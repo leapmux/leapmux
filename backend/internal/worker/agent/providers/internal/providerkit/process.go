@@ -790,7 +790,7 @@ type ParsedLine struct {
 
 // HasID reports whether the line carried a non-null id field.
 func (p *ParsedLine) HasID() bool {
-	return len(p.ID) > 0 && string(p.ID) != "null"
+	return RawPresent(p.ID)
 }
 
 // IDInt64 reads the line's ID as an int64.

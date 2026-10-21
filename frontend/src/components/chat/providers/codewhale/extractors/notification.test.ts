@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { CODEWHALE_EVENT, CODEWHALE_ITEM_KIND } from '~/generated/contracts/codewhale-protocol'
 import { codewhaleEvent, itemFinished } from '../toolResults.fixtures'
-import { codewhaleNotificationEntry } from './notification'
+import { codewhaleCompactionStart, codewhaleNotificationEntry } from './notification'
 
 describe('codewhaleNotificationEntry', () => {
+  it('uses the summary when the detail is whitespace', () => {
+    const row = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { kind: CODEWHALE_ITEM_KIND.Status, detail: ' ', summary: 'The native summary.' } })
+    expect(codewhaleNotificationEntry(row)).toEqual([{ kind: 'status', text: 'The native summary.' }])
+  })
+
   it('states a status item', () => {
     expect(codewhaleNotificationEntry(itemFinished(CODEWHALE_ITEM_KIND.Status, 'Checkpoint saved'))).toStrictEqual([{ kind: 'status', text: 'Checkpoint saved' }])
     expect(codewhaleNotificationEntry(itemFinished(CODEWHALE_ITEM_KIND.Status, '  '))).toStrictEqual([])
@@ -30,16 +35,16 @@ describe('codewhaleNotificationEntry', () => {
     expect(codewhaleNotificationEntry(itemFinished(CODEWHALE_ITEM_KIND.ContextCompaction, 'Compaction complete', { auto: false })))
       .toStrictEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual' } }])
     expect(codewhaleNotificationEntry(itemFinished(CODEWHALE_ITEM_KIND.ContextCompaction, 'The model refused', {}, CODEWHALE_EVENT.ItemFailed)))
-      .toStrictEqual([{ kind: 'compaction', phase: 'end', error: 'The model refused' }])
+      .toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'The model refused' }])
   })
 
   // A compaction that did not complete is an error to the reader, even when the
   // runtime gives no words for it.
   it('states a compaction that the turn cut short, with or without its words', () => {
     expect(codewhaleNotificationEntry(itemFinished(CODEWHALE_ITEM_KIND.ContextCompaction, '', {}, CODEWHALE_EVENT.ItemInterrupted)))
-      .toStrictEqual([{ kind: 'compaction', phase: 'end', error: 'aborted' }])
+      .toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted', error: '' }])
     expect(codewhaleNotificationEntry(itemFinished(CODEWHALE_ITEM_KIND.ContextCompaction, 'Stopped by the reader', {}, CODEWHALE_EVENT.ItemCanceled)))
-      .toStrictEqual([{ kind: 'compaction', phase: 'end', error: 'Stopped by the reader' }])
+      .toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted', error: 'Stopped by the reader' }])
   })
 
   // The `auto` flag is a boolean on the wire. Any other value is no statement that
@@ -84,7 +89,7 @@ describe('codewhaleNotificationEntry', () => {
 
   it('states a wait that is not a positive number of seconds as no wait at all', () => {
     const setting = 'Set [tools] user_input_timeout_seconds = 0 in the Codewhale configuration to wait with no limit.'
-    for (const timeout of [-30, '300', null]) {
+    for (const timeout of [-30, '300', null, Infinity, -Infinity, NaN, 1e308]) {
       expect(codewhaleNotificationEntry(codewhaleEvent(CODEWHALE_EVENT.ApprovalTimeout, { timeout_secs: timeout })), String(timeout))
         .toStrictEqual([{ kind: 'text', text: `Codewhale denied the call because nobody answered in time. ${setting}` }])
     }
@@ -127,5 +132,15 @@ describe('codewhaleNotificationEntry', () => {
     expect(codewhaleNotificationEntry({ type: 'interrupted' })).toStrictEqual([])
     expect(codewhaleNotificationEntry(itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'Hello'))).toStrictEqual([])
     expect(codewhaleNotificationEntry(codewhaleEvent('a.later.event', {}))).toStrictEqual([])
+  })
+})
+
+describe('codewhaleCompactionStart', () => {
+  it('identifies only a native compaction start', () => {
+    const start = (kind: string) => codewhaleEvent(CODEWHALE_EVENT.ItemStarted, { item: { kind } })
+    expect(codewhaleCompactionStart(start(CODEWHALE_ITEM_KIND.ContextCompaction))).toBe(true)
+    expect(codewhaleCompactionStart(start(CODEWHALE_ITEM_KIND.Status))).toBe(false)
+    expect(codewhaleCompactionStart(itemFinished(CODEWHALE_ITEM_KIND.ContextCompaction, 'Done.'))).toBe(false)
+    expect(codewhaleCompactionStart({})).toBe(false)
   })
 })

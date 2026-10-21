@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 const (
@@ -202,6 +203,16 @@ type Snapshot struct {
 	Items               []SnapshotItem
 }
 
+// HeadIndex finds the first item that does not await an echo, or returns -1.
+func (s Snapshot) HeadIndex() int {
+	for index, item := range s.Items {
+		if item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO {
+			return index
+		}
+	}
+	return -1
+}
+
 type NewItem struct {
 	ID               string
 	AgentID          string
@@ -216,16 +227,20 @@ type NewItem struct {
 type PreparedDispatch struct {
 	Item        DispatchItem
 	ReservedSeq int64
+	// Steering preserves the active turn that admitted this input.
+	Steering bool
 }
 
 type AcceptedTranscript struct {
-	ID                 string
-	AgentID            string
-	Seq                int64
-	Content            []byte
-	ContentCompression leapmuxv1.ContentCompression
-	AgentProvider      leapmuxv1.AgentProvider
-	MarkType           leapmuxv1.MarkType
+	ID                             string
+	AgentID                        string
+	Seq                            int64
+	Content                        []byte
+	ContentCompression             leapmuxv1.ContentCompression
+	SupplementalContent            []byte
+	SupplementalContentCompression leapmuxv1.ContentCompression
+	AgentProvider                  leapmuxv1.AgentProvider
+	MarkType                       leapmuxv1.MarkType
 	// SpanLines carries the passthrough span column that Accept wrote into the
 	// messages row. The live broadcast must repeat it, or the same bubble
 	// renders without its bars now and with them after a reload.
@@ -238,7 +253,9 @@ type DispatchResult struct {
 	TurnSteerable bool
 	SpanLines     string
 	Steering      bool
-	AfterAccept   func()
+	// SupplementalContent stores the original provider source for frontend extraction.
+	SupplementalContent []byte
+	AfterAccept         func()
 }
 
 // DeliveryError carries a refused dispatch and what the queue must do. A busy
@@ -287,6 +304,8 @@ func (e *DeliveryError) Unwrap() error {
 type Dispatcher interface {
 	Dispatch(item DispatchItem) (DispatchResult, error)
 	Steer(item DispatchItem) (DispatchResult, error)
+	PrepareSteer(agentID string)
+	SteerPolicy(agentID string) agent.SteerPolicy
 	SupportsSteering(agentID string) bool
 	// Interrupt cancels the agent's active turn without any of the stop-side
 	// bookkeeping the InterruptAgent RPC applies (queue pause, control

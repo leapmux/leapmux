@@ -57,6 +57,13 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 	providerEntries := map[string]indexedRaw{}
 
 	var keepAll []indexedRaw
+	applyCompactionBoundary := func(i int, raw json.RawMessage) {
+		status = indexedRaw{idx: -1}
+		if contextCleared.idx >= 0 && i > contextCleared.idx {
+			contextCleared = indexedRaw{idx: -1}
+		}
+		keepAll = append(keepAll, indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindCompactionBoundary})
+	}
 
 	for i, raw := range messages {
 		var env envelope
@@ -155,34 +162,22 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 			}
 			rateLimitByType[key] = indexedRaw{idx: i, raw: raw}
 
-		case contracts.NotificationTypeCompacting:
-			status = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
+		case contracts.NotificationTypeApiRetry, contracts.NotificationTypeApiRetryResolved:
+			apiRetry = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindAPIRetry}
+		case contracts.NotificationTypeCompactionEnded:
+			applyCompactionBoundary(i, raw)
 
 		default:
 			class := plugin.Classify(raw)
-			switch class.Kind {
+			switch class.Kind() {
 			case agent.NotificationKindStatus:
-				status = indexedRaw{idx: i, raw: raw, kind: class.Kind}
+				status = indexedRaw{idx: i, raw: raw, kind: class.Kind()}
 			case agent.NotificationKindAPIRetry:
-				apiRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind}
+				apiRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind()}
 			case agent.NotificationKindCompactionBoundary:
-				status = indexedRaw{idx: -1}
-				if contextCleared.idx >= 0 && i > contextCleared.idx {
-					contextCleared = indexedRaw{idx: -1}
-				}
-				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw, kind: class.Kind})
+				applyCompactionBoundary(i, raw)
 			case agent.NotificationKindProviderScoped:
-				prev, ok := providerEntries[class.Key]
-				if ok {
-					merged, err := plugin.Merge(class, prev.raw, raw)
-					if err != nil {
-						slog.Warn("consolidate provider notification merge failed", "key", class.Key, "error", err)
-						merged = raw
-					}
-					providerEntries[class.Key] = indexedRaw{idx: i, raw: merged, kind: class.Kind}
-				} else {
-					providerEntries[class.Key] = indexedRaw{idx: i, raw: raw, kind: class.Kind}
-				}
+				providerEntries[class.Key()] = indexedRaw{idx: i, raw: raw, kind: class.Kind()}
 			default:
 				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw})
 			}

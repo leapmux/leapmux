@@ -92,7 +92,8 @@ func newProcessHarnessWithShell(t *testing.T, shell string) *processHarness {
 
 	options := agentapi.Options{AgentID: "agent-proc", WorkingDir: t.TempDir(), Shell: shell, APITimeout: 30 * time.Second}
 	agentDir := agentdirtest.NewDir(t, agentDirSpec())
-	bridge, err := newPermissionBridge(agentDir.Path())
+	clock := quartz.NewReal()
+	bridge, err := newPermissionBridge(agentDir.Path(), clock)
 	require.NoError(t, err)
 	h.agent = newAgent(options, agentapi.NewProviderServices(h.sink), launchConfig{
 		opts:          options,
@@ -102,7 +103,7 @@ func newProcessHarnessWithShell(t *testing.T, shell string) *processHarness {
 		getenv:        envOf(nil),
 		home:          t.TempDir(),
 		shellEnv:      shellEnvOf(options),
-	}, bridge, agentDir, quartz.NewReal())
+	}, bridge, agentDir, clock)
 	t.Cleanup(h.agent.Stop)
 	return h
 }

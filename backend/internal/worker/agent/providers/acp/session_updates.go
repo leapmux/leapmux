@@ -9,7 +9,8 @@ import (
 )
 
 // acpSessionUpdates buffers session/update notifications during initialization and session replacement.
-// Its mutex serializes identity validation, replay, and dispatch.
+// Its mutex serializes session updates and identity checks.
+// Off-reader buffer flushes use the same mutex.
 type acpSessionUpdates struct {
 	mu        sync.Mutex
 	buffering bool
@@ -76,7 +77,7 @@ var conversationReplayKinds = map[string]bool{
 	contracts.ACPUpdateAgentThoughtChunk: true,
 	contracts.ACPUpdateToolCall:          true,
 	contracts.ACPUpdateToolCallUpdate:    true,
-	acpUpdatePlan:                        true,
+	contracts.ACPUpdatePlan:              true,
 }
 
 // isConversationReplay reports whether one buffered notification is a
@@ -153,7 +154,13 @@ func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
 		return
 	}
 	if b.hooks.SessionNotificationMetadata != nil && len(wrapper.Meta) > 0 {
-		b.hooks.SessionNotificationMetadata(wrapper.Meta)
+		var kind struct {
+			SessionUpdate string `json:"sessionUpdate"`
+		}
+		if json.Unmarshal(wrapper.Update, &kind) != nil {
+			kind.SessionUpdate = ""
+		}
+		b.hooks.SessionNotificationMetadata(kind.SessionUpdate, wrapper.Meta)
 	}
 	b.handleACPUpdate(wrapper.Update)
 }

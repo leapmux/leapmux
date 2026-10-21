@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -438,6 +439,23 @@ func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
 	assert.Equal(t, contracts.CodexOptionDefaultServiceTier, a.serviceTier)
 	assert.Equal(t, "", a.permissionMode, "a null policy keeps the unset mode, which has no lifecycle default")
 	assert.Equal(t, "", a.permissionProfile)
+}
+
+func TestCodexThreadResultDistinguishesWhitespaceAndNull(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{" \n\t", " \nnull\t"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			raw := json.RawMessage(value)
+			result, err := newCodexThreadResult(testCodexThreadResponse("thread-1", "gpt-5.6-sol", raw, raw, raw, nil, raw))
+			require.NoError(t, err)
+			for _, key := range []string{agent.OptionIDEffort, contracts.CodexOptionServiceTier, agent.OptionIDPermissionMode, contracts.CodexOptionPermissionProfile} {
+				setting, present := result.settings[key]
+				assert.Equal(t, strings.Contains(value, "null"), present, key)
+				assert.Nil(t, setting, key)
+			}
+		})
+	}
 }
 
 func TestCodexThreadResultPreservesGranularApprovalPolicy(t *testing.T) {

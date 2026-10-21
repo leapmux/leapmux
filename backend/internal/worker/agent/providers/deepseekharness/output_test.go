@@ -7,12 +7,178 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUnknownFramesPersist(t *testing.T) {
+	stored := []byte(`{"type":"future/event","seq":1,"time":1000,"data":{"future":true}}`)
+	frame := func(stream string) []byte {
+		return []byte(`{"type":"item","streamId":"` + stream + `","value":{"type":"event","event":` + string(stored) + `}}`)
+	}
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "root", Frame: frame("root"), Stored: stored},
+		{Name: "other session", Frame: frame("foreign"), OtherSession: true},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		require.NoError(t, a.handleFrame(tc.Frame))
+		return sink
+	})
+}
+
+func TestInboxSpliceKeepsTheKnownSteerIdentity(t *testing.T) {
+	for _, id := range []string{"", " ", "\t"} {
+		t.Run(strconv.Quote(id), func(t *testing.T) {
+			a := newOfflineAgent(t, &agenttest.Sink{})
+			steer := &pendingSteer{requestID: "request", itemID: "known-item"}
+			a.pendingSteers = []*pendingSteer{steer}
+			raw, err := json.Marshal(map[string]any{
+				"type": "agent/inbox/spliced", "seq": 1, "time": 1000,
+				"data": map[string]any{"inserted": []any{map[string]any{"id": id, "source": map[string]string{"rpcId": "request"}}}},
+			})
+			require.NoError(t, err)
+			require.NoError(t, a.handleSessionEvent(a.streams["root"], raw))
+			assert.Equal(t, "known-item", steer.itemID, "a malformed update must not prevent native steer removal")
+		})
+	}
+}
+
+func TestSessionEventVerdicts(t *testing.T) {
+	for _, kind := range []string{
+		"agent-preset/selected", "approval/asked", "approval/decided", "approval/policy", "assistant/attempt", "command/done", "command/run",
+		"compaction/prune", "compaction/summary", "developer/message", "feedback/message-delete", "feedback/message-put", "feedback/record", "hook/invoked",
+		"image/offload", "llm/retry-started", "model/selection", "permission/preset", "request/header", "sandbox/mode", "schedule/change",
+		"session-log-deepseek/delivery-accepted", "session/end-seed", "session/title", "session/title-llm-request", "step/start", "step/end",
+		"subagent/descriptor", "subagent/model-selection-policy", "system/message", "team/member", "team/message/delivered", "team/message/queued", "team/task",
+		"tool/ptc-dispatch", "tool/ptc-dispatch-start", "web/deepseek-search-llm-request", "workspace/changes", "request/context", "compaction/start", "agent/inbox/spliced",
+	} {
+		t.Run(kind, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			raw, err := json.Marshal(map[string]any{"type": kind, "seq": 1, "time": 1000, "data": map[string]any{}})
+			require.NoError(t, err)
+			require.NoError(t, a.handleSessionEvent(a.streams["root"], raw))
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+		})
+	}
+	for _, tc := range []struct {
+		data   string
+		stored bool
+	}{
+		{`{"decision":"pass","exitCode":0}`, false},
+		{`{"decision":"pass","exitCode":1}`, true},
+		{`{"decision":"deny","exitCode":0}`, true},
+		{`{"decision":"block"}`, true},
+		{`{"decision":"stop"}`, true},
+		{`{"decision":"pass","stderrSummary":"cannot start the hook"}`, true},
+		{`{"decision":"allow","exitCode":0,"stderrSummary":"an informational line"}`, false},
+		{`{"decision":"pass"}`, false},
+	} {
+		t.Run(tc.data, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"hook/result","seq":1,"time":1000,"data":`+tc.data+`}`)))
+			if tc.stored {
+				assert.Len(t, sink.PersistedNotifications(), 1)
+			} else {
+				assert.Empty(t, sink.PersistedNotifications())
+			}
+			assert.Empty(t, sink.Messages())
+		})
+	}
+	t.Run("deliverables", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		raw := []byte(`{"type":"deliverables/presented","seq":1,"time":1000,"data":{"files":[{"path":"report.md","description":"Report"}]}}`)
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], raw))
+		require.Len(t, sink.PersistedNotifications(), 1)
+		assert.JSONEq(t, string(raw), string(sink.PersistedNotifications()[0].Content))
+	})
+}
+
+func TestLlmRetryResolvesAtRootOutput(t *testing.T) {
+	for _, output := range []string{
+		`{"type":"assistant/message","seq":6,"time":1000,"data":{"message":{"content":[{"type":"text","text":"answer"}]}}}`,
+		`{"type":"tool/call","seq":6,"time":1000,"data":{"callId":"call","name":"read","arguments":"{}"}}`,
+	} {
+		t.Run(output, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			stream := a.streams["root"]
+			for seq := range 5 {
+				// .tmp/probe/deepseekharness/logs/frames.jsonl, retry frames 115-140.
+				raw, err := json.Marshal(map[string]any{"type": "llm/retry", "seq": seq, "time": 1000, "data": map[string]any{"retryId": "retry", "retry": seq + 1, "maxRetries": 5, "failure": map[string]any{"message": "overloaded"}}})
+				require.NoError(t, err)
+				require.NoError(t, a.handleSessionEvent(stream, raw))
+				stream.lastSeq = -1
+				require.NoError(t, a.handleSessionEvent(stream, raw))
+				assert.Equal(t, agent.NotificationKindAPIRetry, Registration().Plugin.Classify(raw).Kind())
+			}
+			require.Len(t, sink.PersistedNotifications(), 5)
+			require.NoError(t, a.handleSessionEvent(stream, []byte(output)))
+			assert.Equal(t, []map[string]interface{}{{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved}}, sink.LeapMuxNotifications())
+		})
+	}
+}
+
+func TestLlmRetryEndsWithTheRootTurn(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	stream := a.streams["root"]
+	for _, raw := range []string{
+		`{"type":"llm/retry","seq":0,"time":1000,"data":{}}`,
+		`{"type":"turn/end","seq":1,"time":1000,"data":{"reason":{"kind":"error"}}}`,
+		`{"type":"assistant/message","seq":2,"time":1000,"data":{"message":{"content":[{"type":"text","text":"another turn"}]}}}`,
+	} {
+		require.NoError(t, a.handleSessionEvent(stream, []byte(raw)))
+	}
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+func TestRequestContextStoresNoRowAndSetsTheWindow(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"request/context","seq":0,"time":1000,"data":{"contextWindow":128000}}`)))
+	assert.Equal(t, int64(128000), a.streams["root"].contextWindow)
+	assert.Empty(t, sink.Messages())
+}
+
+func TestCompactionIsLiveThenOneEndOnItsStreamSink(t *testing.T) {
+	for _, child := range []bool{false, true} {
+		for _, command := range []string{"", "command-1"} {
+			t.Run(strconv.FormatBool(child)+command, func(t *testing.T) {
+				base := &agenttest.Sink{}
+				a := newOfflineAgent(t, base)
+				stream, sink := a.streams["root"], base
+				if child {
+					stream = &sessionStream{sessionID: "native-child", childAgentID: "stored-child", lastSeq: -1}
+					sink = base.Child("stored-child")
+				}
+				raw, err := json.Marshal(map[string]any{"type": "compaction/start", "seq": 0, "time": 1000, "data": map[string]any{"sourceCommandId": command}})
+				require.NoError(t, err)
+				require.NoError(t, a.handleSessionEvent(stream, raw))
+				trigger := "auto"
+				if command != "" {
+					trigger = "manual"
+				}
+				assert.Equal(t, []map[string]interface{}{{"compaction": map[string]interface{}{"trigger": trigger}}}, sink.SessionInfos())
+				assert.Empty(t, sink.Messages())
+				assert.Empty(t, sink.PersistedNotifications())
+				require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"compaction/end","seq":1,"time":1000,"data":{"error":"failed"}}`)))
+				require.Len(t, sink.PersistedNotifications(), 1)
+				assert.Equal(t, stream.sessionID, sink.PersistedNotifications()[0].AgentSessionID)
+				require.Len(t, sink.SessionInfos(), 2)
+				assert.Equal(t, map[string]interface{}{"compaction": nil}, sink.SessionInfos()[1])
+			})
+		}
+	}
+}
 
 type failingAssistantBlockSink struct {
 	*agenttest.Sink
@@ -86,6 +252,95 @@ func TestFailedAssistantBlockDoesNotAdvanceTheNativeCursorOrDuplicateItsPriorBlo
 	assert.JSONEq(t, `{"blockIndex":0}`, string(messages[0].SupplementalContent))
 	assert.JSONEq(t, `{"blockIndex":1}`, string(messages[1].SupplementalContent))
 	assert.Equal(t, int64(17), stream.lastSeq)
+}
+
+type heldTranscriptSink struct {
+	*agenttest.Sink
+	failure error
+}
+
+func (s *heldTranscriptSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if s.failure != nil {
+		return s.failure
+	}
+	return s.Sink.PersistMessage(source, content, span)
+}
+
+func (s *heldTranscriptSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	if s.failure != nil {
+		return false, s.failure
+	}
+	return s.Sink.PersistNotification(source, content)
+}
+
+func (s *heldTranscriptSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	if s.failure != nil {
+		return s.failure
+	}
+	return s.Sink.PersistTurnEnd(content, span)
+}
+
+func TestRetainedOutputKeepsEveryBlockAndReleasesTheTurnAfterPersistence(t *testing.T) {
+	t.Parallel()
+	base := &agenttest.Sink{}
+	sink := &heldTranscriptSink{Sink: base, failure: errors.New("the transcript write failed")}
+	a := newOfflineAgent(t, base)
+	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
+	stream := a.streams["root"]
+	frames := []string{
+		`{"type":"turn/start","seq":1,"time":1000,"data":{}}`,
+		`{"type":"assistant/message","seq":2,"time":1001,"data":{"message":{"content":[{"type":"reasoning","text":"First thought."},{"type":"text","text":"First answer."}]}}}`,
+		`{"type":"tool/call","seq":3,"time":1002,"data":{"callId":"call-1","name":"bash"}}`,
+		`{"type":"turn/end","seq":4,"time":1003,"data":{"reason":{"kind":"completed"}}}`,
+	}
+	for _, frame := range frames {
+		require.NoError(t, a.handleSessionEvent(stream, []byte(frame)))
+	}
+	assert.Equal(t, int64(4), stream.lastSeq, "the output queue owns every retained row")
+	assert.Empty(t, base.Messages())
+	assert.NotContains(t, base.TurnLifecycle(), "turn_active:false")
+	sink.failure = nil
+	require.NoError(t, agent.FlushPendingOutput(a.sink))
+	rows := base.Messages()
+	require.Len(t, rows, 5)
+	assert.JSONEq(t, `{"blockIndex":0}`, string(rows[0].SupplementalContent))
+	assert.JSONEq(t, `{"blockIndex":1}`, string(rows[1].SupplementalContent))
+	assert.Equal(t, "call-1", rows[2].SpanID)
+	assert.Equal(t, "call-1", rows[3].SpanID)
+	assert.True(t, rows[4].TurnEnd)
+	assert.Equal(t, "turn_active:false", base.TurnLifecycle()[len(base.TurnLifecycle())-1])
+	for _, frame := range frames {
+		require.NoError(t, a.handleSessionEvent(stream, []byte(frame)))
+	}
+	assert.Len(t, base.Messages(), 5, "native replay must not submit retained rows again")
+}
+
+func TestRetainedNotificationStillResolvesRetryAndCompactionState(t *testing.T) {
+	t.Parallel()
+	base := &agenttest.Sink{}
+	sink := &heldTranscriptSink{Sink: base, failure: errors.New("the notification write failed")}
+	a := newOfflineAgent(t, base)
+	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
+	stream := a.streams["root"]
+	for _, frame := range []string{
+		`{"type":"compaction/start","seq":1,"time":1000,"data":{}}`,
+		`{"type":"compaction/end","seq":2,"time":1001,"data":{}}`,
+		`{"type":"llm/retry","seq":3,"time":1002,"data":{"attempt":1}}`,
+		`{"type":"assistant/message","seq":4,"time":1003,"data":{"message":{"content":[{"type":"text","text":"Recovered answer."}]}}}`,
+	} {
+		require.NoError(t, a.handleSessionEvent(stream, []byte(frame)))
+	}
+	assert.False(t, stream.compactionLive)
+	value, exists := base.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Nil(t, value)
+	sink.failure = nil
+	require.NoError(t, agent.FlushPendingOutput(a.sink))
+	require.Len(t, base.PersistedNotifications(), 2)
+	require.Len(t, base.LeapMuxNotifications(), 1)
+	assert.Equal(t, contracts.NotificationTypeApiRetryResolved, base.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+	require.Len(t, base.Messages(), 1)
+	assert.Contains(t, string(base.Messages()[0].Content), "Recovered answer.")
 }
 
 func TestChildReplayKeepsOneCopyOfEachExactNativeAssistantBlock(t *testing.T) {

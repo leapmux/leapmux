@@ -22,7 +22,7 @@ func TestOpenToolSpan_OrdinaryToolReservesPersistsAndOpens(t *testing.T) {
 	open := sink.OpenSpans()
 	require.Len(t, open, 1)
 	assert.Equal(t, "tc-read", open[0].SpanID)
-	assert.Empty(t, open[0].ParentSpanID, "a provider's tool calls are flat")
+	assert.Empty(t, open[0].ParentSpanID, "the root helper uses no parent")
 	assert.Equal(t, "read", sink.GetSpanType("tc-read"))
 
 	// The row persisted BEFORE its own span opened, so it draws no rail of its
@@ -76,4 +76,29 @@ func TestOpenToolSpan_ReturnsThePersistErrorAndStillOpensTheSpan(t *testing.T) {
 	open := sink.OpenSpans()
 	require.Len(t, open, 1, "the span opens anyway, as every call site did before")
 	assert.Equal(t, "tc-read", open[0].SpanID)
+}
+
+func TestOpenToolSpanWithParentKeepsTheParentAndWriteOrder(t *testing.T) {
+	t.Parallel()
+	for _, writeFails := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stored", true: "failed write"}[writeFails], func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			sink.OpenSpan("parent", "")
+			if writeFails {
+				sink.PersistErr = assert.AnError
+			}
+			err := OpenToolSpanWithParent(sink, agent.MessageContent{Original: []byte(`{}`)}, "child", "read", "parent", false)
+			if writeFails {
+				require.ErrorIs(t, err, assert.AnError)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, sink.Messages(), 1)
+				assert.Equal(t, "parent", sink.Messages()[0].ParentSpanID)
+				assert.Equal(t, []agenttest.SpanOpen{{SpanID: "parent", ParentSpanID: ""}}, sink.Messages()[0].SpansOpenAtPersist)
+			}
+			assert.Equal(t, []agenttest.SpanOpen{{SpanID: "parent", ParentSpanID: ""}, {SpanID: "child", ParentSpanID: "parent"}}, sink.OpenSpans())
+			assert.Equal(t, "read", sink.GetSpanType("child"))
+		})
+	}
 }

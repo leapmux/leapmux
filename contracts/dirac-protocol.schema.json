@@ -10,7 +10,8 @@
     "modes",
     "defaultMode",
     "configIds",
-    "toolNames"
+    "toolNames",
+    "notices"
   ],
   "$defs": {
     "table": {
@@ -134,6 +135,9 @@
       "pattern": "^[A-Z][A-Za-z0-9]*$"
     },
     "configIds": {
+      "$ref": "#/$defs/table"
+    },
+    "notices": {
       "$ref": "#/$defs/table"
     },
     "toolNames": {

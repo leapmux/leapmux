@@ -8,6 +8,7 @@ import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+import type { LiveCompaction } from '~/stores/chatCompaction'
 import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 
@@ -44,6 +45,7 @@ import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { useChatScroll } from './useChatScroll'
 import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
+import { CompactionIndicator } from './widgets/CompactionIndicator'
 import { SpanLineGapBridges } from './widgets/SpanLineGapBridges'
 import { SpanLines } from './widgets/SpanLines'
 import { reservedRowContentColumnStyle, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
@@ -132,6 +134,8 @@ export interface ChatPaginationProps extends PaginationCallbacks {
  * state rather than a construction mistake.
  */
 export interface AgentLifecycleProps {
+  /** A compaction can remain active after the model turn ends. */
+  liveCompaction?: LiveCompaction | undefined
   /** Whether the agent is actively working (for showing the thinking indicator). */
   agentWorking?: boolean
   /**
@@ -1163,6 +1167,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   them — the scroll-to-bottom button jumps back to the tail.
                 */}
                   <Show when={!props.pagination?.hasNewerMessages}>
+                    <CompactionIndicator compaction={props.agentLifecycle?.liveCompaction} />
                     {/* Each optional indicator prop is omitted (not undefined) while the lifecycle scope holds none. */}
                     <ThinkingIndicator
                       {...(props.agentId !== undefined ? { id: props.agentId } : {})}

@@ -20,10 +20,9 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		defer a.dispatchMu.Unlock()
 		a.dispatchOutput(line)
 	}()
-	// Goal writes run outside every dispatch, provider, and lifecycle lock: a
-	// native goal observer re-enters HandleOutput from its UpsertGoal and
-	// ClearGoal callbacks, and running those callbacks under dispatchMu would
-	// deadlock the reentry on the first nested native frame.
+	// Goal writes run after dispatchMu releases.
+	// A native goal observer can call HandleOutput from its UpsertGoal or ClearGoal callback.
+	// The callback must hold no provider or lifecycle lock, because it can enter the same dispatcher.
 	for _, apply := range a.takeDeferredGoalActions() {
 		apply()
 	}
@@ -47,6 +46,10 @@ func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
 		a.handleLogRecord(line.Params)
 		return
 	}
+	if line.Method == methodLogGap {
+		a.handleLogGap(line.Params)
+		return
+	}
 	var identity struct {
 		SessionID string `json:"sessionId"`
 		TurnID    string `json:"turnId"`
@@ -60,6 +63,8 @@ func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
 	if state == nil {
 		if line.Method == contracts.MuseMethodUsageChanged {
 			a.handleUsage(line.Params, a.sink)
+		} else {
+			slog.Debug("ignore a Muse event without an owned session", "method", line.Method, "session", identity.SessionID)
 		}
 		return
 	}
@@ -143,18 +148,25 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		state.toolUses++
 	}
 	finished := item.Item.Status != contracts.MuseItemStatusInProgress
+	current := a.currentSessionState(item.SessionID, state)
+	modelTool := open && item.Item.Kind == contracts.MuseItemKindToolCall && current
 	a.stateMu.Unlock()
+	if modelTool && a.flushRetryNotices(state) {
+		state.retry.Resolve(state.sink)
+	}
 	if tool {
 		if open && !finished {
-			if a.persistItem(state, existing, false) {
+			if a.persistItem(state, existing, false) && current {
 				state.sink.OpenSpan(item.Item.ID, "")
 				state.sink.SetSpanType(item.Item.ID, item.Item.Tool)
 			}
 		}
 		if finished {
 			a.persistItem(state, existing, true)
-			state.sink.CloseSpan(item.Item.ID)
-			state.sink.ReportProgress(agent.CompleteOutputProgress(item.Item.ID))
+			if current {
+				state.sink.CloseSpan(item.Item.ID)
+				state.sink.ReportProgress(agent.CompleteOutputProgress(item.Item.ID))
+			}
 		}
 		a.enrichToolGroup(state, existing, previous)
 	} else if item.Item.Kind == contracts.MuseItemKindUserMessage {
@@ -162,18 +174,43 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 			a.persistItem(state, existing, false)
 		}
 	} else if item.Item.Kind == contracts.MuseItemKindCompaction {
+		a.stateMu.Lock()
+		publish := current && !finished && !state.compactionLive[item.Item.ID]
+		if publish {
+			if state.compactionLive == nil {
+				state.compactionLive = make(map[string]bool)
+			}
+			state.compactionLive[item.Item.ID] = true
+		}
 		if finished {
-			_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw})
+			delete(state.compactionLive, item.Item.ID)
+		}
+		a.stateMu.Unlock()
+		if publish {
+			providerkit.PublishCompaction(state.sink, item.Item.Trigger)
+		}
+		if finished {
+			if current {
+				providerkit.EndCompaction(state.sink)
+			}
+			_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, museItemMessageContent(slices.Clone(raw), item))
 			if err != nil {
 				slog.Warn("persist Muse compaction", "error", err)
+			} else {
+				a.stateMu.Lock()
+				existing.persistedRevision = max(existing.persistedRevision, item.Item.Revision)
+				a.stateMu.Unlock()
 			}
-			// A compaction runs outside any model turn and the host reports no
-			// idle of its own, so the compact turn the Worker opened ends here.
-			if item.SessionID == a.sessionID {
+			// A compaction runs outside model turns. The host reports no idle state for it.
+			// End the worker's compaction turn here.
+			a.stateMu.Lock()
+			root := item.SessionID == a.sessionID
+			a.stateMu.Unlock()
+			if root {
 				a.PublishTurnActive()
 			}
 		}
-	} else if finished {
+	} else if finished && !museSilentItem(item.Item) {
 		a.persistItem(state, existing, false)
 	}
 	if item.Item.Kind == contracts.MuseItemKindAgentMessage || item.Item.Kind == contracts.MuseItemKindReasoning {
@@ -184,9 +221,32 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 			}
 		}
 	}
-	if item.Item.Kind == contracts.MuseItemKindSubagent || item.Item.Kind == contracts.MuseItemKindWorkflow || item.Item.Background {
+	if finished {
+		a.flushRetryNotices(state)
+	}
+	if current && (item.Item.Kind == museItemSubagent || item.Item.Kind == contracts.MuseItemKindWorkflow || item.Item.Background) {
 		a.observeChildOrTask(item, state)
 	}
+}
+
+// endSessionCompactions withdraws live state when the session retires.
+func (a *Agent) endSessionCompactions(state *sessionState) {
+	if state == nil {
+		return
+	}
+	a.stateMu.Lock()
+	live := len(state.compactionLive) > 0
+	state.compactionLive = nil
+	a.stateMu.Unlock()
+	if live {
+		providerkit.EndCompaction(state.sink)
+	}
+}
+
+// museSilentItem identifies native items that no transcript reader displays.
+func museSilentItem(item nativeItem) bool {
+	return item.Kind == museItemSubagent || item.Kind == museItemReminderChild ||
+		item.Kind == contracts.MuseItemKindHookRun && item.Status == contracts.MuseItemStatusCompleted
 }
 
 func (a *Agent) persistItem(state *sessionState, item *itemState, closing bool) bool {
@@ -207,14 +267,37 @@ func (a *Agent) persistItem(state *sessionState, item *itemState, closing bool) 
 	if params.Item.Kind == contracts.MuseItemKindUserMessage {
 		source = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
 	}
-	if err := state.sink.PersistMessage(source, agent.MessageContent{Original: raw, AgentSessionID: params.SessionID, IdempotencyKey: nativeItemKey(params.Item.ID, revision)}, span); err != nil {
+	content := museItemMessageContent(raw, params)
+	if err := state.sink.PersistMessage(source, content, span); err != nil {
 		slog.Warn("persist a Muse item", "item", params.Item.ID, "error", err)
-		return false
+		return museWriteIsRetained(err)
 	}
 	a.stateMu.Lock()
 	item.persistedRevision = max(item.persistedRevision, revision)
 	a.stateMu.Unlock()
 	return true
+}
+
+// museItemCompletion preserves the native failure state of a finished text item.
+func museItemCompletion(status string) agent.MessageCompletion {
+	switch status {
+	case contracts.MuseItemStatusFailed, contracts.MuseItemStatusTimedOut:
+		return agent.MessageCompletionError
+	case contracts.MuseItemStatusCancelled:
+		return agent.MessageCompletionInterrupted
+	default:
+		return ""
+	}
+}
+
+// museItemMessageContent gives normal and retried writes the same native completion.
+// The caller supplies an owned copy of raw.
+func museItemMessageContent(raw []byte, params itemParams) agent.MessageContent {
+	content := agent.MessageContent{Original: raw, AgentSessionID: params.SessionID, IdempotencyKey: nativeItemKey(params.Item.ID, params.Item.Revision)}
+	if params.Item.Kind == contracts.MuseItemKindAgentMessage || params.Item.Kind == contracts.MuseItemKindReasoning {
+		content.Completion = museItemCompletion(params.Item.Status)
+	}
+	return content
 }
 
 func (a *Agent) handleDelta(raw []byte, state *sessionState) {
@@ -261,6 +344,9 @@ func (a *Agent) handleDelta(raw []byte, state *sessionState) {
 	a.stateMu.Unlock()
 	switch kind {
 	case contracts.MuseItemKindAgentMessage, contracts.MuseItemKindReasoning:
+		if !retired && delta.Delta != "" && a.flushRetryNotices(state) {
+			state.retry.Resolve(state.sink)
+		}
 		assembled := agent.AssembledMessageKindText
 		if kind == contracts.MuseItemKindReasoning {
 			assembled = agent.AssembledMessageKindReasoning
@@ -323,6 +409,7 @@ func (a *Agent) finishTurn(raw []byte, id, turnID string) {
 	root := id == a.sessionID
 	retiredRoot := !root && state.childID == ""
 	a.stateMu.Unlock()
+	state.retry.Reset()
 	if a.captureFinalization(state, id, turnID, raw, completion(frame.Params.Outcome)) == nil {
 		return
 	}

@@ -33,7 +33,7 @@ import { AUTO_REVIEW_APPROVE_LABEL, AUTO_REVIEW_APPROVE_TOOLTIP, AUTO_REVIEW_APP
  */
 function NotificationDivider(props: { text: string, loading?: boolean }): JSXElement {
   return (
-    <div class={resultDivider} data-testid="notification-divider">
+    <div class={resultDivider} data-testid="notification-divider" data-loading={props.loading ? 'true' : undefined}>
       <Icon
         icon={props.loading ? LoaderCircle : ArrowDownToLine}
         size="sm"

@@ -2,13 +2,19 @@ package kimi
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
@@ -65,6 +71,161 @@ func TestParseKimiEvent(t *testing.T) {
 		_, ok := parseKimiEvent(kimiFrame{Payload: json.RawMessage(payload)})
 		assert.False(t, ok, payload)
 	}
+}
+
+func TestKimiBlockedPromptPersistsTheHookResult(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	// Trimmed from .tmp/probe/kimi/logs/ws-frames.jsonl, the blocked prompt after frame 89.
+	rig.feed(t, map[string]any{"type": "hook.result", "hookEvent": "UserPromptSubmit", "content": "probe hook blocked this prompt", "blocked": true})
+	rig.feed(t, map[string]any{"type": "prompt.completed", "reason": "blocked"})
+	require.Len(t, rig.sink.PersistedNotifications(), 1)
+	assert.Contains(t, string(rig.sink.PersistedNotifications()[0].Content), "probe hook blocked this prompt")
+	assert.Empty(t, rig.sink.Messages(), "a blocked prompt starts no turn and writes no divider")
+}
+
+func TestKimiPassedHookResultIsDropped(t *testing.T) {
+	t.Parallel()
+	for _, blocked := range []any{false, nil, "true"} {
+		rig := newKimiOutputRig(t)
+		rig.feed(t, map[string]any{"type": "hook.result", "hookEvent": "UserPromptSubmit", "content": "a hook detail", "blocked": blocked})
+		assert.Empty(t, rig.sink.PersistedNotifications())
+		assert.Empty(t, rig.sink.Messages())
+	}
+}
+
+func TestKimiConfigWarningOfThisRunPersistsOnce(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.sink.UpdateSessionID("session_1")
+	// The global replay in .tmp/probe/kimi/run4/logs/ws-frames-split.jsonl supplies this shape.
+	raw, err := json.Marshal(map[string]any{
+		"type": "event.config.warning", "session_id": "__global__", "timestamp": rig.agent.clock.Now().Add(time.Second).Format(time.RFC3339Nano),
+		"payload": map[string]any{"type": "event.config.warning", "warnings": []map[string]string{{"domain": "loopControl", "message": "A config key is deprecated."}}},
+	})
+	require.NoError(t, err)
+	rig.agent.HandleOutput(raw)
+	rig.agent.HandleOutput(raw)
+	require.Len(t, rig.sink.PersistedNotifications(), 1)
+	assert.Contains(t, string(rig.sink.PersistedNotifications()[0].Content), "A config key is deprecated.")
+}
+
+func TestKimiConfigWarningOfAnEarlierRunIsDropped(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	launched := clock.Now()
+	for _, stamp := range []string{"", "invalid", launched.Add(-time.Nanosecond).Format(time.RFC3339Nano)} {
+		rig := newKimiOutputRig(t)
+		rig.sink.UpdateSessionID("session_1")
+		rig.agent.clock = clock
+		rig.agent.serverLaunchedAt = launched
+		raw, err := json.Marshal(map[string]any{
+			"type": "event.config.warning", "session_id": "__global__", "timestamp": stamp,
+			"payload": map[string]any{"type": "event.config.warning", "warnings": []map[string]string{{"domain": "config", "message": "Old warning."}}},
+		})
+		require.NoError(t, err)
+		rig.agent.HandleOutput(raw)
+		assert.Empty(t, rig.sink.PersistedNotifications(), stamp)
+	}
+}
+
+func TestKimiConfigWarningFiltersIndividualDuplicatesAndKeepsNativeFields(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.sink.UpdateSessionID("session_1")
+	rig.agent.serverLaunchedAt = rig.agent.clock.Now()
+	feed := func(messages ...string) {
+		var warnings []map[string]string
+		for _, message := range messages {
+			warnings = append(warnings, map[string]string{"domain": "config", "message": message, "nativeField": "kept"})
+		}
+		raw, err := json.Marshal(map[string]any{
+			"type": "event.config.warning", "session_id": "__global__", "timestamp": rig.agent.serverLaunchedAt.Format(time.RFC3339Nano),
+			"payload": map[string]any{"type": "event.config.warning", "warnings": warnings, "nativeField": "kept"},
+		})
+		require.NoError(t, err)
+		rig.agent.HandleOutput(raw)
+	}
+	feed("First warning.", "First warning.", " ")
+	feed("First warning.", "Second warning.", "Second warning.")
+	rows := rig.sink.PersistedNotifications()
+	require.Len(t, rows, 2)
+	for i, message := range []string{"First warning.", "Second warning."} {
+		var stored struct {
+			Warnings    []map[string]string `json:"warnings"`
+			NativeField string              `json:"nativeField"`
+		}
+		require.NoError(t, json.Unmarshal(rows[i].Content, &stored))
+		assert.Equal(t, "kept", stored.NativeField)
+		assert.Equal(t, []map[string]string{{"domain": "config", "message": message, "nativeField": "kept"}}, stored.Warnings)
+	}
+}
+
+func TestKimiConfigWarningConcurrentFramesPersistOnce(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.sink.UpdateSessionID("session_1")
+	raw := []byte(`{"type":"event.config.warning","session_id":"__global__","timestamp":"2099-01-01T00:00:00Z","payload":{"type":"event.config.warning","warnings":[{"domain":"config","message":"One warning."}]}}`)
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Go(func() { rig.agent.HandleOutput(raw) })
+	}
+	workers.Wait()
+	assert.Len(t, rig.sink.PersistedNotifications(), 1)
+}
+
+func TestKimiConfigWarningBeforeSessionAdmissionWaitsForReplay(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	raw := []byte(`{"type":"event.config.warning","session_id":"__global__","timestamp":"2099-01-01T00:00:00Z","payload":{"type":"event.config.warning","warnings":[{"domain":"config","message":"Startup warning."}]}}`)
+	rig.agent.HandleOutput(raw)
+	assert.Empty(t, rig.sink.PersistedNotifications(), "the startup replay supplies the warning after the sink receives its session")
+	assert.Empty(t, rig.agent.storedConfigWarnings)
+	rig.sink.UpdateSessionID("session_1")
+	rig.agent.HandleOutput(raw)
+	require.Len(t, rig.sink.PersistedNotifications(), 1)
+	assert.Equal(t, "session_1", rig.sink.PersistedNotifications()[0].AgentSessionID)
+}
+
+type failedConfigWarningSink struct {
+	*agenttest.Sink
+	failure error
+}
+
+func (s *failedConfigWarningSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	if s.failure != nil {
+		return false, s.failure
+	}
+	return s.Sink.PersistNotification(source, content)
+}
+
+func TestKimiConfigWarningRetriesARefusedWrite(t *testing.T) {
+	t.Parallel()
+	base := &agenttest.Sink{}
+	base.UpdateSessionID("session_1")
+	sink := &failedConfigWarningSink{Sink: base, failure: errors.New("the warning write failed")}
+	a := newOfflineKimiAgent(t, base)
+	a.sink = agent.NewProviderServices(sink)
+	raw := []byte(`{"type":"event.config.warning","session_id":"__global__","timestamp":"2099-01-01T00:00:00Z","payload":{"type":"event.config.warning","warnings":[{"domain":"config","message":"One warning."}]}}`)
+	a.HandleOutput(raw)
+	assert.Empty(t, a.storedConfigWarnings)
+	sink.failure = nil
+	a.HandleOutput(raw)
+	a.HandleOutput(raw)
+	assert.Len(t, base.PersistedNotifications(), 1)
+}
+
+func TestKimiOtherGlobalEventsAreDropped(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.sink.UpdateSessionID("session_1")
+	for _, event := range []string{"event.workspace.created", "future.event"} {
+		raw, err := json.Marshal(map[string]any{"type": event, "session_id": "__global__", "timestamp": "2099-01-01T00:00:00Z", "payload": map[string]string{"type": event}})
+		require.NoError(t, err)
+		rig.agent.HandleOutput(raw)
+	}
+	assert.Empty(t, rig.sink.PersistedNotifications())
+	assert.Empty(t, rig.sink.Messages())
 }
 
 // TestKimiDispatchToleratesAMinimalPayloadOfEveryType feeds every event type

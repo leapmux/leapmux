@@ -133,11 +133,9 @@ func TestHandleCodexOutput_ContextCompactionCompletionPersistsBoundary(t *testin
 
 	completion := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`
 	handleCodexOutput(ag, providerkit.ParseLine([]byte(completion)))
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": nil})
 
-	// The completion must persist as a NOTIFICATION. persistMessage clears the
-	// agent's notification thread, so a message can never join the thread that
-	// the matching item/started opened, and the consolidator never drops the
-	// "Compacting context..." status. The status then stays for the session.
+	// The native completion stays a notification boundary. The live start has no stored row.
 	assert.Equal(t, 0, sink.MessageCount(),
 		"the compaction boundary must not reach the transcript as a chat row")
 	require.Equal(t, 1, sink.NotificationCount())
@@ -145,10 +143,7 @@ func TestHandleCodexOutput_ContextCompactionCompletionPersistsBoundary(t *testin
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
 	assert.JSONEq(t, completion, string(last.Content),
 		"the raw JSON-RPC envelope must reach the frontend unchanged")
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindCompactionBoundary,
-		Key:  "codex:item/completed:contextCompaction",
-	}, codexProvider{}.Classify(last.Content),
+	assert.Equal(t, agent.CompactionBoundaryNotification(), codexProvider{}.Classify(last.Content),
 		"the consolidator drops the compacting status only for a compaction boundary")
 
 	assert.Empty(t, sink.TurnActives(), "the item boundary must not end its enclosing turn")
@@ -158,28 +153,131 @@ func TestHandleCodexOutput_ContextCompactionCompletionPersistsBoundary(t *testin
 		"the turn's own completion releases the Worker's input queue")
 }
 
-// The Codex app-server still emits thread/compacted for an auto-compaction. It
-// belongs to codexSystemMetadataMethods, so it persists verbatim as a
-// threadable agent notification. Without that entry it falls to the default
-// branch, and the transcript draws it as a raw JSON-RPC bubble.
-func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
+type codexCompactionEndSink struct {
+	agenttest.Sink
+	endedBeforeTurn bool
+}
+
+func (s *codexCompactionEndSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	s.endedBeforeTurn = len(s.LeapMuxNotifications()) == 1
+	return s.Sink.PersistTurnEnd(content, span)
+}
+
+func TestHandleCodexOutput_AFailedCompactionPersistsAFailedEnd(t *testing.T) {
 	t.Parallel()
+	sink := &codexCompactionEndSink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	// Codex run1-frames.log records retry errors followed by a failed turn with no completed compaction item.
+	feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`)
+	for range 3 {
+		feedCodexLines(a, `{"method":"error","params":{"threadId":"main-thread","willRetry":true,"error":{"message":"retry"}}}`)
+	}
+	feedCodexLines(a,
+		`{"method":"error","params":{"threadId":"main-thread","willRetry":false,"error":{"message":"failed"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","error":{"message":"failed"}}}}`,
+	)
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": map[string]interface{}{}})
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": nil})
+	assert.Equal(t, []map[string]interface{}{{"type": "compaction_ended", "outcome": "failed"}}, sink.LeapMuxNotifications())
+	assert.True(t, sink.endedBeforeTurn)
+}
 
+func TestHandleCodexOutput_AnInterruptedCompactionPersistsAnAbortedEnd(t *testing.T) {
+	t.Parallel()
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	feedCodexLines(a,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted"}}}`,
+	)
+	assert.Equal(t, []map[string]interface{}{{"type": "compaction_ended", "outcome": "aborted"}}, sink.LeapMuxNotifications())
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": nil})
+}
 
-	input := `{"method":"thread/compacted","params":{"threadId":"main-thread","turnId":"turn1"}}`
-	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
+func TestHandleCodexOutput_AChildCompactionPublishesAndEndsOnTheChildSink(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	feedCodexLines(a,
+		`{"method":"item/started","params":{"threadId":"child-1","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-1","status":"failed"}}}`,
+	)
+	assert.Empty(t, sink.SessionInfos())
+	feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)
+	child := sink.Child("child-of-spawn-1")
+	require.NotNil(t, child)
+	assert.Contains(t, child.SessionInfos(), map[string]interface{}{"compaction": map[string]interface{}{}})
+	assert.Contains(t, child.SessionInfos(), map[string]interface{}{"compaction": nil})
+	assert.Equal(t, []map[string]interface{}{{"type": "compaction_ended", "outcome": "failed"}}, child.LeapMuxNotifications())
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
 
-	require.Equal(t, 1, sink.NotificationCount())
-	require.Equal(t, 0, sink.MessageCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"thread/compacted must persist as AGENT (Codex-emitted)")
-	assert.JSONEq(t, input, string(last.Content),
-		"the raw JSON-RPC envelope must be preserved verbatim -- the frontend keys off method:\"thread/compacted\"")
-	assert.False(t, codexProvider{}.Classify(last.Content).Consolidatable(),
-		"item/completed is the compaction boundary now; thread/compacted stays a plain threadable notification")
+func TestHandleCodexOutput_ASuccessfulCompactionPersistsNoExtraEnd(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	feedCodexLines(a,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`,
+		`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`,
+	)
+	assert.Empty(t, sink.LeapMuxNotifications())
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), `"method":"item/completed"`)
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": nil})
+}
+
+func TestCodexClearContext_EndsTheLiveCompactionOfTheRetiredThread(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`)
+	_, err := a.replaceMainThread(codexThreadResult{ID: "fresh-thread"})
+	require.NoError(t, err)
+	assert.Contains(t, sink.LeapMuxNotifications(), map[string]interface{}{"type": "compaction_ended", "outcome": "aborted"})
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": nil})
+}
+
+func TestCodexNewTurnEndsAnUnfinishedCompaction(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"compact-1"}}}`,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`,
+	)
+	assert.Equal(t, []map[string]interface{}{{"type": "compaction_ended", "outcome": "aborted"}}, sink.LeapMuxNotifications())
+}
+
+func TestCodexAnEarlierCompactionEndKeepsTheCurrentCompactionLive(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	feedCodexLines(a,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"first"}}}`,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"second"}}}`,
+		`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"first"}}}`,
+	)
+	assert.NotContains(t, sink.SessionInfos(), map[string]interface{}{"compaction": nil})
+	feedCodexLines(a, `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"second"}}}`)
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": nil})
+}
+
+func TestCodexClearContextEndsTheChildCompactionBeforeItRetiresTheRoute(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	feedCodexLines(a,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`,
+		`{"method":"item/started","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"contextCompaction","id":"compact-1"}}}`,
+	)
+	child := sink.Child("child-of-spawn-1")
+	require.NotNil(t, child)
+	_, err := a.replaceMainThread(codexThreadResult{ID: "fresh-thread"})
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]interface{}{{"type": "compaction_ended", "outcome": "aborted"}}, child.LeapMuxNotifications())
+	assert.Contains(t, child.SessionInfos(), map[string]interface{}{"compaction": nil})
 }
 
 // blockingTurnFlagSink blocks inside SetTurnState until the test releases it,

@@ -71,10 +71,8 @@ export function dividerMetaFromMessage(parsed: ParsedMessageContent): TurnMetric
 /**
  * A subagent prompt row: the instruction a parent sent to a child.
  *
- * Three surfaces produce one -- a provider's own subagent prompt row, Claude's
- * `agent_prompt`, and a prompt delivered into a child transcript -- and each used to
- * draw its own card. `promptFormat` says whether the body is Markdown or preformatted
- * text, which is the only difference between them that a reader can see.
+ * Tool requests and prompts delivered into child transcripts use this model.
+ * promptFormat selects Markdown or preformatted text for the body.
  */
 export interface AgentPrompt {
   description?: string

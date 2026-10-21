@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// goalFrame builds a thread/goal/updated line. turnID is emitted verbatim, so a
-// caller passes `null` to make the frame a resume snapshot.
+// goalFrame builds a thread/goal/updated line. turnID is a raw JSON token.
+// The resume handshake decides whether the provider treats the frame as a snapshot.
 func goalFrame(threadID, turnID, objective, status string, tokensUsed, timeUsed, createdAt int64) string {
 	return `{"jsonrpc":"2.0","method":"thread/goal/updated","params":{` +
 		`"threadId":"` + threadID + `","turnId":` + turnID + `,"goal":{` +
@@ -34,17 +34,34 @@ func TestCodexGoal_UpdatedReportsNeutralGoal(t *testing.T) {
 	require.True(t, ok, "an active goal must reach the sink")
 	assert.Equal(t, "Make the tests pass", got.Objective)
 	assert.Equal(t, agent.GoalStatusActive, got.Status)
-	// The provider's own word survives beside the neutral status, so the panel
-	// can say WHY without the neutral enum growing a value per provider.
-	assert.Equal(t, "active", got.StatusDetail)
+	assert.Empty(t, got.StatusDetail, "the detail must not repeat the neutral status")
 	require.NotNil(t, got.TokensUsed)
 	assert.EqualValues(t, 1200, *got.TokensUsed)
 	require.NotNil(t, got.TimeUsedSeconds)
 	assert.EqualValues(t, 45, *got.TimeUsedSeconds)
-	assert.False(t, got.Snapshot, "a frame with a turnId announces a change")
+	assert.False(t, got.Snapshot, "an update outside the resume handshake announces a change")
 	// createdAt is Unix SECONDS. Reading it as milliseconds would put the goal
 	// in 1970 and make every later report look like a different goal.
 	assert.Equal(t, int64(1_700_000_000), got.CreatedAt.Unix())
+}
+
+func TestCodexGoal_StatusDetailOmitsWordsTheStatusStates(t *testing.T) {
+	t.Parallel()
+	for wire, want := range map[string]string{
+		"active": "", "paused": "", "complete": "", "blocked": "",
+		"usageLimited": "usage limited", "budgetLimited": "budget limited",
+		"": "", "newStatus": "newStatus",
+	} {
+		t.Run(wire, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			feedCodexLines(a, goalFrame("main-thread", `"turn-1"`, "Finish the task", wire, 0, 0, 0))
+			goal, present := sink.LastGoal()
+			require.True(t, present)
+			assert.Equal(t, want, goal.StatusDetail)
+		})
+	}
 }
 
 // Codex reports no iteration count. The field must stay ABSENT rather than

@@ -25,10 +25,119 @@ const (
 	copilotMethodHostEvent = "host.event"
 )
 
-// copilotEventUsageCheckpoint reports the credits one turn spent and the model cache
-// state. The runtime does not mark it ephemeral, so it would otherwise reach the
-// transcript as a row that states no conversation.
-const copilotEventUsageCheckpoint = "session.usage_checkpoint"
+// copilotNewInboxMessage announces native inbox state that LeapMux does not display.
+const copilotNewInboxMessage = "new_inbox_message"
+
+// copilotRetry holds one native agent's retry state under outputMu.
+type copilotRetry struct {
+	resolution providerkit.RetryResolution
+	count      int
+	lastError  string
+}
+
+// copilotDroppedEvents contains frames whose state the Worker consumes without a row.
+var copilotDroppedEvents = map[string]struct{}{
+	contracts.CopilotEventSessionStart:                           {},
+	contracts.CopilotEventSessionResume:                          {},
+	contracts.CopilotEventSessionShutdown:                        {},
+	contracts.CopilotEventSessionTitleChanged:                    {},
+	contracts.CopilotEventSessionTodosChanged:                    {},
+	contracts.CopilotEventSessionPlanChanged:                     {},
+	contracts.CopilotEventSessionUsageInfo:                       {},
+	contracts.CopilotEventSessionLimitsChanged:                   {},
+	contracts.CopilotEventSessionModeChanged:                     {},
+	contracts.CopilotEventSessionPermissionsChanged:              {},
+	contracts.CopilotEventSessionModelChange:                     {},
+	contracts.CopilotEventSessionAutopilotObjectiveChanged:       {},
+	contracts.CopilotEventAssistantTurnStart:                     {},
+	contracts.CopilotEventAssistantTurnEnd:                       {},
+	contracts.CopilotEventAssistantUsage:                         {},
+	contracts.CopilotEventAssistantMessageDelta:                  {},
+	contracts.CopilotEventAssistantStreamingDelta:                {},
+	contracts.CopilotEventAssistantToolCallDelta:                 {},
+	contracts.CopilotEventAssistantReasoningDelta:                {},
+	contracts.CopilotEventToolProgress:                           {},
+	contracts.CopilotEventToolPartialResult:                      {},
+	contracts.CopilotEventSubagentStarted:                        {},
+	contracts.CopilotEventSubagentConfigured:                     {},
+	contracts.CopilotEventSessionTaskComplete:                    {},
+	contracts.CopilotEventAbort:                                  {},
+	contracts.CopilotEventUserInputCompleted:                     {},
+	contracts.CopilotEventExitPlanModeCompleted:                  {},
+	contracts.CopilotEventElicitationCompleted:                   {},
+	contracts.CopilotEventUserMessage:                            {},
+	contracts.CopilotEventAssistantMessageStart:                  {},
+	contracts.CopilotEventAssistantIdle:                          {},
+	contracts.CopilotEventAssistantIntent:                        {},
+	contracts.CopilotEventAssistantServerToolProgress:            {},
+	contracts.CopilotEventMcpAppToolCallComplete:                 {},
+	contracts.CopilotEventCapabilitiesChanged:                    {},
+	contracts.CopilotEventCommandsChanged:                        {},
+	contracts.CopilotEventSessionToolsUpdated:                    {},
+	contracts.CopilotEventSessionSkillsLoaded:                    {},
+	contracts.CopilotEventSessionExtensionsLoaded:                {},
+	contracts.CopilotEventSessionCustomAgentsUpdated:             {},
+	contracts.CopilotEventSessionExtensionsAttachmentsPushed:     {},
+	contracts.CopilotEventSessionMcpServersLoaded:                {},
+	contracts.CopilotEventSessionMcpServerStatusChanged:          {},
+	contracts.CopilotEventSessionMcpServerRemoved:                {},
+	contracts.CopilotEventSessionMcpServerNeedsReconnect:         {},
+	contracts.CopilotEventMcpToolsListChanged:                    {},
+	contracts.CopilotEventMcpResourcesListChanged:                {},
+	contracts.CopilotEventMcpPromptsListChanged:                  {},
+	contracts.CopilotEventSessionBackgroundTasksChanged:          {},
+	contracts.CopilotEventPendingMessagesModified:                {},
+	contracts.CopilotEventSubagentSelected:                       {},
+	contracts.CopilotEventSubagentDeselected:                     {},
+	contracts.CopilotEventToolSearchActivated:                    {},
+	contracts.CopilotEventSessionUsageCheckpoint:                 {},
+	contracts.CopilotEventSessionContextChanged:                  {},
+	contracts.CopilotEventSessionCompletionReceipt:               {},
+	contracts.CopilotEventSessionManagedSettingsResolved:         {},
+	contracts.CopilotEventSessionManagedSettingsEnforced:         {},
+	contracts.CopilotEventSessionAutoModeResolved:                {},
+	contracts.CopilotEventSessionRemoteSteerableChanged:          {},
+	contracts.CopilotEventSessionModeNoticeDelivered:             {},
+	contracts.CopilotEventSessionBinaryAsset:                     {},
+	contracts.CopilotEventSessionSnapshotRewind:                  {},
+	contracts.CopilotEventSessionWorkspaceFileChanged:            {},
+	contracts.CopilotEventSessionHandoff:                         {},
+	contracts.CopilotEventUiEphemeralQuery:                       {},
+	contracts.CopilotEventSamplingCompleted:                      {},
+	contracts.CopilotEventExternalToolCompleted:                  {},
+	contracts.CopilotEventCommandQueued:                          {},
+	contracts.CopilotEventCommandCompleted:                       {},
+	contracts.CopilotEventAutoModeSwitchCompleted:                {},
+	contracts.CopilotEventSessionLimitsExhaustedCompleted:        {},
+	contracts.CopilotEventSystemMessage:                          {},
+	contracts.CopilotEventPermissionAssentDetected:               {},
+	contracts.CopilotEventPermissionContextualAuthorization:      {},
+	contracts.CopilotEventPermissionMessageAuthorization:         {},
+	contracts.CopilotEventPermissionMessageAuthorizationDegraded: {},
+	contracts.CopilotEventPermissionMessageAuthorizationRead:     {},
+	contracts.CopilotEventSessionPermissionRecovery:              {},
+	contracts.CopilotEventSkillContextDelivered:                  {},
+	contracts.CopilotEventSkillContextDeliveredRef:               {},
+}
+
+// copilotStoredEphemeralEvents contains notices that the browser can display.
+var copilotStoredEphemeralEvents = map[string]struct{}{
+	contracts.CopilotEventSessionCustomNotification:     {},
+	contracts.CopilotEventSessionAutoTierRecommendation: {},
+	contracts.CopilotEventSessionAutoTierSwitchFailed:   {},
+	contracts.CopilotEventMcpOauthRequired:              {},
+	contracts.CopilotEventMcpOauthCompleted:             {},
+	contracts.CopilotEventMcpHeadersRefreshRequired:     {},
+	contracts.CopilotEventMcpHeadersRefreshCompleted:    {},
+}
+
+var copilotKnownEvents = func() map[string]struct{} {
+	events := make(map[string]struct{}, len(contracts.CopilotEventKeys))
+	for _, event := range contracts.CopilotEventKeys {
+		events[event] = struct{}{}
+	}
+	return events
+}()
 
 // A session can run for hours. Keep only recent reasoning IDs for duplicate checks.
 const maxCopilotReasoningIDs = 256
@@ -43,31 +152,16 @@ func copilotMethodIsTelemetry(method string) bool {
 	return method == copilotMethodSessionLifecycle || method == copilotMethodHostEvent
 }
 
-// copilotEventIsRuntimeTrace reports whether an event type identifies a family that
-// describes the RUNTIME rather than the work.
+// copilotEventIsRuntimeTrace tests the shared runtime-trace prefixes.
+// The Worker and browser both read every member of contracts.CopilotEventPrefixKeys.
+// A partial Worker list would store rows that the browser always hides.
 //
-// The families come from contracts.CopilotEventPrefixKeys, which both sides iterate.
-// The membership of that table crosses the boundary as much as the spellings do: the
-// browser hides every family the table lists, so a worker that tested a SUBSET stored
-// a row for each of the rest -- each one spending a message seq and a slot in the
-// chat-history page budget for a row nobody ever sees.
-//
-// The table holds six families today. `model.` is the runtime's own model-call trace:
-// the request, the response, a snapshot of the whole message list, and the call's
-// start and end. Every part of it repeats what the `assistant.` and `tool.` events
-// already deliver, so it is a second copy of the conversation rather than the
-// conversation. One trivial turn sent 71 kilobytes of it, and the reader saw ten
-// raw-JSON rows. `hook.` states that the runtime ran one of its own hooks; a hook that
-// changes the work changes a tool call, and that call has its own rows. The other four
-// -- `session.canvas.`, `factory.`, `assistant.fusion_` and `session.fusion_` -- are
-// the runtime's experiments, which no renderer draws.
-//
-// `model.call_failure` is the one exception. LeapMux surfaces it as a notification,
-// because a model call that failed is an answer the reader acts on.
+// The model family repeats model input and output already present in assistant and tool events.
+// A single probed turn sent 71 kilobytes of this trace data.
+// The hook family records internal hook execution. A hook that changes a tool call has that call's own rows.
+// The remaining families describe native experiments that no renderer displays.
+// The dispatch reads model failures and retries before it applies this trace rule.
 func copilotEventIsRuntimeTrace(eventType string) bool {
-	if eventType == contracts.CopilotEventModelCallFailure {
-		return false
-	}
 	for _, prefix := range contracts.CopilotEventPrefixKeys {
 		if strings.HasPrefix(eventType, prefix) {
 			return true
@@ -79,8 +173,9 @@ func copilotEventIsRuntimeTrace(eventType string) bool {
 // copilotStreamedText is one accumulating assistant segment and the transcript it
 // belongs to. The identity is the runtime's own message or reasoning id.
 type copilotStreamedText struct {
-	scope string
-	sink  agent.ProviderServices
+	agentID string
+	scope   string
+	sink    agent.ProviderServices
 }
 
 // copilotOpenTool remembers where one running tool call belongs.
@@ -116,8 +211,26 @@ type copilotToolStart struct {
 // response for such a request arrives on THIS goroutine and a direct call would
 // wait for itself.
 func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
+	if retry := a.retries[event.AgentID]; retry != nil {
+		switch event.Type {
+		case contracts.CopilotEventAssistantMessageDelta, contracts.CopilotEventAssistantStreamingDelta,
+			contracts.CopilotEventAssistantMessage, contracts.CopilotEventAssistantReasoningDelta,
+			contracts.CopilotEventAssistantReasoning, contracts.CopilotEventToolStarted:
+			retry.resolution.Resolve(a.sinkFor(a.childForEvent(event)))
+		}
+	}
 	if a.handleNativeControlEvent(raw, event) {
 		return
+	}
+	if event.Type == contracts.CopilotEventSystemNotification {
+		var notice struct {
+			Kind struct {
+				Type string `json:"type"`
+			} `json:"kind"`
+		}
+		if json.Unmarshal(event.Data, &notice) == nil && notice.Kind.Type == copilotNewInboxMessage {
+			return
+		}
 	}
 	switch event.Type {
 	case contracts.CopilotEventSubagentStarted:
@@ -136,6 +249,28 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 	child := a.childForEvent(event)
 	sink := a.sinkFor(child)
 	switch event.Type {
+	case contracts.CopilotEventUserMessage:
+		if event.AgentID == "" {
+			var message struct {
+				Content json.RawMessage `json:"content"`
+			}
+			if json.Unmarshal(event.Data, &message) == nil {
+				if text, ok := providerkit.RawString(message.Content); ok && a.steers.EchoKey(text) {
+					a.steers.Settle(a.sink)
+				}
+			}
+		}
+		return
+	case contracts.CopilotEventModelCallFailure:
+		errorText := strings.TrimSpace(providerkit.StringField(event.Data, "errorMessage"))
+		if message := providerkit.StringField([]byte(errorText), "message"); message != "" {
+			errorText = strings.TrimSpace(message)
+		}
+		a.nativeRetry(event.AgentID).lastError = errorText
+		return
+	case contracts.CopilotEventModelTurnRetry, contracts.CopilotEventAssistantTurnRetry:
+		a.retryNativeTurn(event.AgentID, sink)
+		return
 	case contracts.CopilotEventAssistantTurnStart:
 		if child == nil && !a.closing {
 			a.setNativeTurnActive(true)
@@ -145,13 +280,24 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 			a.endNativeTurn(raw, copilotTurnWasAborted(event.Data))
 			return
 		}
+		a.resetNativeRetry(event.AgentID)
+	case contracts.CopilotEventSessionCompactionStart:
+		providerkit.PublishCompaction(sink, providerkit.StringField(event.Data, "trigger"))
+		return
+	case contracts.CopilotEventSessionCompactionComplete:
+		a.persistNativeFrameTo(sink, raw, agent.SpanInfo{})
+		providerkit.EndCompaction(sink)
+		return
+	case contracts.CopilotEventSessionTodosChanged:
+		a.offReader("sql-todos", a.refreshSqlTodos)
+		return
 	case contracts.CopilotEventSessionUsageInfo:
 		a.reportNativeContextUsage(sink, event.Data)
 	case contracts.CopilotEventAssistantUsage:
 		// Quota snapshots describe account state and do not create transcript rows.
 		a.reportNativeQuota(sink, event.Data)
 		return
-	case copilotEventUsageCheckpoint:
+	case contracts.CopilotEventSessionUsageCheckpoint:
 		// Credit totals and model cache state. LeapMux surfaces neither, and the
 		// runtime does not mark the event ephemeral, so the transcript would hold one
 		// row of counters for every turn.
@@ -184,23 +330,23 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		a.reportNativeToolOutput(sink, event.Data)
 		return
 	}
-	// `Ephemeral` is the runtime's own "do not store" mark. The trace test is
-	// LeapMux's: the runtime stores its trace itself and marks none of it ephemeral.
-	if event.Ephemeral || copilotEventIsRuntimeTrace(event.Type) {
+	if _, dropped := copilotDroppedEvents[event.Type]; dropped || copilotEventIsRuntimeTrace(event.Type) {
 		return
 	}
+	if _, stored := copilotStoredEphemeralEvents[event.Type]; !stored && event.Ephemeral {
+		if _, known := copilotKnownEvents[event.Type]; known {
+			return
+		}
+	}
+
 	a.persistNativeFrameTo(sink, raw, agent.SpanInfo{})
 }
 
 // reportNativeToolOutput carries the live text of a running call to its own row.
 //
-// The two frames carry DIFFERENT things, and neither is cumulative: `partialOutput`
-// is the output the tool produced, and `progressMessage` is the runtime's own
-// sentence about what the tool does. Output outranks the sentence, because the
-// runtime interleaves them -- a `Running the tests...` between two output frames
-// replaced the lines the reader watched with one status line, and the next
-// output frame put them back. The sentence is what a call that produced NOTHING yet
-// has to show, so it shows until output arrives and never after.
+// partialOutput contains new tool output. progressMessage contains a runtime status sentence. Neither field is cumulative.
+// The runtime can interleave both fields. Once output arrives, it takes priority over status sentences.
+// Before any output arrives, the row shows the status sentence.
 //
 // The caller holds outputMu, which guards openTools.
 func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.RawMessage) {
@@ -240,8 +386,9 @@ func copilotTurnWasAborted(data json.RawMessage) bool {
 }
 
 func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
+	a.resetNativeRetry("")
 	if !a.setNativeTurnActive(false) {
-		a.persistNativeFrame(raw, agent.SpanInfo{})
+		// Idle before a turn or after its end supplies no new transcript boundary.
 		return
 	}
 	// A segment the runtime never finished ends with the turn. It reads as interrupted
@@ -267,12 +414,9 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 
 // closeOpenNativeTools ends every call the runtime started and never finished.
 //
-// The runtime sends no completion for a call its turn cut short, so without this
-// sweep the card keeps a running badge for the rest of the session. The closing row
-// is the agent's OWN start frame, and LeapMux's completion column is what states
-// that the call did not finish -- nothing here invents a result.
-//
-// The order is the order the calls opened, so the rows read as the agent ran them.
+// An interrupted turn can omit the completion frame. Without a closing row, the card keeps its running badge.
+// The closing row contains the native start frame. LeapMux's completion column states that the call did not finish.
+// The rows keep the order in which the calls opened.
 func (a *Agent) closeOpenNativeTools() {
 	open := a.openTools
 	a.openTools = nil
@@ -581,14 +725,10 @@ func copilotAssistantTextKind(eventType string) (agent.AssembledMessageKind, boo
 // reportNativeTextProgress publishes the live counters for one assistant event, and
 // accumulates whatever text that event streams.
 //
-// The scope is the message or reasoning identity, so a delta and the finished
-// message that replaces it share one counter instead of adding twice. That identity
-// is also what pairs the accumulated deltas with the finished message: the runtime
-// sends the message only once it is COMPLETE, and the frame it sends then is the
-// authoritative row, so the deltas it replaces are discarded rather than stored twice.
-//
-// A stream that reports a SIZE and no text moves the output counter instead, on one
-// scope of its own -- it identifies no message, and its total is for the whole response.
+// The scope identifies one message or reasoning segment.
+// The completed message replaces that scope's deltas, so the counter does not count the text twice.
+// The runtime sends the authoritative message only when it completes.
+// A size-only report uses a separate response scope because it identifies no message and counts the whole response.
 func (a *Agent) reportNativeTextProgress(sink agent.ProviderServices, event copilotEvent) {
 	kind, isDelta, ok := copilotAssistantTextKind(event.Type)
 	if !ok {
@@ -620,14 +760,14 @@ func (a *Agent) reportNativeTextProgress(sink agent.ProviderServices, event copi
 		a.dropStreamedNativeText(scope)
 		return
 	}
-	a.appendStreamedNativeText(sink, scope, kind, body)
+	a.appendStreamedNativeText(sink, event.AgentID, scope, kind, body)
 }
 
 // appendStreamedNativeText accumulates one delta under its message identity.
 //
 // The caller holds outputMu, which guards nativeTextSegments as it guards every
 // other field the dispatch touches.
-func (a *Agent) appendStreamedNativeText(sink agent.ProviderServices, scope string, kind agent.AssembledMessageKind, delta string) {
+func (a *Agent) appendStreamedNativeText(sink agent.ProviderServices, agentID, scope string, kind agent.AssembledMessageKind, delta string) {
 	if delta == "" {
 		return
 	}
@@ -637,7 +777,7 @@ func (a *Agent) appendStreamedNativeText(sink agent.ProviderServices, scope stri
 			return
 		}
 	}
-	a.nativeTextSegments = append(a.nativeTextSegments, copilotStreamedText{scope: scope, sink: sink})
+	a.nativeTextSegments = append(a.nativeTextSegments, copilotStreamedText{agentID: agentID, scope: scope, sink: sink})
 }
 
 // dropStreamedNativeText forgets the deltas a finished message replaces.
@@ -651,11 +791,8 @@ func (a *Agent) dropStreamedNativeText(scope string) {
 // closeStreamedNativeText stores every segment the runtime streamed and never
 // finished, as LeapMux's own assembled message.
 //
-// The runtime sends no frame for such a segment -- it marks each delta ephemeral and
-// emits the message only when the message is complete -- so this row is LeapMux's
-// calculation over what the agent actually produced, which is what the assembled
-// envelope is for. Nothing is invented: the text is the agent's own, and the
-// completion column states that the segment did not finish.
+// The runtime marks deltas ephemeral and sends a message frame only when the message completes.
+// The assembled row retains the text from those deltas. Its completion column states that the segment did not finish.
 func (a *Agent) closeStreamedNativeText(completion agent.MessageCompletion) {
 	segments := a.nativeTextSegments
 	a.nativeTextSegments = nil
@@ -699,6 +836,21 @@ func (a *Agent) reportNativeContextUsage(sink agent.ProviderServices, data json.
 
 // persistNativeFrameTo stores one native frame in the transcript that owns it.
 func (a *Agent) persistNativeFrameTo(sink agent.ProviderServices, raw []byte, span agent.SpanInfo) {
+	// Specialized handlers also store frames through this method after consuming their state.
+	// Apply the drop rule here also, so control receipts and subagent starts store no row.
+	var header struct {
+		Method string `json:"method"`
+		Params struct {
+			Event struct {
+				Type string `json:"type"`
+			} `json:"event"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &header) == nil && header.Method == copilotMethodSessionEvent {
+		if _, dropped := copilotDroppedEvents[header.Params.Event.Type]; dropped || copilotEventIsRuntimeTrace(header.Params.Event.Type) {
+			return
+		}
+	}
 	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}, span); err != nil {
 		slog.Error("Persist Copilot event", "agent_id", a.AgentID(), "error", err)
@@ -736,4 +888,92 @@ func (a *Agent) handleNativeOutput(line *providerkit.ParsedLine) {
 
 func (a *Agent) persistNativeFrame(raw []byte, span agent.SpanInfo) {
 	a.persistNativeFrameTo(a.sink, raw, span)
+}
+
+// nativeRetry returns one agent's state. The caller holds outputMu.
+func (a *Agent) nativeRetry(nativeAgentID string) *copilotRetry {
+	if a.retries == nil {
+		a.retries = make(map[string]*copilotRetry)
+	}
+	retry := a.retries[nativeAgentID]
+	if retry == nil {
+		retry = &copilotRetry{}
+		a.retries[nativeAgentID] = retry
+	}
+	return retry
+}
+
+// retryNativeTurn discards only the failed agent's open output before it records the retry.
+func (a *Agent) retryNativeTurn(nativeAgentID string, sink agent.ProviderServices) {
+	var scopes []string
+	a.nativeTextSegments = slices.DeleteFunc(a.nativeTextSegments, func(segment copilotStreamedText) bool {
+		if segment.agentID != nativeAgentID {
+			return false
+		}
+		scopes = append(scopes, segment.scope)
+		return true
+	})
+	providerkit.DiscardGenerationScopes(&a.nativeText, sink, scopes)
+	// Size-only updates have no buffered segment, but belong to the failed attempt also.
+	sink.ReportProgress(agent.ResetModelScopeProgress(copilotResponseSizeScope))
+	retry := a.nativeRetry(nativeAgentID)
+	retry.count++
+	notice := map[string]any{
+		contracts.NotificationFieldType:  contracts.NotificationTypeApiRetry,
+		contracts.NotificationFieldCount: retry.count,
+	}
+	if retry.lastError != "" {
+		notice[contracts.NotificationFieldError] = retry.lastError
+	}
+	sink.PersistLeapMuxNotification(notice)
+	retry.resolution.NoteRetry()
+}
+
+// resetNativeRetry forgets a completed agent's retry state. The caller holds outputMu.
+func (a *Agent) resetNativeRetry(nativeAgentID string) {
+	if retry := a.retries[nativeAgentID]; retry != nil {
+		retry.resolution.Reset()
+		delete(a.retries, nativeAgentID)
+	}
+}
+
+// refreshSqlTodos stores changed rows from the native session's SQL to-do table.
+// offReader holds sessionMu for reading, so the snapshot keeps its session identity.
+func (a *Agent) refreshSqlTodos() {
+	raw, err := a.requestNativeSession("plan.readSqlTodos", nil)
+	if err != nil {
+		slog.Warn("read Copilot SQL to-dos", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	var result struct {
+		Rows json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		slog.Warn("decode Copilot SQL to-dos", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if _, ok := decodeCopilotSQLTodos(result.Rows); !ok {
+		slog.Warn("Copilot returned invalid SQL to-do rows", "agent_id", a.AgentID())
+		return
+	}
+	content, err := json.Marshal(map[string]any{"type": contracts.CopilotLeapmuxRowTypeSqlTodos, "rows": result.Rows})
+	if err != nil {
+		slog.Error("encode the SQL to-do snapshot for Copilot", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
+	if agent.JSONCanonicalEqual(a.sqlTodos, result.Rows) {
+		return
+	}
+	err = a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+		Original: content, AgentSessionID: a.currentNativeSessionID(),
+	}, agent.SpanInfo{})
+	if err != nil {
+		slog.Error("persist the SQL to-do snapshot for Copilot", "agent_id", a.AgentID(), "error", err)
+		if !agent.OutputRetained(err) {
+			return
+		}
+	}
+	a.sqlTodos = slices.Clone(result.Rows)
 }

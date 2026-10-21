@@ -401,9 +401,10 @@ func TestOpenCodeSubagentDetectorCarriesThePrompt(t *testing.T) {
 func newOpenCodeChildBase(t *testing.T) (*acp.Base, *agenttest.Sink) {
 	t.Helper()
 	sink := &agenttest.Sink{}
-	b := &acp.Base{}
+	family := &FamilyBase{}
+	b := &family.Base
 	b.SetSinkForTest(agent.NewProviderServices(sink))
-	*b.HooksForTest() = FamilyHooks()
+	*b.HooksForTest() = FamilyHooks(family)
 	return b, sink
 }
 

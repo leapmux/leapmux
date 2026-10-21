@@ -1,6 +1,7 @@
 import type { ElicitationRequest, PermissionOption, PermissionScope } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { KIRO_META, KIRO_METHOD, KIRO_PERMISSION_OPTION, KIRO_SCOPED_PERMISSION_OPTION } from '~/generated/contracts/kiro-protocol'
+import { MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { KIND_ALLOW_ALWAYS, KIND_REJECT_ALWAYS } from '../../model/controlPrompt'
 import { acpElicitation } from '../acp/elicitation'
@@ -147,7 +148,7 @@ export function kiroElicitation(payload: Record<string, unknown>): ElicitationRe
     return acpElicitation(payload)
   const elicitation = pickObject(pickObject(payload, 'params'), 'elicitation') ?? {}
   return {
-    mode: pickString(elicitation, 'mode', 'form'),
+    mode: pickString(elicitation, 'mode', MCP_ELICITATION_MODE.Form),
     message: pickString(elicitation, 'message'),
     server: '',
     schema: elicitation.requestedSchema,

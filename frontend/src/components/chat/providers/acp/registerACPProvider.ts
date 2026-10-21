@@ -3,6 +3,7 @@ import type { ProviderPermissionPresets } from '../../providerSettings'
 import type { AttachmentCapabilities, ProviderAskUserQuestion, ProviderConfigurationCapability, ProviderControlCapability, ProviderPlugin, ProviderTranscriptCapability } from '../capabilities'
 import type { ACPPermissionRejectReason } from './controlResponse'
 import type { ACPToolCallAdapter } from './extractors/toolCall'
+import type { ACPNativeNotifications } from './notification'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { withElicitationResponse } from '../../controls/elicitationResponse'
@@ -16,6 +17,7 @@ import { acpExtractControl, acpPermissionSpanId } from './extractControl'
 import { acpDividerReader } from './extractors/resultDivider'
 import { createACPRowExtractor } from './extractors/row'
 import { resolveACPMessage } from './extractors/toolCall'
+import { createACPCompactionBoundaryReader } from './notification'
 import { acpSpanRole, createACPRelatedMessagesReader } from './spanRole'
 
 /**
@@ -53,6 +55,8 @@ export type ACPQuestionHandling = ProviderAskUserQuestion
  */
 export interface ACPProviderOptions {
   provider: AgentProvider
+  assistantTextSegments?: ProviderTranscriptCapability['assistantTextSegments']
+  nativeNotifications?: ACPNativeNotifications
   /** The provider's own reading of one call, for the kind-discriminated pair. */
   toolCallAdapter?: ACPToolCallAdapter
   /** The provider's pure reader of reported output file paths. */
@@ -211,6 +215,7 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
       ...(opts.outputFilePaths ? { outputFilePaths: opts.outputFilePaths } : {}),
       resolveMessage: resolveACPMessage,
       classify: classifyACPMessage({
+        ...(opts.nativeNotifications ? { nativeNotifications: opts.nativeNotifications } : {}),
         ...(opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {}),
         ...(opts.agentTurnEnd ? { agentTurnEnd: opts.agentTurnEnd } : {}),
       }),
@@ -218,7 +223,17 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
       relatedMessages: createACPRelatedMessagesReader(opts.toolCallAdapter),
       extractRow: createACPRowExtractor(opts.toolCallAdapter),
       extractDivider: acpDividerReader(opts.agentTurnEnd),
+      ...(opts.nativeNotifications ? { notificationEntry: opts.nativeNotifications.entries } : {}),
+      ...(opts.assistantTextSegments ? { assistantTextSegments: opts.assistantTextSegments } : {}),
+      ...(opts.nativeNotifications?.compactionStart ? { compactionStart: opts.nativeNotifications.compactionStart } : {}),
     },
+    ...(opts.nativeNotifications?.compactionBoundary
+      ? {
+          session: {
+            compactionBoundaryFromMessage: createACPCompactionBoundaryReader(opts.nativeNotifications.compactionBoundary),
+          },
+        }
+      : {}),
     controls,
     configuration,
   }

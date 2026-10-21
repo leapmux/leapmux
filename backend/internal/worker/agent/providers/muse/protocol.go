@@ -1,5 +1,27 @@
 package muse
 
+// These item kinds supply worker state and never persist as transcript rows.
+const (
+	museItemSubagent      = "subagent"
+	museItemReminderChild = "reminderChild"
+)
+
+// Muse reports whether an input starts a turn or enters its queue.
+const (
+	museDispositionStarted = "started"
+	museDispositionQueued  = "queued"
+)
+
+// Muse reports these goal states in session/goalChanged.
+const (
+	museGoalActive        = "active"
+	museGoalPaused        = "paused"
+	museGoalBlocked       = "blocked"
+	museGoalUsageLimited  = "usage_limited"
+	museGoalBudgetLimited = "budget_limited"
+	museGoalComplete      = "complete"
+)
+
 // These commands have only a Go reader. Shared native events live in the contract.
 const (
 	methodInitialize          = "initialize"
@@ -40,14 +62,26 @@ const (
 )
 
 const (
-	methodTurnStarted            = "turn/started"
-	methodSessionStarted         = "session/started"
-	methodSessionClosed          = "session/closed"
-	methodSessionStatusChanged   = "session/statusChanged"
-	methodSessionModelChanged    = "session/modelChanged"
-	methodSessionEffortChanged   = "session/reasoningEffortChanged"
-	methodSessionApprovalChanged = "session/approvalModeChanged"
-	methodSessionGoalChanged     = "session/goalChanged"
-	methodViewGap                = "view/gap"
-	methodLogGap                 = "log/gap"
+	methodTurnStarted                     = "turn/started"
+	methodSessionStarted                  = "session/started"
+	methodSessionClosed                   = "session/closed"
+	methodSessionStatusChanged            = "session/statusChanged"
+	methodSessionModelChanged             = "session/modelChanged"
+	methodSessionEffortChanged            = "session/reasoningEffortChanged"
+	methodSessionApprovalChanged          = "session/approvalModeChanged"
+	methodSessionGoalChanged              = "session/goalChanged"
+	methodViewGap                         = "view/gap"
+	methodLogGap                          = "log/gap"
+	methodSessionBranchChanged            = "session/branchChanged"
+	methodSessionNameChanged              = "session/nameChanged"
+	methodSessionPermissionProfileChanged = "session/permissionProfileChanged"
+	methodSessionViewHealthChanged        = "session/viewHealthChanged"
+	methodTurnRetracted                   = "turn/retracted"
+	methodTurnUnqueued                    = "turn/unqueued"
+	methodTurnForegroundCompleted         = "turn/foregroundCompleted"
+	methodSkillChanged                    = "skill/changed"
+	methodAccountChanged                  = "account/changed"
+	methodAccountLoginCompleted           = "account/loginCompleted"
+	methodMcpOAuthLoginCompleted          = "mcpServer/oauthLoginCompleted"
+	methodSessionListChanged              = "session/listChanged"
 )

@@ -7,8 +7,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 // notification encodes one Kiro notification.
@@ -142,6 +144,29 @@ func TestKiroCustomAgentNotFoundStatesTheFallback(t *testing.T) {
 	}, statusTexts(sink))
 }
 
+// A resume whose stored custom agent no longer exists writes ONE row -- Kiro's
+// own notice -- and the stored mode follows the fallback: the startup's shared
+// fallback row stays suppressed beside the notice. Frames from
+// .tmp/probe/kiro/logs/r2/agent.
+func TestKiroStartupFallbackKeepsKirosOwnNoticeAsTheRow(t *testing.T) {
+	t.Parallel()
+	opts := agent.Options{Options: map[string]string{agent.OptionIDPermissionMode: "probe-agent"}}
+	a, sink, requests := newKiroAgent(t, opts, nil)
+
+	// Kiro states the missing agent while the session loads, before the
+	// startup applies the stored mode.
+	a.HandleOutput(notification(t, kiroCustomAgentNotFoundMethod, map[string]any{
+		"sessionId": kiroTestSession, "requestedAgent": "probe-agent", "fallbackAgent": "vibe",
+	}))
+	require.NoError(t, a.ApplyPermissionModeStartup(
+		&acp.SessionResult{CurrentModeID: "vibe", Modes: []acp.ModeInfo{{ID: "vibe", Name: "Vibe"}}},
+		opts, contracts.KiroModeDefault, ""))
+
+	assert.Equal(t, []string{`Kiro has no mode "probe-agent", so it runs "vibe"`}, statusTexts(sink))
+	assert.Equal(t, "vibe", a.PermissionModeForTest(), "the stored mode follows the fallback")
+	assert.Empty(t, requests(), "the startup writes no mode the session does not offer")
+}
+
 func TestKiroCustomAgentConfigErrorStatesThePath(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
@@ -176,12 +201,18 @@ func TestKiroOtherExtensionNotificationsReachNoTranscript(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
 
-	for _, method := range []string{"_kiro/mcp/server_initialized", "_kiro/governance/state", "_kiro/a/later/method"} {
+	for _, method := range []string{"_kiro/governance/state", "_kiro/mcp/status", "_kiro/safety/statusChanged"} {
 		a.HandleOutput(notification(t, method, map[string]any{"sessionId": kiroTestSession}))
 	}
 
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.Notifications())
+
+	// An unknown notification persists raw (decision 1).
+	unknown := notification(t, "_kiro/mcp/server_initialized", map[string]any{"sessionId": kiroTestSession})
+	a.HandleOutput(unknown)
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(unknown), string(sink.Messages()[0].Content))
 }
 
 func TestKiroUnknownExtensionRequestReceivesAnError(t *testing.T) {
@@ -207,4 +238,70 @@ func TestKiroUnknownExtensionRequestReceivesAnError(t *testing.T) {
 		}
 	}
 	assert.True(t, answered)
+}
+
+// The known `_kiro/` notification methods each have a verdict, and an unknown
+// notification persists raw (decision 1). The list comes from the notification
+// senders of the KAS 0.66.8 acp-server.js.
+func TestKiroUnknownNotificationsPersist(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{
+		"_kiro/code_references", "_kiro/governance/state", "_kiro/hooks/didChange",
+		"_kiro/knowledge/indexingStarted", "_kiro/knowledge/indexingCompleted",
+		"_kiro/mcp/status", "_kiro/mcp/governance_disabled", "_kiro/policy/changed",
+		"_kiro/safety/statusChanged", "_kiro/safety/propertiesChanged", "_kiro/sandbox/status",
+		"_kiro/sessions/changed", "_kiro/system/notify", "_kiro/spec/taskStatusChanged",
+		"_kiro/spec/phaseCheckpoint", "_kiro/tools/didChange", "_kiro/powers/items_changed",
+		"_kiro/progressive_context/items_changed", "_kiro/steering/documents_changed",
+		"_kiro/terminal/settings_changed", "_kiro/workflow/node_failed",
+		"_kiro/workflow/steps_queued", "_kiro/workflow/watch_poll", "_kiro/workflow/loop_iteration",
+		"_kiro/hooks/cancel",
+	} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+			a.HandleOutput(notification(t, method, map[string]any{"sessionId": kiroTestSession}))
+			assert.Empty(t, sink.Messages(), "%s is known live chrome, not a row", method)
+		})
+	}
+
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	unknown := notification(t, "_kiro/future_notice", map[string]any{"sessionId": kiroTestSession, "payload": 1})
+	a.HandleOutput(unknown)
+	rows := sink.Messages()
+	require.Len(t, rows, 1, "an unknown notification persists raw")
+	assert.JSONEq(t, string(unknown), string(rows[0].Content))
+}
+
+// An unknown session-info kind persists its update, so the reader can see what
+// a later Kiro build states.
+func TestKiroUnknownSessionInfoKindPersists(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	frameRaw := notification(t, "session/update", map[string]any{
+		"sessionId": kiroTestSession,
+		"update": map[string]any{
+			"sessionUpdate": "session_info_update",
+			"_meta":         map[string]any{"kiro": map[string]any{"kind": "future_kind", "detail": true}},
+		},
+	})
+	update := json.RawMessage(`{"sessionUpdate":"session_info_update","_meta":{"kiro":{"kind":"future_kind","detail":true}}}`)
+	a.HandleOutput(frameRaw)
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1, "an unknown session-info kind persists its update")
+	assert.JSONEq(t, string(update), string(rows[0].Content))
+}
+
+// An unknown `_kiro/` notification of the current session persists byte for
+// byte; one of another session reaches nothing.
+func TestKiroUnknownNotificationSuite(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "current session", Frame: notification(t, "_kiro/future_notice", map[string]any{"sessionId": kiroTestSession, "value": 1})},
+		{Name: "other session", Frame: notification(t, "_kiro/future_notice", map[string]any{"sessionId": "session-other", "value": 1}), OtherSession: true},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+		a.HandleOutput(tc.Frame)
+		return &sink.Sink
+	})
 }

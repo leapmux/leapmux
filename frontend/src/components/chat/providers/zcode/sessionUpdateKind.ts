@@ -33,9 +33,9 @@ export type ZCodeSessionUpdateKind
  *     and which joins a notification thread.
  *   - `reply`: an assistant row through PersistMessage. Only the main reply of a
  *     model response has text for the transcript.
- *   - `none`: no row. The shape drives worker state alone, or it is telemetry.
+ *   - `unknown`: the current worker stores no row for this shape.
  */
-export type ZCodeSessionUpdateRow = 'notification' | 'reply' | 'none'
+export type ZCodeSessionUpdateRow = 'notification' | 'reply' | 'unknown'
 
 /**
  * The row of each `session.updated` shape. The per-row classification and the
@@ -46,14 +46,14 @@ export const ZCODE_SESSION_UPDATE_ROWS: Readonly<Record<ZCodeSessionUpdateKind, 
   // subagent update to its own transcript. The goal change drives the goal card,
   // and the worker writes the neutral `goal_updated` row for its transition. The
   // mode change drives the settings.
-  drop: 'none',
+  drop: 'unknown',
   networkStatus: 'notification',
-  backgroundTask: 'none',
-  subagent: 'none',
+  backgroundTask: 'unknown',
+  subagent: 'unknown',
   modelResponse: 'reply',
   goalVerification: 'notification',
-  goalChange: 'none',
-  modeChange: 'none',
+  goalChange: 'unknown',
+  modeChange: 'unknown',
   compaction: 'notification',
   microcompact: 'notification',
   modelSelected: 'notification',

@@ -151,26 +151,26 @@ func TestClassify(t *testing.T) {
 		{
 			name: "a retry folds into the latest attempt",
 			raw:  `{"type":"session.status","properties":{"sessionID":"ses_test","status":{"type":"retry","attempt":2,"message":"overloaded","next":5}}}`,
-			want: agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "mimo:retry"},
+			want: agent.APIRetryNotification(),
 		},
 		{
 			name: "an idle status is no notification kind",
 			raw:  `{"type":"session.status","properties":{"sessionID":"ses_test","status":{"type":"idle"}}}`,
 		},
 		{
-			name: "a compaction that starts is a status",
+			name: "a live compaction start has no stored classification",
 			raw:  `{"type":"message.part.updated","properties":{"part":{"id":"prt_1","type":"compaction","auto":true}}}`,
-			want: agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "mimo:compaction"},
+			want: agent.NotificationClassification{},
 		},
 		{
 			name: "a compaction with a null projection still starts",
 			raw:  `{"type":"message.part.updated","properties":{"part":{"id":"prt_1","type":"compaction","projection":null}}}`,
-			want: agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "mimo:compaction"},
+			want: agent.NotificationClassification{},
 		},
 		{
 			name: "a compaction that ends is the boundary",
 			raw:  `{"type":"message.part.updated","properties":{"part":{"id":"prt_1","type":"compaction","projection":{"summary":"s"}}}}`,
-			want: agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "mimo:compaction"},
+			want: agent.CompactionBoundaryNotification(),
 		},
 		{
 			name: "a tool part is no notification kind",

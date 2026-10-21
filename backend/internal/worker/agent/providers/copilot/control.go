@@ -44,6 +44,16 @@ var copilotControlSpecs = []copilotControlSpec{
 		completeEvent: contracts.CopilotEventElicitationCompleted,
 		method:        "ui.handlePendingElicitation", responseField: "result",
 	},
+	{
+		kind: "auto_mode_switch", requestEvent: contracts.CopilotEventAutoModeSwitchRequested,
+		completeEvent: contracts.CopilotEventAutoModeSwitchCompleted,
+		method:        "ui.handlePendingAutoModeSwitch", responseField: "response",
+	},
+	{
+		kind: "sampling", requestEvent: contracts.CopilotEventSamplingRequested,
+		completeEvent: contracts.CopilotEventSamplingCompleted,
+		method:        "ui.handlePendingSampling", responseField: "response",
+	},
 }
 
 type copilotPendingControl struct {
@@ -142,7 +152,7 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	if spec == nil {
 		return false
 	}
-	a.persistNativeFrame(raw, agent.SpanInfo{})
+	a.persistNativeFrameTo(a.sinkFor(a.childForEvent(event)), raw, agent.SpanInfo{})
 	if a.closing {
 		return true
 	}
@@ -338,10 +348,21 @@ func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingCo
 	if err != nil {
 		return err
 	}
-	result, err := a.requestNativeSession(pending.spec.method, map[string]any{
-		"requestId":                pending.nativeRequestID,
-		pending.spec.responseField: answer,
-	})
+	values := map[string]any{"requestId": pending.nativeRequestID, pending.spec.responseField: answer}
+	if pending.spec.kind == "sampling" {
+		values, err = a.resolveSampling(pending, response)
+		if err != nil {
+			retainClaim = errors.Is(err, agent.ErrDeliveryUncertain)
+			return err
+		}
+		a.controlMu.Lock()
+		current := a.controls[identifier] == pending
+		a.controlMu.Unlock()
+		if !current {
+			return fmt.Errorf("the Copilot sampling request is no longer pending")
+		}
+	}
+	result, err := a.requestNativeSession(pending.spec.method, values)
 	if err != nil {
 		err = providerkit.ClassifyJSONRPCDeliveryError("control response", err)
 		retainClaim = errors.Is(err, agent.ErrDeliveryUncertain)
@@ -447,4 +468,58 @@ func (a *Agent) completeNativeControlAnswer(answer json.RawMessage) (json.RawMes
 		return nil, fmt.Errorf("address the Copilot approval to its location: %w", err)
 	}
 	return completed, nil
+}
+
+// resolveSampling runs an allowed inference before it answers the native request.
+// The caller holds sessionMu for reading, so ClearContext waits for the inference.
+// Stop or process exit cancels the call. A model response has no fixed timeout.
+func (a *Agent) resolveSampling(pending *copilotPendingControl, response json.RawMessage) (map[string]any, error) {
+	values := map[string]any{"requestId": pending.nativeRequestID}
+	switch providerkit.StringField(response, "decision") {
+	case contracts.CopilotSamplingDecisionDeny:
+		return values, nil
+	case contracts.CopilotSamplingDecisionAllow:
+	default:
+		return nil, fmt.Errorf("the Copilot sampling decision is invalid")
+	}
+	var data struct {
+		ServerName   string          `json:"serverName"`
+		MCPRequestID json.RawMessage `json:"mcpRequestId"`
+		Request      json.RawMessage `json:"request"`
+	}
+	if json.Unmarshal(pending.data, &data) != nil || data.ServerName == "" || !providerkit.RawPresent(data.MCPRequestID) || !providerkit.RawPresent(data.Request) {
+		return nil, fmt.Errorf("the Copilot sampling request is incomplete")
+	}
+	ctx := a.samplingContext()
+	raw, err := a.requestSessionContext(ctx, pending.sessionID, "mcp.executeSampling", map[string]any{
+		"requestId":    "leapmux-sampling-" + pending.nativeRequestID,
+		"serverName":   data.ServerName,
+		"mcpRequestId": data.MCPRequestID,
+		"request":      data.Request,
+	}, 0)
+	if err != nil {
+		return nil, providerkit.ClassifyJSONRPCDeliveryError("sampling inference", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, providerkit.ClassifyJSONRPCDeliveryError("sampling inference", err)
+	}
+	var result struct {
+		Action string          `json:"action"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("%w: Copilot returned an invalid sampling result", agent.ErrDeliveryUncertain)
+	}
+	switch result.Action {
+	case "success":
+		if !providerkit.RawPresent(result.Result) {
+			return nil, fmt.Errorf("%w: Copilot returned no sampling result", agent.ErrDeliveryUncertain)
+		}
+		values["response"] = result.Result
+	case "failure", "cancelled":
+		// An absent response rejects the native sampling request.
+	default:
+		return nil, fmt.Errorf("%w: Copilot returned an unknown sampling outcome", agent.ErrDeliveryUncertain)
+	}
+	return values, nil
 }

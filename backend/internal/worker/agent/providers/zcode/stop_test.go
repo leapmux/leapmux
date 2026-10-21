@@ -10,12 +10,63 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestZCodeStop_ACancelledApprovalEndsTheTurnAsInterrupted(t *testing.T) {
+	t.Parallel()
+	assertZCodeApprovalStopCompletion(t, true, "Permission request cancelled", agent.MessageCompletionInterrupted)
+}
+
+func TestZCodeStop_ASuccessWithoutTheCancelReasonStaysEnded(t *testing.T) {
+	t.Parallel()
+	assertZCodeApprovalStopCompletion(t, true, "Plan mode", agent.MessageCompletionComplete)
+}
+
+func TestZCodeStop_ACancellationWithoutAStopDoesNotInterruptTheTurn(t *testing.T) {
+	t.Parallel()
+	assertZCodeApprovalStopCompletion(t, false, "Permission request cancelled", agent.MessageCompletionComplete)
+}
+
+func assertZCodeApprovalStopCompletion(t *testing.T, stop bool, reason string, completion agent.MessageCompletion) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.afterFunc = (&zcodeCapturedTimer{}).afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"kind":"text_delta","assistantMessageId":"m1","delta":"partial answer"}`))
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
+	if stop {
+		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+	}
+	// Recorded order: run6, stop reply, cancelled permission, then a success end.
+	payload, err := json.Marshal(map[string]any{"requestId": "req-1", "decision": "deny", "reason": reason})
+	require.NoError(t, err)
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventPermissionResolved, string(payload)))
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	_, text, textCompletion, ok := agenttest.DecodeAssembledMessage(rows[0].Content)
+	require.True(t, ok)
+	assert.Equal(t, "partial answer", text)
+	assert.Equal(t, completion, textCompletion)
+	assert.True(t, rows[1].TurnEnd)
+	if completion == agent.MessageCompletionInterrupted {
+		assert.Equal(t, completion, rows[1].Completion)
+	} else {
+		assert.Empty(t, rows[1].Completion)
+	}
+	assert.Contains(t, string(rows[1].Content), `"resultType":"success"`, "the native frame stays unchanged")
+}
 
 type zcodeStopInput struct {
 	frames chan []byte

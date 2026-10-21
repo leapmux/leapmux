@@ -38,6 +38,25 @@ describe('renderExtractedRow', () => {
     expect(text).not.toContain(ERROR_MARKER)
   })
 
+  // The note of a steer the model echoed draws as an inline chip beside the text
+  // it interrupted, not as part of the text itself.
+  it('draws each steer note of a segmented text as its own chip', () => {
+    const text = drawnText({
+      kind: 'assistant-text',
+      text: 'Done. probe handled',
+      segments: [
+        { kind: 'text', text: 'Done. ' },
+        { kind: 'steer-note', steerId: 'steer-09dc', note: 'probe handled' },
+      ],
+    }, 'complete')
+    expect(text).toContain('Done.')
+    expect(text).toContain('probe handled')
+    expect(text).toContain('»')
+    // The steer id lives in the chip's tooltip, not in the drawn text.
+    expect(text).not.toContain('steer-09dc')
+    expect(text).not.toContain(INTERRUPTION_MARKER)
+  })
+
   // A divider states the outcome of the turn in its own label. The marker states
   // truncated TEXT, so under a divider it claimed a cut that a turn with no text, or
   // with complete text, never had -- on every stopped turn of every provider whose

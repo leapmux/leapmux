@@ -15,6 +15,7 @@ func TestStatusItemIsPlumbing(t *testing.T) {
 		"Resuming turn with 1 queued sub-agent completion(s)",
 		"Loaded deferred tool 'apply_patch'. Retry the call with its visible schema.",
 		"Steer input accepted: Also mention the word banana.",
+		"Steer input queued: Read the next file.",
 		"Request cancelled",
 		"Policy: Full Access / ACT",
 		"Permissions: Ask · Work",

@@ -1,27 +1,15 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import { CODEX_ITEM, CODEX_METHOD, CODEX_RAW_FIELD, CODEX_RAW_TOOL } from '~/generated/contracts/codex-protocol'
-import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
-import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
+import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
-import { isJsonRpcResponseObject } from '../acp/classification'
 import { codexRawExecRole } from './extractors/execute'
 import { extractItem } from './extractors/item'
 import { codexNotificationEntry } from './extractors/notification'
 import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from './extractors/plan'
 import { codexReasoningHasText } from './extractors/row'
-import { CODEX_READ_STATE_CHANGED_METHOD } from './protocol'
-import { CODEX_RATE_LIMITS_METHOD } from './rateLimits'
-
-const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
-
-function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
-  if ('item' in parent || 'turn' in parent)
-    return false
-  return isJsonRpcResponseObject(parent)
-}
 
 function isCodexEmptyCompletedWebSearch(item: Record<string, unknown>): boolean {
   const query = pickString(item, 'query').trim()
@@ -37,29 +25,10 @@ function isCodexEmptyCompletedWebSearch(item: Record<string, unknown>): boolean 
   return false
 }
 
-/**
- * The Codex method that reports an automatic compaction of the thread.
- *
- * The Worker persists it as a threadable notification. The COMPLETION of a
- * `contextCompaction` item is the compaction boundary, not this method, so the
- * chat hides this one.
- */
-const CODEX_THREAD_COMPACTED_METHOD = CODEX_METHOD.ThreadCompacted
-/** The Codex method that reports one finished item of a turn. */
-const CODEX_ITEM_COMPLETED_METHOD = CODEX_METHOD.ItemCompleted
-/**
- * Codex JSON-RPC methods that, when persisted as SYSTEM, are notification-thread
- * entries. The consolidator treats these the same way `system+subtype` events
- * are treated for Claude.
- */
+/** Native methods whose stored frames form notification threads. */
 const CODEX_NOTIF_METHODS = new Set<string>([
-  CODEX_RATE_LIMITS_METHOD,
-  CODEX_METHOD.SkillsChanged,
-  CODEX_METHOD.RemoteControlStatusChanged,
   CODEX_METHOD.HookCompleted,
-  CODEX_METHOD.ThreadTokenUsageUpdated,
   CODEX_METHOD.McpServerOauthLoginCompleted,
-  CODEX_METHOD.ThreadNameUpdated,
   CODEX_METHOD.McpServerStartupStatusUpdated,
   // The RENDER notices, for which the notification reader writes the text: the
   // retry entry for an `error` that Codex will try again, and one sentence for
@@ -79,82 +48,22 @@ const CODEX_NOTIF_METHODS = new Set<string>([
   CODEX_METHOD.StrictReviewRequired,
 ])
 
-/**
- * Hide informational methods in standalone and consolidated transcript rows.
- * Both paths must agree. The method groups are:
- * - Turn and thread lifecycle.
- * - Skill metadata invalidation.
- * - Remote-control connection status.
- * - Hook starts.
- * - Auto-review starts, whose completion states the outcome.
- * - Approval requests and questions, which reach the reader as control requests and
- *   never as transcript rows.
- *
- * Native execution requests and outputs bypass raw-item mirror suppression before this lookup.
- * The Worker supplies working state. This method set controls transcript visibility only.
- */
-const CODEX_HIDDEN_TRANSCRIPT_METHODS = new Set<string>([
-  CODEX_METHOD.ThreadStarted,
-  CODEX_METHOD.TurnStarted,
-  CODEX_METHOD.ThreadStatusChanged,
-  CODEX_METHOD.ThreadNameUpdated,
-  CODEX_METHOD.ThreadSettingsUpdated,
-  CODEX_METHOD.ThreadTokenUsageUpdated,
-  CODEX_METHOD.SkillsChanged,
-  CODEX_METHOD.RemoteControlStatusChanged,
-  CODEX_METHOD.HookStarted,
-  CODEX_METHOD.AutoApprovalReviewStarted,
-  CODEX_METHOD.CommandExecutionRequestApproval,
-  CODEX_METHOD.FileChangeRequestApproval,
-  CODEX_METHOD.PermissionsRequestApproval,
-  CODEX_METHOD.ToolRequestUserInput,
-  CODEX_METHOD.McpToolCallProgress,
-  CODEX_METHOD.RawResponseItemCompleted,
-  CODEX_READ_STATE_CHANGED_METHOD,
-  // `initialize` opts out of both now. The set hides the rows that older builds
-  // stored.
-  CODEX_METHOD.TurnModerationMetadata,
-  CODEX_METHOD.AccountUpdated,
-  CODEX_RATE_LIMITS_METHOD,
-  CODEX_THREAD_COMPACTED_METHOD,
-])
+// Native exec rows pass their role checks before this remaining mirror filter.
+const CODEX_HIDDEN_TRANSCRIPT_METHODS = new Set<string>([CODEX_METHOD.RawResponseItemCompleted])
 
 function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
-  // Read the members BEFORE the shared test. Its type predicate narrows `wrapper` to
-  // `null` on the false path, so a read after the call cannot reach them.
+  // Read the members before the shared type predicate narrows wrapper on its false branch.
   const messages = wrapper?.messages ?? []
-  if (isNotificationThreadWrapper(wrapper, undefined, (t, st) =>
-    t === 'system' && st !== 'init' && st !== 'task_notification')) {
+  if (isNotificationThreadWrapper(wrapper))
     return true
-  }
-  // Codex method-based notifications now arriving as SYSTEM-roled raw
-  // JSON-RPC envelopes — recognize them by the inner `method` field.
-  return messages.some((msg) => {
-    if (!isObject(msg))
+  return messages.some((message) => {
+    if (!isObject(message))
       return false
-    if (pickString(pickObject(msg, 'item'), 'type') === CODEX_ITEM.ContextCompaction)
-      return true
-    const method = pickString(msg, 'method')
-    if (CODEX_NOTIF_METHODS.has(method))
-      return true
-    // item/started for a contextCompaction item is the in-progress compacting
-    // indicator, and item/completed for the same item is the boundary that
-    // closes it. Both belong in the notification thread.
-    if (method === CODEX_METHOD.ItemStarted || method === CODEX_ITEM_COMPLETED_METHOD)
-      return pickString(pickObject(pickObject(msg, 'params'), 'item'), 'type') === CODEX_ITEM.ContextCompaction
-    return false
+    const method = pickString(message, 'method')
+    return CODEX_NOTIF_METHODS.has(method)
+      || (method === CODEX_METHOD.ItemCompleted
+        && pickString(pickObject(pickObject(message, 'params'), 'item'), 'type') === CODEX_ITEM.ContextCompaction)
   })
-}
-
-// The Worker also represents a failed turn in its divider. Remove that normalized
-// notification before extraction so one failure does not draw twice. The method
-// sets above own frames with no surface; codexNotificationEntry owns visible outcomes.
-function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
-  if (!isObject(m))
-    return false
-  if (m.type === NOTIFICATION_TYPE.AgentError && m.error === CODEX_TURN_FAILED_NOTIFICATION)
-    return true
-  return false
 }
 
 type CodexItemClassifier = (item: Record<string, unknown>) => MessageCategory
@@ -185,19 +94,12 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
   },
   // The extractor's own read, so a measured row is always a row that draws.
   [CODEX_ITEM.Reasoning]: item => codexReasoningHasText(item) ? { kind: 'assistant_thinking' } : { kind: 'hidden' },
-  [CODEX_ITEM.UserMessage]: () => ({ kind: 'hidden' }),
-  // The five kinds Codex added after this table was written. The row extractor draws
-  // each as a status row, and the classifier covered none of them -- so the list
-  // measured an unrecognized row and the transcript then painted a tool row into it.
-  // Both readers must answer the same kind; `rowKindInvariant` is the guard.
+  // These native items use the tool renderer. Classification and extraction must agree, as rowKindInvariant checks.
   [CODEX_ITEM.Sleep]: () => ({ kind: 'tool_use' }),
   [CODEX_ITEM.EnteredReviewMode]: () => ({ kind: 'tool_use' }),
   [CODEX_ITEM.ExitedReviewMode]: () => ({ kind: 'tool_use' }),
   [CODEX_ITEM.HookPrompt]: () => ({ kind: 'tool_use' }),
   [CODEX_ITEM.FunctionCallOutput]: () => ({ kind: 'tool_use' }),
-  // The Worker consumes subAgentActivity in its background-task registry.
-  // It does not persist a transcript row. Hide this shape if it reaches classification.
-  [CODEX_ITEM.SubAgentActivity]: () => ({ kind: 'hidden' }),
 }
 
 /** Codex message classification. */
@@ -206,16 +108,12 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   const wrapper = input.wrapper
   const notification = notificationClassifierFor(input.agentProvider, codexNotificationEntry)
 
-  // Empty wrappers and read-state metadata have no transcript content.
-  // A mixed wrapper keeps its other content, including unknown native frames.
-  if (wrapper && wrapper.messages.every(message => isObject(message) && message.method === CODEX_READ_STATE_CHANGED_METHOD))
+  // The reducer can leave an empty notification thread.
+  if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
 
-  // Notification threads (settings_changed, context_cleared, etc.)
-  if (isCodexNotifThread(wrapper)) {
-    const msgs = wrapper.messages.filter(m => !isCodexHiddenNotificationThreadMessage(m))
-    return notification(msgs, 'hidden')
-  }
+  if (isCodexNotifThread(wrapper))
+    return notification(wrapper.messages, 'hidden')
 
   if (!parent)
     return { kind: 'unknown' }
@@ -223,11 +121,7 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
   // classifyMessage, before any plugin?.transcript.classify runs, since it is a LeapMux-neutral shape.)
 
-  if (isCodexJsonRpcResponse(parent))
-    return { kind: 'hidden' }
-
   const type = pickString(parent, 'type')
-  const subtype = pickString(parent, 'subtype')
   const method = pickString(parent, 'method')
 
   // Native exec has no typed app-server item. Keep its supported raw rows before mirror suppression.
@@ -238,7 +132,7 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
     return { kind: 'tool_use' }
   }
 
-  // Transcript history can contain lifecycle methods. Keep them hidden.
+  // Keep unsupported raw mirrors hidden after the native exec checks.
   if (CODEX_HIDDEN_TRANSCRIPT_METHODS.has(method))
     return { kind: 'hidden' }
 
@@ -250,17 +144,6 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   // both the standalone row and its notification thread.
   if (CODEX_NOTIF_METHODS.has(method))
     return notification([parent], 'hidden')
-
-  if (type === 'system') {
-    if (subtype === 'init' || subtype === 'task_notification')
-      return { kind: 'hidden' }
-    if (isFinalCompactingStatus(parent))
-      return { kind: 'hidden' }
-    return notification([parent])
-  }
-
-  if (type === NOTIFICATION_TYPE.AgentError && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
-    return { kind: 'hidden' }
 
   // Read turn-plan content through the same helper as extraction.
   // Both readers must agree that the frame contains a tool row.
@@ -276,14 +159,12 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   if (turn && typeof turn.status === 'string' && turn.status)
     return { kind: 'result_divider' }
 
-  // item/completed dispatch — keyed on item.type via the classifier table. The
-  // item is resolved through the SAME unwrap the extractor uses, so a row stored
-  // as the raw `item/started` envelope reaches its classifier instead of falling
-  // through to `unknown` and drawing raw JSON.
+  // Classify the item through the same unwrap function that the extractor uses.
+  // This also recognizes a tool row whose stored envelope retains item/started.
   const item = extractItem(parent) ?? undefined
   const itemType = item ? pickString(item, 'type', undefined) : undefined
   if (item && itemType) {
-    if (itemType === CODEX_ITEM.ContextCompaction)
+    if (itemType === CODEX_ITEM.ContextCompaction && method === CODEX_METHOD.ItemCompleted)
       return notification([parent])
     // `Object.hasOwn`, not a bare read: `itemType` comes straight off the wire,
     // and a value that spells an `Object.prototype` member answers with a function
@@ -295,8 +176,6 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
 
   // User message (persisted by LeapMux service layer)
   if (!parent.item && typeof parent.content === 'string') {
-    if (parent.hidden === true)
-      return { kind: 'hidden' }
     if (parent.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }

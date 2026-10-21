@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { expectNoUnrenderedRow } from '../helpers/nativeConversation'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, permissionModeOffered, sendMessage, waitForAgentStarted, waitForSettingsHydrated } from '../helpers/ui'
+import { assistantBubbles, expectSettingsChip, permissionModeOffered, sendMessage, toolRunningBadge, waitForAgentStarted, waitForSettingsHydrated } from '../helpers/ui'
 
 /**
  * The permission-check badge while the Auto Mode classifier holds a tool call.
@@ -43,7 +43,7 @@ claudeTest('shows the permission-check badge while the Auto Mode classifier hold
   try {
     await sendMessage(page, modelScript.prompt('Run the scripted shell command once, then reply.'))
     await modelScript.waitForGate(gate)
-    const badge = page.locator('[data-testid="tool-running-badge"]:visible')
+    const badge = toolRunningBadge(page)
     // Claude Code reports the check after its own four-second timer. The default expect timeout covers that timer.
     await expect(badge).toHaveText('Checking permission…')
     await modelScript.releaseGate(gate)

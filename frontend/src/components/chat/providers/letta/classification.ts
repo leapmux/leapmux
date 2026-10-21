@@ -18,37 +18,29 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
   const wrapper = input.wrapper
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
-  // The Worker wraps a notice and nothing else, so every wrapper is a notification
-  // thread. The shared test `isNotificationThreadWrapper` accepts a thread only when
-  // a member has a base notification `type`, and no Letta Code notice has one (a
-  // subagent snapshot has its own `type`, a loop error has none). A thread that fails
-  // that test is read by its first member alone. A failed turn stores the snapshot
-  // first, so the error behind it would never reach the transcript.
+  // Read every notification member. Unknown metadata must not conceal a later readable notice.
   if (wrapper)
-    return notification(wrapper.messages, 'hidden')
+    return notification(wrapper.messages)
 
   const parent = input.parentObject
   if (!parent)
-    return { kind: 'hidden' }
+    return { kind: 'unknown' }
 
   // A worker-assembled row carries the worker's own `type` field.
   if (pickString(parent, 'type') === ASSEMBLED_MESSAGE.Type) {
-    const text = pickString(parent, 'text') ?? ''
+    const text = pickString(parent, 'text')
     return text ? { kind: 'assistant_text' } : { kind: 'hidden' }
   }
 
-  // The wire discriminator is `type`, not `kind`, on every protocol_v2
-  // message. A `turn_finished` read from `kind` is not recognized and becomes a
-  // JSON notification instead of the result divider the reader expects.
-  const messageKind = pickString(parent, 'type') || pickString(parent, LETTA_DELTA_FIELD.Kind)
+  // Native frames use type. A kind-only record is not a native turn end.
+  const messageKind = pickString(parent, 'type')
   if (messageKind === LETTA_MESSAGE.TurnFinished)
     return { kind: 'result_divider' }
 
-  // The delta payload may sit at the top level (the persisted shape) or under
-  // `payload` (the raw frame).
+  // The worker stores each native delta at the top level.
   const source = lettaToolPayload(parent)
   if (!source)
-    return { kind: 'hidden' }
+    return { kind: 'unknown' }
   const messageType = pickString(source, LETTA_DELTA_FIELD.MessageType)
   switch (messageType) {
     case LETTA_DELTA_KIND.AssistantMessage:
@@ -64,7 +56,7 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
       const call = singular ?? first
       return call && pickString(call, LETTA_DELTA_FIELD.ToolCallID) && pickString(call, LETTA_DELTA_FIELD.Name)
         ? { kind: 'tool_use' }
-        : { kind: 'hidden' }
+        : { kind: 'unknown' }
     }
     case LETTA_DELTA_KIND.ToolReturnMessage:
       return isLettaToolProgress(source) ? { kind: 'hidden' } : { kind: 'tool_result' }
@@ -76,11 +68,9 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
       break
   }
 
-  // The user row LeapMux writes itself is `{content}`, not a provider frame.
-  // Without this it fell through to the notification reader and drew as a JSON
-  // blob instead of the message the reader typed.
+  // Recognize the worker's user-content envelope before the native notice fallback.
   if (typeof parent.content === 'string' && !('type' in parent) && !('message_type' in parent))
     return { kind: 'user_content' }
 
-  return notification([parent], 'hidden')
+  return notification([parent])
 }

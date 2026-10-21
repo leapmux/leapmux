@@ -4,9 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -37,10 +35,13 @@ func (b *Base) sendPreparedPromptForSession(expected *string, content string, at
 		b.turnMu.Unlock()
 		return err
 	}
-	assistantText, thoughtText := b.takeUnownedOutputLocked()
+	turn := b.takeUnownedOutputLocked()
 	b.turnMu.Unlock()
-	b.persistUnownedText(assistantText, thoughtText)
+	b.persistUnownedText(turn)
 	b.notePromptActive()
+	if b.hooks.PromptPrepared != nil {
+		b.hooks.PromptPrepared()
+	}
 	if prepare != nil {
 		if err := prepare(sessionID); err != nil {
 			b.clearActivePrompt()
@@ -85,32 +86,19 @@ func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, e
 	if !current {
 		return
 	}
-	// A prompt that fails BECAUSE the reader stopped it is a stop, not a failure.
-	//
-	// `IsStopped` asks whether the agent PROCESS is shut down, which a stop button
-	// does not do. So a cancelled prompt whose RPC returns an error finished the turn
-	// as an error, and every tool still in flight inherited it: Cursor's stopped
-	// command stored `status: in_progress` with `completion: error`, and the row read
-	// `Error` for work the reader had chosen to end.
+	// A stopped prompt can return an RPC error while the agent process stays alive.
+	// Keep its text and tools interrupted rather than failed.
 	stopped := b.IsStopped() || b.acpInterruptRequested()
+	var ending PromptEnding
 	if b.hooks.PromptEnded != nil {
-		b.hooks.PromptEnded(err, stopped)
+		ending = b.hooks.PromptEnded(err, stopped)
 	}
 	if err == nil {
 		b.handleACPPromptResponse(response)
+	} else if stopped {
+		b.finishIncompleteACPPrompt(agent.MessageCompletionInterrupted)
 	} else {
-		completion := agent.MessageCompletionError
-		if stopped {
-			completion = agent.MessageCompletionInterrupted
-		}
-		b.finishIncompleteACPPrompt(completion)
-		if !stopped {
-			slog.Error("acp prompt failed", "agent_id", b.AgentID(), "error", err)
-			b.sink.PersistLeapMuxNotification(map[string]interface{}{
-				contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-				contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err),
-			})
-		}
+		b.finishFailedACPPrompt(err, ending)
 	}
 	// A stop ends the command that the cut tool still awaits. This runs after
 	// the rows above, which read a running terminal where it stands, and

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -358,11 +360,19 @@ func (a *Agent) ClearContext() (string, error) {
 	// a context clear would silently drop the level and the model back to them. The
 	// mode is the axis value, so a session in plan mode is replaced by one in plan mode.
 	current := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.permissionModeLocked()}
+	oldSessionID := a.sessionID
 	a.Mu.Unlock()
+	if a.mailboxRoot != "" && oldSessionID != "" {
+		// The replaced session's mailbox holds envelopes no runtime will drain
+		// again; the next prompt of the new session must not fold them in as
+		// reference material. See steering.go.
+		_ = os.RemoveAll(filepath.Join(a.mailboxRoot, oldSessionID))
+	}
 
 	if err := a.openSession("", timeout); err != nil {
 		return "", err
 	}
+	a.retryResolution.Reset()
 	a.applyStartupSettings(current, timeout)
 	// The turn belonged to the session this call replaced, so it ends with it. The
 	// flag and the window go in ONE critical section: a frame that arrived between
@@ -373,6 +383,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.backgroundTurn = false
 	a.cancelStoppedZCodeTurnLocked()
 	a.Mu.Unlock()
+	a.endZCodeCompaction()
 	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
 
@@ -402,5 +413,26 @@ func (a *Agent) ClearContext() (string, error) {
 		return "", fmt.Errorf("the new ZCode session has no ID")
 	}
 	a.sink.UpdateSessionID(sessionID)
-	return sessionID, a.subscribe(timeout)
+	err := a.subscribe(timeout)
+	if oldSessionID != "" && oldSessionID != sessionID {
+		go a.retireZCodeSession(oldSessionID)
+	}
+	return sessionID, err
+}
+
+// retireZCodeSession stops the old runtime before it closes the old session.
+// A close alone does not cancel an outstanding interaction request.
+func (a *Agent) retireZCodeSession(sessionID string) {
+	params := map[string]any{"sessionId": sessionID}
+	if _, err := a.sendZCodeRequest(MethodSessionStop, params, zcodeStopTimeout); err != nil && !zcodeIsSessionGone(err) {
+		slog.Debug("zcode failed to stop a retired session", "agent_id", a.AgentID(), "session_id", sessionID, "error", err)
+	}
+	if _, err := a.sendZCodeRequest(MethodSessionClose, params, a.APITimeout()); err != nil && !zcodeIsSessionGone(err) {
+		slog.Debug("zcode failed to close a retired session", "agent_id", a.AgentID(), "session_id", sessionID, "error", err)
+	}
+}
+
+func zcodeIsSessionGone(err error) bool {
+	code, ok := zcodeErrorCode(err)
+	return ok && (code == ErrMethodNotFound || code == ErrSessionNotActive)
 }

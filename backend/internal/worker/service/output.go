@@ -4,6 +4,7 @@ package service
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -18,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/coder/quartz"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -175,7 +177,11 @@ type cachedTodo struct {
 // OutputHandler manages agent output persistence and broadcasting.
 // It holds shared state accessed by per-agent ProviderServices instances.
 type OutputHandler struct {
-	queries *db.Queries
+	outputQueueMu        sync.Mutex
+	outputQueues         map[string]*agent.OutputQueue
+	outputClock          quartz.Clock
+	outputRetriesStopped bool
+	queries              *db.Queries
 	// db backs the agent_todos snapshot transaction (delete-all + N
 	// inserts). Tests that don't exercise the snapshot path may pass
 	// nil; the snapshot writer then falls back to a non-transactional
@@ -340,6 +346,9 @@ type OutputHandler struct {
 	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
 	// OutputHandler directly, where RequeueDroppedInput then refuses.
 	requeueDroppedInput func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)
+	steersEchoed        func(agentID string, count int, spanLines string) error
+	steersDropped       func(agentID string, count int) error
+	steersUncertain     func(agentID string, count int) error
 
 	// turnPublisher holds, for each root agent id, the sink whose turn flag
 	// counts. A launch adopts one; a publish from any other sink comes from a
@@ -360,12 +369,16 @@ type OutputHandler struct {
 // its registry, so a handler without one could not classify a single frame.
 // NewOutputHandler panics on nil, at construction, rather than at the first
 // frame.
-func NewOutputHandler(sqlDB *sql.DB, queries *db.Queries, watcher *WatcherManager, agents *agent.Manager, wl *wakelock.ActivityTracker) *OutputHandler {
+func NewOutputHandler(sqlDB *sql.DB, queries *db.Queries, watcher *WatcherManager, agents *agent.Manager, wl *wakelock.ActivityTracker, clock quartz.Clock) *OutputHandler {
 	if agents == nil {
 		panic("service: NewOutputHandler requires an agent manager")
 	}
+	if clock == nil {
+		clock = quartz.NewReal()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &OutputHandler{
+		outputClock:    clock,
 		queries:        queries,
 		db:             sqlDB,
 		watcher:        watcher,
@@ -382,6 +395,7 @@ func NewOutputHandler(sqlDB *sql.DB, queries *db.Queries, watcher *WatcherManage
 // write paths. Service.Shutdown calls it AFTER the in-flight drains finish, so
 // any write the drains did not cover fails fast instead of racing sqlDB.Close().
 func (h *OutputHandler) CancelBackgroundCtx() {
+	h.StopOutputRetries()
 	if h.shutdownCancel != nil {
 		h.shutdownCancel()
 	}
@@ -460,6 +474,11 @@ func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, admission agent
 // provider dropped. Call it before any agent output is processed.
 func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)) {
 	h.requeueDroppedInput = fn
+}
+
+// SetSteerEchoFuncs connects provider reports to the queue before output processing starts.
+func (h *OutputHandler) SetSteerEchoFuncs(echoed func(agentID string, count int, spanLines string) error, dropped, uncertain func(agentID string, count int) error) {
+	h.steersEchoed, h.steersDropped, h.steersUncertain = echoed, dropped, uncertain
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -690,11 +709,48 @@ func (h *OutputHandler) finishControlPublication(agentID, rootAgentID string, pu
 	h.watcher.DrainAgentEvents(agentID)
 }
 
-// ClearPendingControlRequests drops the agent's pending control_requests from the
-// DB and broadcasts a controlCancel for each, so request_ids bound to a now-exited
-// subprocess don't reappear stale on resume. It deletes by agent id ALONE (no per-process
-// generation column), so it must run only when no LATER process for the same agent id could
-// own pending requests. The worker wires it as the per-exit onExit handler, where that holds:
+// clearControlRequests runs one delete over the agent's control request rows and
+// broadcasts a controlCancel for each deleted row. The delete query is a
+// parameter because three retirements choose different row sets:
+//   - A process exit keeps the questions.
+//   - A teardown drops every row.
+//   - A session change keeps only the questions of its own session.
+//
+// agentKeepsRunning is true for the session change alone. Its agent keeps
+// running, so the retirement keeps the activity entry (see
+// lockControlMutationRetainingEntry) and every blocking prompt in memory: the
+// agent still waits for those prompts, and a later interrupt withdraws them. An
+// exit and a teardown end the lifetime that owned the prompts, so they clear
+// every prompt, not only the deleted ids.
+func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, agentKeepsRunning bool, deleteRequests func(context.Context) ([]db.ControlRequest, error)) {
+	lock := h.lockControlMutation
+	if agentKeepsRunning {
+		lock = h.lockControlMutationRetainingEntry
+	}
+	_, _, release := lock(agentID, "")
+	publication := controlPublication{}
+	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
+	deleted, err := deleteRequests(bgCtx())
+	if err != nil {
+		publication.recordFailure(failureMessage, "agent_id", agentID, "error", err)
+	}
+	// Each cancellation also removes its own instance from the live prompts.
+	for _, request := range deleted {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	if agentKeepsRunning {
+		return
+	}
+	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+}
+
+// ClearPendingControlRequests drops the agent's pending BLOCKING control_requests
+// from the DB and broadcasts a controlCancel for each, so request_ids bound to a
+// now-exited subprocess don't reappear stale on resume. A non-blocking request
+// belongs to the conversation, not to the process, so an exit keeps it. It deletes
+// by agent id ALONE (no per-process generation column), so it must run only when
+// no LATER process for the same agent id could own pending requests. The worker
+// wires it as the per-exit onExit handler, where that holds:
 // agent.Manager.stopAndWait blocks every relaunch until the OLD process's exit goroutine
 // (this handler included) has fully finished BEFORE registering the new provider, so a
 // relaunch's old-process onExit can only ever clear requests that genuinely belong to the
@@ -706,19 +762,20 @@ func (h *OutputHandler) finishControlPublication(agentID, rootAgentID string, pu
 // restart stays deduped because its claim survives, and a genuinely reissued request_id is disambiguated
 // per instance by its fresh claim_token rather than by clearing the prior claim.
 func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
-	_, _, release := h.lockControlMutation(agentID, "")
-	publication := controlPublication{}
-	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
-	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
-	if err != nil {
-		publication.recordFailure("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
-	}
-	for _, request := range deleted {
-		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
-	}
-	// Clears every prompt, not only the deleted ids: this runs when the
-	// subprocess owning them went away, so nothing it was blocked on survives.
-	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+	h.clearControlRequests(agentID, "clear pending control requests: delete rows", false, func(ctx context.Context) ([]db.ControlRequest, error) {
+		return h.queries.DeleteBlockingControlRequestsByAgentID(ctx, agentID)
+	})
+}
+
+// RetireNonBlockingControlRequestsOutsideSession removes the questions that belong
+// to another conversation. A stored session change leaves the Codex thread that
+// asked them, so no user can answer them there.
+func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, sessionID string) {
+	h.clearControlRequests(agentID, "retire non-blocking control requests outside the session: delete rows", true, func(ctx context.Context) ([]db.ControlRequest, error) {
+		return h.queries.DeleteNonBlockingControlRequestsOutsideSession(ctx, db.DeleteNonBlockingControlRequestsOutsideSessionParams{
+			AgentID: agentID, AgentSessionID: sessionID,
+		})
+	})
 }
 
 // ClearAgentRuntimeState tears down the state tied to a dying SUBPROCESS: pending
@@ -731,7 +788,9 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
-	h.ClearPendingControlRequests(agentID)
+	h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
+		return h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
+	})
 	h.CleanupAgent(agentID)
 }
 
@@ -944,9 +1003,10 @@ type agentOutputSink struct {
 	// recursive `reflect.DeepEqual`. The wire encoding of these values
 	// is JSON anyway, so the cached bytes line up exactly with what the
 	// frontend would observe.
-	sessionInfoMu   sync.Mutex
-	lastSessionInfo map[string][]byte
-	progress        *generationProgressPublisher
+	sessionInfoMu          sync.Mutex
+	lastSessionInfo        map[string][]byte
+	activePermissionChecks map[permissionCheckKey]json.RawMessage
+	progress               *generationProgressPublisher
 
 	// catalogMu protects comparison identity and final catalog admission.
 	// A nested no-op replaces the identity without storing another catalog value.
@@ -1053,6 +1113,9 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 	content.WriteReceipt.RecordStoredWrite(true)
 	owner.activity.mu.Lock()
 	if owner.currentLocked() {
+		s.sessionInfoMu.Lock()
+		clear(s.activePermissionChecks)
+		s.sessionInfoMu.Unlock()
 		if countKnown {
 			value := count
 			owner.activity.settledToolUses = &value
@@ -1136,6 +1199,64 @@ func (s *agentOutputSink) RequeueDroppedInput(dropID, content string, attachment
 	return nil
 }
 
+// ReportSteersEchoed writes the oldest steers at their provider echo.
+func (s *agentOutputSink) ReportSteersEchoed(count int) {
+	s.reportSteers(count, agent.SteerOutcomeEchoed)
+}
+
+// ReportSteersDropped requeues the oldest dropped steers without writing their rows.
+func (s *agentOutputSink) ReportSteersDropped(count int) {
+	s.reportSteers(count, agent.SteerOutcomeDropped)
+}
+
+// ReportSteersUncertain retains unproved deliveries without an automatic replay.
+func (s *agentOutputSink) ReportSteersUncertain(count int) {
+	s.reportSteers(count, agent.SteerOutcomeUncertain)
+}
+
+func (s *agentOutputSink) reportSteers(count int, outcome agent.SteerOutcome) {
+	if err := s.CaptureSteerReport(count, outcome)(); err != nil {
+		slog.Error("report steer outcome failed", "agent_id", s.agentID, "outcome", outcome, "count", count, "error", err)
+	}
+}
+
+// CaptureSteerReport keeps the echo's span context and original process publisher.
+// A native session replacement keeps the publisher. A new process must not resolve the old process's steers.
+func (s *agentOutputSink) CaptureSteerReport(count int, outcome agent.SteerOutcome) func() error {
+	if count <= 0 {
+		return func() error { return nil }
+	}
+	if s.root != nil {
+		slog.Debug("ignore child steer report", "agent_id", s.agentID, "outcome", outcome, "count", count)
+		return func() error { return nil }
+	}
+	spanLines := s.h.snapshotPassthroughSpanLines(s.agentID)
+	return func() error {
+		if !s.registeredCurrent() {
+			return nil
+		}
+		switch outcome {
+		case agent.SteerOutcomeEchoed:
+			if s.h.steersEchoed == nil {
+				return errors.New("the steer echo has no queue callback")
+			}
+			return s.h.steersEchoed(s.agentID, count, spanLines)
+		case agent.SteerOutcomeDropped:
+			if s.h.steersDropped == nil {
+				return errors.New("the dropped steer has no queue callback")
+			}
+			return s.h.steersDropped(s.agentID, count)
+		case agent.SteerOutcomeUncertain:
+			if s.h.steersUncertain == nil {
+				return errors.New("the uncertain steer has no queue callback")
+			}
+			return s.h.steersUncertain(s.agentID, count)
+		default:
+			return fmt.Errorf("invalid steer outcome: %d", outcome)
+		}
+	}
+}
+
 // turnPublisher identifies the PROCESS behind this sink. A child sink stands for
 // the same process as the root it came from, so it reports the root.
 func (s *agentOutputSink) turnPublisher() any { return s.turnPublisherSink() }
@@ -1211,12 +1332,35 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	publication := controlPublication{}
 	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
 	st.mu.Lock()
-	if scope.controlsStopped {
+	// A stop suppresses the blocking requests of its scope: the process no longer
+	// waits for them. A non-blocking request is a question that outlives the stop,
+	// so a stop does not withdraw it.
+	if scope.controlsStopped && !request.NonBlocking {
 		st.mu.Unlock()
 		return nil
 	}
 	previous, known := st.pendingControl[requestID]
 	st.mu.Unlock()
+	if request.NonBlocking {
+		currentAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+		if err != nil {
+			return fmt.Errorf("read the question's current session: %w", err)
+		}
+		if currentAgent.AgentSessionID != request.AgentSessionID {
+			return nil
+		}
+		if request.InstanceID != "" {
+			answer, err := s.h.queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
+				AgentID: s.agentID, RequestID: requestID, ClaimToken: request.InstanceID,
+			})
+			if err == nil && answer.State == storedStateCompleted {
+				return nil
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("read the question's recorded answer: %w", err)
+			}
+		}
+	}
 	// The database owns persisted values. The live scope owns the request association.
 	// An unknown association starts a new instance, even when the persisted payload agrees.
 	// The SQLite generator omits a parameter used only in an ON CONFLICT predicate.
@@ -1232,8 +1376,16 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	if claimToken == "" {
 		claimToken = id.Generate()
 	}
-	if request.InstanceID == "" && err == nil && known && previous.scope == scope && previous.claimToken == current.ClaimToken &&
-		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+	reusable := request.InstanceID == "" && err == nil && previous.claimToken == current.ClaimToken &&
+		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID
+	if request.NonBlocking {
+		// A non-blocking request outlives its scope, so its claim reuse reads no
+		// scope: only the stored row decides.
+		if err == nil && request.InstanceID == "" && current.NonBlocking &&
+			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+			claimToken = current.ClaimToken
+		}
+	} else if reusable && known && previous.scope == scope {
 		claimToken = current.ClaimToken
 	}
 	stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
@@ -1243,6 +1395,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		Payload:        payload,
 		ClaimToken:     claimToken,
 		SourceSeq:      request.SourceSeq,
+		NonBlocking:    request.NonBlocking,
 	})
 	if err != nil {
 		return fmt.Errorf("store control request: %w", err)
@@ -1256,13 +1409,18 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		}
 		return nil
 	}
-	st.mu.Lock()
-	if st.pendingControl == nil {
-		st.pendingControl = make(map[string]ownedControlRequest)
+	// A non-blocking request never enters pendingControl: the map is what an
+	// interrupt consults (NoteAgentStopRequested, Delivered), and a question
+	// survives both.
+	if !request.NonBlocking {
+		st.mu.Lock()
+		if st.pendingControl == nil {
+			st.pendingControl = make(map[string]ownedControlRequest)
+		}
+		st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
+		st.mu.Unlock()
+		publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
 	}
-	st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
-	st.mu.Unlock()
-	publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
 	request.SourceSeq = stored.SourceSeq
 	request.AgentSessionID = stored.AgentSessionID
 	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken)
@@ -1329,8 +1487,14 @@ func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 		mutation.Unlock()
 		if failure != nil {
 			slog.Error(failureMessage, "agent_id", s.agentID, "error", failure)
-		} else if sessionChanged {
+			return
+		}
+		if sessionChanged {
 			slog.Info("agent session ID updated", "agent_id", s.agentID, "session_id", sessionID)
+			// The questions of the previous session belong to the Codex thread
+			// that just went away. This runs after the transcript mutex release,
+			// so the control mutation is never taken under it.
+			s.h.RetireNonBlockingControlRequestsOutsideSession(s.agentID, sessionID)
 		}
 	}()
 	if !s.registeredCurrent() {
@@ -1344,6 +1508,13 @@ func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 	}
 	s.messageSessionMu.Unlock()
 	activity.mu.Unlock()
+	s.sessionInfoMu.Lock()
+	for key := range s.activePermissionChecks {
+		if key.sessionID != sessionID {
+			delete(s.activePermissionChecks, key)
+		}
+	}
+	s.sessionInfoMu.Unlock()
 	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
 		failureMessage, failure = "failed to fetch agent for session ID comparison", err
@@ -1486,21 +1657,9 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 	})
 }
 
-// dedupExemptSessionInfoKeys are the agent_session_info keys that
-// BroadcastSessionInfo broadcasts unconditionally -- always broadcast, never
-// cache.
-//
-// The rest of the vocabulary carries across turns and benefits from the dedup.
-// Running-tool progress is live state that the frontend drops when its result
-// row arrives. A dedup suppresses a repeat of a value that the frontend
-// already dropped, and the counter or the badge then stays hidden until a
-// strictly different value arrives. Both carry unique values in normal
-// operation, and the frontend stores drop an identical update themselves, so
-// the exemption costs nothing.
-//
-// The generated contract supplies the strings, so the exemption uses the exact
-// strings that the handlers broadcast. Hand-copied literals could drift and
-// re-enable the dedup without a word.
+// dedupExemptSessionInfoKeys identifies updates that always broadcast.
+// The browser removes tool progress when its result arrives. A repeated update must restore it.
+// Active permission checks use a separate cache for replay, without suppressing live updates.
 var dedupExemptSessionInfoKeys = map[string]struct{}{
 	contracts.SessionInfoKeyRunningTool: {},
 }
@@ -1531,10 +1690,11 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 	}
 	changed := make(map[string]interface{}, len(info))
 	for k, v := range info {
-		// An exempt key always broadcasts and is never cached, so nothing
-		// suppresses a re-broadcast after the frontend drops the value. See
-		// dedupExemptSessionInfoKeys.
+		// An exempt key bypasses value deduplication. Permission checks use a separate cache.
 		if _, exempt := dedupExemptSessionInfoKeys[k]; exempt {
+			if k == contracts.SessionInfoKeyRunningTool {
+				s.cachePermissionCheckLocked(v)
+			}
 			changed[k] = v
 			continue
 		}
@@ -1557,6 +1717,59 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 	s.h.broadcastAgentSessionInfo(s.agentID, changed)
 }
 
+type permissionCheckKey struct {
+	sessionID string
+	spanID    string
+}
+
+// cachePermissionCheckLocked retains active checks only. The caller holds sessionInfoMu.
+func (s *agentOutputSink) cachePermissionCheckLocked(value interface{}) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(encoded, &fields) != nil {
+		return
+	}
+	var key permissionCheckKey
+	if json.Unmarshal(fields[contracts.RunningToolFieldSpanId], &key.spanID) != nil || key.spanID == "" {
+		return
+	}
+	if session, present := fields[contracts.RunningToolFieldAgentSessionId]; present {
+		if json.Unmarshal(session, &key.sessionID) != nil {
+			return
+		}
+	}
+	switch string(fields[contracts.RunningToolFieldPermissionCheck]) {
+	case "true":
+		if s.activePermissionChecks == nil {
+			s.activePermissionChecks = make(map[permissionCheckKey]json.RawMessage)
+		}
+		s.activePermissionChecks[key] = encoded
+	case "null":
+		delete(s.activePermissionChecks, key)
+	}
+}
+
+// permissionCheckSnapshots returns active checks in session and span order.
+func (s *agentOutputSink) permissionCheckSnapshots() []json.RawMessage {
+	s.sessionInfoMu.Lock()
+	defer s.sessionInfoMu.Unlock()
+	keys := make([]permissionCheckKey, 0, len(s.activePermissionChecks))
+	for key := range s.activePermissionChecks {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b permissionCheckKey) int {
+		return cmp.Or(cmp.Compare(a.sessionID, b.sessionID), cmp.Compare(a.spanID, b.spanID))
+	})
+	checks := make([]json.RawMessage, 0, len(keys))
+	for _, key := range keys {
+		checks = append(checks, s.activePermissionChecks[key])
+	}
+	return checks
+}
+
 // sessionInfoSnapshot returns the last value this sink broadcast for every
 // CACHED key, as the JSON bytes it shipped. json.RawMessage re-marshals those
 // bytes unchanged, so the replayed frame carries the exact encoding the live
@@ -1577,8 +1790,27 @@ func (s *agentOutputSink) sessionInfoSnapshot() map[string]interface{} {
 	return info
 }
 
+// PersistWorkerNotification preserves a captured owner and the worker envelope's reduction mode.
+func (s *agentOutputSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	content = s.CaptureMessage(content, agent.SpanInfo{})
+	if _, err := s.capturedOwner(content); err != nil {
+		return false, err
+	}
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(content.Original, &envelope); err != nil {
+		return false, err
+	}
+	mode := notificationThreaded
+	if envelope.Type == contracts.NotificationTypeApiRetryResolved {
+		mode = notificationRetryResolution
+	}
+	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, mode)
+}
+
 func (s *agentOutputSink) PersistLeapMuxNotification(content map[string]interface{}) {
-	s.h.PersistLeapMuxNotification(s.agentID, s.agentProvider, content)
+	s.h.persistLeapMuxNotification(s.agentID, s.agentProvider, content, s)
 }
 
 func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
@@ -2493,7 +2725,7 @@ func (h *OutputHandler) enqueueMessage(agentID string, msg *leapmuxv1.AgentChatM
 // the payload does not marshal.
 //
 // Two callers share it: the live broadcast below, which fans it out to every
-// watcher, and SessionInfoReplayEvent, which sends it to one (re)subscriber.
+// watcher, and SessionInfoReplayEvents, which sends it to one subscriber.
 // One builder, so the replayed frame cannot differ from the live one.
 func sessionInfoEvent(agentID string, info map[string]interface{}) *leapmuxv1.AgentEvent {
 	content := map[string]interface{}{
@@ -2527,20 +2759,10 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 	}
 }
 
-// SessionInfoReplayEvent rebuilds the agent_session_info that a (re)subscribing
-// client missed, or nil when no process runs for the root and when the sink
-// broadcast nothing yet.
-//
-// agent_session_info is EPHEMERAL: it ships at seq -1 and no message row keeps
-// it, so a browser reload leaves every counter blank until the provider reports
-// the next one. The wait is a full turn for `goal_progress`, because Codex
-// advances those counters after a completed tool call, so a reloaded goal card
-// showed the objective with no progress under it. The same gap emptied the cost
-// and the context-usage readouts.
-//
-// The sink already keeps the last value of each key for the dedup, so this
-// costs one map copy and adds no new state to keep in step.
-func (h *OutputHandler) SessionInfoReplayEvent(agentID string) *leapmuxv1.AgentEvent {
+// SessionInfoReplayEvents restores cached state and active permission checks after a reconnect.
+// The counters come first. Each check then gets its own event, in session and span order.
+// These events use sequence -1 because no transcript row stores live state.
+func (h *OutputHandler) SessionInfoReplayEvents(agentID string) []*leapmuxv1.AgentEvent {
 	sink := h.sinkForAgent(agentID)
 	if sink == nil {
 		return nil
@@ -2552,10 +2774,14 @@ func (h *OutputHandler) SessionInfoReplayEvent(agentID string) *leapmuxv1.AgentE
 	for key, value := range sink.progress.snapshotInfo() {
 		info[key] = value
 	}
-	if len(info) == 0 {
-		return nil
+	var events []*leapmuxv1.AgentEvent
+	if len(info) > 0 {
+		events = append(events, sessionInfoEvent(agentID, info))
 	}
-	return sessionInfoEvent(agentID, info)
+	for _, check := range sink.permissionCheckSnapshots() {
+		events = append(events, sessionInfoEvent(agentID, map[string]interface{}{contracts.SessionInfoKeyRunningTool: check}))
+	}
+	return events
 }
 
 func (h *OutputHandler) sinkForAgent(agentID string) *agentOutputSink {
@@ -2568,12 +2794,24 @@ func (h *OutputHandler) sinkForAgent(agentID string) *agentOutputSink {
 
 // PersistLeapMuxNotification persists and broadcasts a LEAPMUX notification.
 func (h *OutputHandler) PersistLeapMuxNotification(agentID string, agentProvider leapmuxv1.AgentProvider, content map[string]interface{}) {
+	h.persistLeapMuxNotification(agentID, agentProvider, content, nil)
+}
+
+func (h *OutputHandler) persistLeapMuxNotification(agentID string, agentProvider leapmuxv1.AgentProvider, content map[string]interface{}, sink *agentOutputSink) {
 	contentJSON, err := json.Marshal(content)
 	if err != nil {
 		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
 		return
 	}
-	if _, err := h.persistNotificationThreaded(agentID, agentProvider, h.agents.Registry().Plugin(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: contentJSON}); err != nil {
+	mode := notificationThreaded
+	message := agent.MessageContent{Original: contentJSON}
+	if content[contracts.NotificationFieldType] == contracts.NotificationTypeApiRetryResolved {
+		mode = notificationRetryResolution
+		if sink != nil {
+			message = sink.CaptureMessage(message, agent.SpanInfo{})
+		}
+	}
+	if _, err := h.writeNotification(agentID, agentProvider, h.agents.Registry().Plugin(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, message, mode); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
 }

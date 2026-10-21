@@ -26,7 +26,14 @@ const (
 	MessageCompletionFinished    MessageCompletion = contracts.AssembledMessageCompletionFinished
 )
 
+// MarshalAssembledMessage validates the neutral vocabulary before it encodes a row.
 func MarshalAssembledMessage(kind AssembledMessageKind, text string, completion MessageCompletion) ([]byte, error) {
+	if assembledMessageKindFromToken(string(kind)) == leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED {
+		return nil, fmt.Errorf("the assembled message has an unknown kind %q", kind)
+	}
+	if err := ValidateMessageCompletion(MessageContent{Completion: completion}); err != nil {
+		return nil, err
+	}
 	return json.Marshal(map[string]string{
 		contracts.AssembledMessageFieldType:       contracts.AssembledMessageType,
 		contracts.AssembledMessageFieldKind:       string(kind),

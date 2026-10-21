@@ -15,7 +15,7 @@ import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CONTROL_S
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { isObject } from '~/lib/jsonPick'
 import { activityInterruptsWork } from '~/stores/agentActivity.store'
-import { controlRequestProvider, requestInstanceId } from '~/stores/control.store'
+import { controlRequestProvider, pendingQuestionCount, requestInstanceId, shownControlRequest } from '~/stores/control.store'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { ReportedControlResponseError } from './controls/controlResponseError'
 import { canAnswerControlRequest, canSendControlResponse } from './controls/controlResponseState'
@@ -32,6 +32,9 @@ export interface ControlResponseHandlingProps {
   // state here rather than an invalid construction.
   agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider } | undefined
   controlRequests?: ControlRequest[] | undefined
+  /** Whether the reader opened this agent's non-blocking questions. */
+  questionsOpen?: boolean | undefined
+  onQuestionsOpenChange?: ((open: boolean) => void) | undefined
   messageContext?: MessageContextResolver | undefined
   onControlResponse?: ControlResponseHandler | undefined
   onSettingChange?: ProviderSettingChangeHandler | undefined
@@ -53,6 +56,12 @@ export interface ControlResponseHandlingProps {
 
 export interface ControlResponseHandlingResult {
   activeControlRequest: Accessor<ControlRequest | null>
+  /** How many non-blocking questions wait behind the composer. */
+  pendingQuestionCount: Accessor<number>
+  /** Show the oldest waiting question in place of the normal composer. */
+  openQuestions: () => void
+  /** Restore the normal composer and let the questions wait again. */
+  closeQuestions: () => void
   /**
    * The provider whose plugin renders the active request, and which surface
    * answers it.
@@ -165,8 +174,13 @@ export function useControlResponseHandling(
   // `AgentEditorPanel`. They rebuild the control components and discard their
   // local state, which unchecks the plan switches that the user checked. The
   // memo returns the same instance when the head does not change, so it stops
-  // the notification there.
-  const activeControlRequest = createMemo(() => props.controlRequests?.[0] ?? null)
+  // the notification there. The shown request follows one rule: the head when
+  // it is blocking, or when it is non-blocking and the reader opened the
+  // questions.
+  const activeControlRequest = createMemo(() => shownControlRequest(props.controlRequests ?? [], props.questionsOpen ?? false))
+  const questionCount = createMemo(() => pendingQuestionCount(props.controlRequests ?? []))
+  const openQuestions = () => props.onQuestionsOpenChange?.(true)
+  const closeQuestions = () => props.onQuestionsOpenChange?.(false)
   // Which provider renders the active request, and which surface answers it.
   // Derived ONCE here, for the composer and for both halves of the banner; see
   // `createControlSurface`.
@@ -599,6 +613,9 @@ export function useControlResponseHandling(
 
   return {
     activeControlRequest,
+    pendingQuestionCount: questionCount,
+    openQuestions,
+    closeQuestions,
     activeControlProvider: activeProvider,
     activeControlSurface: activeSurface,
     handleControlSend,

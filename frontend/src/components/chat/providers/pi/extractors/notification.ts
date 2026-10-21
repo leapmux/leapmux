@@ -1,9 +1,11 @@
 import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { PI_EVENT, PI_EXTENSION_METHOD } from '~/generated/contracts/pi-protocol'
+import { PI_ENTRY_TYPE, PI_EVENT, PI_EXTENSION_METHOD } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { toTokenCount } from '../../../model/notification'
+import { retryEntry, tokenCount } from '../../../model/notification'
+import { PI_MANUAL_COMPACTION_ERROR_PREFIX, PI_NOTIFY_TYPE, PI_SUMMARY_SOURCE_LABEL } from '../protocol'
+import { piSessionEntry } from '../sessionEntry'
 
 /**
  * A readable line for one Pi notification event that states plain TEXT.
@@ -31,28 +33,28 @@ export function describePiNotification(parsed: unknown): string | null {
   // sees that an extension fired something.
   if (type === PI_EVENT.ExtensionUIRequest) {
     const method = pickString(parsed, 'method')
-    if (method === PI_EXTENSION_METHOD.Notify)
-      return pickString(parsed, 'message') || null
+    if (method === PI_EXTENSION_METHOD.Notify) {
+      const text = pickString(parsed, 'message').trim()
+      if (!text)
+        return null
+      const level = pickString(parsed, 'notifyType')
+      const prefix = level === PI_NOTIFY_TYPE.Warning ? 'Warning: ' : level === PI_NOTIFY_TYPE.Error ? 'Error: ' : ''
+      return `${prefix}${text}`
+    }
     return method ? `Extension UI: ${method}` : 'Extension UI request'
   }
 
   return null
 }
 
-/**
- * What one Pi `compaction_end` frame states about the context it rewrote.
- *
- * Pi carries only a pre-compaction size (`result.tokensBefore`) and no post count, so
- * the transition degrades to pre-only -- exactly as the shared formatter renders an
- * unknown post. The `reason` (manual, threshold, overflow) is the trigger.
- */
-function piCompactionDetail(m: Record<string, unknown>): CompactionDetails {
-  // Each fact rides only when the frame stated it, never as an explicitly undefined key.
-  const trigger = pickString(m, 'reason') || undefined
-  const pre = toTokenCount(pickNumber(pickObject(m, 'result'), 'tokensBefore') ?? undefined)
+/** Read the optional sizes from a native compaction result or session entry. */
+function piCompactionDetail(result: Record<string, unknown>, trigger?: string): CompactionDetails {
+  const pre = tokenCount(result.tokensBefore)
+  const post = tokenCount(result.estimatedTokensAfter)
   return {
-    ...(trigger !== undefined ? { trigger } : {}),
+    ...(trigger ? { trigger } : {}),
     ...(pre !== undefined ? { pre } : {}),
+    ...(post !== undefined ? { post } : {}),
   }
 }
 
@@ -64,9 +66,15 @@ function piCompactionDetail(m: Record<string, unknown>): CompactionDetails {
  */
 export function piCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const inner = getInnerMessage(parsed)
-  if (!isObject(inner) || pickString(inner, 'type') !== PI_EVENT.CompactionEnd || inner.aborted === true || !pickObject(inner, 'result'))
+  if (!isObject(inner))
     return null
-  return piCompactionDetail(inner)
+  const entry = piSessionEntry(inner)
+  if (entry?.type === PI_ENTRY_TYPE.Compaction)
+    return piCompactionDetail(entry)
+  const result = pickObject(inner, 'result')
+  if (inner.type !== PI_EVENT.CompactionEnd || inner.aborted === true || !result)
+    return null
+  return piCompactionDetail(result, pickString(inner, 'reason'))
 }
 
 /**
@@ -79,14 +87,19 @@ export function piCompactionBoundary(parsed: ParsedMessageContent): CompactionDe
 export function piNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const type = pickString(msg, 'type')
 
-  if (type === PI_EVENT.CompactionStart)
-    return [{ kind: 'compaction', phase: 'start' }]
+  const entry = piSessionEntry(msg)
+  if (entry?.type === PI_ENTRY_TYPE.Compaction)
+    return [{ kind: 'compaction', phase: 'end', detail: piCompactionDetail(entry) }]
   if (type === PI_EVENT.CompactionEnd) {
     if (msg.aborted === true)
-      return [{ kind: 'compaction', phase: 'end', error: 'aborted' }]
-    if (!pickObject(msg, 'result'))
-      return [{ kind: 'compaction', phase: 'end', error: pickString(msg, 'errorMessage') || 'no compaction result' }]
-    return [{ kind: 'compaction', phase: 'end', detail: piCompactionDetail(msg) }]
+      return [{ kind: 'compaction', phase: 'end', outcome: 'aborted' }]
+    const result = pickObject(msg, 'result')
+    if (!result) {
+      const rawError = pickString(msg, 'errorMessage')
+      const error = (rawError.startsWith(PI_MANUAL_COMPACTION_ERROR_PREFIX) ? rawError.slice(PI_MANUAL_COMPACTION_ERROR_PREFIX.length) : rawError).trim()
+      return [{ kind: 'compaction', phase: 'end', outcome: 'failed', ...(error ? { error } : {}) }]
+    }
+    return [{ kind: 'compaction', phase: 'end', detail: piCompactionDetail(result, pickString(msg, 'reason')) }]
   }
 
   if (type === PI_EVENT.AutoRetryStart) {
@@ -94,14 +107,12 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
     const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
     const delayMs = pickNumber(msg, 'delayMs', undefined)
     const error = pickString(msg, 'errorMessage') || undefined
-    return [{
-      kind: 'retry',
-      scope: 'api',
+    return [retryEntry('api', {
       ...(attempt !== undefined ? { attempt } : {}),
       ...(maxAttempts !== undefined ? { maxAttempts } : {}),
       ...(delayMs !== undefined ? { delayMs } : {}),
       ...(error !== undefined ? { error } : {}),
-    }]
+    })]
   }
   if (type === PI_EVENT.AutoRetryEnd) {
     // A retry that SUCCEEDED ends the stall, and the row says so. One that failed
@@ -109,14 +120,12 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
     const attempt = pickNumber(msg, 'attempt', undefined)
     const succeeded = msg.success === true
     const error = succeeded ? undefined : pickString(msg, 'finalError') || undefined
-    return [{
-      kind: 'retry',
-      scope: 'api',
+    return [retryEntry('api', {
       ...(attempt !== undefined ? { attempt } : {}),
       ...(succeeded ? {} : { willRetry: false }),
       ...(error !== undefined ? { error } : {}),
       ...(succeeded ? { succeeded: true } : {}),
-    }]
+    })]
   }
 
   // The three summarization-retry events state the same stall for the SUMMARY that
@@ -126,22 +135,25 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
     const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
     const delayMs = pickNumber(msg, 'delayMs', undefined)
     const error = pickString(msg, 'errorMessage') || undefined
-    return [{
-      kind: 'retry',
-      scope: 'summarization',
+    return [retryEntry('summarization', {
       ...(attempt !== undefined ? { attempt } : {}),
       ...(maxAttempts !== undefined ? { maxAttempts } : {}),
       ...(delayMs !== undefined ? { delayMs } : {}),
       ...(error !== undefined ? { error } : {}),
-    }]
+    })]
   }
   if (type === PI_EVENT.SummarizationRetryAttemptStart) {
-    const source = pickString(msg, 'source')
-    return [{ kind: 'status', text: source ? `Retrying the ${source} summary` : 'Retrying the summary' }]
+    const subject = PI_SUMMARY_SOURCE_LABEL.get(pickString(msg, 'source')) ?? 'summary'
+    return [{ kind: 'status', text: `Retrying the ${subject}` }]
   }
   if (type === PI_EVENT.SummarizationRetryFinished)
     return [{ kind: 'status', text: 'Summary retry finished' }]
 
   const text = describePiNotification(msg)
   return text === null ? [] : [{ kind: 'text', text }]
+}
+
+/** Identify an old stored start without changing its ordinary category. */
+export function piCompactionStart(message: Record<string, unknown>): boolean {
+  return message.type === PI_EVENT.CompactionStart
 }

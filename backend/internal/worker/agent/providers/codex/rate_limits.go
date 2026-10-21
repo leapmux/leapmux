@@ -108,7 +108,7 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 		accountBlock[contracts.RateLimitFieldRateLimitType] = reachedType
 		accountBlock[contracts.RateLimitFieldStatus] = codexRateLimitStatusExceeded
 	}
-	summary.rateLimits[contracts.CodexRateLimitAccountBlockKey] = accountBlock
+	summary.rateLimits[codexRateLimitAccountBlockKey] = accountBlock
 	return summary
 }
 
@@ -122,8 +122,14 @@ const (
 	codexRateLimitStatusAllowed        = "allowed"
 	codexRateLimitStatusAllowedWarning = "allowed_warning"
 	codexRateLimitStatusExceeded       = "exceeded"
-	codexRateLimitReachedTimeWindow    = contracts.CodexRateLimitReachedTimeWindow
 )
+
+// codexRateLimitReachedTimeWindow identifies the Codex limit that the rolling-window timer clears.
+// The other limits require a billing or usage change.
+const codexRateLimitReachedTimeWindow = "rate_limit_reached"
+
+// codexRateLimitAccountBlockKey identifies a billing or workspace block independently from the rolling windows.
+const codexRateLimitAccountBlockKey = "account_block"
 
 func codexTierStatus(usedPercent float64) string {
 	switch {

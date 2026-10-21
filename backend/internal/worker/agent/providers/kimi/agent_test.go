@@ -132,6 +132,15 @@ func TestKimiSendInput(t *testing.T) {
 	})
 }
 
+func TestKimiBlockedPromptReleasesTheTurn(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{Data: map[string]any{"status": "blocked"}})
+	before := len(rig.sink.TurnActives())
+	require.NoError(t, rig.agent.SendInput("The hook blocks this prompt.", nil))
+	assert.Equal(t, []bool{false}, rig.sink.TurnActives()[before:], "the queue must receive the inactive state before dispatch returns")
+}
+
 func TestKimiPublishTurnActiveRaisesItsToken(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}

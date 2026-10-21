@@ -130,28 +130,30 @@ func TestApplyStartupPermissionMode_RejectionIsFatal(t *testing.T) {
 	require.Error(t, err, "a rejected mode must surface so the caller aborts startup")
 }
 
-// A mode LeapMux chose, not the user, must not kill the session when this build does not
-// offer it: the safe default degrades to whatever mode the handshake reported. Goose is
-// the provider that ships one (smart_approve), and a build without that mode would
-// otherwise fail EVERY new session.
+// An unavailable default keeps the reported mode without a notice.
+// An unavailable explicit selection keeps that mode and produces a notice.
 func TestApplyStartupPermissionMode_SafeDefaultDegradesWhenUnavailable(t *testing.T) {
-	agent, requests := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
+	subject, requests := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
 		if method == MethodSessionSetMode {
 			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"unknown mode"}`)}
 		}
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
-	agent.permissionMode = testModeAuto
-	agent.availableModes = []*leapmuxv1.AvailableOption{{Id: testModeAuto}}
+	sink := &agenttest.Sink{}
+	subject.sink = agent.NewProviderServices(sink)
+	subject.permissionMode = testModeAuto
+	subject.availableModes = []*leapmuxv1.AvailableOption{{Id: testModeAuto}}
 
-	require.NoError(t, agent.applyStartupPermissionMode(testModeApprove, true),
+	require.NoError(t, subject.applyStartupPermissionMode(testModeApprove, true),
 		"a safe default this session does not offer must not abort startup")
 	assert.Empty(t, requests(), "the mode is never pushed, so the session keeps the one it reported")
-	assert.Equal(t, testModeAuto, agent.permissionMode)
+	assert.Equal(t, testModeAuto, subject.permissionMode)
 
-	// The same mode asked for EXPLICITLY still aborts, so a typed --permission-mode this
-	// build cannot enter is reported rather than silently downgraded.
-	require.Error(t, agent.applyStartupPermissionMode(testModeApprove, false))
+	assert.Empty(t, sink.LeapMuxNotifications())
+	// An explicit saved mode uses the same fallback and reports it to the reader.
+	require.NoError(t, subject.applyStartupPermissionMode(testModeApprove, false))
+	assert.Len(t, sink.LeapMuxNotifications(), 1)
+	assert.Empty(t, requests())
 }
 
 // seedThinkingEffort surfaces a thinking_effort config option, as a

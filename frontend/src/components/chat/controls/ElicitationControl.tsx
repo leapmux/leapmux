@@ -5,7 +5,7 @@ import type { McpElicitationAction } from '~/generated/contracts/mcp-elicitation
 import { createMemo, createSignal, createUniqueId, For, Match, Show, Switch } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
 import { isPillOptions } from '~/components/common/pillOptions'
-import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
+import { MCP_ELICITATION_ACTION, MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import * as styles from '../ControlRequestBanner.css'
 import { MarkdownText } from '../messageRenderers'
@@ -54,7 +54,7 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
       </Show>
       <Show when={props.elicitation.argumentNotice}><div class={styles.bannerHint}>{props.elicitation.argumentNotice}</div></Show>
       <Switch fallback={<p>This request type is not supported. You can reject or cancel it.</p>}>
-        <Match when={props.elicitation.mode === 'form'}>
+        <Match when={props.elicitation.mode === MCP_ELICITATION_MODE.Form}>
           <Show when={form().fields.length > 0 || validation().error}>
             <fieldset disabled={props.optionsDisabled} style={{ 'min-width': '0', 'display': 'grid', 'gap': 'var(--space-3, 0.75rem)' }} data-elicitation-form data-testid="elicitation-form">
               <For each={form().fields}>
@@ -122,7 +122,7 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
             </fieldset>
           </Show>
         </Match>
-        <Match when={props.elicitation.mode === 'url'}>
+        <Match when={props.elicitation.mode === MCP_ELICITATION_MODE.URL}>
           <Show when={elicitationURL(props.elicitation.url)} fallback={<p>The request contains no usable web link.</p>}>
             {url => <a href={url()} target="_blank" rel="noopener noreferrer nofollow" {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}>{url()}</a>}
           </Show>
@@ -135,7 +135,7 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
 export const ElicitationActions: Component<ActionsProps & { elicitation: ElicitationRequest }> = (props) => {
   const form = createMemo(() => createElicitationForm(props.elicitation.schema))
   const answer = createMemo(() => form().read(props.answerState.choices()))
-  const canAccept = () => props.elicitation.mode === 'form' ? !!answer().content : props.elicitation.mode === 'url' && !!elicitationURL(props.elicitation.url)
+  const canAccept = () => props.elicitation.mode === MCP_ELICITATION_MODE.Form ? !!answer().content : props.elicitation.mode === MCP_ELICITATION_MODE.URL && !!elicitationURL(props.elicitation.url)
   const choice = createControlChoice(() => props.answerState, ELICITATION_ACCEPT_CHOICE, 'once')
   const choicePill = createMemo(() => {
     const options = props.elicitation.acceptChoices ?? []
@@ -151,7 +151,7 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
     setPending(true)
     setError('')
     try {
-      await sendResponse(props.onRespond, buildElicitationResponse(props.request.requestId, action, props.elicitation.mode === 'form' ? answer().content : undefined, elicitationAcceptMetadata(props.elicitation, props.answerState.choices())))
+      await sendResponse(props.onRespond, buildElicitationResponse(props.request.requestId, action, props.elicitation.mode === MCP_ELICITATION_MODE.Form ? answer().content : undefined, elicitationAcceptMetadata(props.elicitation, props.answerState.choices())))
     }
     catch (error) {
       if (!(error instanceof ReportedControlResponseError))

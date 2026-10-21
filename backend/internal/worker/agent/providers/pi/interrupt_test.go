@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -152,20 +153,18 @@ func TestPiAgent_Interrupt_KeepsADialogWhenItsCancellationFails(t *testing.T) {
 func TestPiAgent_Interrupt_LeavesADialogThatPiNoLongerWaitsOn(t *testing.T) {
 	t.Parallel()
 
-	for name, settle := range map[string]func(t *testing.T, a *Agent, sink *agenttest.ControlSink){
-		"the reader answered it": func(t *testing.T, a *Agent, _ *agenttest.ControlSink) {
+	for name, settle := range map[string]func(t *testing.T, a *Agent, sink *agenttest.ControlSink, clock *quartz.Mock){
+		"the reader answered it": func(t *testing.T, a *Agent, _ *agenttest.ControlSink, _ *quartz.Mock) {
 			a.handlePiExtensionUIRequest(piOpenSelect("dialog-1"))
 			require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"dialog-1","value":"A"}`), agent.StopContext{}))
 		},
-		"its deadline passed": func(t *testing.T, a *Agent, sink *agenttest.ControlSink) {
-			clock := testutil.NewQuartzMock(t)
-			a.clock = clock
+		"its deadline passed": func(t *testing.T, a *Agent, sink *agenttest.ControlSink, clock *quartz.Mock) {
 			a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"dialog-1","method":"confirm","title":"Proceed?","timeout":1000}`))
 			clock.Advance(time.Second).MustWait(testutil.DeadlineContext(t))
 			require.Equal(t, []string{"dialog-1"}, sink.CanceledControls())
 			sink.ResetCanceledControls()
 		},
-		"it could not be published": func(t *testing.T, a *Agent, sink *agenttest.ControlSink) {
+		"it could not be published": func(t *testing.T, a *Agent, sink *agenttest.ControlSink, clock *quartz.Mock) {
 			sink.PublicationError = errors.New("the store is gone")
 			a.handlePiExtensionUIRequest(piOpenSelect("dialog-1"))
 		},
@@ -173,14 +172,15 @@ func TestPiAgent_Interrupt_LeavesADialogThatPiNoLongerWaitsOn(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
-			rig := newPiTestRig(t, agent.NewProviderServices(sink))
+			clock := testutil.NewQuartzMock(t)
+			rig := newPiTestRigWithClock(t, agent.NewProviderServices(sink), clock)
 			// The recorder reads the pipe on its own goroutine. A sentinel's answer
 			// states that it read every earlier line.
 			flush := func() {
 				_, err := rig.agent.sendPiCommand(CommandGetState, nil, time.Second)
 				require.NoError(t, err)
 			}
-			settle(t, rig.agent, sink)
+			settle(t, rig.agent, sink, clock)
 			flush()
 			before := len(piCancellations(rig.requests()))
 

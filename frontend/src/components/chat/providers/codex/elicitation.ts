@@ -1,12 +1,12 @@
 import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
-import { MCP_ELICITATION_APPROVAL_KIND, MCP_ELICITATION_APPROVAL_SCOPE, MCP_ELICITATION_METHOD } from '~/generated/contracts/mcp-elicitation'
+import { MCP_ELICITATION_APPROVAL_KIND, MCP_ELICITATION_APPROVAL_SCOPE, MCP_ELICITATION_METHOD, MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
 export function codexElicitation(payload: Record<string, unknown>): ElicitationRequest | undefined {
   if (payload.method !== MCP_ELICITATION_METHOD.Codex)
     return undefined
   const params: Record<string, unknown> = pickObject(payload, 'params', {})
-  const mode = pickString(params, 'mode', 'form')
+  const mode = pickString(params, 'mode', MCP_ELICITATION_MODE.Form)
   const meta: Record<string, unknown> = pickObject(params, '_meta', {})
   const approval = meta.codex_approval_kind === MCP_ELICITATION_APPROVAL_KIND.ToolCall || meta.codex_approval_kind === MCP_ELICITATION_APPROVAL_KIND.ToolSuggestion
   const persist = Array.isArray(meta.persist) ? meta.persist : []
@@ -22,7 +22,7 @@ export function codexElicitation(payload: Record<string, unknown>): ElicitationR
     // plain form states none of the three, and each key stays out rather than
     // carrying `undefined` down.
     ...(approval ? { purpose: 'permission' as const, arguments: meta.tool_params, acceptChoices } : {}),
-    mode: mode === 'openai/form' || mode === 'openaiForm' ? 'form' : mode,
+    mode: mode === 'openai/form' || mode === 'openaiForm' ? MCP_ELICITATION_MODE.Form : mode,
     message: pickString(params, 'message', ''),
     server: pickString(params, 'serverName', ''),
     schema: params.requestedSchema,

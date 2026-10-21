@@ -19,9 +19,7 @@ type kimiProvider struct {
 	agent.ProviderDefaults
 }
 
-// Classify groups the notices that repeat. A retry replaces the retry before
-// it, a compaction's progress replaces the notice that it started, and its
-// completion is the context boundary.
+// Classify folds retries and identifies every stored compaction end as a boundary.
 func (kimiProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	var head struct {
 		Type string `json:"type"`
@@ -31,11 +29,9 @@ func (kimiProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 	}
 	switch head.Type {
 	case contracts.KimiEventTurnStepRetrying:
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "kimi:retry"}
-	case contracts.KimiEventCompactionStarted, contracts.KimiEventCompactionBlocked, contracts.KimiEventCompactionCancelled:
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "kimi:compaction"}
-	case contracts.KimiEventCompactionCompleted:
-		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "kimi:compaction"}
+		return agent.APIRetryNotification()
+	case contracts.KimiEventCompactionCompleted, contracts.KimiEventCompactionCancelled:
+		return agent.CompactionBoundaryNotification()
 	default:
 		return agent.NotificationClassification{}
 	}

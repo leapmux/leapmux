@@ -6,7 +6,7 @@ import { providerRow, providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { classifyOhMyPiMessage } from './classification'
-import { ohMyPiCompactionBoundary, ohMyPiNotificationEntry } from './extractors/notification'
+import { ohMyPiCompactionBoundary, ohMyPiCompactionStart, ohMyPiNotificationEntry } from './extractors/notification'
 import { ohMyPiResultDivider } from './extractors/resultDivider'
 import { ohMyPiExtractRow } from './extractors/row'
 import { ohMyPiControls } from './pluginControls'
@@ -42,6 +42,7 @@ describe('ohmypi plugin', () => {
       classify: classifyOhMyPiMessage,
       extractRow: ohMyPiExtractRow,
       notificationEntry: ohMyPiNotificationEntry,
+      compactionStart: ohMyPiCompactionStart,
       extractDivider: ohMyPiResultDivider,
     })
     expect(plugin.controls).toBe(ohMyPiControls)

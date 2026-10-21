@@ -496,6 +496,18 @@ const zcodePlanParams = `{
   "context": {"plan": "1. read\n2. write"}
 }`
 
+func TestZCodePlanApprovalStoresThePlanOnce(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
+	require.Equal(t, 1, sink.PlanUpdateCount())
+	assert.Equal(t, "1. read\n2. write", string(sink.LastPlanUpdate().Content))
+	assert.Equal(t, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, sink.LastPlanUpdate().Compression)
+	a.HandleOutput(zcodeRequestLine(t, 10, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
+	assert.Equal(t, 1, sink.PlanUpdateCount(), "a repeated request keeps the same stored plan")
+}
+
 func TestHandleUserInputRequest_PlanApprovalIsStoredAsAPlanControl(t *testing.T) {
 	t.Parallel()
 
@@ -577,7 +589,7 @@ func TestZCodeResolveControlResponse_PlanRejectionWithFeedbackKeepsTheText(t *te
 	assert.NotContains(t, result, contracts.ZCodeReplyFieldContent)
 	// The feedback is the reader's own typed text, and it reaches the agent as the next
 	// user input, so it keeps every byte the reader typed.
-	assert.Equal(t, "  split step 2  ", resolution.Feedback)
+	assert.Equal(t, agent.FeedbackFollowUp("  split step 2  "), resolution.FollowUp)
 }
 
 // With nothing typed there is no text to preserve, so the honest reply is a decline.
@@ -752,7 +764,7 @@ func TestZCodeResolveControlResponse_QuestionRejectionKeepsSeparateFeedback(t *t
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeActionDecline, result[contracts.ZCodeReplyFieldAction])
 	assert.NotContains(t, result, "reason")
-	assert.Equal(t, "ask me later", resolution.Feedback)
+	assert.Equal(t, agent.FeedbackFollowUp("ask me later"), resolution.FollowUp)
 }
 
 // The questions may arrive under `schema.questions` or hoisted to the top level. One
@@ -1089,29 +1101,20 @@ func TestZCodeProvider_ClassifyGroupsTheRepeatingNotifications(t *testing.T) {
 	// the key.
 	bash := provider.Classify(json.RawMessage(
 		`{"type":"permission.resolved","payload":{"toolName":"Bash","decision":"deny"}}`))
-	assert.Equal(t, agent.NotificationKindProviderScoped, bash.Kind)
-	assert.Contains(t, bash.Key, "Bash")
+	assert.Equal(t, agent.NotificationKindProviderScoped, bash.Kind())
+	assert.Contains(t, bash.Key(), "Bash")
 	write := provider.Classify(json.RawMessage(
 		`{"type":"permission.resolved","payload":{"toolName":"Write","decision":"deny"}}`))
-	assert.NotEqual(t, bash.Key, write.Key)
+	assert.NotEqual(t, bash.Key(), write.Key())
 
-	// The steering queue flaps, so only the latest state matters.
+	// The latest steer notice occupies its own provider slot.
 	queued := provider.Classify(json.RawMessage(`{"type":"` + contracts.ZCodeEventTurnSteerQueued + `"}`))
 	drained := provider.Classify(json.RawMessage(`{"type":"` + contracts.ZCodeEventTurnSteerDrained + `"}`))
-	assert.Equal(t, agent.NotificationKindStatus, queued.Kind)
-	assert.Equal(t, queued.Key, drained.Key, "both sides of the flap collapse onto one row")
+	assert.Equal(t, agent.ProviderScopedNotification("zcode:steer"), queued)
+	assert.Equal(t, queued, drained, "both notices use one provider slot")
 
 	assert.Equal(t, agent.NotificationClassification{}, provider.Classify(json.RawMessage(`{"type":"turn.started"}`)))
 	assert.Equal(t, agent.NotificationClassification{}, provider.Classify(json.RawMessage(`not json`)))
-}
-
-func TestZCodeProvider_MergeKeepsTheLatest(t *testing.T) {
-	t.Parallel()
-
-	merged, err := zcodeProvider{}.Merge(agent.NotificationClassification{},
-		json.RawMessage(`{"a":1}`), json.RawMessage(`{"b":2}`))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"b":2}`, string(merged))
 }
 
 func TestZCodeProvider_IsInterruptRecognizesTheStopFrame(t *testing.T) {

@@ -16,7 +16,7 @@ const BUFFERED_GATE = 'buffered'
 /** The buffering notice offers this model. Its native catalog supports code-mode tools. */
 const FASTER_MODEL = 'gpt-5.6-sol'
 
-/** The notice row and banner sentence that state the buffering. */
+/** Codex's notice row states the buffering reason. The banner uses neutral text. */
 const BUFFERING_NOTICE = 'Giving this request a little extra thought'
 
 /**
@@ -50,6 +50,7 @@ codexTest.describe('offers a faster retry while a request buffers', () => {
       // The buffering states its notice in the transcript and its offer in the composer.
       await expect(messageContents(page).filter({ hasText: BUFFERING_NOTICE }).first()).toBeVisible()
       await expect(visibleOnly(page.getByTestId('turn-retry-offer-banner'))).toHaveCount(1)
+      await expect(visibleOnly(page.getByTestId('turn-retry-offer-banner'))).not.toContainText(BUFFERING_NOTICE)
 
       // The worker replays its current offer without another model event.
       await page.reload()

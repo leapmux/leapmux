@@ -196,7 +196,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		homeDir:                opts.HomeDir,
 		sink:                   agent.NewModelProgressResetSink(sink),
 		thirdPartyFromSettings: thirdPartyFromSettings,
-		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
 		alwaysThinking:         AlwaysThinkingOn,
 	}
 
@@ -249,9 +248,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) error {
 	timeout := opts.EffectiveStartupTimeout()
 
-	// Send "initialize" as the first control request, matching the Agent SDK
-	// protocol. This triggers Claude Code to emit the init system message
-	// (which contains the session_id) and establishes the control protocol.
+	// Send "initialize" first to establish the Agent SDK control protocol.
+	// Claude sends no init message in reply. It sends init after running at each turn start.
 	agent.TraceStartupPhase(opts.AgentID, "before_initialize")
 	initResp, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, timeout)
 	if err != nil {

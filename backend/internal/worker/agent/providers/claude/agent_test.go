@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/id"
-
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -595,10 +593,9 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 				ProcessDone: make(chan struct{}),
 				StderrDone:  make(chan struct{}),
 			}),
-			model:          opts.Model(),
-			workingDir:     opts.WorkingDir,
-			sink:           sink,
-			pendingControl: make(map[string]chan<- claudeCodeControlResult),
+			model:      opts.Model(),
+			workingDir: opts.WorkingDir,
+			sink:       sink,
 		}
 		a.SkipStderr()
 
@@ -613,41 +610,14 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 		// Replicate the startup handshake from Start().
 		mode := cmp.Or(opts.PermissionMode(), contracts.ClaudeModeDefault)
-		requestID := id.Short()
-		ch := make(chan claudeCodeControlResult, 1)
-		a.registerPendingControl(requestID, ch)
-
-		msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":{"subtype":"set_permission_mode","mode":"%s"}}`,
-			requestID, mode)
-		if sendErr := a.SendRawInput([]byte(msg), agentapi.StopContext{}); sendErr != nil {
-			a.unregisterPendingControl(requestID)
+		body := fmt.Sprintf(`{"subtype":"set_permission_mode","mode":%q}`, mode)
+		response, err := a.sendControlAndWait(ctx2, body, opts.EffectiveStartupTimeout())
+		if err != nil {
 			a.Stop()
 			_ = a.Wait()
-			return nil, sendErr
+			return nil, err
 		}
-
-		cleanup := func() {
-			a.Stop()
-			_ = a.Wait()
-		}
-
-		select {
-		case resp := <-ch:
-			a.unregisterPendingControl(requestID)
-			if !resp.Success {
-				cleanup()
-				return nil, fmt.Errorf("set_permission_mode failed: %s", resp.Error)
-			}
-			a.confirmedPermissionMode = resp.Mode
-		case <-ctx2.Done():
-			a.unregisterPendingControl(requestID)
-			cleanup()
-			return nil, ctx2.Err()
-		case <-time.After(opts.EffectiveStartupTimeout()):
-			a.unregisterPendingControl(requestID)
-			cleanup()
-			return nil, fmt.Errorf("timeout waiting for agent to respond")
-		}
+		a.confirmedPermissionMode = response.Mode
 
 		return a, nil
 	}
@@ -698,10 +668,9 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 				ProcessDone: make(chan struct{}),
 				StderrDone:  make(chan struct{}),
 			}),
-			model:          opts.Model(),
-			workingDir:     opts.WorkingDir,
-			sink:           sink,
-			pendingControl: make(map[string]chan<- claudeCodeControlResult),
+			model:      opts.Model(),
+			workingDir: opts.WorkingDir,
+			sink:       sink,
 		}
 		cmd.Stderr = a.StderrWriterForTest()
 		a.SkipStderr() // stderr is captured synchronously via cmd.Stderr
@@ -822,10 +791,9 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 			PreambleDelimiter: delimiter,
 			PreambleMeta:      make(map[string]string),
 		}),
-		model:          "test",
-		workingDir:     t.TempDir(),
-		sink:           agentapi.NewProviderServices(sink),
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		model:      "test",
+		workingDir: t.TempDir(),
+		sink:       agentapi.NewProviderServices(sink),
 	}
 
 	require.NoError(t, cmd.Start())
@@ -922,10 +890,9 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 			PreambleMetaPrefix: metaPrefix,
 			PreambleMeta:       make(map[string]string),
 		}),
-		model:          "test",
-		workingDir:     t.TempDir(),
-		sink:           agentapi.NewProviderServices(sink),
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		model:      "test",
+		workingDir: t.TempDir(),
+		sink:       agentapi.NewProviderServices(sink),
 	}
 	a.SkipStderr()
 

@@ -33,6 +33,19 @@ func TestCompressDecompressRoundTrip(t *testing.T) {
 	}
 }
 
+// Empty input is no content: Compress stores no bytes under no compression,
+// so a field that carries nothing never holds a frame that decodes back to
+// nothing.
+func TestCompressEmptyIsNoContent(t *testing.T) {
+	compressed, compression := Compress(nil)
+	assert.Equal(t, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, compression)
+	assert.Empty(t, compressed)
+
+	decompressed, err := Decompress(compressed, compression)
+	require.NoError(t, err)
+	assert.Empty(t, decompressed)
+}
+
 func TestDecompressNone(t *testing.T) {
 	data := []byte(`{"content":"hello"}`)
 	result, err := Decompress(data, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE)

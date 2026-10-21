@@ -310,7 +310,7 @@ func lettaResolveQuestion(ctx agent.ControlResponseContext, toolCallID string, q
 		resolution.Refuse(agent.RefusalUnencodableReply)
 		return resolution
 	}
-	return agent.ControlResponseResolution{Content: raw, Feedback: feedback}
+	return agent.ControlResponseResolution{Content: raw, FollowUp: agent.FeedbackFollowUp(feedback)}
 }
 
 // lettaEnvelopeAnswersField is the member of `updatedInput` in which the browser

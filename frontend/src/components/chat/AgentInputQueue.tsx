@@ -25,7 +25,7 @@ import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import * as styles from './AgentInputQueue.css'
-import { dragIdOf, resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
+import { dragIdOf, isLockedInputState, queueHeadIndex, resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
 
 export interface AgentInputQueueProps {
   snapshot?: AgentInputQueueSnapshot
@@ -59,6 +59,7 @@ const OPERATION_LABELS = {
   [AgentInputKind.PLAN_EXECUTION]: 'Execute plan',
   [AgentInputKind.AUTO_CONTINUE]: 'Auto-continue',
   [AgentInputKind.CONTROL_FEEDBACK]: 'Control feedback',
+  [AgentInputKind.QUESTION_ANSWER]: 'Answer',
 } satisfies Record<AgentInputKind, string>
 
 /**
@@ -72,6 +73,7 @@ const STATE_LABELS = {
   [AgentInputState.DISPATCHING]: 'Dispatching',
   [AgentInputState.FAILED]: 'Failed',
   [AgentInputState.DELIVERY_UNCERTAIN]: 'Delivery uncertain',
+  [AgentInputState.AWAITING_ECHO]: 'Sent, waiting for the agent to read it',
 } satisfies Record<AgentInputState, string>
 
 // A Worker ahead of this client sends an enum number that the generated table
@@ -188,13 +190,13 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   }
 
   /**
-   * `closestCenter`, with every DISPATCHING row taken out of the candidates.
+   * Exclude locked rows from the collision candidates.
    *
    * `createSortable` registers a droppable for every row, whether or not the
    * queue can displace it, so the Worker's own row won the collision like any
    * other. `SortableProvider` then PREVIEWED that move -- the rows visibly
    * reflowed -- and `handleDragEnd` discarded it, because `resolveQueueMove`
-   * refuses a DISPATCHING target. The row snapped back and nothing said why.
+   * refuses a locked target. The row returned to its position without an explanation.
    *
    * Filtering here keeps the preview and the drop on one answer: the pointer
    * lands on the first LEGAL slot instead. `resolveQueueMove` stays the single
@@ -204,7 +206,10 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   const dropTarget: CollisionDetector = (draggable, droppables, context) =>
     closestCenter(
       draggable,
-      droppables.filter(candidate => byKey().get(String(candidate.id))?.state !== AgentInputState.DISPATCHING),
+      droppables.filter((candidate) => {
+        const item = byKey().get(String(candidate.id))
+        return item !== undefined && !isLockedInputState(item.state)
+      }),
       context,
     )
 
@@ -218,22 +223,23 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   // row asks the same question, so a per-row scan costs the square of the queue
   // length on every snapshot.
   const movableCount = createMemo(
-    () => items().filter(candidate => candidate.state !== AgentInputState.DISPATCHING).length,
+    () => items().filter(candidate => !isLockedInputState(candidate.state)).length,
   )
+  const headIndex = createMemo(() => queueHeadIndex(items()))
 
   /**
    * Whether this key's row can be dragged, resolved through the LIVE queue.
    *
    * Read through `byKey()` and never from an item the row captured at mount.
    * The row keeps its identity now, so a captured item would freeze this at the
-   * state the row started with, and a row that becomes DISPATCHING would keep a
+   * state the row started with, and a row that becomes locked would keep a
    * live grip and live drag activators.
    *
    * The question is whether this row has a legal DESTINATION, which is what
    * `resolveQueueMove` answers for the two arrow buttons. That function refuses
-   * a move onto the row itself and refuses a DISPATCHING row at either end, so a
-   * destination exists exactly when a second row that is not DISPATCHING does. A
-   * count of the whole queue is not the same test: a queue of one DISPATCHING
+   * a move onto the row itself and refuses a locked row at either end, so a
+   * destination exists exactly when a second movable row does. A
+   * count of the whole queue is not the same test: a queue of one locked
    * row and one queued row has two rows and no legal move, and the queued row
    * would lift and snap back with nothing saying why.
    *
@@ -243,7 +249,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
    */
   const canDragKey = (key: string) => {
     const item = byKey().get(key)
-    return !!item && item.state !== AgentInputState.DISPATCHING && movableCount() >= 2
+    return !!item && !isLockedInputState(item.state) && movableCount() >= 2
   }
 
   /**
@@ -268,8 +274,8 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
 
   const renderRow = (item: Accessor<QueuedAgentInput>, key: string, dnd: ReturnType<typeof setupRowDnd>) => {
     const index = () => indexByKey().get(key) ?? -1
-    const isHead = () => index() === 0
-    const isDispatching = () => item().state === AgentInputState.DISPATCHING
+    const isHead = () => index() === headIndex()
+    const isLocked = () => isLockedInputState(item().state)
     const editedByMe = () => item().editOwnerClientId === props.clientId
     const editedByOther = () => !!item().editOwnerClientId && !editedByMe()
     // This row has no edit owner, so the shared scan needs no exclusion
@@ -281,18 +287,18 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
     // the name and the handler of a case cannot drift apart.
     const editAction = createMemo(() => {
       if (requiresTakeover())
-        return { icon: UserPen, label: 'Take Over', onClick: () => props.onEdit(item(), true) }
+        return { icon: UserPen, label: 'Take Over', disabled: isLocked(), onClick: () => props.onEdit(item(), true) }
       if (!editedByMe()) {
         return {
           icon: Pencil,
           label: 'Edit',
-          disabled: isDispatching(),
+          disabled: isLocked(),
           onClick: () => props.onEdit(item(), false),
         }
       }
       return props.activeEditInputId === item().id
-        ? { icon: PencilOff, label: 'Cancel Edit', onClick: () => props.onCancelEdit(item()) }
-        : { icon: SquarePen, label: 'Resume Edit', onClick: () => props.onEdit(item(), false) }
+        ? { icon: PencilOff, label: 'Cancel Edit', disabled: isLocked(), onClick: () => props.onCancelEdit(item()) }
+        : { icon: SquarePen, label: 'Resume Edit', disabled: isLocked(), onClick: () => props.onEdit(item(), false) }
     })
 
     return (
@@ -310,9 +316,10 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
         }}
         style={dnd.dragRow.style()}
         data-testid={`queued-input-${item().id}`}
+        data-input-state={String(item().state)}
       >
         {/*
-          Kept in the row whether or not this row can move, so a DISPATCHING row
+          Kept in the row whether or not this row can move, so a locked row
           does not shift its text one slot left. `dragHandleInert` hides it
           without removing its box, and the activators go away with it -- an
           affordance that cannot drag must not look like one.
@@ -351,7 +358,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             icon={editAction().icon}
             label={editAction().label}
             onClick={() => editAction().onClick()}
-            {...(editAction().disabled !== undefined ? { disabled: editAction().disabled } : {})}
+            disabled={editAction().disabled}
           />
           {/*
             Delete takes a second click, because an icon carries no word to read
@@ -365,7 +372,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             tooltip="Delete"
             confirmTooltip="Confirm delete?"
             confirmLabel={<Icon icon={TriangleAlert} size="xs" />}
-            disabled={isDispatching()}
+            disabled={isLocked()}
             onClick={() => props.onDelete(item())}
           >
             <Icon icon={Trash2} size="xs" />

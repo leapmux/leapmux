@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // eventuallyWait limits each wait for work that the manager does on a goroutine
@@ -30,6 +31,10 @@ type recordingDispatcher struct {
 	dispatchRelease <-chan struct{}
 	dispatchStarted chan struct{}
 	steered         []string
+	prepared        []string
+	onPrepare       func(string)
+	policy          agent.SteerPolicy
+	onSteer         func()
 	fail            error
 	steering        bool
 	steerStarted    chan struct{}
@@ -58,7 +63,11 @@ func (d *recordingDispatcher) Steer(item DispatchItem) (DispatchResult, error) {
 	d.mu.Lock()
 	d.steered = append(d.steered, item.ID)
 	started, release, steerFail := d.steerStarted, d.steerRelease, d.steerFail
+	onSteer := d.onSteer
 	d.mu.Unlock()
+	if onSteer != nil {
+		onSteer()
+	}
 	if started != nil {
 		close(started)
 	}
@@ -69,6 +78,85 @@ func (d *recordingDispatcher) Steer(item DispatchItem) (DispatchResult, error) {
 }
 
 func (d *recordingDispatcher) SupportsSteering(string) bool { return d.steering }
+
+func (d *recordingDispatcher) SteerPolicy(string) agent.SteerPolicy { return d.policy }
+
+func TestManagerSteerOfASurvivorIsNotRequeuedWhenTheTurnEndsDuringTheCall(t *testing.T) {
+	t.Parallel()
+	for _, rowAtEcho := range []bool{false, true} {
+		_, store := newStoreFixture(t)
+		dispatcher := &recordingDispatcher{steering: true, policy: agent.SteerPolicy{RowAtEcho: rowAtEcho, SurvivesTurnEnd: true}}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+		_, err := manager.SetPaused(t.Context(), "agent-1", true)
+		require.NoError(t, err)
+		_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+		require.NoError(t, err)
+		_, err = store.Enqueue(t.Context(), NewItem{ID: "steer", AgentID: "agent-1", Text: "read this once", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		dispatcher.onSteer = func() {
+			_, err := manager.TurnEnded(t.Context(), "agent-1")
+			require.NoError(t, err)
+		}
+		snapshot, err := manager.Steer(t.Context(), "agent-1", "steer")
+		require.NoError(t, err)
+		if rowAtEcho {
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
+		} else {
+			assert.Empty(t, snapshot.Items)
+		}
+	}
+}
+
+func (d *recordingDispatcher) PrepareSteer(agentID string) {
+	d.mu.Lock()
+	d.prepared = append(d.prepared, agentID)
+	prepare := d.onPrepare
+	d.mu.Unlock()
+	if prepare != nil {
+		prepare(agentID)
+	}
+}
+
+func TestManagerSteerPreparesTheProviderBeforeItReservesTheSequence(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{steering: true}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+	_, err := manager.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	// TurnStarted schedules a drain (a turn that just became steerable can
+	// deliver a question answer), and that drain holds the coordinator lock
+	// across its store call. Let it finish before the steer runs.
+	drainCoordinator := manager.coordinator("agent-1")
+	require.Eventually(t, func() bool {
+		drainCoordinator.mu.Lock()
+		defer drainCoordinator.mu.Unlock()
+		return !drainCoordinator.draining
+	}, eventuallyWait, 10*time.Millisecond)
+	// Seed through the store so an unrelated drain cannot hold the lock during the assertion.
+	_, err = store.Enqueue(t.Context(), NewItem{ID: "steer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Change the answer"})
+	require.NoError(t, err)
+	dispatcher.onPrepare = func(agentID string) {
+		coordinator := manager.coordinator(agentID)
+		if coordinator.mu.TryLock() {
+			coordinator.mu.Unlock()
+		} else {
+			t.Error("the queue lock must stay outside the provider call")
+		}
+		snapshot, err := store.Snapshot(t.Context(), agentID)
+		require.NoError(t, err)
+		require.Len(t, snapshot.Items, 1)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	}
+	_, err = manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	dispatcher.mu.Lock()
+	defer dispatcher.mu.Unlock()
+	assert.Equal(t, []string{"agent-1"}, dispatcher.prepared)
+}
 
 func (d *recordingDispatcher) Interrupt(agentID string) error {
 	d.mu.Lock()
@@ -103,6 +191,202 @@ type recordingObserver struct {
 	mu        sync.Mutex
 	accepted  []AcceptedTranscript
 	snapshots []Snapshot
+}
+
+type echoQueueFixture struct {
+	store      *Store
+	manager    *Manager
+	dispatcher *recordingDispatcher
+	observer   *recordingObserver
+}
+
+func newEchoQueueFixture(t *testing.T, survives bool) echoQueueFixture {
+	t.Helper()
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{steering: true, policy: agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: survives}}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	_, err := manager.SetPaused(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	return echoQueueFixture{store: store, manager: manager, dispatcher: dispatcher, observer: observer}
+}
+
+func (f echoQueueFixture) enqueue(t *testing.T, id string) {
+	t.Helper()
+	_, err := f.store.Enqueue(t.Context(), NewItem{ID: id, AgentID: "agent-1", Text: id, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+	require.NoError(t, err)
+}
+
+func TestManagerSteerHoldsARowAtEchoSteerUntilItsEcho(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, false)
+	f.enqueue(t, "steer")
+	snapshot, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
+	f.observer.mu.Lock()
+	assert.Empty(t, f.observer.accepted)
+	f.observer.mu.Unlock()
+	snapshot, err = f.manager.AcceptEchoedSteers(t.Context(), "agent-1", 1, "[]")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+	f.observer.mu.Lock()
+	defer f.observer.mu.Unlock()
+	require.Len(t, f.observer.accepted, 1)
+	assert.Equal(t, "steer", f.observer.accepted[0].ID)
+}
+
+func TestManagerAcceptEchoedSteersIsFIFO(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	for _, id := range []string{"first", "second"} {
+		f.enqueue(t, id)
+		_, err := f.manager.Steer(t.Context(), "agent-1", id)
+		require.NoError(t, err)
+	}
+	_, err := f.manager.AcceptEchoedSteers(t.Context(), "agent-1", 2, "[]")
+	require.NoError(t, err)
+	f.observer.mu.Lock()
+	defer f.observer.mu.Unlock()
+	require.Len(t, f.observer.accepted, 2)
+	assert.Equal(t, "first", f.observer.accepted[0].ID)
+	assert.Equal(t, "second", f.observer.accepted[1].ID)
+	assert.Less(t, f.observer.accepted[0].Seq, f.observer.accepted[1].Seq)
+}
+
+func TestManagerEchoDuringTheSteerCallWritesTheRowOnce(t *testing.T) {
+	t.Parallel()
+	for _, lateError := range []error{nil, errors.New("late refusal")} {
+		f := newEchoQueueFixture(t, true)
+		f.enqueue(t, "steer")
+		f.dispatcher.steerFail = lateError
+		f.dispatcher.onSteer = func() {
+			_, err := f.manager.AcceptEchoedSteers(t.Context(), "agent-1", 1, "[]")
+			require.NoError(t, err)
+		}
+		snapshot, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+		require.NoError(t, err)
+		assert.Empty(t, snapshot.Items)
+		f.observer.mu.Lock()
+		assert.Len(t, f.observer.accepted, 1)
+		f.observer.mu.Unlock()
+	}
+}
+
+func TestManagerRequeueDroppedSteersReturnsThemToTheHeadWithNoRow(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	f.enqueue(t, "steer")
+	_, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	f.enqueue(t, "later")
+	snapshot, err := f.manager.RequeueDroppedSteers(t.Context(), "agent-1", 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"steer", "later"}, queueSnapshotIDs(snapshot))
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	f.observer.mu.Lock()
+	assert.Empty(t, f.observer.accepted)
+	f.observer.mu.Unlock()
+}
+
+func TestManagerDropDuringTheSteerCallRequeuesTheInput(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	f.enqueue(t, "steer")
+	f.dispatcher.onSteer = func() {
+		_, err := f.manager.RequeueDroppedSteers(t.Context(), "agent-1", 1)
+		require.NoError(t, err)
+	}
+	snapshot, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	f.observer.mu.Lock()
+	assert.Empty(t, f.observer.accepted)
+	f.observer.mu.Unlock()
+}
+
+func TestManagerAnEarlyEchoKeepsItsReceiptWhenTheNextSteerStarts(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	f.enqueue(t, "first")
+	f.enqueue(t, "second")
+	calls := 0
+	f.dispatcher.onSteer = func() {
+		calls++
+		if calls != 1 {
+			return
+		}
+		_, err := f.manager.AcceptEchoedSteers(t.Context(), "agent-1", 1, "[]")
+		require.NoError(t, err)
+		_, err = f.manager.Steer(t.Context(), "agent-1", "second")
+		require.NoError(t, err)
+	}
+	snapshot, err := f.manager.Steer(t.Context(), "agent-1", "first")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, "second", snapshot.Items[0].ID)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
+	f.observer.mu.Lock()
+	assert.Len(t, f.observer.accepted, 1)
+	f.observer.mu.Unlock()
+}
+
+func TestManagerTurnEndRequeuesUnechoedSteersOfANonSurvivor(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, false)
+	f.enqueue(t, "steer")
+	_, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	snapshot, err := f.manager.TurnEnded(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+}
+
+func TestManagerTurnEndKeepsASurvivorsUnechoedSteerAndHoldsTheDrain(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	f.enqueue(t, "steer")
+	_, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	f.enqueue(t, "later")
+	_, err = f.manager.SetPaused(t.Context(), "agent-1", false)
+	require.NoError(t, err)
+	snapshot, err := f.manager.TurnEnded(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
+	f.manager.StopAndWait()
+	assert.Empty(t, f.dispatcher.dispatches())
+}
+
+func TestManagerResolveUnechoedSteersMarksThemUncertainAndPauses(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	f.enqueue(t, "steer")
+	_, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	snapshot, err := f.manager.ResolveUnechoedSteers(t.Context(), "agent-1", -1)
+	require.NoError(t, err)
+	assert.True(t, snapshot.Paused)
+	assert.False(t, snapshot.ActiveTurn)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+}
+
+func TestManagerFailedEchoHoldMarksDeliveryUncertain(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	f.enqueue(t, "steer")
+	_, err := f.store.db.ExecContext(t.Context(), `CREATE TRIGGER refuse_echo_hold BEFORE UPDATE ON agent_input_queue_items WHEN NEW.state = 5 BEGIN SELECT RAISE(ABORT, 'refused hold'); END`)
+	require.NoError(t, err)
+	snapshot, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+	assert.True(t, snapshot.Paused)
 }
 
 func (o *recordingObserver) QueueChanged(snapshot Snapshot) {
@@ -869,7 +1153,7 @@ func TestManagerRetryRefusesDuringAPlannedRestart(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
@@ -1301,7 +1585,7 @@ func TestManagerObserversCanReadCommittedQueueStateDuringReentry(t *testing.T) {
 				require.NoError(t, err)
 			}
 			if operation == "retry" {
-				prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 				require.NoError(t, err)
 				require.NotNil(t, prepared)
 				_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
@@ -1463,4 +1747,207 @@ func TestManagerAfterAcceptCanReconcileTheNextTurnInOrder(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, snapshot.ActiveTurn)
 	assert.True(t, snapshot.ActiveTurnSteerable)
+}
+
+func TestManagerUncertaintyDuringTheSteerCallKeepsTheInput(t *testing.T) {
+	t.Parallel()
+	for _, providerErr := range []error{nil, ErrTurnEnded, ErrSteeringUnsupported, assert.AnError} {
+		t.Run(fmt.Sprint(providerErr), func(t *testing.T) {
+			f := newEchoQueueFixture(t, true)
+			f.enqueue(t, "steer")
+			f.dispatcher.onSteer = func() {
+				_, err := f.manager.ResolveUnechoedSteers(t.Context(), "agent-1", 1)
+				require.NoError(t, err)
+			}
+			f.dispatcher.steerFail = providerErr
+			snapshot, err := f.manager.Steer(t.Context(), "agent-1", "steer")
+			require.NoError(t, err)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+			assert.True(t, snapshot.Paused)
+			f.manager.StopAndWait()
+			assert.Empty(t, f.dispatcher.dispatches())
+			f.observer.mu.Lock()
+			assert.Empty(t, f.observer.accepted)
+			f.observer.mu.Unlock()
+		})
+	}
+}
+
+func TestManagerMixedSteerOutcomesKeepTheirInputIdentity(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	for _, id := range []string{"echo", "uncertain", "drop", "pending"} {
+		f.enqueue(t, id)
+		_, err := f.manager.Steer(t.Context(), "agent-1", id)
+		require.NoError(t, err)
+	}
+	_, err := f.manager.AcceptEchoedSteers(t.Context(), "agent-1", 1, "[]")
+	require.NoError(t, err)
+	_, err = f.manager.ResolveUnechoedSteers(t.Context(), "agent-1", 1)
+	require.NoError(t, err)
+	snapshot, err := f.manager.RequeueDroppedSteers(t.Context(), "agent-1", 1)
+	require.NoError(t, err)
+	require.Equal(t, []string{"pending", "drop", "uncertain"}, queueSnapshotIDs(snapshot))
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[1].State)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[2].State)
+	assert.True(t, snapshot.Paused)
+	f.observer.mu.Lock()
+	require.Len(t, f.observer.accepted, 1)
+	assert.Equal(t, "echo", f.observer.accepted[0].ID)
+	f.observer.mu.Unlock()
+}
+
+func TestAutomaticQuestionSteeringAfterABusyDispatch(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{steering: true, fail: &DeliveryError{
+		Err: errors.New("a turn already runs"), Outcome: DispatchBusy, ActiveTurnSteerable: true,
+	}}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	_, err := manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		return len(observer.accepted) == 1
+	}, eventuallyWait, 10*time.Millisecond)
+	assert.Equal(t, []string{"answer"}, dispatcher.dispatches())
+	dispatcher.mu.Lock()
+	assert.Equal(t, []string{"answer"}, dispatcher.steered)
+	dispatcher.mu.Unlock()
+}
+
+type queueTurnAdmission struct{ state agent.TurnState }
+type queueTurnLease struct{}
+
+func (queueTurnLease) Release()            {}
+func (queueTurnAdmission) IsCurrent() bool { return true }
+func (a queueTurnAdmission) Acquire() (agent.TurnState, agent.TurnStateLease) {
+	return a.state, queueTurnLease{}
+}
+
+func TestAutomaticQuestionSteeringAfterTheTurnBecomesSteerable(t *testing.T) {
+	t.Parallel()
+	for _, providerReport := range []bool{false, true} {
+		t.Run(fmt.Sprint(providerReport), func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			_, _, err := store.TurnStarted(t.Context(), "agent-1", false)
+			require.NoError(t, err)
+			dispatcher := &recordingDispatcher{steering: true}
+			observer := &recordingObserver{}
+			manager := NewManager(store, dispatcher, observer)
+			t.Cleanup(manager.StopAndWait)
+			_, err = manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+			require.NoError(t, err)
+			coordinator := manager.coordinator("agent-1")
+			require.Eventually(t, func() bool {
+				coordinator.mu.Lock()
+				defer coordinator.mu.Unlock()
+				return !coordinator.draining
+			}, eventuallyWait, 10*time.Millisecond)
+			if providerReport {
+				_, err = manager.ReconcileProviderTurn(t.Context(), "agent-1", queueTurnAdmission{state: agent.TurnState{Active: true, Steerable: true}})
+			} else {
+				_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+			}
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				observer.mu.Lock()
+				defer observer.mu.Unlock()
+				return len(observer.accepted) == 1
+			}, eventuallyWait, 10*time.Millisecond)
+			assert.Empty(t, dispatcher.dispatches())
+			dispatcher.mu.Lock()
+			assert.Equal(t, []string{"answer"}, dispatcher.steered)
+			dispatcher.mu.Unlock()
+		})
+	}
+}
+
+// A provider whose user steers land at the echo still accepts a question
+// answer's row at the steer: the row is LeapMux's own record, and no echo
+// report is awaited for it.
+func TestAutomaticQuestionSteeringAcceptsItsRowAtTheSteer(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{steering: true, policy: agent.SteerPolicy{RowAtEcho: true}}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := manager.Snapshot(t.Context(), "agent-1")
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, eventuallyWait, 10*time.Millisecond)
+	dispatcher.mu.Lock()
+	assert.Equal(t, []string{"answer"}, dispatcher.steered)
+	dispatcher.mu.Unlock()
+	// The acceptance is published to the observer after the transaction that
+	// consumed the item has committed, so the snapshot poll above can observe
+	// the empty queue while the InputAccepted publication is still in flight.
+	require.Eventually(t, func() bool {
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		return len(observer.accepted) == 1
+	}, eventuallyWait, 10*time.Millisecond)
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	assert.Equal(t, "answer", observer.accepted[0].ID)
+}
+
+func TestAutomaticQuestionSteeringDoesNotRepeatARefusedDelivery(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		err    error
+		state  leapmuxv1.AgentInputState
+		paused bool
+	}{
+		{name: "unsupported", err: ErrSteeringUnsupported, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED},
+		{name: "ended", err: ErrTurnEnded, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED},
+		{name: "uncertain", err: &DeliveryError{Err: assert.AnError, Outcome: DispatchUncertain}, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, paused: true},
+		{name: "failed", err: assert.AnError, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED, paused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+			require.NoError(t, err)
+			dispatcher := &recordingDispatcher{steering: true, steerFail: test.err}
+			observer := &recordingObserver{}
+			manager := NewManager(store, dispatcher, observer)
+			t.Cleanup(manager.StopAndWait)
+			_, err = manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+			require.NoError(t, err)
+			coordinator := manager.coordinator("agent-1")
+			require.Eventually(t, func() bool {
+				coordinator.mu.Lock()
+				defer coordinator.mu.Unlock()
+				return !coordinator.draining
+			}, eventuallyWait, 10*time.Millisecond)
+			snapshot, err := manager.Snapshot(t.Context(), "agent-1")
+			require.NoError(t, err)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, test.state, snapshot.Items[0].State)
+			assert.Equal(t, test.paused, snapshot.Paused)
+			assert.Empty(t, dispatcher.dispatches())
+			dispatcher.mu.Lock()
+			assert.Equal(t, []string{"answer"}, dispatcher.steered)
+			dispatcher.mu.Unlock()
+			observer.mu.Lock()
+			assert.Empty(t, observer.accepted)
+			observer.mu.Unlock()
+		})
+	}
 }

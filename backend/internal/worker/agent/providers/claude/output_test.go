@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -906,6 +907,40 @@ func TestClaudeTurnCounterPreservesOriginalBytes(t *testing.T) {
 	last := messages[len(messages)-1]
 	assert.Equal(t, raw, last.Content)
 	assert.Contains(t, string(last.Metadata), `"num_tool_uses":2`)
+}
+
+func TestClaudeTurnToolUses_ResetAtEachResult(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	for turn := range 2 {
+		a.HandleOutput([]byte(fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"call-%d","name":"Read","input":{"file_path":"README.md"}}]}}`, turn)))
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+		messages := sink.Messages()
+		var metadata struct {
+			Count int `json:"num_tool_uses"`
+		}
+		require.NoError(t, json.Unmarshal(messages[len(messages)-1].Metadata, &metadata))
+		assert.Equal(t, 1, metadata.Count)
+		assert.Zero(t, a.TurnToolUses)
+	}
+}
+
+func TestExtractAndBroadcastUsage_DebouncesOnTheProcessClock(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	sink := &agenttest.Sink{}
+	a := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Clock: clock}), sink: agent.NewProviderServices(sink)}
+	frame := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}],"usage":{"input_tokens":100,"output_tokens":10}}}`)
+	a.HandleOutput(frame)
+	require.Len(t, sink.SessionInfoValues("context_usage"), 1)
+	clock.Advance(9 * time.Second).MustWait(testutil.DeadlineContext(t))
+	a.HandleOutput(frame)
+	assert.Len(t, sink.SessionInfoValues("context_usage"), 1)
+	clock.Advance(time.Second).MustWait(testutil.DeadlineContext(t))
+	a.HandleOutput(frame)
+	assert.Len(t, sink.SessionInfoValues("context_usage"), 2)
 }
 
 func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) {
@@ -2505,7 +2540,9 @@ func TestHandleOutput_RenderedSystemSubtypesPersist(t *testing.T) {
 			sink := &outputTestSink{}
 			a := newTestAgent(agent.NewProviderServices(sink))
 			a.HandleOutput([]byte(fixture.line))
-			assert.Len(t, sink.Messages(), 1, "%s must persist its row", fixture.name)
+			rows := append(sink.Messages(), sink.PersistedNotifications()...)
+			require.Len(t, rows, 1, "%s must persist its row", fixture.name)
+			assert.JSONEq(t, fixture.line, string(rows[0].Content))
 		})
 	}
 }
@@ -2594,15 +2631,16 @@ func TestHandleOutput_ModelFallbacksRefreshTheSessionModel(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"retry","scope":"local","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","request_id":null,"content":"Switched to claude-sonnet-5-5","uuid":"u-1","session_id":"s-1"}`))
 	assert.Equal(t, 0, sink.SettingsRefreshCount(), "a local fallback serves one response only")
 
-	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"sticky","scope":"session","original_model":"claude-opus-5-5","fallback_model":"claude-haiku-4-5","request_id":null,"content":"Switched to claude-haiku-4-5","uuid":"u-2","session_id":"s-1"}`))
+	// The refusal_fable_noretry probe supplies this session fallback shape.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"sticky","scope":"session","original_model":"claude-fable-5","fallback_model":"claude-opus-4-8","request_id":null,"content":"Switched to claude-opus-4-8","uuid":"u-2","session_id":"s-1"}`))
 	require.Equal(t, 1, sink.SettingsRefreshCount())
-	assert.Equal(t, "claude-haiku-4-5", sink.LastSettingsRefresh().Model)
-	assert.Equal(t, "claude-haiku-4-5", a.model, "the session model follows the fallback")
+	assert.Equal(t, "opus[1m]", sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "opus[1m]", a.model, "the session model follows the fallback")
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"model_consent_fallback","choice":"switch_default","original_model":"claude-opus-5-5","fallback_model":"claude-opus-5-5","content":"Switched to claude-opus-5-5","uuid":"u-3","session_id":"s-1"}`))
 	require.Equal(t, 2, sink.SettingsRefreshCount())
-	assert.Equal(t, "claude-opus-5-5", sink.LastSettingsRefresh().Model)
-	assert.Equal(t, "claude-opus-5-5", a.model)
+	assert.Equal(t, "opus[1m]", sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "opus[1m]", a.model)
 
 	assert.Len(t, sink.Messages(), 3, "every fallback row still persists")
 }
@@ -2613,16 +2651,386 @@ func TestHandleOutput_ModelRefusalFallbackWithoutScopeRefreshesTheSessionModel(t
 	sink := &outputTestSink{}
 	a := newTestAgent(agent.NewProviderServices(sink))
 
-	// `scope` is optional on the wire, and the interface's own schema states
-	// that an absent scope is the session-scoped swap ("Absent from older CLIs
-	// (treat as 'session')"). Only a PRESENT `scope: "local"` serves one
-	// response and leaves the session model alone.
-	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"retry","original_model":"claude-opus-5-5","fallback_model":"claude-haiku-4-5","request_id":null,"content":"Switched to claude-haiku-4-5","uuid":"u-1","session_id":"s-1"}`))
+	// An absent scope means a session fallback. Only local leaves the session model unchanged.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"retry","original_model":"claude-fable-5","fallback_model":"claude-opus-4-8","request_id":null,"content":"Switched to claude-opus-4-8","uuid":"u-1","session_id":"s-1"}`))
 
 	require.Equal(t, 1, sink.SettingsRefreshCount(), "an absent scope is the session-scoped swap")
-	assert.Equal(t, "claude-haiku-4-5", sink.LastSettingsRefresh().Model)
-	assert.Equal(t, "claude-haiku-4-5", a.model, "the session model follows the fallback")
+	assert.Equal(t, "opus[1m]", sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "opus[1m]", a.model, "the session model follows the fallback")
 	assert.Len(t, sink.Messages(), 1, "the row itself still persists")
+}
+
+func TestHandleOutput_ModelFallbackKeepsTheContextWindow(t *testing.T) {
+	t.Parallel()
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","scope":"session","fallback_model":"claude-opus-4-8"}`))
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}],"usage":{"input_tokens":100,"output_tokens":10}}}`))
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, int64(1_000_000), usage["context_window"])
+}
+
+func TestClaudeUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "current session", Frame: []byte(`{"type":"leapmux_probe_new_frame","session_id":"s-1"}`)},
+		{Name: "other session", Frame: []byte(`{"type":"leapmux_probe_new_frame","session_id":"s-other"}`), OtherSession: true},
+		{Name: "no session", Frame: []byte(`{"type":"leapmux_probe_new_frame"}`), OtherSession: true},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		t.Helper()
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agent.NewProviderServices(sink))
+		a.sessionID = "s-1"
+		a.HandleOutput(tc.Frame)
+		return sink
+	})
+}
+
+func TestHandleOutput_SyntheticUserFrameStoresNoRow(t *testing.T) {
+	t.Parallel()
+	// These texts are trimmed from the named Claude probe runs.
+	for _, tc := range []struct{ run, text string }{
+		{"skill_allowed", "# Keybindings Skill"},
+		{"autocompact_ok", "This session is being continued from a previous conversation that ran out of context."},
+		{"goal_met", "Stop hook feedback:\n[Reply with the word OK once]: not yet (evaluation 1)"},
+		{"refusal_fable", "Your response above was stopped by a safety classifier"},
+	} {
+		t.Run(tc.run, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(fmt.Sprintf(`{"type":"user","isSynthetic":true,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":%q}]}}`, tc.text)))
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+		})
+	}
+}
+
+func TestHandleOutput_SyntheticToolResultKeepsItsRow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	raw := []byte(`{"type":"user","isSynthetic":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call","content":"done"}]}}`)
+	a.HandleOutput(raw)
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
+}
+
+func claudeAPIErrorForTest(t *testing.T, text, parent string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"type": "assistant", "is_api_error_message": true, "parent_tool_use_id": parent,
+		"message": map[string]any{"role": "assistant", "model": "<synthetic>", "content": []map[string]string{{"type": "text", "text": text}}},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+func TestHandleOutput_TheFinalAPIErrorShowsOnlyOnTheDivider(t *testing.T) {
+	t.Parallel()
+	// Each case trims the error text from the corresponding recorded probe run.
+	for _, tc := range []struct{ run, text string }{
+		{"apierror", "API Error: 400 probe: invalid request (PROBE_ERR400)"},
+		{"retry500", "API Error: 500 probe: internal error (PROBE_ERR500)."},
+		{"refusal_fable_noretry", "API Error: Opus 4.8's safeguards flagged this message."},
+		{"autocompact_fail400", "Prompt is too long · automatic compaction failed: API Error: 400 probe: invalid request (compact-error400)"},
+		{"r2_goal_error", "Prompt is too long · automatic compaction failed: API Error: 400 probe: invalid request (compact-error400)"},
+	} {
+		t.Run(tc.run, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			a.HandleOutput(claudeAPIErrorForTest(t, tc.text, ""))
+			assert.Empty(t, sink.Messages())
+			if tc.run == "r2_goal_error" {
+				a.HandleOutput([]byte(`{"type":"system","subtype":"informational","level":"info","content":"Goal evaluation continues"}`))
+			}
+			end := []byte(fmt.Sprintf(`{"type":"result","subtype":"success","is_error":true,"result":%q}`, tc.text))
+			a.HandleOutput(end)
+			require.Len(t, sink.Messages(), 1)
+			assert.JSONEq(t, string(end), string(sink.Messages()[0].Content))
+			assert.Contains(t, sink.TurnLifecycle(), "turn_end")
+		})
+	}
+}
+
+func TestHandleOutput_AnAPIErrorFollowedByADifferentResultPersists(t *testing.T) {
+	t.Parallel()
+	for _, end := range []string{
+		`{"type":"result","is_error":true,"result":"another error"}`,
+		`{"type":"result","is_error":false,"result":"API Error: failure"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"next answer"}]}}`,
+		`{"type":"user","message":{"content":[{"type":"text","text":"next prompt"}]}}`,
+	} {
+		t.Run(end, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			first := claudeAPIErrorForTest(t, "API Error: failure", "")
+			a.HandleOutput(first)
+			a.HandleOutput([]byte(end))
+			require.Len(t, sink.Messages(), 2)
+			assert.JSONEq(t, string(first), string(sink.Messages()[0].Content))
+			assert.JSONEq(t, end, string(sink.Messages()[1].Content))
+		})
+	}
+}
+
+func TestHandleOutput_AHeldAPIErrorPersistsAtProcessExit(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	first := claudeAPIErrorForTest(t, "API Error: failure", "")
+	a.HandleOutput(first)
+	assert.Empty(t, sink.Messages())
+	a.SimulateExitForTest()
+	require.NoError(t, a.Wait())
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(first), string(sink.Messages()[0].Content))
+}
+
+func TestHandleOutput_AHeldAPIErrorIgnoresSyntheticContextAndChildOutput(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput(claudeAPIErrorForTest(t, "API Error: root failure", ""))
+	a.HandleOutput([]byte(`{"type":"user","isSynthetic":true,"message":{"content":[{"type":"text","text":"Stop hook feedback"}]}}`))
+	a.HandleOutput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"unrelated","response":{}}}`))
+	a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"child-spawn","message":{"content":[{"type":"text","text":"child answer"}]}}`))
+	assert.Empty(t, sink.Messages())
+	a.HandleOutput([]byte(`{"type":"result","is_error":true,"result":"API Error: root failure"}`))
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, `{"type":"result","is_error":true,"result":"API Error: root failure"}`, string(sink.Messages()[0].Content))
+}
+
+func TestHandleOutput_AHeldAPIErrorFlushesOnceAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	raw := claudeAPIErrorForTest(t, "API Error: failure", "")
+	a.HandleOutput(raw)
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(a.flushHeldAPIError)
+	}
+	group.Wait()
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
+}
+
+func TestHandleOutput_AHeldAPIErrorKeepsAnIndependentCopy(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	raw := claudeAPIErrorForTest(t, "API Error: failure", "")
+	want := bytes.Clone(raw)
+	a.HandleOutput(raw)
+	clear(raw)
+	a.flushHeldAPIError()
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(want), string(sink.Messages()[0].Content))
+}
+
+func TestHandleOutput_LocalCommandOutputIsNotHeld(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	// The local_commands probe uses this model without the API-error flag.
+	raw := []byte(`{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"Local command output"}]}}`)
+	a.HandleOutput(raw)
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
+}
+
+func TestHandleOutput_AManualCompactionPublishesALiveStartAndStoresOnlyItsEnd(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	// Trimmed from compact_ok. The native final status precedes its boundary.
+	for _, frame := range []string{
+		`{"type":"system","subtype":"session_state_changed","state":"running"}`,
+		`{"type":"system","subtype":"status","status":"compacting"}`,
+		`{"type":"system","subtype":"status","status":null,"compact_result":"success"}`,
+		`{"type":"system","subtype":"init","session_id":"s-1"}`,
+		`{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":15,"post_tokens":890}}`,
+		`{"type":"user","isSynthetic":true,"message":{"content":[{"type":"text","text":"Summary"}]}}`,
+		`{"type":"system","subtype":"local_command_output","content":"Context compacted"}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":""}`,
+		`{"type":"system","subtype":"session_state_changed","state":"idle"}`,
+	} {
+		a.HandleOutput([]byte(frame))
+	}
+	assert.Equal(t, []interface{}{map[string]interface{}{}, nil}, sink.SessionInfoValues("compaction"))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), `"compact_boundary"`)
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), `"type":"result"`)
+}
+
+func TestHandleOutput_AFailedManualCompactionStoresOneFailureRow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	// Trimmed from compact_fail400. The local command repeats the failed status's error.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"compacting"}`))
+	failed := `{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Error during compaction: API Error: 400 probe"}`
+	a.HandleOutput([]byte(failed))
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Error during compaction: API Error: 400 probe"}]},"local_command_run":{"command":"compact","args":""},"local_command_outcome":{"kind":"failed"}}`))
+	a.HandleOutput([]byte(`{"type":"result","is_error":false,"result":""}`))
+	assert.Equal(t, []interface{}{map[string]interface{}{}, nil}, sink.SessionInfoValues("compaction"))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.JSONEq(t, failed, string(sink.PersistedNotifications()[0].Content))
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), `"type":"result"`)
+}
+
+func TestHandleOutput_AnAutomaticFailureBelowTheBlockingLimitStoresTheFailure(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	// The autocompact_fail400_u975000 probe continues after too_few_groups.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"too_few_groups"}`))
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`))
+	a.HandleOutput([]byte(`{"type":"result","is_error":false,"result":"answer"}`))
+	assert.Equal(t, []interface{}{map[string]interface{}{}, nil}, sink.SessionInfoValues("compaction"))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), "too_few_groups")
+	assert.Len(t, sink.Messages(), 2)
+}
+
+func TestHandleOutput_ARequestingStatusStoresNothing(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"requesting"}`))
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.SessionInfoValues("compaction"))
+}
+
+func TestHandleOutput_AResultEndsALiveCompaction(t *testing.T) {
+	t.Parallel()
+	for _, end := range []string{
+		`{"type":"result","is_error":true,"result":"stopped"}`,
+		`{"type":"system","subtype":"compact_boundary"}`,
+		`{"type":"system","subtype":"microcompact_boundary"}`,
+		`{"type":"system","subtype":"status","status":"requesting"}`,
+		`{"type":"system","subtype":"status","status":"new-state"}`,
+	} {
+		t.Run(end, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"compacting"}`))
+			a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"compacting"}`))
+			a.HandleOutput([]byte(end))
+			assert.Equal(t, []interface{}{map[string]interface{}{}, nil}, sink.SessionInfoValues("compaction"))
+		})
+	}
+}
+
+func TestHandleOutput_AFailedFinalStatusPersistsWithNoCompactingStatusBefore(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	raw := `{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"too_few_groups"}`
+	a.HandleOutput([]byte(raw))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.JSONEq(t, raw, string(sink.PersistedNotifications()[0].Content))
+	assert.Empty(t, sink.SessionInfoValues("compaction"))
+}
+
+func TestHandleOutput_RepeatedNotificationsOfOneKeyFold(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	raw := []byte(`{"type":"system","subtype":"notification","key":"stop-hook-error","message":"Stop hook error occurred"}`)
+	a.HandleOutput(raw)
+	a.HandleOutput(raw)
+	assert.Empty(t, sink.Messages())
+	// Both writes reach the reducer's same slot. The service integration test verifies the folded row.
+	require.Len(t, sink.PersistedNotifications(), 2)
+	for _, notice := range sink.PersistedNotifications() {
+		assert.Equal(t, agent.ProviderScopedNotification("claude:notification:stop-hook-error"), claudeProvider{}.Classify(notice.Content))
+	}
+}
+
+type claudeRetryOrderSink struct {
+	agenttest.Sink
+	resolvedBeforeMessage []bool
+	notificationError     error
+}
+
+func (s *claudeRetryOrderSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	if s.notificationError != nil {
+		return false, s.notificationError
+	}
+	return s.Sink.PersistNotification(source, content)
+}
+
+func (s *claudeRetryOrderSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	s.resolvedBeforeMessage = append(s.resolvedBeforeMessage, len(s.LeapMuxNotifications()) > 0)
+	return s.Sink.PersistMessage(source, content, span)
+}
+
+func TestHandleOutput_TheFirstAnswerAfterAnAPIRetryResolvesIt(t *testing.T) {
+	t.Parallel()
+	sink := &claudeRetryOrderSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	// The flaky probe sends native retry frames before the recovered answer.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":1000}`))
+	answer := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`)
+	a.HandleOutput(answer)
+	a.HandleOutput(answer)
+	assert.Equal(t, []map[string]interface{}{{"type": "api_retry_resolved"}}, sink.LeapMuxNotifications())
+	assert.Equal(t, []bool{true, true}, sink.resolvedBeforeMessage)
+}
+
+func TestHandleOutput_AFinalAPIErrorLeavesTheRetryUnresolved(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
+	a.HandleOutput(claudeAPIErrorForTest(t, "API Error: failed", ""))
+	a.HandleOutput([]byte(`{"type":"result","is_error":true,"result":"API Error: failed"}`))
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+func TestHandleOutput_AResultResetsTheRetry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
+	a.HandleOutput([]byte(`{"type":"result","is_error":true,"result":"failed"}`))
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"next turn"}]}}`))
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+func TestHandleOutput_AnUnstoredRetryResolvesNothing(t *testing.T) {
+	t.Parallel()
+	sink := &claudeRetryOrderSink{notificationError: assert.AnError}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
+	sink.notificationError = nil
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`))
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+func TestHandleOutput_KnownDroppedFrameTypesStoreNoRow(t *testing.T) {
+	t.Parallel()
+	for frameType, reason := range claudeDroppedFrameTypes {
+		t.Run(frameType, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			a.sessionID = "s-1"
+			assert.NotEmpty(t, reason)
+			raw, err := json.Marshal(map[string]string{"type": frameType, "session_id": "s-1"})
+			require.NoError(t, err)
+			a.HandleOutput(raw)
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+			assert.Empty(t, sink.LeapMuxNotifications())
+		})
+	}
 }
 
 func TestHandleOutput_CommandsChangedReplacesTheSlashCommands(t *testing.T) {

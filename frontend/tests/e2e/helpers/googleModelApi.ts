@@ -6,7 +6,7 @@ import { Buffer } from 'node:buffer'
 import { isObject } from '../../../src/lib/jsonPick'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
-import { lastUserText, systemText } from './mockModelScript'
+import { lastUserText, stopReasonToken, systemText } from './mockModelScript'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput } from './modelStream'
 
@@ -66,6 +66,8 @@ async function handleGoogleRequest(request: IncomingMessage, response: ServerRes
   }
   const { step } = answer
   answer.recordHttpResponse(response, () => step.error ? { code: step.error.code ?? 'UNKNOWN', message: step.error.message } : undefined)
+  if (step.stopReason !== undefined)
+    stopReasonToken('google-generative-language', step.stopReason)
   if (!await answer.holdStep({ request, response }))
     return
   if (step.error) {

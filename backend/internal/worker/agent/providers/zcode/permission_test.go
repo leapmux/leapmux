@@ -80,14 +80,38 @@ func TestZCodeChildRequestKeepsItsOwningRootDeliverySession(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
-	a.handleZCodeModeChanged(contracts.ZCodeModeYolo, false, "user")
-	params := strings.ReplaceAll(zcodePermissionParams, "sess-1", "child-session")
+	params := strings.Replace(zcodePermissionParams, `"sessionId": "sess-1",`, `"sessionId": "sess-1", "origin":{"kind":"subagent"},`, 1)
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, params))
 	assert.True(t, a.approvalWork.Idle())
 	require.Equal(t, 1, sink.PublishedControlCount())
 	assert.Equal(t, "sess-1", sink.LastPublishedControl().AgentSessionID)
 	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"allow","reason":"Approved once"}}`), agent.StopContext{}))
 	assert.Len(t, stdin.Frames(), 1)
+}
+
+func TestZCodeControlRequestOfARetiredSessionIsDeclined(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ method, params string }{
+		{contracts.ZCodeMethodRequestPermission, zcodePermissionParams},
+		{contracts.ZCodeMethodRequestUserInput, zcodePlanParams},
+		{contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams},
+	} {
+		sink := &agenttest.ControlSink{}
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+		a.HandleOutput(zcodeRequestLine(t, 7, tc.method, strings.ReplaceAll(tc.params, "sess-1", "retired")))
+		assert.Empty(t, sink.PublishedControls())
+		assert.Zero(t, sink.MessageCount())
+		assert.Empty(t, a.pendingControls)
+		replies := stdin.Requests(t)
+		require.Len(t, replies, 1)
+		assert.Equal(t, "7", string(replies[0].ID))
+		if tc.method == contracts.ZCodeMethodRequestPermission {
+			assert.Contains(t, string(replies[0].Result), `"decision":"deny"`)
+		} else {
+			assert.JSONEq(t, `{"action":"decline"}`, string(replies[0].Result))
+		}
+	}
 }
 
 func TestZCodeClearContextKeepsControlsFromTheNewSubscription(t *testing.T) {

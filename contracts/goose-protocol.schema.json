@@ -12,7 +12,8 @@
     "subagent",
     "subagentRequest",
     "todo",
-    "configIds"
+    "configIds",
+    "goalTexts"
   ],
   "$defs": {
     "table": {
@@ -90,6 +91,9 @@
       "$ref": "#/$defs/table"
     },
     "configIds": {
+      "$ref": "#/$defs/table"
+    },
+    "goalTexts": {
       "$ref": "#/$defs/table"
     }
   }

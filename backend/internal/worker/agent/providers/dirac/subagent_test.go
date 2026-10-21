@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,20 +114,30 @@ func TestDiracSubagentFinalCardReleasesItsCumulativeTrajectory(t *testing.T) {
 	finalOutput := json.RawMessage("{\"trajectory\":[{\"type\":\"message\",\"text\":\"First update\"},{\"type\":\"message\",\"text\":\"Final update\"}]}")
 	final := a.observeChildCard("call-trajectory", "Ada", nil, finalOutput, "completed")
 	require.NotNil(t, final)
-	assert.Contains(t, string(final.ChildTranscriptPayload), "Final update")
-	assert.NotContains(t, string(final.ChildTranscriptPayload), "First update")
+	// A live card states no child text: a card can skip whole events of the
+	// child's timeline, so the archive replay that closes the row is the one
+	// writer of the child's text rows, in the child's own order.
+	assert.Empty(t, string(final.ChildUpdate))
 	a.ApplySubagentObservation(final)
 	row, ok := sink.BackgroundTask(spawn.RowKey)
 	require.True(t, ok)
 	messages := sink.Child(row.ChildAgentID).Messages()
-	require.Len(t, messages, 3, "the child keeps its prompt and two distinct live updates")
-	assert.Contains(t, string(messages[2].Content), "Final update")
+	require.Len(t, messages, 1, "the child keeps only its prompt until the archive replays")
+	assert.NotContains(t, strings.Join(messageTexts(messages), "\n"), "First update")
 
 	state := a.childState["call-trajectory"]
 	require.NotNil(t, state, "the archive still needs the child's identity")
 	assert.Empty(t, state.trajectory, "a final card must release its cumulative live text while the archive waits")
 	assert.Nil(t, a.observeChildCard("call-trajectory", "Ada", nil, finalOutput, "completed"),
 		"a repeated final card must not append the whole trajectory again")
+}
+
+func messageTexts(messages []agenttest.Message) []string {
+	texts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		texts = append(texts, string(message.Content))
+	}
+	return texts
 }
 
 func startDiracPendingArchive(t *testing.T, a *Agent) *acp.SubagentObservation {
@@ -323,4 +334,28 @@ func TestDiracArchiveBacksOffAfterRepeatedReadFailures(t *testing.T) {
 	a.CancelForTest()
 	stopTimer.MustWait(ctx).MustRelease(ctx)
 	assert.Equal(t, bgtask.StatusFailed, waitDiracChildClose(t, ctx, sink))
+}
+
+// Two live card updates with new trajectory events assemble their text as
+// ordinary assistant rows of the child, with no raw agent_message_chunk row.
+// A live card states no child text: a card can skip whole events of the
+// child's timeline, so the archive replay that closes the row is the one
+// writer of the child's text rows, in the child's own order.
+func TestDiracChildCardStatesNoTextOfItsOwn(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newDiracSubagentAgentForRPC(t, t.TempDir())
+	input := json.RawMessage(`{"isSubagent":true,"agentId":9,"agentName":"Eve","prompt":"Trace the work"}`)
+	first := a.observeChildCard("call-live", "Eve", input, json.RawMessage(`{"trajectory":[{"type":"message","text":"First block"}]}`), "in_progress")
+	require.NotNil(t, first)
+	a.ApplySubagentObservation(first)
+	second := a.observeChildCard("call-live", "Eve", nil, json.RawMessage(`{"trajectory":[{"type":"message","text":"First block"},{"type":"message","text":"Second block"}]}`), "in_progress")
+	require.NotNil(t, second)
+	assert.Empty(t, string(second.ChildUpdate), "a live card carries no child text")
+	a.ApplySubagentObservation(second)
+
+	row, ok := sink.BackgroundTask(first.RowKey)
+	require.True(t, ok)
+	messages := sink.Child(row.ChildAgentID).Messages()
+	require.Len(t, messages, 1, "the child keeps only its prompt until the archive replays")
+	assert.NotContains(t, string(messages[0].Content), "block")
 }

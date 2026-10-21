@@ -384,6 +384,11 @@ describe('parseScenarioSpec', () => {
       .toThrow('midStream must be a boolean')
   })
 
+  it('keeps an incomplete-stream error option', () => {
+    expect(parseScenarioSpec({ steps: [{ error: { status: 500, message: 'The stream ended.', midStream: 'truncate' } }] }).steps[0]?.error)
+      .toEqual({ status: 500, message: 'The stream ended.', midStream: 'truncate' })
+  })
+
   it('takes a tool call with JSON arguments or with raw custom-tool input', () => {
     expect(parseScenarioSpec({ steps: [{ toolCalls: [{ id: 'a', name: 'Read', arguments: { path: 'x' } }] }] }).steps[0])
       .toEqual({ toolCalls: [{ id: 'a', name: 'Read', arguments: { path: 'x' } }] })
@@ -940,5 +945,18 @@ describe('describeScenarioStatus', () => {
     const unexpected = { protocol: 'openai-responses' as const, path: '/v1/responses', reason: 'no answer', body: {} }
     expect(describeScenarioStatus({ ...base, nextStep: 0, stepCount: 0, unexpectedRequests: [unexpected] }))
       .toBe('0 of 0 queued answers consumed, 1 request the script did not answer')
+  })
+})
+describe('stopReason', () => {
+  it.each(['refusal', 'max_tokens'])('keeps the supported stop reason %s', (stopReason) => {
+    expect(parseScenarioSpec({ steps: [{ text: 'Answer', stopReason }] }).steps[0]).toMatchObject({ stopReason })
+  })
+
+  it.each(['', 'stop', 0, null, true])('refuses an invalid stop reason: %j', (stopReason) => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'Answer', stopReason }] })).toThrow('stopReason')
+  })
+
+  it.each([{ error: { status: 400, message: 'failed' } }, { toolCalls: [] }])('refuses a stop reason with incompatible output: %j', (output) => {
+    expect(() => parseScenarioSpec({ steps: [{ ...output, stopReason: 'refusal' }] })).toThrow('cannot combine stopReason')
   })
 })

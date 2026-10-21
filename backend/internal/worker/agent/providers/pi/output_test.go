@@ -11,8 +11,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -65,13 +67,140 @@ func TestPiMCPPermissionLinksItsToolRequest(t *testing.T) {
 }
 
 func newPiAgentWithSink(sink agent.ProviderServices) *Agent {
+	return newPiAgentWithClock(sink, nil)
+}
+
+func newPiAgentWithClock(sink agent.ProviderServices, clock quartz.Clock) *Agent {
 	a := &Agent{
-		Process:     providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"}),
+		Process:     providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent", Clock: clock}),
 		sink:        sink,
 		sessionFile: "/tmp/pi-session.jsonl",
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	return a
+}
+
+func TestPiMessageUpdateReportsProgressUnderTheSegmentScope(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	for index := range 2 {
+		a.handlePiMessageUpdate([]byte(fmt.Sprintf(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":%d,"delta":"part"}}`, index)))
+	}
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 2)
+	assert.Equal(t, "pi:content:0", updates[0].ScopeID)
+	assert.Equal(t, "pi:content:1", updates[1].ScopeID)
+}
+
+func TestPiFlushGenerationCompletesEveryScope(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	for index := range 2 {
+		a.handlePiMessageUpdate([]byte(fmt.Sprintf(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":%d,"delta":"part"}}`, index)))
+	}
+	a.flushPiGeneration(agent.MessageCompletionInterrupted)
+	require.Len(t, sink.Messages(), 2)
+	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteModelProgress("pi:content:0"))
+	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteModelProgress("pi:content:1"))
+}
+
+func TestPiTurnEndsAtAgentSettledAfterAThresholdCompaction(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	clock, advance := piFakeClock(t, piEpoch)
+	a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
+	// Trimmed lifecycle from .tmp/verify-c29/pi/run2/frames.jsonl.
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	a.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"stopReason":"stop"}}`))
+	advance(5 * time.Second)
+	end := []byte(`{"type":"agent_end","messages":[]}`)
+	a.HandleOutput(end)
+	require.Len(t, sink.Messages(), 1, "the native run end is not the session turn end")
+	active, published := sink.LastTurnActive()
+	assert.True(t, published && active)
+	a.HandleOutput([]byte(`{"type":"compaction_start","reason":"threshold"}`))
+	a.HandleOutput([]byte(`{"type":"compaction_end","result":{"estimatedTokensAfter":5991}}`))
+	advance(6 * time.Second)
+	a.HandleOutput([]byte(`{"type":"agent_settled","aborted":false}`))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.True(t, rows[1].TurnEnd)
+	assert.Equal(t, end, rows[1].Content)
+	var metadata map[string]any
+	require.NoError(t, json.Unmarshal(rows[1].Metadata, &metadata))
+	assert.Equal(t, float64(11000), metadata[contracts.MessageMetadataFieldDurationMs])
+}
+
+func TestPiQueuedSteerContinuationWritesOneDivider(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	// Trimmed run sequence from .tmp/verify-c29/pi/run3-steer/frames.jsonl.
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"first"}]}]}`))
+	assert.Empty(t, sink.Messages())
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	end := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"continuation"}]}]}`)
+	a.HandleOutput(end)
+	assert.Empty(t, sink.Messages())
+	a.HandleOutput([]byte(`{"type":"agent_settled","aborted":false}`))
+	require.Len(t, sink.Messages(), 1)
+	assert.Equal(t, end, sink.Messages()[0].Content)
+	assert.True(t, sink.Messages()[0].TurnEnd)
+}
+
+func TestPiOverflowRecoveryWritesOneDivider(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	for _, frame := range []string{
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"context overflow"}]}`,
+		`{"type":"compaction_start","reason":"overflow"}`,
+		`{"type":"compaction_end","willRetry":true}`,
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`,
+		`{"type":"agent_settled","aborted":false}`,
+	} {
+		a.HandleOutput([]byte(frame))
+	}
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].TurnEnd)
+	assert.NotContains(t, string(sink.Messages()[0].Content), "overflow")
+}
+
+func TestPiRetryAttemptsWriteNoDivider(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	startPiRetryBackoff(a)
+	assert.Empty(t, sink.Messages())
+}
+
+func TestPiFailedMessageEndWithTextIsMarkedError(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	raw := []byte(`{"type":"message_end","message":{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"partial answer"}]}}`)
+	a.HandleOutput(raw)
+	require.Len(t, sink.Messages(), 1)
+	assert.Equal(t, agent.MessageCompletionError, sink.Messages()[0].Completion)
+	assert.Equal(t, raw, sink.Messages()[0].Content)
+}
+
+func TestPiStopSettlesAHeldDivider(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.agent.SetStdinForTest(&piExitOnCloseWriter{WriteCloser: rig.writePipe, exit: rig.agent.SimulateExitForTest})
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_end","messages":[]}`))
+	rig.agent.Stop()
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].TurnEnd)
+	assert.Equal(t, agent.MessageCompletionInterrupted, sink.Messages()[0].Completion)
 }
 
 func TestHandlePiOutput_AgentStart_SetsTurnFlag(t *testing.T) {
@@ -100,6 +229,7 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 	a.TurnToolUses = 3
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	a.Mu.Lock()
 	turnActive := a.currentTurnActive
@@ -123,10 +253,12 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 // The caller advances the clock between events.
 // Handler reads must not advance it.
 // Otherwise, added or removed reads change the expected durations.
-func piFakeClock(a *Agent, start time.Time) (advance func(time.Duration)) {
-	now := start
-	a.nowFn = func() time.Time { return now }
-	return func(d time.Duration) { now = now.Add(d) }
+func piFakeClock(t *testing.T, start time.Time) (*quartz.Mock, func(time.Duration)) {
+	t.Helper()
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	clock.Set(start).MustWait(ctx)
+	return clock, func(d time.Duration) { clock.Advance(d).MustWait(ctx) }
 }
 
 // piEpoch is an arbitrary fixed instant. Only the differences matter.
@@ -145,8 +277,7 @@ func piPersistedAgentEnd(t *testing.T, sink *agenttest.ControlSink, index int) m
 }
 
 // agent_settled states that Pi will not continue after agent_end.
-// agent_end already drew the divider.
-// The handler must drop agent_settled so the default case cannot persist a raw JSON row.
+// With no held divider, it stores no row. The native marker never becomes a transcript row.
 func TestHandlePiOutput_AgentSettled_PersistsNothing(t *testing.T) {
 	t.Parallel()
 
@@ -170,27 +301,29 @@ func TestPiTurnCountMetadata(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"read-call","toolName":"read","args":{"path":"sample.txt"}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_end","toolCallId":"read-call","toolName":"read","result":{"content":[]}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[],"willRetry":true}`)))
+	assert.Len(t, sink.Messages(), 2, "a retry writes no divider")
+	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	assert.Equal(t, float64(1), piPersistedAgentEnd(t, sink, 2)["num_tool_uses"])
-	assert.False(t, sink.Messages()[2].TurnEnd)
+	assert.True(t, sink.Messages()[2].TurnEnd)
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
-	assert.Equal(t, float64(1), piPersistedAgentEnd(t, sink, 3)["num_tool_uses"])
-	assert.True(t, sink.Messages()[3].TurnEnd)
-	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
-	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
-	assert.Equal(t, float64(0), piPersistedAgentEnd(t, sink, 4)["num_tool_uses"])
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	assert.Equal(t, float64(0), piPersistedAgentEnd(t, sink, 3)["num_tool_uses"])
 }
 
 func TestHandlePiOutput_AgentEnd_ReportsTurnDuration(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-	advance := piFakeClock(a, piEpoch)
+	clock, advance := piFakeClock(t, piEpoch)
+	a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	advance(2500 * time.Millisecond)
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	assert.Equal(t, float64(2500), piPersistedAgentEnd(t, sink, 0)["duration_ms"])
 }
@@ -202,12 +335,13 @@ func TestHandlePiOutput_AgentEnd_ZeroLengthTurnReportsZero(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	clock, _ := piFakeClock(t, piEpoch)
+	a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
 	// The clock never advances, so the turn takes no measurable time at all.
-	piFakeClock(a, piEpoch)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	persisted := piPersistedAgentEnd(t, sink, 0)
 	require.Contains(t, persisted, "duration_ms")
@@ -224,24 +358,27 @@ func TestHandlePiOutput_AgentEnd_WithoutStartOmitsDuration(t *testing.T) {
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	assert.NotContains(t, piPersistedAgentEnd(t, sink, 0), "duration_ms")
 }
 
-// agent_end clears the start time when the turn ends.
+// agent_settled clears the start time when the turn ends.
 // A second agent_end must omit the duration.
 func TestHandlePiOutput_AgentEnd_SecondEndOmitsDuration(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-	advance := piFakeClock(a, piEpoch)
+	clock, advance := piFakeClock(t, piEpoch)
+	a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	advance(time.Second)
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	advance(time.Second)
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	assert.Equal(t, float64(1000), piPersistedAgentEnd(t, sink, 0)["duration_ms"])
 	assert.NotContains(t, piPersistedAgentEnd(t, sink, 1), "duration_ms")
@@ -253,8 +390,8 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTurnStartMark(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-	advance := piFakeClock(a, piEpoch)
+	clock, advance := piFakeClock(t, piEpoch)
+	a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
 
 	// The turn contains two runs.
 	// The first attempt takes one second.
@@ -266,10 +403,10 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTurnStartMark(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	advance(time.Second)
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
-	assert.Equal(t, float64(1000), piPersistedAgentEnd(t, sink, 0)["duration_ms"],
-		"the retried attempt reports the elapsed time so far")
-	assert.Equal(t, float64(3000), piPersistedAgentEnd(t, sink, 1)["duration_ms"],
+	require.Len(t, sink.Messages(), 1)
+	assert.Equal(t, float64(3000), piPersistedAgentEnd(t, sink, 0)["duration_ms"],
 		"the final divider spans from the FIRST agent_start")
 }
 
@@ -287,8 +424,7 @@ func TestHandlePiOutput_AgentEnd_WillRetryDoesNotEndTurn(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"overloaded"}],"willRetry":true}`)))
 
-	require.Equal(t, 1, sink.MessageCount())
-	assert.False(t, sink.Messages()[0].TurnEnd, "a retried run must not route through PersistTurnEnd")
+	assert.Zero(t, sink.MessageCount(), "a retried run writes no divider")
 
 	a.Mu.Lock()
 	turnActive, toolUses := a.currentTurnActive, a.TurnToolUses
@@ -317,6 +453,7 @@ func TestHandlePiOutput_AgentEnd_MarksRetainedTextAsError(t *testing.T) {
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"partial answer"}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"failed"}]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.NotEmpty(t, sink.Messages())
 	assert.JSONEq(t, `{
@@ -335,6 +472,7 @@ func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"printf partial"}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_update","toolCallId":"tool-1","partialResult":{"content":[{"type":"text","text":"partial output"}],"details":{}}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	result := sink.Messages()[1]
@@ -372,6 +510,7 @@ func TestHandlePiOutput_AgentEndClosesToolWithoutPartialOutput(t *testing.T) {
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"tool-empty","toolName":"bash","args":{"command":"sleep 10"}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Len(t, sink.Messages(), 3)
 	closing := sink.Messages()[1]
@@ -411,6 +550,7 @@ func TestHandlePiOutput_InterruptedGenerationPreservesContentOrder(t *testing.T)
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"answer"}}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":2,"delta":"second reason"}}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`,
+		`{"type":"agent_settled"}`,
 	} {
 		handlePiOutput(a, providerkit.ParseLine([]byte(raw)))
 	}
@@ -463,6 +603,7 @@ func TestHandlePiOutput_DiscardedTurnDoesNotPersistIncompleteTool(t *testing.T) 
 	before := sink.MessageCount()
 	a.DiscardOutput()
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	assert.Equal(t, before+1, sink.MessageCount(), "only the agent-end divider can persist")
 	for _, message := range sink.Messages()[before:] {
@@ -470,15 +611,15 @@ func TestHandlePiOutput_DiscardedTurnDoesNotPersistIncompleteTool(t *testing.T) 
 	}
 }
 
-func TestPiPromptFailureKeepsActiveTurnForRejectedSteer(t *testing.T) {
+func TestPiPromptRefusalKeepsAnActiveTurnsOutput(t *testing.T) {
 	t.Parallel()
-
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.currentTurnActive = true
 	a.generationBuffer.Append("answer", agent.AssembledMessageKindText, "still active", providerkit.JoinVerbatim)
-	a.handlePiPromptFailure(errors.New("steer rejected"), true)
-
-	assert.Equal(t, 0, sink.MessageCount())
+	// A preflight reply can reach its waiter after another native run starts.
+	a.handlePiPromptFailure(errors.New("prompt rejected"))
+	assert.Zero(t, sink.MessageCount())
 	assert.Len(t, sink.Notifications(), 1)
 	a.flushPiGeneration(agent.MessageCompletionInterrupted)
 	require.Len(t, sink.Messages(), 1)
@@ -491,7 +632,7 @@ func TestPiPromptFailureSuppressesIntentionalStopError(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	a.SetStoppedForTest(true)
-	a.handlePiPromptFailure(errors.New("process closed"), false)
+	a.handlePiPromptFailure(errors.New("process closed"))
 
 	assert.Empty(t, sink.Notifications())
 }
@@ -523,6 +664,7 @@ func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoContinue(t *testing.T) {
 				tc.willRetry)
 
 			handlePiOutput(a, providerkit.ParseLine(raw))
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 			assert.Equal(t, tc.schedules, sink.AutoScheduleCount())
 			assert.Equal(t, tc.cancels, sink.AutoCancelCount())
@@ -616,14 +758,15 @@ func TestHandlePiOutput_MessageEnd_MarksTheTextThatAStopCut(t *testing.T) {
 
 // The marker states truncated TEXT, so a message whose text a stop did not cut keeps
 // none: a real failure, a message that finished, and a cut message with no text.
-func TestHandlePiOutput_MessageEnd_LeavesAMessageThatNoStopCut(t *testing.T) {
+func TestPiMessageEndDistinguishesFailureFromInterruption(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
-		message string
-		noted   bool
+		message    string
+		noted      bool
+		completion agent.MessageCompletion
 	}{
-		"a failure that nobody asked for":     {message: `{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"Half"}]}`},
+		"a failure that nobody asked for":     {completion: agent.MessageCompletionError, message: `{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"Half"}]}`},
 		"a message that finished at the stop": {message: `{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Whole."}]}`, noted: true},
 		"a cut message with a tool call only": {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"toolCall","id":"call-1","name":"bash"}]}`, noted: true},
 		"a cut message with blank text":       {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"text","text":"  "}]}`, noted: true},
@@ -642,7 +785,7 @@ func TestHandlePiOutput_MessageEnd_LeavesAMessageThatNoStopCut(t *testing.T) {
 			handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"message_end","message":`+tc.message+`}`)))
 
 			require.Equal(t, 1, sink.MessageCount())
-			assert.Equal(t, agent.MessageCompletion(""), sink.Messages()[0].Completion)
+			assert.Equal(t, tc.completion, sink.Messages()[0].Completion)
 		})
 	}
 }
@@ -727,8 +870,7 @@ func TestHandlePiOutput_MessageEnd_PersistsThinkingAsARowOfItsOwn(t *testing.T) 
 		t.Parallel()
 		frame := `{"type":"message_end","message":{"role":"user","content":[{"type":"thinking","thinking":"Not the model's."},{"type":"text","text":"Hi."}]}}`
 		messages := run(t, frame)
-		require.Len(t, messages, 1)
-		assert.JSONEq(t, frame, string(messages[0].Content))
+		assert.Empty(t, messages)
 	})
 
 	t.Run("a message whose content is a string adds no row", func(t *testing.T) {
@@ -783,15 +925,16 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	clock, advance := piFakeClock(t, piEpoch)
+	a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
 	a.model = "gpt-5.5"
 	a.availableModels = []*agent.ModelInfo{{Id: "gpt-5.5", ContextWindow: 200000}}
-	advance := piFakeClock(a, piEpoch)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":10,"cacheRead":20,"cacheWrite":5,"totalTokens":135,"cost":{"total":0.00033}}}}`)))
 	advance(750 * time.Millisecond)
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	msgs := sink.Messages()
 	require.Equal(t, 2, len(msgs))
@@ -820,6 +963,7 @@ func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesAutoContinue(t *testing.
 	raw := []byte(`{"type":"agent_end","messages":[{"role":"user"},{"role":"assistant","stopReason":"error","errorMessage":"WebSocket error"}]}`)
 
 	handlePiOutput(a, providerkit.ParseLine(raw))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
@@ -837,6 +981,7 @@ func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoContinue(t *testin
 	raw := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`)
 
 	handlePiOutput(a, providerkit.ParseLine(raw))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
@@ -851,6 +996,7 @@ func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoContinue(t *
 	raw := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"rate limited"}]}`)
 
 	handlePiOutput(a, providerkit.ParseLine(raw))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
@@ -863,7 +1009,7 @@ func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeLeavesAutoContinueUnchan
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	// messages contains a string instead of an array.
-	// handlePiAgentEndObserved cannot decode the envelope.
+	// handlePiAgentEnd cannot decode the envelope.
 	// An invalid envelope must not change continuation state.
 	raw := []byte(`{"type":"agent_end","messages":"unexpected"}`)
 
@@ -998,7 +1144,17 @@ func TestHandlePiOutput_QueueUpdate_BroadcastsDepth(t *testing.T) {
 	assert.Equal(t, 1, info["pi_follow_up_depth"])
 }
 
-func TestHandlePiOutput_CompactionEvents_PersistAsAgentNotification(t *testing.T) {
+func TestPiCompactionStartPublishesLiveStateAndStoresNoRow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"compaction_start","reason":"threshold"}`))
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Equal(t, []any{map[string]any{"trigger": "threshold"}}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+}
+
+func TestPiCompactionEndStoresTheRowAndEndsLiveState(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -1011,11 +1167,22 @@ func TestHandlePiOutput_CompactionEvents_PersistAsAgentNotification(t *testing.T
 		handlePiOutput(a, providerkit.ParseLine([]byte(line)))
 	}
 
-	require.Equal(t, 2, sink.NotificationCount())
+	require.Equal(t, 1, sink.NotificationCount())
+	assert.Equal(t, []any{map[string]any{"trigger": "threshold"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 	for _, n := range sink.PersistedNotifications() {
 		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, n.Source,
 			"Pi-emitted lifecycle events must persist as AGENT (LEAPMUX is reserved for worker-synthesized envelopes)")
 	}
+}
+
+func TestPiCompactCommandFailureEndsLiveState(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) { return nil, false, "summary failed" })
+	rig.agent.HandleOutput([]byte(`{"type":"compaction_start","reason":"manual"}`))
+	require.ErrorContains(t, rig.agent.SendInput("/compact", nil), "summary failed")
+	assert.Equal(t, []any{map[string]any{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 }
 
 func TestHandlePiOutput_AutoRetryEvents_PersistAsAgentNotification(t *testing.T) {
@@ -1562,6 +1729,7 @@ func TestHandlePiOutput_AgentEnd_AfterInterrupt_MarksTheTurnInterrupted(t *testi
 	noteDeliveredPiInterrupt(a)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(piInterruptedAgentEnd)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
@@ -1579,6 +1747,7 @@ func TestHandlePiOutput_AgentEnd_WithoutInterrupt_KeepsTheError(t *testing.T) {
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant",`+
 		`"stopReason":"error","errorMessage":"rate limit"}]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.MessageCount())
 	assert.Empty(t, sink.Messages()[0].Completion,
@@ -1588,17 +1757,19 @@ func TestHandlePiOutput_AgentEnd_WithoutInterrupt_KeepsTheError(t *testing.T) {
 // The interruption note belongs to one turn.
 // If the process dies or the session changes before Pi ends that turn, clear the note.
 // It must not label the next divider.
-func TestHandlePiOutput_AgentStart_DropsAStaleInterruptNote(t *testing.T) {
+func TestPiSettlementDropsAStaleInterruptNote(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	a.currentTurnActive = true
 	noteDeliveredPiInterrupt(a)
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant",`+
 		`"stopReason":"error","errorMessage":"rate limit"}]}`)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.MessageCount())
 	assert.Empty(t, sink.Messages()[0].Completion)
@@ -1617,9 +1788,10 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTheInterruptNote(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant",`+
 		`"stopReason":"error","errorMessage":"WebSocket error"}]}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(piInterruptedAgentEnd)))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
-	require.Equal(t, 2, sink.MessageCount())
-	assert.Equal(t, agent.MessageCompletionInterrupted, sink.Messages()[1].Completion)
+	require.Equal(t, 1, sink.MessageCount())
+	assert.Equal(t, agent.MessageCompletionInterrupted, sink.Messages()[0].Completion)
 }
 
 func TestPiIncompleteToolsReleaseOutputForACallWithNoStartFrame(t *testing.T) {
@@ -1954,20 +2126,54 @@ func TestHandlePiOutput_ToolExecutionUpdateCountsATruncatedSnapshotByItsGrowth(t
 // Pi appends session entries for its internal operations.
 // Most repeat facts that the event stream already reported.
 // Those entries must not create duplicate raw JSON rows.
+func TestPiEntryAppendedVerdicts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		entry         string
+		live          bool
+		messages      int
+		notifications int
+	}{
+		{entry: `{"type":"usage"}`},
+		{entry: `{"type":"context_edit"}`},
+		{entry: `{"type":"custom","customType":"extension-data"}`},
+		{entry: `{"type":"custom_message","display":true,"content":"visible"}`, messages: 1},
+		{entry: `{"type":"custom_message","display":false,"content":"internal"}`},
+		{entry: `{"type":"custom_message","content":"internal"}`},
+		{entry: `{"type":"custom_message","display":"true","content":"invalid flag"}`},
+		{entry: `{"type":"compaction","tokensBefore":12000}`, notifications: 1},
+		{entry: `{"type":"compaction","tokensBefore":12000}`, live: true},
+		{entry: `{"type":"future_entry"}`, messages: 1},
+	} {
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		if tc.live {
+			a.HandleOutput([]byte(`{"type":"compaction_start","reason":"threshold"}`))
+		}
+		raw := []byte(`{"type":"entry_appended","entry":` + tc.entry + `}`)
+		a.HandleOutput(raw)
+		assert.Len(t, sink.Messages(), tc.messages, tc.entry)
+		assert.Len(t, sink.PersistedNotifications(), tc.notifications, tc.entry)
+		if tc.notifications != 0 {
+			assert.Equal(t, agent.CompactionBoundaryNotification(), Registration().Plugin.Classify(raw))
+		}
+	}
+}
+
 func TestHandlePiOutput_EntryAppendedDrawsOnlyWhatTheStreamDoesNotState(t *testing.T) {
 	t.Parallel()
 
-	t.Run("keeps an extension's own entry", func(t *testing.T) {
+	t.Run("keeps a displayed extension message", func(t *testing.T) {
 		t.Parallel()
 		sink := &agenttest.ControlSink{}
 		a := newPiAgentWithSink(agent.NewProviderServices(sink))
-		raw := []byte(`{"type":"entry_appended","entry":{"type":"custom","id":"e1","customType":"pi-subagents","data":{}}}`)
+		raw := []byte(`{"type":"entry_appended","entry":{"type":"custom_message","display":true,"id":"e1","customType":"pi-subagents","data":{}}}`)
 		handlePiOutput(a, providerkit.ParseLine(raw))
 		require.Len(t, sink.Messages(), 1)
 		assert.Equal(t, raw, sink.Messages()[0].Content)
 	})
 
-	for _, entryType := range []string{"message", "compaction", "branch_summary", "label", "session_info", "thinking_level_change"} {
+	for _, entryType := range []string{"message", "custom", "usage", "context_edit", "branch_summary", "label", "session_info", "thinking_level_change"} {
 		t.Run("draws no row for "+entryType, func(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
@@ -2015,4 +2221,107 @@ func TestHandlePiOutput_EntryAppendedDrawsOnlyWhatTheStreamDoesNotState(t *testi
 		handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"entry_appended","entry":{"type":"model_change","id":"e1","provider":"openai","modelId":"gpt-5"}}`)))
 		assert.Equal(t, 0, sink.SettingsRefreshCount())
 	})
+}
+
+func TestPiNotificationMembershipPersistsEachContractEvent(t *testing.T) {
+	t.Parallel()
+	for _, event := range contracts.PiNotificationEventMembers {
+		t.Run(event, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			raw, err := json.Marshal(map[string]any{"type": event})
+			require.NoError(t, err)
+			a.HandleOutput(raw)
+			require.Len(t, sink.PersistedNotifications(), 1)
+			assert.Empty(t, sink.Messages())
+		})
+	}
+}
+
+func TestPiNestedToolCallOpensUnderItsParentAndCountsOnce(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"code","toolName":"codemode","args":{}}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"code/1","parentToolCallId":"code","toolName":"read","args":{"path":"a.go"}}`))
+	require.Len(t, sink.Messages(), 2)
+	assert.Equal(t, "code", sink.Messages()[1].ParentSpanID)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "code", ParentSpanID: ""}, {SpanID: "code/1", ParentSpanID: "code"}}, sink.OpenSpans())
+	a.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"code/1","toolName":"read","result":{}}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"code","toolName":"codemode","result":{}}`))
+	a.HandleOutput([]byte(`{"type":"agent_end","messages":[]}`))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	assert.Equal(t, float64(1), piPersistedAgentEnd(t, sink, 4)["num_tool_uses"])
+}
+
+func TestPiNestedToolCallWithNoOpenParentStaysTopLevel(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"absent", "closed", "update only", "self"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			parent := "parent"
+			switch state {
+			case "closed":
+				a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"parent","toolName":"codemode"}`))
+				a.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"parent","toolName":"codemode"}`))
+			case "update only":
+				a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"parent","partialResult":{"content":[]}}`))
+			case "self":
+				parent = "child"
+			}
+			before := a.TurnToolUses
+			a.HandleOutput(fmt.Appendf(nil, `{"type":"tool_execution_start","toolCallId":"child","parentToolCallId":%q,"toolName":"read"}`, parent))
+			messages := sink.Messages()
+			assert.Empty(t, messages[len(messages)-1].ParentSpanID)
+			a.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"child","toolName":"read"}`))
+			assert.Equal(t, before+1, a.TurnToolUses)
+		})
+	}
+}
+
+func TestPiUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "event", Frame: []byte(`{"type":"probe_future_event","x":1}`)},
+		{Name: "session entry", Frame: []byte(`{"type":"entry_appended","entry":{"type":"probe_future_entry"}}`)},
+		{Name: "message role", Frame: []byte(`{"type":"message_end","message":{"role":"probe_future_role","content":"Preserve this text"}}`)},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		t.Helper()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.HandleOutput(tc.Frame)
+		return sink
+	})
+}
+
+func TestPiNestedToolCallKeepsNestingAfterItsParentEnds(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"parent","toolName":"codemode"}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"child","parentToolCallId":"parent","toolName":"read"}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"parent","toolName":"codemode"}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"child","toolName":"read"}`))
+	assert.Equal(t, 1, a.TurnToolUses)
+}
+
+func TestPiPendingGenerationStaysBeforeALaterNativeMessage(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Earlier answer"}}`))
+	a.flushPiGeneration(agent.MessageCompletionInterrupted)
+	require.True(t, a.generationBuffer.HasPendingWrites())
+	require.Len(t, sink.Messages(), 1, "the recording sink includes the failed attempt")
+	sink.PersistErr = nil
+	a.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Later answer"}],"stopReason":"stop"}}`))
+	a.flushPiGeneration(agent.MessageCompletionComplete)
+	messages := sink.Messages()[1:]
+	require.Len(t, messages, 2)
+	assert.Contains(t, string(messages[0].Content), "Earlier answer")
+	assert.Contains(t, string(messages[1].Content), "Later answer")
 }

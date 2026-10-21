@@ -10,31 +10,40 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestIsNotificationThreadable_ClaudeRateLimitEventAsAgent(t *testing.T) {
+func TestClaudeIsConsolidatable_RateLimitEvent(t *testing.T) {
 	t.Parallel()
 
-	// rate_limit_event arrives as AGENT. The plugin classifies it as
-	// provider-scoped, so isNotificationThreadable returns true and it
-	// threads with surrounding notifications.
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded"}}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	assert.True(t, claudeIsConsolidatable([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded"}}`)))
 }
 
-func TestIsNotificationThreadable_ClaudeStatusCompactingAsAgent(t *testing.T) {
+func TestClaudeClassify_OnlyAFailedStatusIsAClassifiedStatus(t *testing.T) {
 	t.Parallel()
-
-	// The worker persists the raw `system` message as AGENT (not a
-	// synthesized `{type:"compacting"}` envelope), and
-	// isNotificationThreadable still returns true because the plugin
-	// classifies it as a Status notification.
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"compacting"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	assert.Equal(t, agent.CompactionBoundaryNotification(), claudeProvider{}.Classify([]byte(`{"type":"system","subtype":"status","status":null,"compact_result":"failed"}`)))
+	assert.Equal(t, agent.NotificationClassification{}, claudeProvider{}.Classify([]byte(`{"type":"system","subtype":"status","status":"compacting"}`)))
+	assert.Equal(t, agent.NotificationClassification{}, claudeProvider{}.Classify([]byte(`{"type":"system","subtype":"status","status":null,"compact_result":"success"}`)))
 }
 
-func TestIsNotificationThreadable_ClaudeSystemUsesPlugin(t *testing.T) {
+func TestClaudeClassifyNotificationUsesItsNativeKey(t *testing.T) {
+	t.Parallel()
+	plugin := claudeProvider{}
+	// The hooks_fail probe identifies its repeated notice with this key.
+	assert.Equal(t, agent.ProviderScopedNotification("claude:notification:stop-hook-error"), plugin.Classify([]byte(`{"type":"system","subtype":"notification","key":"stop-hook-error","message":"Stop hook error occurred"}`)))
+	for _, frame := range []string{
+		`{"type":"system","subtype":"notification"}`,
+		`{"type":"system","subtype":"notification","key":""}`,
+		`{"type":"system","subtype":"notification","key":null}`,
+		`{"type":"system","subtype":"notification","key":12}`,
+	} {
+		assert.Equal(t, agent.NotificationClassification{}, plugin.Classify([]byte(frame)))
+	}
+}
+
+func TestClaudeIsConsolidatable_SystemUsesPlugin(t *testing.T) {
 	t.Parallel()
 
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"idle"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
-	assert.False(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"other"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	assert.False(t, claudeIsConsolidatable([]byte(`{"type":"system","subtype":"status","status":"idle"}`)))
+	assert.True(t, claudeIsConsolidatable([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`)))
+	assert.False(t, claudeIsConsolidatable([]byte(`{"type":"system","subtype":"other"}`)))
 }
 
 func TestPermissionModeFromRawInput(t *testing.T) {
@@ -71,19 +80,22 @@ func TestProviderFor_ClaudeClassification(t *testing.T) {
 	plugin := registry.Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "claude:system:status"},
+		agent.NotificationClassification{},
 		plugin.Classify(json.RawMessage(`{"type":"system","subtype":"status","status":"idle"}`)),
 	)
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "claude:system:api_retry"},
+		agent.APIRetryNotification(),
 		plugin.Classify(json.RawMessage(`{"type":"system","subtype":"api_retry","attempt":2}`)),
 	)
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "claude:system:compact_boundary"},
+		agent.CompactionBoundaryNotification(),
 		plugin.Classify(json.RawMessage(`{"type":"system","subtype":"compact_boundary"}`)),
 	)
+	assert.Equal(t, agent.CompactionBoundaryNotification(), plugin.Classify(json.RawMessage(`{"type":"system","subtype":"microcompact_boundary"}`)))
+	assert.Equal(t, agent.NotificationClassification{}, plugin.Classify(json.RawMessage(`{"type":"system","subtype":"unknown"}`)))
+	assert.Equal(t, agent.NotificationClassification{}, plugin.Classify(json.RawMessage(`invalid JSON`)))
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: "claude:rate_limit_event"},
+		agent.ProviderScopedNotification("claude:rate_limit_event"),
 		plugin.Classify(json.RawMessage(`{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","status":"exceeded"}}`)),
 		"raw rate_limit_event must be consolidatable so a flurry of tier updates collapses to the latest snapshot",
 	)

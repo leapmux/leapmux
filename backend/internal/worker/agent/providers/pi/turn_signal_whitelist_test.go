@@ -11,12 +11,12 @@ import (
 func TestTurnSignalWhitelist_Pi(t *testing.T) {
 	t.Parallel()
 
-	// Pi's run bookends are agent_start and agent_end. Its turn_start/turn_end
-	// pair is the INNER loop -- one assistant response inside the run -- so the
-	// two events whose names match "turn" are the two that must move nothing.
+	// agent_start opens the turn, and agent_settled closes it.
+	// A run end and the inner turn markers do not publish another turn state.
 	agenttest.AssertTurnFrames(t, []agenttest.TurnFrameCase{
 		{Name: "agent start", Line: `{"type":"agent_start"}`, Moves: true},
-		{Name: "agent end", Line: `{"type":"agent_end","willRetry":false}`, Moves: true},
+		{Name: "agent end", Line: `{"type":"agent_end","willRetry":false}`},
+		{Name: "agent settled", Line: `{"type":"agent_settled"}`, Moves: true},
 
 		{Name: "turn start", Line: `{"type":"turn_start"}`},
 		{Name: "turn end", Line: `{"type":"turn_end","message":{"role":"assistant","content":[]}}`},
@@ -29,6 +29,9 @@ func TestTurnSignalWhitelist_Pi(t *testing.T) {
 	}, func(t *testing.T, tc agenttest.TurnFrameCase) []bool {
 		sink := &agenttest.ControlSink{}
 		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		if tc.Name == "agent settled" {
+			a.currentTurnActive = true
+		}
 		handlePiOutput(a, providerkit.ParseLine([]byte(tc.Line)))
 		return sink.TurnActives()
 	})

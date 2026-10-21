@@ -1,4 +1,5 @@
-import type { NativeContextFixtures } from '../helpers/nativeScenario'
+import type { McpProbeServer } from '../helpers/mcpProbeServer'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
@@ -25,19 +26,29 @@ import { COPILOT_AGENT, nativeContext } from './scenarios'
  * The file returns to its exact earlier bytes after the test.
  */
 export async function exerciseCopilotMcpForm(fixtures: NativeContextFixtures): Promise<void> {
+  await withCopilotMcpServer(fixtures, directory => writeMcpFormServer(directory, 'form-server.mjs'), async (context, server) => {
+    const catalog = await sendNativeAnswer(context, 'Confirm the MCP server is available.', 'The Copilot MCP server is ready.')
+    expect(nativeModelToolNames(catalog)).toContain(mcpToolCall(context.provider, 'catalog', { server: server.name, tool: 'ask', input: {} }).name)
+    await exerciseMcpProbeFormRoundTrip(context, { callId: 'copilot-form', reloadBeforeSubmit: true })
+  })
+}
+
+/** Open a Copilot session with one local MCP server and restore its configuration afterward. */
+export async function withCopilotMcpServer(
+  fixtures: NativeContextFixtures,
+  createServer: (directory: string) => McpProbeServer,
+  exercise: (context: ManagedNativeScenarioContext, server: McpProbeServer) => Promise<void>,
+): Promise<void> {
   const { leapmuxServer, page, workspaceId } = fixtures
   const home = leapmuxServer.agentEnv?.COPILOT_HOME
   if (!home)
-    throw new Error('The Copilot MCP form test needs the isolated Copilot home.')
-  const directory = newProviderWorkingDir(COPILOT_AGENT, 'copilot-mcp-form-')
-  const server = writeMcpFormServer(directory, 'form-server.mjs')
+    throw new Error('The Copilot MCP test needs the isolated Copilot home.')
+  const directory = newProviderWorkingDir(COPILOT_AGENT, 'copilot-mcp-probe-')
+  const server = createServer(directory)
   const content = JSON.stringify({ mcpServers: { [server.name]: { type: 'local', command: server.command, args: server.args, tools: ['*'] } } })
   await withNativeConfigurationFile({ path: join(home, 'mcp-config.json'), content, runDir: getGlobalState().tmpDir }, async () => {
     await openProviderAgent(leapmuxServer, workspaceId, COPILOT_AGENT, { workingDir: directory, optionValues: { permissionMode: COPILOT_PERMISSION_MODE.AllowAll } })
     await openWorkspace(page, workspaceId)
-    const context = await nativeContext(fixtures)
-    const catalog = await sendNativeAnswer(context, 'Confirm the MCP server is available.', 'The Copilot MCP server is ready.')
-    expect(nativeModelToolNames(catalog)).toContain(mcpToolCall(context.provider, 'catalog', { server: server.name, tool: 'ask', input: {} }).name)
-    await exerciseMcpProbeFormRoundTrip(context, { callId: 'copilot-form', reloadBeforeSubmit: true })
+    await exercise(await nativeContext(fixtures), server)
   })
 }

@@ -1,6 +1,7 @@
 package droid
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,6 +22,23 @@ import (
 )
 
 const archiveChildID = "52af9b7b-5e82-4932-83c0-a2bf1caa2fcd"
+
+func TestChildArchivePreservesCommittedBlockOrder(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	a.HandleOutput([]byte(droidChildAvailable))
+	child, ok := sink.BackgroundTask("child-1")
+	require.True(t, ok)
+	var record droidArchiveRecord
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"message","id":"committed","message":{"role":"assistant","content":[{"type":"text","text":"Before the tool"},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"note.txt"}},{"type":"text","text":"After the tool"}]}}`), &record))
+	tail := droidChildTail{agent: a, sessionID: "child-1"}
+	tail.projectMessage(record)
+	rows := sink.Child(child.ChildAgentID).Messages()
+	require.Len(t, rows, 3)
+	assert.Contains(t, string(rows[0].Content), "Before the tool")
+	assert.Contains(t, string(rows[1].Content), `"tool_call"`)
+	assert.Contains(t, string(rows[2].Content), "After the tool")
+}
 
 type droidPromptFailureSink struct {
 	*agenttest.Sink
@@ -530,7 +548,7 @@ func droidEarlySendArchive(t *testing.T, sends int) (*Agent, *agenttest.Sink, *q
 	for index := range sends {
 		if index > 0 {
 			// Native idle can reach the bound child before the archive ticker runs.
-			child.disarmTurn()
+			child.endTurn()
 		}
 		require.NoError(t, a.SendChildInput(archiveChildID, fmt.Sprintf("follow-up %d", index+1), nil))
 	}

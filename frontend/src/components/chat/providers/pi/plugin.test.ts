@@ -142,8 +142,8 @@ describe('pi result divider', () => {
       messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
     })!
 
-    it('marks the divider auto-retry after the duration', () => {
-      expect(retrying.label).toBe('Turn failed (2.1s, auto-retry) — overloaded')
+    it('uses no retry qualifier on a stored final divider', () => {
+      expect(retrying.label).toBe('Turn failed (2.1s) — overloaded')
     })
 
     it('adds no meta part when Pi does not retry', () => {
@@ -323,6 +323,10 @@ describe('pi tool row toolbar metadata', () => {
 // its own, before the message. The message's own row therefore draws its text alone,
 // and a message that holds no text draws nothing.
 describe('pi message rows', () => {
+  it('extracts the text of a displayed custom session entry', () => {
+    const parent = { type: 'entry_appended', entry: { type: 'custom_message', display: true, content: 'A stored extension note.' } }
+    expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'A stored extension note.' })
+  })
   it('draws the text of a message and leaves its thinking out', () => {
     const parent = {
       type: 'message_end',

@@ -56,27 +56,35 @@ func (clineProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 		return classifyNotice(envelope.Payload.Metadata.Kind, envelope.Payload.Metadata.Phase)
 	case contracts.ClineEventTeamProgress:
 		if runID := envelope.Payload.LastEvent.RunID; runID != "" {
-			return agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: teamRowPrefix + runID}
+			return agent.ProviderScopedNotification(teamRowPrefix + runID)
 		}
 	}
 	return agent.NotificationClassification{}
 }
 
-// noticeKey groups the notices of Cline's compactions.
-const noticeKey = "cline:compaction"
-
 // classifyNotice classifies one `session.notice` by its kind and phase.
 func classifyNotice(kind, phase string) agent.NotificationClassification {
+	if isCompactionNotice(kind) {
+		switch phase {
+		case contracts.ClineNoticePhaseCompleted, contracts.ClineNoticePhaseSkipped, contracts.ClineNoticePhaseFailed:
+			return agent.CompactionBoundaryNotification()
+		case contracts.ClineNoticePhaseStarted:
+			return agent.NotificationClassification{}
+		}
+	}
+	if kind == contracts.ClineNoticeKindProviderErrorRetry {
+		return agent.APIRetryNotification()
+	}
+	return agent.ProviderScopedNotification("cline:status")
+}
+
+// isCompactionNotice identifies the kinds whose phases describe one compaction.
+func isCompactionNotice(kind string) bool {
 	switch kind {
 	case contracts.ClineNoticeKindAutoCompaction, contracts.ClineNoticeKindManualCompaction, contracts.ClineNoticeKindOverflowRecoveryCompaction:
-		if phase == contracts.ClineNoticePhaseCompleted {
-			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: noticeKey}
-		}
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: noticeKey}
-	case contracts.ClineNoticeKindProviderErrorRetry:
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "cline:retry"}
+		return true
 	default:
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "cline:status"}
+		return false
 	}
 }
 

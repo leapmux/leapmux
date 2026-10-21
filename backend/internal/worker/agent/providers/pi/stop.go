@@ -38,6 +38,7 @@ func (a *Agent) Stop() {
 	a.interruptOutput.waitForDrain()
 	a.flushPiGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
+	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	a.sink.ReportProgress(agent.ResetProgress())
 }
 
@@ -80,6 +81,7 @@ func (a *Agent) Wait() error {
 	completion := a.ProcessExitCompletion()
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
+	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	a.sink.ReportProgress(agent.ResetProgress())
 	return err
 }

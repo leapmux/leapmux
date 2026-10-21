@@ -1,11 +1,81 @@
 import type { AutoReviewEntry, NotificationEntry } from './model/notification'
 import { create } from '@bufbuild/protobuf'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GOAL_STATUS_TOKEN, GOAL_TRANSITION, NOTIFICATION_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { autoReviewTitle, COMPACTING_LABEL, flattenNotificationEntries, leapmuxNotificationEntry, notificationEntriesFor, pendingRequestsApprovedLabel } from './notificationEntries'
+import { autoReviewTitle, compactionContextTokens, flattenNotificationEntries, leapmuxNotificationEntry, pendingRequestsApprovedLabel } from './notificationEntries'
+import * as providerRegistry from './providers/registry'
 import { providerFor } from './providers/registry'
+
+describe('flattenNotificationEntries compaction', () => {
+  it.each([
+    ['completed', 'divider', 'Context compacted'],
+    ['failed', 'text', 'Compaction failed'],
+    ['aborted', 'text', 'Context compaction aborted'],
+    ['skipped', 'text', 'Context compaction skipped'],
+  ] as const)('states the %s outcome', (outcome, kind, text) => {
+    expect(flattenNotificationEntries([{ kind: 'compaction', phase: 'end', outcome }])).toEqual([{ kind, text }])
+  })
+
+  it('treats an error without an outcome as a failure', () => {
+    expect(flattenNotificationEntries([{ kind: 'compaction', phase: 'end', error: ' reason ' }]))
+      .toEqual([{ kind: 'text', text: 'Compaction failed (reason)' }])
+  })
+
+  it('states an aborted outcome with its detail', () => {
+    expect(flattenNotificationEntries([{ kind: 'compaction', phase: 'end', outcome: 'aborted', error: 'stopped' }]))
+      .toEqual([{ kind: 'text', text: 'Context compaction aborted (stopped)' }])
+  })
+
+  it('omits an invalid post count', () => {
+    expect(flattenNotificationEntries([{ kind: 'compaction', phase: 'end', detail: { post: -1 } }]))
+      .toEqual([{ kind: 'divider', text: 'Context compacted' }])
+  })
+})
+
+describe('flattenNotificationEntries hook', () => {
+  it.each([
+    ['failed', 'failed'],
+    ['blocked', 'blocked'],
+    ['timed-out', 'timed out'],
+    ['continued', 'made the agent continue'],
+  ] as const)('states the %s outcome', (outcome, verb) => {
+    expect(flattenNotificationEntries([{ kind: 'hook', outcome, event: 'Stop', name: 'check', exitCode: 0, detail: 'reason' }]))
+      .toEqual([{ kind: 'text', text: `Hook Stop (check) ${verb} (exit 0): reason` }])
+  })
+
+  it('omits absent fields and a fractional exit code', () => {
+    expect(flattenNotificationEntries([{ kind: 'hook', outcome: 'failed', exitCode: 1.5 }]))
+      .toEqual([{ kind: 'text', text: 'A hook failed' }])
+  })
+})
+
+describe('compactionContextTokens', () => {
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])('ignores the invalid post count %s and keeps an earlier valid count', (post) => {
+    const plugin = providerFor(AgentProvider.OPENCODE)!
+    const lookup = vi.spyOn(providerRegistry, 'pluginFor').mockReturnValue({
+      ...plugin,
+      session: {
+        compactionBoundaryFromMessage: parsed => ({ post: parsed.topLevel?.post as number }),
+      },
+    })
+    try {
+      const invalid = { post }
+      expect(compactionContextTokens({ rawText: '', topLevel: invalid, parentObject: invalid, wrapper: null }, AgentProvider.OPENCODE))
+        .toBeUndefined()
+      expect(compactionContextTokens({
+        rawText: '',
+        topLevel: {},
+        parentObject: {},
+        wrapper: { old_seqs: [], messages: [{ post: 0 }, invalid] },
+      }, AgentProvider.OPENCODE)).toBe(0)
+    }
+    finally {
+      lookup.mockRestore()
+    }
+  })
+})
 
 // Register the OpenCode plugin so the test uses the production dispatch path.
 // This plugin supplies no notificationEntry hook.
@@ -27,6 +97,10 @@ function retryText(entry: Omit<Extract<NotificationEntry, { kind: 'retry' }>, 'k
  * Retain the wait and error detail.
  */
 describe('flattenNotificationEntries retry', () => {
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('omits the invalid attempt %s', (attempt) => {
+    expect(retryText({ scope: 'api', attempt, maxAttempts: 3 })).toBe('API retry')
+  })
+
   it('states a sub-second wait in milliseconds', () => {
     // Rounding this positive delay to zero would display "0s".
     // Retain a positive wait so it differs from no wait.
@@ -65,16 +139,37 @@ describe('flattenNotificationEntries retry', () => {
  * Without the shared case, that row would display no block.
  */
 describe('leapmuxNotificationEntry', () => {
-  it('reads the compacting envelope as the neutral start of a compaction', () => {
-    expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.Compacting }, AgentProvider.OPENCODE))
-      .toStrictEqual([{ kind: 'compaction', phase: 'start' }])
+  it.each([
+    // An absent outcome with no error is a compaction that completed: the
+    // worker writes it when the agent frames no end of its own.
+    [{}, { kind: 'compaction', phase: 'end', outcome: 'completed' }],
+    [{ outcome: 'aborted' }, { kind: 'compaction', phase: 'end', outcome: 'aborted' }],
+    [{ outcome: 'other', error: '  details  ' }, { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'details' }],
+    [{ error: 'boom' }, { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'boom' }],
+  ])('maps a worker compaction end: %j', (fields, expected) => {
+    expect(leapmuxNotificationEntry({ type: 'compaction_ended', ...fields }, undefined)).toEqual([expected])
   })
 
-  it('draws the compacting row for a provider that supplies no notificationEntry hook', () => {
-    // Confirm that this provider supplies no notification hook.
-    expect(providerFor(AgentProvider.OPENCODE)?.transcript.notificationEntry).toBeUndefined()
-    expect(flattenNotificationEntries(notificationEntriesFor({ type: NOTIFICATION_TYPE.Compacting }, AgentProvider.OPENCODE)))
-      .toStrictEqual([{ kind: 'divider', text: COMPACTING_LABEL, loading: true }])
+  it('maps api_retry_resolved to a succeeded retry', () => {
+    expect(flattenNotificationEntries(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.ApiRetryResolved }, undefined) ?? []))
+      .toEqual([{ kind: 'text', text: 'API retry succeeded' }])
+  })
+
+  it('maps api_retry to a retry with its count', () => {
+    expect(flattenNotificationEntries(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.ApiRetry, count: 3 }, undefined) ?? []))
+      .toEqual([{ kind: 'text', text: 'API retry 3' }])
+  })
+
+  it('reads the compaction-ended envelope as a completed end', () => {
+    expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.CompactionEnded }, AgentProvider.OPENCODE))
+      .toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'completed' }])
+  })
+
+  it('leaves an old compacting envelope of an older build unrecognized', () => {
+    // The type is gone from the vocabulary: no worker writes it, and a stored
+    // row draws the no-display card (decision 22).
+    expect(leapmuxNotificationEntry({ type: 'compacting' }, AgentProvider.OPENCODE))
+      .toBeNull()
   })
 })
 

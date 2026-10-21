@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { expectRateLimitNotice } from '../helpers/rateLimit'
-import { resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { messageContents, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiroTest } from '../kiro-fixtures'
 
 /**
@@ -28,5 +28,19 @@ kiroTest.describe('Kiro basic chat', () => {
     const recovered = await sendNativeAnswer(native, 'Reply once after the native throttled turn ends.', 'The native Kiro session recovered after its service failure.')
     expect(recovered.protocol).toBe('aws-event-stream')
     expect((await currentNativeAgent(native)).id).toBe(before.id)
+  })
+
+  // A content-filter refusal rides its own chunk: the answer keeps its text and
+  // the refusal states its category, explanation and recommended model.
+  kiroTest('states a content-filter refusal beside the answer text', async ({ native, modelScript }) => {
+    const start = await modelScript.queue({
+      text: 'Probe refusal explanation.',
+      stopReason: 'refusal',
+    })
+    await sendMessage(native.page, modelScript.prompt('Say the refused answer.'))
+    await modelScript.waitForSteps(start + 1)
+    await waitForAgentIdle(native.page)
+    await expect(messageContents(native.page).filter({ hasText: 'The model refused this request (CYBER)' })).toHaveCount(1)
+    await expect(messageContents(native.page).filter({ hasText: 'Recommended model: kiro-probe-alt' })).toHaveCount(1)
   })
 })

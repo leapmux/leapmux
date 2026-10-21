@@ -40,17 +40,11 @@ func (deepseekHarnessProvider) Classify(raw json.RawMessage) agent.NotificationC
 	if json.Unmarshal(raw, &event) != nil {
 		return agent.NotificationClassification{}
 	}
-	if event.Type == contracts.DeepseekHarnessEventCompactionEnd {
-		var data struct {
-			Error *string `json:"error"`
-		}
-		if json.Unmarshal(event.Data, &data) != nil {
-			return agent.NotificationClassification{}
-		}
-		if data.Error == nil {
-			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "deepseek-harness:compaction"}
-		}
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "deepseek-harness:compaction"}
+	switch event.Type {
+	case contracts.DeepseekHarnessEventCompactionEnd:
+		return agent.CompactionBoundaryNotification()
+	case contracts.DeepseekHarnessEventLlmRetry:
+		return agent.APIRetryNotification()
 	}
 	return agent.NotificationClassification{}
 }

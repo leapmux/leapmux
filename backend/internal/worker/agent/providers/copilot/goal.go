@@ -208,16 +208,9 @@ func (a *Agent) clearNativeGoal() error {
 
 // reopenNativeSessionAfterClear opens the disposed session under its own identity.
 //
-// A resume restores the conversation, so it is what runs first. The runtime refuses
-// one for a session its store never recorded -- every session that ran no model turn
-// is in that state, and the browser's own goal case is one -- and it answers
-// "Failed to load session events: Session not found". Creating the session under the
-// SAME identity is then the way back, and it loses nothing, because the store held
-// nothing to restore. See CP-012.
-//
-// Only the runtime's own REFUSAL takes that path. A transport failure or a timeout
-// leaves the outcome unknown, and a create there could replace a session whose
-// events the store still holds.
+// It first tries to resume the session. A session that ran no model turn can have no stored events.
+// The runtime then refuses the resume, so the Worker creates the same session identity. See CP-012.
+// Only a native refusal permits creation. A transport failure or timeout leaves the stored history uncertain.
 func (a *Agent) reopenNativeSessionAfterClear(opts agent.Options, sessionID string) error {
 	err := a.resumeNativeSessionWithoutPendingWork(opts, sessionID)
 	if err == nil {
@@ -288,11 +281,8 @@ func (a *Agent) applyNativeGoal(state copilotObjectiveState, snapshot bool) {
 	})
 }
 
-// copilotGoalStatus maps the runtime's own words onto the neutral four.
-//
-// Every other word reads as blocked, `cap_reached` above all: that is the credit
-// limit Resume asked for, and it needs the user, because a Resume under the same
-// limit would stop again at once.
+// copilotGoalStatus maps the three native goal states to neutral states.
+// An unknown state reads as blocked because the Worker cannot confirm that the goal remains active.
 func copilotGoalStatus(wire string) agent.GoalStatus {
 	switch wire {
 	case copilotGoalStatusActive:

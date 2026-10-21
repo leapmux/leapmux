@@ -49,6 +49,13 @@ export const COMMAND_CODE_ALT_MODEL_ID = 'leapmux-e2e/command-code-e2e-alt'
 /** The third Command Code model, which offers the low, medium, and high efforts. */
 export const COMMAND_CODE_REASONING_MODEL_ID = 'leapmux-e2e/command-code-e2e-reasoning'
 export const GEMINI_MODEL_ID = 'gemini-2.5-pro'
+/**
+ * The Codex model whose catalog entry offers `request_user_input_async`.
+ * The bundled Codex catalog lists `send_user_message_async` for this model, and
+ * Codex keeps the bundled catalog for the `leapmux-e2e` provider because that
+ * provider states no `model_catalog_url`.
+ */
+export const CODEX_ASYNC_QUESTION_MODEL = 'gpt-6-luna'
 
 export const MODEL_KEY = 'leapmux-e2e-model-key'
 export const MOCK_IDENTITY_TOKEN = 'leapmux-e2e-token'

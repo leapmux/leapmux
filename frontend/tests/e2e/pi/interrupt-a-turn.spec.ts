@@ -194,13 +194,22 @@ piTest('settles a cancelled native retry and completes a later prompt in the sam
         await stopped
         if (!retryBytes)
           throw new Error('The native retry start did not supply its original bytes.')
-        expect(JSON.parse(retryBytes.toString())).toMatchObject({ type: PI_EVENT.AutoRetryStart, attempt: 1, maxAttempts: 3, delayMs: 2000 })
+        expect(JSON.parse(retryBytes.toString())).toMatchObject({
+          type: PI_EVENT.AutoRetryStart,
+          attempt: 1,
+          maxAttempts: 3,
+          delayMs: 2000,
+          errorMessage: expect.stringContaining(`500 native retry ${marker}`),
+        })
         await expect.poll(() => relayEvidence(evidencePath).filter(record => record.kind === 'native-output' && record.frame.type === PI_EVENT.AgentSettled)).toHaveLength(1)
         const records = relayEvidence(evidencePath)
         const cancelled = records.find(record => record.kind === 'native-output' && record.frame.type === PI_EVENT.AutoRetryEnd)
         expect(cancelled?.frame).toMatchObject({ success: false, attempt: 1, finalError: 'Retry cancelled' })
         expect(records.some(record => record.kind === 'native-output' && record.frame.type === PI_EVENT.AgentEnd && record.frame.willRetry === true)).toBe(true)
-        await expect(page.locator('[data-testid="result-divider"]:visible').filter({ hasText: 'auto-retry' }).first()).toContainText(`500 native retry ${marker}`)
+        const dividers = page.locator('[data-testid="result-divider"]:visible')
+        await expect(dividers).toHaveCount(1)
+        await expect(dividers).toContainText('Turn interrupted')
+        await expect(dividers).not.toContainText('auto-retry')
         await expect(visibleOnly(page.getByText('Retry cancelled', { exact: false })).first()).toBeVisible()
         await resumePausedQueue(page)
         await sendMessage(page, modelScript.prompt(`Complete a normal turn after cancelled retry ${marker}.`))

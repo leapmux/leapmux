@@ -671,7 +671,9 @@ func hasToolResultBlock(env *messageEnvelope) bool {
 //   - Assistant text or thinking.
 //   - A child tool_use.
 //   - A child tool_result.
-//   - The child's result.
+//   - A synthetic assistant API error.
+//
+// Claude Code 2.1.302 sends no child result. task_updated or task_notification closes the child.
 //
 // Resolve the child through the task-to-tool-use index recorded at task_started.
 // If that index misses an early envelope, EnsureChildAgent can still use the spawn span.
@@ -768,7 +770,7 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 	}
 
 	if msgType == claudeMsgTypeResult {
-		// A child result also closes its registry row when no task_notification arrives.
+		// Claude Code 2.1.302 sends no child result. A build that forwards one closes the child's registry row here.
 		//
 		// After InterruptChild sends stop_task, mark the turn interrupted only when the result confirms that the stop affected it.
 		// The divider then displays "Turn interrupted", and the row reports interrupted.

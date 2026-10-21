@@ -55,6 +55,12 @@ func TestDroidChildProcessHelper(t *testing.T) {
 		if request.Method == "droid.test_release_exit" && pendingExit {
 			os.Exit(7)
 		}
+		if request.Method == droidMethodAddUserMessage {
+			// Droid acknowledges enqueueing before the process can exit during the turn.
+			if _, err := fmt.Fprintf(os.Stdout, `{"type":"response","id":%q,"result":{}}`+"\n", request.ID); err != nil {
+				os.Exit(2)
+			}
+		}
 		if request.Method == droidMethodAddUserMessage && os.Getenv("LEAPMUX_DROID_CHILD_EXIT_AFTER_RELEASE") == "1" {
 			pendingExit = true
 			continue

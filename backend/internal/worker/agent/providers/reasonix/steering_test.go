@@ -71,3 +71,44 @@ func TestReasonixAdvertisedSteerMapsEndedTurnResponse(t *testing.T) {
 	reasonix.SetPromptActiveForTest(true)
 	assert.ErrorIs(t, reasonix.SteerInput("guide", nil), agent.ErrNoActiveTurn)
 }
+
+// The disposition of Reasonix's steer reply decides what the queue hears.
+// steer_accepted and queued_followup both deliver: Reasonix runs a
+// queued_followup as the follow-up turn when the active one ends. Every
+// rejected_* word answers ErrNoActiveTurn, so the queue keeps the input for
+// the next turn.
+func TestReasonixSteerDisposition(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		disposition string
+		wantErr     error
+	}{
+		{"steer_accepted", nil},
+		{"queued_followup", nil},
+		{"rejected_busy", agent.ErrNoActiveTurn},
+		{"rejected_rotating", agent.ErrNoActiveTurn},
+		{"rejected_closed", agent.ErrNoActiveTurn},
+		{"rejected_capacity", agent.ErrNoActiveTurn},
+	} {
+		t.Run(tc.disposition, func(t *testing.T) {
+			t.Parallel()
+			disposition := tc.disposition
+			a, requests := acptest.NewAgentForRPCWithResponder(t,
+				func() *Agent { return &Agent{} },
+				func(a *Agent) *acp.Base { return &a.Base },
+				func(method string) agenttest.RPCReply {
+					if method == reasonixSteerMethod {
+						return agenttest.RPCReply{Result: json.RawMessage(`{"disposition":"` + disposition + `"}`)}
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				})
+			a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+			a.SetSessionIDForTest("reasonix-session")
+			a.SetSteerMethodForTest(reasonixSteerMethod)
+			a.SetPromptActiveForTest(true)
+			err := a.SteerInput("more context", nil)
+			assert.Equal(t, tc.wantErr, err)
+			require.NotEmpty(t, requests(), "the steer request left the agent")
+		})
+	}
+}

@@ -1,18 +1,17 @@
 /**
  * The Goals sidebar sets and clears Muse's native session goal.
  *
- * The Worker sends Muse's own goal/set and goal/clear commands, and Muse runs a native
- * goal turn for each: the objective reaches the model, and Muse reports the goal state
- * that the panel shows.
+ * The worker sends Muse's goal/set and goal/clear commands. Muse runs a native goal turn for each command.
+ * The objective reaches the model. The panel shows the goal state that Muse reports.
  */
 import { expect } from '@playwright/test'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
+import { completeGoalToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { museTest } from '../muse-fixtures'
 
 /**
- * Muse works a goal in its own goal turns and parks it between them, so a
- * settled session reads its goal as paused while the objective stays.
+ * Muse pauses a goal between its native goal turns. The paused goal keeps its objective.
  */
 museTest('sets a native goal through the panel and clears it after reload', async ({ native }) => {
   const { page, modelScript } = native
@@ -43,4 +42,22 @@ museTest('sets a native goal through the panel and clears it after reload', asyn
   await modelScript.waitForSteps(after + 1)
   await waitForAgentIdle(page)
   await expect(assistantBubbles(page).filter({ hasText: 'The session continues without a goal.' })).toBeVisible()
+})
+
+museTest('reads a completed native goal as done', async ({ native }) => {
+  const { page, modelScript } = native
+  const start = await modelScript.queue(
+    { toolCalls: [completeGoalToolCall(native.provider, 'muse-goal-complete')] },
+    { text: 'The native goal is complete.' },
+  )
+  const objective = scriptedObjective(modelScript, 'Complete the native goal with the scripted tool.')
+  await setGoal(page, objective)
+  await modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(page)
+  await expectGoalObjective(page, objective)
+  await expectGoalStatus(page, 'done')
+  await page.reload()
+  await expandGoalsAndTodosSection(page)
+  await expectGoalObjective(page, objective)
+  await expectGoalStatus(page, 'done')
 })

@@ -99,10 +99,11 @@ const reasonixMethodSessionStatus = "_reasonix.io/session/status"
 // Reasonix publishes its starting status before SetGoal stores the objective.
 // Read the native status because another notification may not arrive until the model responds.
 func (a *Agent) confirmReasonixGoal(sessionID, objective string) error {
-	expires := time.Now().Add(min(a.APITimeout(), 5*time.Second))
-	deadline := time.NewTimer(time.Until(expires))
+	window := min(a.APITimeout(), 5*time.Second)
+	expires := a.Process.Clock().Now().Add(window)
+	deadline := a.Process.Clock().NewTimer(window)
 	defer deadline.Stop()
-	ticker := time.NewTicker(25 * time.Millisecond)
+	ticker := a.Process.Clock().NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		a.goalStatusMu.Lock()
@@ -117,8 +118,8 @@ func (a *Agent) confirmReasonixGoal(sessionID, objective string) error {
 			if err != nil {
 				return err
 			}
-			remaining := time.Until(expires)
-			if remaining <= 0 {
+			remaining := a.Process.Clock().Now().Sub(expires).Abs()
+			if a.Process.Clock().Now().After(expires) {
 				return agent.ErrDeliveryUncertain
 			}
 			raw, err = a.SendRequest(reasonixMethodSessionStatus, params, remaining)
@@ -309,8 +310,6 @@ func (a *Agent) handleReasonixStatusUpdate(params json.RawMessage) {
 // surface in the app already says, and repeating them would put a row in the
 // transcript for each step of every turn.
 var reasonixPhaseLabels = map[string]string{
-	"waiting_permission": "Waiting for permission",
-	"waiting_input":      "Waiting for input",
 	"checking_readiness": "Checking whether the work is ready",
 	"readiness_paused":   "Paused: the work is not ready",
 	"review_ready":       "Ready for review",

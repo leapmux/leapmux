@@ -6,13 +6,7 @@ import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { qoderNotificationEntry } from './extractors/notification'
 
-/**
- * Qoder message classification.
- *
- * The stream carries Anthropic-shaped assistant frames with extra fields, plus
- * a first-class control channel. This plugin reads only what it needs to pick a
- * category; the extraction turns it into the neutral row.
- */
+/** Classify Qoder's native transcript rows before extraction. */
 export function classifyQoderMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
@@ -24,8 +18,12 @@ export function classifyQoderMessage(input: ClassificationInput): MessageCategor
     return { kind: 'hidden' }
   if (isNotificationThreadWrapper(wrapper, undefined, (type, subtype) =>
     type === QODER_FRAME_KIND.System
-    && (subtype === QODER_SYSTEM_SUBTYPE.CompactBoundary || subtype === QODER_SYSTEM_SUBTYPE.Status))) {
-    return notification(wrapper.messages, 'hidden')
+    && (subtype === QODER_SYSTEM_SUBTYPE.CompactBoundary
+      || subtype === QODER_SYSTEM_SUBTYPE.ApiRetry
+      || subtype === QODER_SYSTEM_SUBTYPE.ModelQueueStatus
+      || subtype === QODER_SYSTEM_SUBTYPE.HookResponse
+      || subtype === QODER_SYSTEM_SUBTYPE.AgentsMdSizeWarning))) {
+    return notification(wrapper.messages)
   }
 
   if (!parent || !isObject(parent))
@@ -40,25 +38,19 @@ export function classifyQoderMessage(input: ClassificationInput): MessageCategor
     case QODER_FRAME_KIND.Result:
       return { kind: 'result_divider' }
     case QODER_FRAME_KIND.System:
-      return notification([parent], 'hidden')
-    case QODER_FRAME_KIND.StreamEvent:
-    case QODER_FRAME_KIND.CommandLifecycle:
-    case QODER_FRAME_KIND.ToolProgress:
-    case QODER_FRAME_KIND.Progress:
-    case QODER_FRAME_KIND.Attachment:
-      return { kind: 'hidden' }
+      return notification([parent])
     default:
       return { kind: 'unknown' }
   }
 }
 
-/** Qoder echoes user input and sends an empty result before image bytes. */
+/** Read tool results. An empty provisional result precedes native image bytes. */
 function classifyUser(parent: Record<string, unknown>): MessageCategory {
   const message = isObject(parent.message) ? parent.message : undefined
   const content = message && Array.isArray(message.content) ? message.content : []
   const result = content.find(block => isObject(block) && pickString(block, 'type') === 'tool_result')
   if (!isObject(result))
-    return { kind: 'hidden' }
+    return { kind: 'unknown' }
   const body = result.content
   if (typeof body === 'string')
     return { kind: body.trim() ? 'tool_result' : 'hidden' }

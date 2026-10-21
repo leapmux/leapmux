@@ -104,6 +104,89 @@ func TestNotificationThreading_CrossSourceProducesSeparateThreads(t *testing.T) 
 	require.Len(t, secondWrapper.Messages, 1)
 }
 
+func TestNotificationThreading_WorkerRetryResolutionUpdatesTheNativeRetry(t *testing.T) {
+	t.Parallel()
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		[]byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
+	sink.PersistLeapMuxNotification(map[string]interface{}{
+		contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved,
+	})
+	rows := listRows()
+	require.Len(t, rows, 1, "the worker resolution must update the existing retry row")
+	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	require.Len(t, wrapper.Messages, 1)
+	assert.JSONEq(t, `{"type":"api_retry_resolved"}`, string(wrapper.Messages[0]))
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
+}
+
+func TestNotificationThreading_RetryResolutionPreservesBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"empty", "ordinary notice", "answer", "session change", "worker retry", "intervening source", "duplicate"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			sink.UpdateSessionID("session-one")
+			if scenario != "empty" && scenario != "ordinary notice" {
+				if scenario == "worker retry" {
+					sink.PersistLeapMuxNotification(map[string]interface{}{"type": "api_retry", "count": 1})
+				} else {
+					persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
+				}
+			}
+			switch scenario {
+			case "ordinary notice", "intervening source":
+				sink.PersistLeapMuxNotification(map[string]interface{}{"type": "agent_status", "message": "A separate notice"})
+			case "answer":
+				require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+					agent.MessageContent{Original: []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`)}, agent.SpanInfo{}))
+			case "session change":
+				sink.UpdateSessionID("session-two")
+			}
+			before := listRows()
+			resolve := func() {
+				sink.PersistLeapMuxNotification(map[string]interface{}{"type": "api_retry_resolved"})
+			}
+			resolve()
+			after := listRows()
+			switch scenario {
+			case "worker retry", "intervening source", "duplicate":
+				require.Len(t, after, len(before))
+				resolved := after[len(after)-1]
+				assert.Equal(t, before[0].ID, resolved.ID)
+				assert.Equal(t, before[0].Source, resolved.Source)
+				wrapper := decodeNotifWrapper(t, resolved.Content, resolved.ContentCompression)
+				require.Len(t, wrapper.Messages, 1)
+				assert.JSONEq(t, `{"type":"api_retry_resolved"}`, string(wrapper.Messages[0]))
+				if scenario == "intervening source" {
+					assert.Equal(t, before[1], after[0], "the ordinary notice keeps its own row and source")
+				}
+				resolve()
+				assert.Equal(t, after, listRows(), "a repeated resolution changes nothing")
+			default:
+				assert.Equal(t, before, after, "a resolution cannot create a row or cross a transcript boundary")
+			}
+		})
+	}
+}
+
+func TestNotificationThreading_StaleSinkCannotResolveTheCurrentRetry(t *testing.T) {
+	t.Parallel()
+	svc, old := setupRootSink(t, "retry-owner")
+	old.UpdateSessionID("same-native-session")
+	current := svc.Output.NewSink("retry-owner", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	current.PersistLeapMuxNotification(map[string]interface{}{"type": "api_retry", "count": 1})
+	list := func() []db.Message {
+		rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "retry-owner"})
+		require.NoError(t, err)
+		return rows
+	}
+	before := list()
+	require.Len(t, before, 1)
+	old.PersistLeapMuxNotification(map[string]interface{}{"type": "api_retry_resolved"})
+	assert.Equal(t, before, list())
+}
+
 func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 	t.Parallel()
 
@@ -292,4 +375,42 @@ func TestWrapNotifContentFallbackMatchesTheStruct(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, notifThreadWrapperType, wrapper.Type)
 	assert.Empty(t, wrapper.Messages)
+}
+
+func TestNotificationThreading_OrderedWorkerResolutionPreservesNativeAndWorkerSources(t *testing.T) {
+	t.Parallel()
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	var queue agent.OutputQueue
+	unavailable := true
+	queue.Append(agent.OutputWrite{Label: "store unavailable", Run: func() error {
+		if unavailable {
+			return assert.AnError
+		}
+		return nil
+	}})
+	ordered := agent.NewOrderedProviderServices(&queue, sink)
+	_, err := ordered.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"type":"system","subtype":"api_retry","attempt":1}`)})
+	require.ErrorIs(t, err, assert.AnError)
+	notice := map[string]interface{}{"type": "agent_status", "message": "Keep this notice"}
+	ordered.PersistLeapMuxNotification(notice)
+	notice["message"] = "changed after submission"
+	_, err = ordered.PersistWorkerNotification(agent.MessageContent{Original: []byte(`{"type":"api_retry_resolved"}`)})
+	require.ErrorIs(t, err, assert.AnError)
+	require.ErrorIs(t, ordered.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Answer"}]}}`)}, agent.SpanInfo{}), assert.AnError)
+	assert.Empty(t, listRows())
+	unavailable = false
+	require.NoError(t, queue.Flush())
+	rows := listRows()
+	require.Len(t, rows, 3)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, rows[0].Source)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[1].Source)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[2].Source)
+	retry := decodeNotifWrapper(t, rows[1].Content, rows[1].ContentCompression)
+	require.Len(t, retry.Messages, 1)
+	assert.JSONEq(t, `{"type":"api_retry_resolved"}`, string(retry.Messages[0]))
+	worker := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	require.Len(t, worker.Messages, 1)
+	assert.JSONEq(t, `{"type":"agent_status","message":"Keep this notice"}`, string(worker.Messages[0]))
 }

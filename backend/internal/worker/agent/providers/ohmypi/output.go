@@ -106,6 +106,8 @@ func (a *Agent) disarmTurn(id string) {
 // the session's own, or one subagent's. Every field is guarded by Process.Mu,
 // except generation, which guards itself.
 type conversation struct {
+	compactionOpen bool
+	ttsrPending    bool
 	// sink is the transcript the conversation writes to: the agent's own sink, or
 	// the child sink of a subagent.
 	sink agent.ProviderServices
@@ -151,9 +153,9 @@ type toolState struct {
 // messageUpdateEnvelope takes the fields that model progress needs from a
 // message_update frame.
 //
-// The frame repeats the WHOLE cumulative assistant message twice, under
-// `assistantMessageEvent.partial` and under `message`, so it grows with the
-// message. This shape declares neither field, and the decoder skips both.
+// The handshake requests delta-only root updates. Subagent frames retain full
+// snapshots under assistantMessageEvent.partial and message. This decoder skips
+// both snapshot fields. Child message_end frames supply the child transcript.
 type messageUpdateEnvelope struct {
 	AssistantMessageEvent struct {
 		Type         string `json:"type"`
@@ -205,13 +207,14 @@ type contentBlock struct {
 
 // agentEndEnvelope takes the outcome fields of an agent_end frame.
 //
-// `isTerminal` is false when omp has already scheduled more work: a steer or a
-// follow-up that arrived at the tail of the run, an IRC wake, or a maintenance
-// step that continues the run (session/agent-session.ts, #flushPendingAgentEnd).
-// A steer of LeapMux's own continues the running turn, so the turn stays open
-// across that end (see turnState.pendingSteers). Any other scheduled work can
-// start much later -- a background job's result, for example -- so the worker
-// ends the turn, and the run that the work starts is a turn of its own.
+// The native isTerminal field is false when Oh My Pi schedules more work:
+//   - A steer or another pending input.
+//   - An IRC wake.
+//   - A maintenance step.
+//
+// A LeapMux steer keeps the current turn open until its echo. See turnState.pendingSteers.
+// Other scheduled work can start much later, so its run starts a separate turn.
+// The native rule is in session/agent-session.ts, #flushPendingAgentEnd.
 type agentEndEnvelope struct {
 	Messages []struct {
 		Role         string `json:"role"`
@@ -242,6 +245,7 @@ func (a *Agent) handleAgentStart() {
 	// Read the clock before the lock, so an injected clock never runs under Mu.
 	now := a.Clock().Now()
 	a.Mu.Lock()
+	a.rootConversationLocked().ttsrPending = false
 	firstRun := !a.turn.runStarted
 	a.turn.active = true
 	a.turn.runStarted = true
@@ -249,8 +253,8 @@ func (a *Agent) handleAgentStart() {
 		a.turn.startedAt = now
 	}
 	if firstRun && a.turn.armedBy == "" {
-		// A run that no prompt of this worker armed -- omp started it for a
-		// background job's result. A stop note left from before is stale.
+		// Oh My Pi started this run for a background result, without a Worker prompt.
+		// A stop request from an earlier run does not apply.
 		a.turn.interruptRequested = false
 	}
 	a.Mu.Unlock()
@@ -330,6 +334,7 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 	}
 	endedAt := a.Clock().Now()
 	a.Mu.Lock()
+	a.rootConversationLocked().ttsrPending = false
 	if env.IsTerminal != nil && !*env.IsTerminal && a.turn.pendingSteers > 0 {
 		root := a.rootConversationLocked()
 		a.Mu.Unlock()
@@ -407,19 +412,62 @@ func (a *Agent) handleMessageUpdate(c *conversation, raw []byte) {
 	if event.Delta == "" {
 		return
 	}
-	a.sink.ReportProgress(agent.ModelTextProgress("omp:model", event.Delta))
-	c.generation.Append(fmt.Sprintf("omp:content:%d", event.ContentIndex), kind, event.Delta, providerkit.JoinVerbatim)
+	scopeID := fmt.Sprintf("omp:content:%d", event.ContentIndex)
+	c.sink.ReportProgress(agent.ModelTextProgress(scopeID, event.Delta))
+	c.generation.Append(scopeID, kind, event.Delta, providerkit.JoinVerbatim)
+}
+
+// beginCompaction publishes the native start without storing a transcript row.
+func (a *Agent) beginCompaction(c *conversation, trigger string) {
+	a.Mu.Lock()
+	c.compactionOpen = true
+	a.Mu.Unlock()
+	providerkit.PublishCompaction(c.sink, trigger)
+}
+
+// endCompaction clears the flag before it withdraws the live state.
+func (a *Agent) endCompaction(c *conversation) {
+	a.Mu.Lock()
+	c.compactionOpen = false
+	a.Mu.Unlock()
+	providerkit.EndCompaction(c.sink)
+}
+
+// persistCompactionEnd preserves a native end even when the start was not observed.
+func (a *Agent) persistCompactionEnd(c *conversation, raw []byte) {
+	a.Mu.Lock()
+	c.compactionOpen = false
+	a.Mu.Unlock()
+	if _, err := c.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
+		slog.Error("omp persist compaction end", "agent_id", a.AgentID(), "error", err)
+	}
+	providerkit.EndCompaction(c.sink)
+}
+
+// finishOpenCompactions claims each missing end once before the conversations close.
+func (a *Agent) finishOpenCompactions() {
+	a.Mu.Lock()
+	var unfinished []*conversation
+	take := func(c *conversation) {
+		if c != nil && c.compactionOpen {
+			c.compactionOpen = false
+			unfinished = append(unfinished, c)
+		}
+	}
+	take(a.root)
+	for _, state := range a.subagents {
+		take(state.conv)
+	}
+	a.Mu.Unlock()
+	for _, c := range unfinished {
+		providerkit.EndCompaction(c.sink)
+		providerkit.PersistCompactionEnded(c.sink, providerkit.CompactionEndAborted, "")
+	}
 }
 
 // flushGeneration persists the streamed text that no message_end completed.
 func (a *Agent) flushGeneration(c *conversation, completion agent.MessageCompletion) {
-	if a.IsDiscardingOutput() {
-		c.generation.Reset()
-		return
-	}
-	if err := c.generation.PersistAll(completion, func(raw []byte) error {
-		return c.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-	}); err != nil {
+	if err := providerkit.FlushGeneration(&c.generation, c.sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("omp persist partial generation", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -451,16 +499,26 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 		content := agent.MessageContent{Original: raw}
 		if c.isRoot() {
 			content = a.assistantMessageContent(raw)
+		}
+		a.Mu.Lock()
+		discard := c.ttsrPending && message.StopReason == contracts.OhMyPiStopReasonAborted
+		if discard {
+			c.ttsrPending = false
+		}
+		a.Mu.Unlock()
+		if discard {
+			providerkit.DiscardGenerationScopes(&c.generation, c.sink, c.generation.ScopeIDs())
+			return
+		}
+		if c.isRoot() {
 			a.rememberAskCalls(message.Content)
 		}
-		if a.messageTextCut(c, message.StopReason, message.Content) {
-			content.Completion = agent.MessageCompletionInterrupted
-		}
+		content.Completion = a.messageTextCompletion(c, message.StopReason, message.Content)
 		a.persistThinking(c, message.Content)
 		if err := c.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
 			slog.Error("omp persist message_end", "agent_id", a.AgentID(), "error", err)
 		}
-		c.generation.Reset()
+		providerkit.DiscardGenerationScopes(&c.generation, c.sink, c.generation.ScopeIDs())
 	case contracts.OhMyPiRoleUser:
 		if !c.isRoot() {
 			a.persistChildPrompt(c, message.Content)
@@ -468,6 +526,9 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 		}
 		if message.Steering {
 			a.takePendingSteer()
+		}
+		if text, valid := steerEchoText(message.Content); valid && a.steers.EchoKey(text) {
+			a.steers.Settle(a.sink)
 		}
 	case contracts.OhMyPiRoleCustom:
 		if !c.isRoot() {
@@ -491,40 +552,34 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 	}
 }
 
-// messageTextCut reports whether a stop cut the text of one assistant message.
-//
-// omp ends a message that a stop cut with its partial text, so the row draws that
-// text, and its completion states the stop. omp spells the stop two ways (see
-// turnState.interruptRequested): `aborted`, and `error` while a tool still ran,
-// which only the worker's own note on the session's turn tells apart from a
-// failure. A message with no visible text keeps no completion: the marker states
-// truncated text, and its row draws none.
-func (a *Agent) messageTextCut(c *conversation, stopReason string, content json.RawMessage) bool {
+// messageTextCompletion marks visible text that a failure or a stop cut.
+// A delivered stop takes precedence over a native error for the root conversation.
+// A message with no visible text needs no completion marker.
+func (a *Agent) messageTextCompletion(c *conversation, stopReason string, content json.RawMessage) agent.MessageCompletion {
+	var completion agent.MessageCompletion
 	switch stopReason {
 	case contracts.OhMyPiStopReasonAborted:
+		completion = agent.MessageCompletionInterrupted
 	case contracts.OhMyPiStopReasonError:
-		if !c.isRoot() {
-			return false
-		}
+		completion = agent.MessageCompletionError
 		a.Mu.Lock()
-		noted := a.turn.interruptRequested
-		a.Mu.Unlock()
-		if !noted {
-			return false
+		if c.isRoot() && a.turn.interruptRequested {
+			completion = agent.MessageCompletionInterrupted
 		}
+		a.Mu.Unlock()
 	default:
-		return false
+		return ""
 	}
 	var blocks []contentBlock
 	if json.Unmarshal(content, &blocks) != nil {
-		return false
+		return ""
 	}
 	for _, block := range blocks {
 		if block.Type == contentBlockText && strings.TrimSpace(block.Text) != "" {
-			return true
+			return completion
 		}
 	}
-	return false
+	return ""
 }
 
 // persistRaw persists a frame this build cannot read, so the reader can still
@@ -581,6 +636,29 @@ func messageThinking(content json.RawMessage) string {
 
 // messageText joins the text of a message's content, which omp states either as a
 // string or as a list of typed blocks.
+// steerEchoText rejects malformed echoes so they cannot consume an image-only steer with an empty text key.
+func steerEchoText(content json.RawMessage) (string, bool) {
+	if text, valid := providerkit.RawString(content); valid {
+		return text, true
+	}
+	var blocks []*struct {
+		Type string  `json:"type"`
+		Text *string `json:"text"`
+	}
+	if json.Unmarshal(content, &blocks) != nil || blocks == nil {
+		return "", false
+	}
+	for _, block := range blocks {
+		if block == nil || block.Type != contentBlockText && block.Type != contentBlockImage {
+			return "", false
+		}
+		if block.Type == contentBlockText && block.Text == nil {
+			return "", false
+		}
+	}
+	return messageText(content), true
+}
+
 func messageText(content json.RawMessage) string {
 	if len(content) == 0 {
 		return ""

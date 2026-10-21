@@ -14,8 +14,12 @@ type ControlRequestRecord struct {
 	// holds when it stores the request (see ControlSink.PublishControlRequest).
 	AgentSessionID string
 	RequestID      string
+	InstanceID     string
 	Payload        []byte
 	SourceSeq      int64
+	// NonBlocking mirrors agent.ControlRequest.NonBlocking: true for a request
+	// the agent does not wait for.
+	NonBlocking bool
 }
 
 // PlanUpdateRecord captures a single UpdatePlan call.
@@ -25,9 +29,8 @@ type PlanUpdateRecord struct {
 	Title       string
 }
 
-// ControlSink extends Sink to also capture control requests, plan updates, and
-// LeapMux notification broadcasts. The base Sink drops all three. A provider
-// test uses it when it asserts on any of the three.
+// ControlSink adds control-request and plan records to Sink.
+// It keeps its own worker-notification collection also.
 type ControlSink struct {
 	Sink
 
@@ -59,8 +62,10 @@ func (s *ControlSink) PublishControlRequest(request agent.ControlRequest) error 
 	s.publishedControls = append(s.publishedControls, ControlRequestRecord{
 		AgentSessionID: sessionID,
 		RequestID:      request.RequestID,
+		InstanceID:     request.InstanceID,
 		Payload:        append([]byte(nil), request.Payload...),
 		SourceSeq:      request.SourceSeq,
+		NonBlocking:    request.NonBlocking,
 	})
 	return nil
 }
@@ -99,6 +104,10 @@ func (s *ControlSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCo
 		Compression: compression,
 		Title:       title,
 	})
+}
+
+func (s *ControlSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	return s.persistWorkerNotification(content, s.PersistLeapMuxNotification)
 }
 
 func (s *ControlSink) PersistLeapMuxNotification(info map[string]interface{}) {

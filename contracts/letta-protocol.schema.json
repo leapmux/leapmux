@@ -19,7 +19,8 @@
     "question",
     "stopReasons",
     "toolOutput",
-    "toolStatuses"
+    "toolStatuses",
+    "eventTypes"
   ],
   "$defs": {
     "table": {
@@ -171,6 +172,9 @@
       "$ref": "#/$defs/table"
     },
     "toolStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "eventTypes": {
       "$ref": "#/$defs/table"
     }
   }

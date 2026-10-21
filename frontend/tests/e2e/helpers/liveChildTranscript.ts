@@ -75,6 +75,11 @@ export interface LiveChildSpec {
   toolProof?: LiveChildToolProof
   /** Register provider-owned report handling while the real child remains held. */
   beforeRelease?: () => Promise<void>
+  /**
+   * Run after the held child answer releases and before the completion waits. A provider whose child then
+   * waits for a reader approval answers that control here.
+   */
+  afterRelease?: () => Promise<void>
   /** Complete provider-owned work that starts after the native child finishes. */
   afterComplete?: () => Promise<void>
 }
@@ -186,6 +191,7 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
       await modelScript.waitForGate(parentGate)
       await modelScript.releaseGate(parentGate)
     }
+    await spec.afterRelease?.()
     return { row, childId, parentId }
   }, () => finishCleanup([
     modelScript.releaseGateIfHeld(gate),

@@ -5,8 +5,7 @@ import { createStore, reconcile } from 'solid-js/store'
 //
 // The one live retry offer for each agent (keyed agentId -> offer). The
 // ephemeral `turn_retry_offer` agent_session_info key supplies it. The offer
-// identifies the turn and the faster model that the safety-buffering notice
-// proposes.
+// identifies the turn and the faster model that the provider proposes.
 //
 // Keep this state outside the agent-session store, which persists to browser
 // storage. Browser storage can retain an offer after the worker withdraws it.

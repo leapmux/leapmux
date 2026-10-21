@@ -4,10 +4,12 @@ import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agen
 import type { AgentOpenOverrides } from '../agentSettings'
 import type { AgentServer } from './api'
 import type { ProviderWorkingDir } from './providerWorkingDir'
+import type { TranscriptGuardState } from './transcriptGuard'
 import { agentOpenOptions } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { withCleanup } from './cleanup'
 import { newProviderWorkingDir } from './providerWorkingDir'
+import { runTranscriptGuard } from './transcriptGuard'
 import { loginViaToken, openWorkspace } from './ui'
 
 export interface WorkspaceFixture {
@@ -220,6 +222,7 @@ export async function openProviderAgent(
 
 /** The fixtures that an authenticated agent workspace fixture reads. */
 interface AuthenticatedWorkspaceFixtures {
+  transcriptGuard: TranscriptGuardState
   page: Page
   leapmuxServer: WorkspaceServer & { agentEnv: Record<string, string> }
 }
@@ -239,12 +242,13 @@ export interface AuthenticatedAgentWorkspaceOptions extends ProviderAgent {
  * Each provider fixture file states its workspace fixtures through this factory.
  */
 export function authenticatedAgentWorkspace(options: AuthenticatedAgentWorkspaceOptions) {
-  return async ({ page, leapmuxServer }: AuthenticatedWorkspaceFixtures, use: (workspace: AgentWorkspace) => Promise<void>, testInfo: TestInfo): Promise<void> => {
+  return async ({ page, leapmuxServer, transcriptGuard }: AuthenticatedWorkspaceFixtures, use: (workspace: AgentWorkspace) => Promise<void>, testInfo: TestInfo): Promise<void> => {
     await withAgentWorkspace(leapmuxServer, options, async (workspace) => {
       await loginViaToken(page, leapmuxServer.adminToken)
       await openWorkspace(page, workspace.workspaceId)
       try {
         await use(workspace)
+        await runTranscriptGuard(page, transcriptGuard, testInfo)
       }
       finally {
         if (options.onFailure && testInfo.status !== testInfo.expectedStatus)

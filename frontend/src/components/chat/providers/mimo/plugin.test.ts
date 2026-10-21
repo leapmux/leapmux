@@ -198,8 +198,8 @@ describe('mimo quotable text', () => {
     expect(providerQuotableText(AgentProvider.MIMO_CODE, assembledMessageRow('reasoning', 'thinking'), { category: { kind: 'assistant_thinking' } })).toBe('thinking')
   })
 
-  it('reads nothing from a hidden status frame', () => {
-    expect(plugin.transcript.classify(parsedFrame(statusFrame(MIMO_STATUS_TYPE.Busy)))).toEqual({ kind: 'hidden' })
+  it('reads nothing from an unknown stored status frame', () => {
+    expect(plugin.transcript.classify(parsedFrame(statusFrame(MIMO_STATUS_TYPE.Busy)))).toEqual({ kind: 'unknown' })
     expect(providerQuotableText(AgentProvider.MIMO_CODE, statusFrame(MIMO_STATUS_TYPE.Busy))).toBeNull()
   })
 

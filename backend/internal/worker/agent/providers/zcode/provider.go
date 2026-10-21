@@ -23,12 +23,9 @@ type zcodeProvider struct {
 	storageQuery zcodeStoragePathQuery
 }
 
-// Classify groups ZCode's consolidatable notifications.
-//
-// A permission ZCode decided by itself and a steering queue notice both repeat, and
-// a chat that shows each one separately is unreadable. The key includes the tool
-// name so two different tools' denials stay distinguishable. The compaction
-// lifecycle folds under one key: the start of a rewrite and its end are one row.
+// Classify groups notifications that retain only their latest state.
+// Permission notices use one key per tool. Steer notices use a separate provider key.
+// Compaction ends clear transient status. A compaction start is live state and has no stored row.
 func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	var env zcodeEventEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -38,14 +35,10 @@ func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 	case contracts.ZCodeEventPermissionResolved:
 		var payload zcodePermissionResolved
 		_ = json.Unmarshal(env.Payload, &payload)
-		return agent.NotificationClassification{
-			Kind: agent.NotificationKindProviderScoped,
-			Key:  "zcode:" + contracts.ZCodeEventPermissionResolved + ":" + payload.ToolName,
-		}
+		return agent.ProviderScopedNotification("zcode:" + contracts.ZCodeEventPermissionResolved + ":" + payload.ToolName)
 	case contracts.ZCodeEventTurnSteerQueued, contracts.ZCodeEventTurnSteerDrained:
-		// The steering queue flaps while the user types ahead of the model, so the
-		// latest state is the only interesting one.
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:steer"}
+		// The latest steer notice remains separate from the compaction state.
+		return agent.ProviderScopedNotification("zcode:steer")
 	case contracts.ZCodeEventSessionUpdated:
 		var payload zcodeSessionUpdatedPayload
 		if json.Unmarshal(env.Payload, &payload) != nil {
@@ -53,26 +46,24 @@ func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 		}
 		switch payload.kind() {
 		case zcodeSessionUpdateCompaction:
-			status, _ := zcodeRawString(payload.Status)
+			status, _ := providerkit.RawString(payload.Status)
 			switch status {
-			case contracts.ZCodeCompactionStatusStarted, contracts.ZCodeCompactionStatusRetrying:
-				return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:compaction"}
 			case contracts.ZCodeCompactionStatusCompleted, contracts.ZCodeCompactionStatusSkipped,
 				contracts.ZCodeCompactionStatusFailed, contracts.ZCodeCompactionStatusInterrupted:
-				return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "zcode:compaction"}
+				return agent.CompactionBoundaryNotification()
 			}
 		case zcodeSessionUpdateNetworkStatus:
 			// A burst of retries repeats one event. The notice keeps the latest state.
-			status, _ := zcodeRawString(payload.Type)
+			status, _ := providerkit.RawString(payload.Type)
 			if status == contracts.ZCodeNetworkStatusRetryScheduled && payload.networkStatusHasAPIRetry() {
-				return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "zcode:api_retry"}
+				return agent.APIRetryNotification()
 			}
 		case zcodeSessionUpdateHookAdmission:
 			// One notice per session. The pending count is the whole state.
-			return agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: "zcode:hook_admission"}
+			return agent.ProviderScopedNotification("zcode:hook_admission")
 		case zcodeSessionUpdateSteerDiscarded:
 			// The discard replaces the queued notice the same key already holds.
-			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:steer"}
+			return agent.ProviderScopedNotification("zcode:steer")
 		default:
 			// Every other `session.updated` shape is classified per row. A new
 			// kind therefore lands here and gets no folding key, which is the
@@ -82,10 +73,6 @@ func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 	default:
 		return agent.NotificationClassification{}
 	}
-}
-
-func (zcodeProvider) Merge(_ agent.NotificationClassification, _, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
 }
 
 // IsInterrupt recognizes ZCode's own stop frame.
@@ -293,7 +280,7 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		// sentinel and a whitespace-only reason, which is what this guard needs it for.
 		var original agent.ControlBehaviorEnvelope
 		if json.Unmarshal(ctx.ResponseContent, &original) == nil {
-			res.Feedback = original.Response.Response.Message
+			res.FollowUp = agent.FeedbackFollowUp(original.Response.Response.Message)
 		}
 	}
 	return res

@@ -101,6 +101,36 @@ func TestAgentInputQueueRPCsReturnAuthoritativeSnapshots(t *testing.T) {
 	assert.Equal(t, "input-1", listed.GetSnapshot().GetItems()[0].GetId())
 }
 
+// Only the worker creates a question-answer input: it holds the provider's
+// reply, not the user's own words. The RPC refuses it before it mutates the
+// queue.
+func TestEnqueueAgentInputRefusesAQuestionAnswer(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	before, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "answer-1", Text: "Red",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+	}, writer)
+
+	require.Len(t, writer.errors, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), writer.errors[0].code)
+	assert.Contains(t, writer.errors[0].message, "the worker creates question-answer inputs")
+	require.Empty(t, writer.responses)
+	after, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "refusal must change no durable queue state")
+}
+
 func TestReadOnlyChildUserMessageIsRefusedBeforeQueueMutation(t *testing.T) {
 	t.Parallel()
 	for _, active := range []bool{false, true} {
@@ -1643,10 +1673,37 @@ func TestUpdateAgentGoalRefusesAnObjectiveThatClears(t *testing.T) {
 	assert.Empty(t, snapshot.Items, "a refused objective queues nothing")
 }
 
-// Only Claude Code and Codex write a plan file. ZCode and native Copilot raise
-// the same plan-exit control with none, and the approval already moved the
-// permission mode before this runs -- so a hard failure here would leave the
-// mode moved with no turn to use it, and every retry would repeat that move.
+// The plan service writes a canonical file that a context replacement can read.
+func TestPlanExecutionQueuesThePlanStoredThroughTheSink(t *testing.T) {
+	t.Parallel()
+	for _, hasOldPath := range []bool{false, true} {
+		ctx := t.Context()
+		svc, _, _ := setupTestService(t)
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+		}))
+		if hasOldPath {
+			require.NoError(t, svc.Queries.UpdateAgentPlan(ctx, db.UpdateAgentPlanParams{
+				ID: "agent-1", PlanFilePath: filepath.Join(t.TempDir(), "unreadable-plan.md"), PlanTitle: "Old plan",
+			}))
+		}
+		_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+		require.NoError(t, err)
+		plan := "  # Approved plan\n\nKeep the exact content.\n"
+		svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE).UpdatePlan([]byte(plan), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, "Approved plan")
+		require.NoError(t, svc.enqueuePlanExecution("agent-1", "build", "plan-execution"))
+		snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		require.Len(t, snapshot.Items, 1)
+		item := snapshot.Items[0]
+		assert.Contains(t, item.Text, "Execute the following plan:\n\n---\n\n"+plan)
+		assert.Contains(t, item.Text, "The plan is stored at ")
+		assert.True(t, item.PrepareContext)
+		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, item.Kind)
+	}
+}
+
 func TestPlanExecutionWithoutASavedPlanQueuesTheNeutralTurn(t *testing.T) {
 	t.Parallel()
 
@@ -1707,7 +1764,7 @@ func TestControlInputWaitsForAnApprovalThatIsStillPending(t *testing.T) {
 	startEchoAgent(t, svc, "agent-1")
 	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: storedStatePending,
-		AgentSessionID: "session-1", InputID: "feedback-input", Feedback: "feedback", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentSessionID: "session-1", InputID: "feedback-input", FollowUp: "feedback", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
@@ -1856,6 +1913,87 @@ func newRequeueFixture(t *testing.T) (*Service, agent.ProviderServices) {
 	return svc, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE)
 }
 
+type echoSinkAgent struct{ agenttest.IdleAgent }
+
+func (*echoSinkAgent) SteerInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (*echoSinkAgent) SupportsSteering() bool                           { return true }
+func (*echoSinkAgent) SteerRowAtEcho() bool                             { return true }
+func (*echoSinkAgent) SteerSurvivesTurnEnd() bool                       { return true }
+
+func newSteerEchoServiceFixture(t *testing.T) (*Service, agent.ProviderServices) {
+	t.Helper()
+	svc, sink := newRequeueFixture(t)
+	svc.Agents.PutAgentForTest("agent-1", &echoSinkAgent{})
+	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(t.Context(), inputqueue.NewItem{
+		ID: "steer-1", AgentID: "agent-1", Text: "Read this once", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	snapshot, err := svc.InputQueue.Steer(t.Context(), "agent-1", "steer-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	require.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
+	return svc, sink
+}
+
+func TestReportSteersEchoedWritesTheSteerRowThroughTheQueue(t *testing.T) {
+	t.Parallel()
+	svc, sink := newSteerEchoServiceFixture(t)
+	sink.ReportSteersEchoed(1)
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "steer-1", rows[0].ID)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
+}
+
+func TestReportSteersDroppedRequeuesWithoutARow(t *testing.T) {
+	t.Parallel()
+	svc, sink := newSteerEchoServiceFixture(t)
+	sink.ReportSteersDropped(1)
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestHandleAgentProcessExitResolvesUnechoedSteers(t *testing.T) {
+	t.Parallel()
+	for _, stopped := range []bool{false, true} {
+		svc, _ := newSteerEchoServiceFixture(t)
+		_, err := svc.InputQueue.SetPaused(t.Context(), "agent-1", false)
+		require.NoError(t, err)
+		svc.HandleAgentProcessExit("agent-1", 1, nil, stopped)
+		svc.Output.WaitActivityRefreshes()
+		snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+		require.NoError(t, err)
+		assert.True(t, snapshot.Paused)
+		assert.False(t, snapshot.ActiveTurn)
+		require.Len(t, snapshot.Items, 1)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+	}
+}
+
+func TestChildSinkIgnoresSteerEchoes(t *testing.T) {
+	t.Parallel()
+	svc, sink := newSteerEchoServiceFixture(t)
+	child := sink.ChildSink("child-1")
+	child.ReportSteersEchoed(1)
+	child.ReportSteersDropped(1)
+	child.ReportSteersUncertain(1)
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
+}
+
 // requeuedNotices counts the rows that state why a message appears again.
 func requeuedNotices(t *testing.T, svc *Service) int {
 	t.Helper()
@@ -1989,4 +2127,103 @@ func TestDroppedInputIDKeepsEachAgentAndDropApart(t *testing.T) {
 	assert.NotEqual(t, droppedInputID("a\x00b", "c"), droppedInputID("a", "b\x00c"))
 	assert.NotEqual(t, droppedInputID("ab", "c"), droppedInputID("a", "bc"))
 	assert.NotEqual(t, droppedInputID("", "x"), droppedInputID("x", ""))
+}
+
+func TestOrderedSteerEchoKeepsTheSpansAtTheEcho(t *testing.T) {
+	t.Parallel()
+	svc, sink := newSteerEchoServiceFixture(t)
+	sink.ReserveSpanColor("before", "")
+	sink.OpenSpan("before", "")
+	expected := svc.Output.snapshotPassthroughSpanLines("agent-1")
+	var queue agent.OutputQueue
+	unavailable := true
+	queue.Append(agent.OutputWrite{Label: "store unavailable", Run: func() error {
+		if unavailable {
+			return assert.AnError
+		}
+		return nil
+	}})
+	ordered := agent.NewOrderedProviderServices(&queue, sink)
+	ordered.ReportSteersEchoed(1)
+	sink.CloseSpan("before")
+	sink.ReserveSpanColor("after", "")
+	sink.OpenSpan("after", "")
+	unavailable = false
+	require.NoError(t, queue.Flush())
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, expected, rows[0].SpanLines)
+}
+
+func TestOrderedDroppedSteerReturnsToTheQueueAfterSessionReplacement(t *testing.T) {
+	t.Parallel()
+	svc, sink := newSteerEchoServiceFixture(t)
+	sink.UpdateSessionID("old")
+	var queue agent.OutputQueue
+	unavailable := true
+	queue.Append(agent.OutputWrite{Label: "store unavailable", Run: func() error {
+		if unavailable {
+			return assert.AnError
+		}
+		return nil
+	}})
+	agent.NewOrderedProviderServices(&queue, sink).ReportSteersDropped(1)
+	sink.UpdateSessionID("new")
+	unavailable = false
+	require.NoError(t, queue.Flush())
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+}
+
+func TestReportSteersUncertainPausesWithoutARow(t *testing.T) {
+	t.Parallel()
+	svc, sink := newSteerEchoServiceFixture(t)
+	reporter, ok := any(sink).(interface{ ReportSteersUncertain(int) })
+	require.True(t, ok, "provider services must retain uncertain steers without replay")
+	reporter.ReportSteersUncertain(1)
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+	assert.Equal(t, "Read this once", snapshot.Items[0].Text)
+	assert.True(t, snapshot.Paused)
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestOrderedUncertainSteerKeepsItsOriginalPublisher(t *testing.T) {
+	t.Parallel()
+	for _, replaceProcess := range []bool{false, true} {
+		t.Run(fmt.Sprint(replaceProcess), func(t *testing.T) {
+			svc, sink := newSteerEchoServiceFixture(t)
+			var queue agent.OutputQueue
+			unavailable := true
+			queue.Append(agent.OutputWrite{Label: "store unavailable", Run: func() error {
+				if unavailable {
+					return assert.AnError
+				}
+				return nil
+			}})
+			agent.NewOrderedProviderServices(&queue, sink).ReportSteersUncertain(1)
+			if replaceProcess {
+				svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+			} else {
+				sink.UpdateSessionID("replacement-session")
+			}
+			unavailable = false
+			require.NoError(t, queue.Flush())
+			snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+			require.NoError(t, err)
+			require.Len(t, snapshot.Items, 1)
+			expected := leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN
+			if replaceProcess {
+				expected = leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO
+			}
+			assert.Equal(t, expected, snapshot.Items[0].State)
+		})
+	}
 }

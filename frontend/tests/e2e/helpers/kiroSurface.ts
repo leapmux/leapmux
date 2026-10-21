@@ -342,6 +342,8 @@ async function serveKiro(request: IncomingMessage, response: ServerResponse, bod
   // Kiro cannot read a generic model error and would repeat that request.
   let toolEvents: KiroEvent[]
   try {
+    if (answer.step.stopReason !== undefined && answer.step.stopReason !== 'refusal')
+      throw new Error(`The mock cannot state stop reason ${answer.step.stopReason} on aws-event-stream`)
     toolEvents = (answer.step.toolCalls ?? []).flatMap(kiroToolUseEvents)
   }
   catch (error) {
@@ -393,10 +395,25 @@ async function writeKiroTurn(response: ServerResponse, body: unknown, step: Mock
     return
   for (const [eventType, payload] of toolEvents)
     response.write(encodeEventStreamEvent(eventType, payload))
-  response.end(encodeEventStreamEvent('metadataEvent', {
-    tokenUsage: { uncachedInputTokens: 1, outputTokens: 1, totalTokens: 2 },
+  const inputTokens = step.usage?.inputTokens ?? 1
+  const outputTokens = step.usage?.outputTokens ?? 1
+  const metadata: Record<string, unknown> = {
+    tokenUsage: { uncachedInputTokens: inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     stopReason: toolEvents.length > 0 ? 'TOOL_USE' : 'END_TURN',
-  }))
+  }
+  // A scripted refusal ends the stream the way Kiro's service states a content
+  // filter: the CONTENT_FILTERED stop reason beside its stopDetails.refusal.
+  if (step.stopReason === 'refusal') {
+    metadata.stopReason = 'CONTENT_FILTERED'
+    metadata.stopDetails = {
+      refusal: {
+        category: 'CYBER',
+        explanation: 'Probe refusal explanation.',
+        recommendedModel: 'kiro-probe-alt',
+      },
+    }
+  }
+  response.end(encodeEventStreamEvent('metadataEvent', metadata))
 }
 
 function writeAwsJSON(response: ServerResponse, status: number, value: unknown): void {

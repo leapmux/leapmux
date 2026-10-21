@@ -54,6 +54,12 @@ const (
 	eventCapabilityResolved     = "capability.resolved"
 	eventSessionUpdated         = "session.updated"
 	eventPendingPromptSubmitted = "session.pending_prompt_submitted"
+	eventPendingPrompts         = "session.pending_prompts"
+	eventUINotify               = "ui.notify"
+	eventSessionAttached        = "session.attached"
+	eventSessionDetached        = "session.detached"
+	eventSessionCreated         = "session.created"
+	eventSessionDeleted         = "session.deleted"
 )
 
 // The delivery words of session.send_input. A plain send starts a turn; a
@@ -181,4 +187,10 @@ const hubPathname = "/hub"
 const (
 	userInputOpen  = "<user_input"
 	userInputClose = "</user_input>"
+)
+
+// The agent kinds on native notices and usage reports.
+const (
+	agentKindLead     = "lead"
+	agentKindTeammate = "teammate"
 )

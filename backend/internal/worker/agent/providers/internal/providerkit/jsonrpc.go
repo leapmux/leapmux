@@ -3,6 +3,7 @@ package providerkit
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,11 +110,11 @@ func decodeJSONRPCResponse(raw json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, fmt.Errorf("decode json-rpc response: %w", err)
 	}
-	if !isJSONNull(response.Error) {
+	if RawPresent(response.Error) {
 		// A native error can include an unused result member with an explicit null.
 		// Null states no result, so preserve the native error code in this case.
 		// Rejecting it would report uncertain delivery instead of the provider's refusal.
-		if !isJSONNull(response.Result) {
+		if RawPresent(response.Result) {
 			return nil, errors.New("json-rpc response contains both a result and an error")
 		}
 		responseErr, ok := parseJSONRPCError(response.Error)
@@ -128,14 +129,28 @@ func decodeJSONRPCResponse(raw json.RawMessage) (json.RawMessage, error) {
 	return response.Result, nil
 }
 
+// SendRequest waits for a reply on the process context.
 func (b *JSONRPCProcess) SendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	return b.SendRequestObserved(method, params, timeout, nil)
+	return b.sendRequest(b.Context(), method, params, timeout, nil)
+}
+
+// SendRequestContext limits one request with the caller's context and the process context.
+// A nonpositive timeout leaves cancellation and process exit as the only wait limits.
+func (b *JSONRPCProcess) SendRequestContext(ctx context.Context, method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+	return b.sendRequest(ctx, method, params, timeout, nil)
 }
 
 // SendRequestObserved observes a decoded reply before the waiting caller resumes.
 // The observer runs on the reader. It must not wait for another request.
 // Write failures, cancellation, and timeouts do not produce a reply observation.
 func (b *JSONRPCProcess) SendRequestObserved(method string, params json.RawMessage, timeout time.Duration, observe func(json.RawMessage, error)) (json.RawMessage, error) {
+	return b.sendRequest(b.Context(), method, params, timeout, observe)
+}
+
+func (b *JSONRPCProcess) sendRequest(ctx context.Context, method string, params json.RawMessage, timeout time.Duration, observe func(json.RawMessage, error)) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, &jsonRPCRequestNotSentError{cause: err}
+	}
 	reqID := b.nextReqID.Add(1)
 
 	var rawObserver func(json.RawMessage)
@@ -161,11 +176,14 @@ func (b *JSONRPCProcess) SendRequestObserved(method string, params json.RawMessa
 		return nil, &jsonRPCRequestNotSentError{cause: fmt.Errorf("marshal request: %w", err)}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, &jsonRPCRequestNotSentError{cause: err}
+	}
 	if err := b.writeJSONRPCMessage(data); err != nil {
 		return nil, jsonRPCRequestWriteError(err)
 	}
 
-	resp, err := b.AwaitResponse(ch, method, timeout)
+	resp, err := AwaitReply(&b.Process, ctx, ch, method, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -316,15 +334,10 @@ func (b *JSONRPCProcess) ReadOutputLoop(scanner *bufio.Scanner, handle LineHandl
 	b.ReadOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
-// isJSONNull treats an explicit JSON null and an absent member as empty.
-func isJSONNull(raw json.RawMessage) bool {
-	return len(raw) == 0 || string(raw) == "null"
-}
-
 // parseJSONRPCError reads a native protocol error's code, message and data.
 // It rejects an absent value, JSON null, and a value without both required fields.
 func parseJSONRPCError(resp json.RawMessage) (*JSONRPCResponseError, bool) {
-	if isJSONNull(resp) {
+	if !RawPresent(resp) {
 		return nil, false
 	}
 	var rpcErr struct {
@@ -339,7 +352,7 @@ func parseJSONRPCError(resp json.RawMessage) (*JSONRPCResponseError, bool) {
 		return nil, false
 	}
 	responseErr := &JSONRPCResponseError{Code: *rpcErr.Code, Message: *rpcErr.Message}
-	if !isJSONNull(rpcErr.Data) {
+	if RawPresent(rpcErr.Data) {
 		responseErr.Data = rpcErr.Data
 	}
 	return responseErr, true
@@ -374,7 +387,7 @@ func (e *JSONRPCResponseError) Error() string {
 // other JSON value in its compact form, with its members in the agent's order.
 // It is empty for an absent or null member and for a blank string.
 func (e *JSONRPCResponseError) dataText() string {
-	if isJSONNull(e.Data) {
+	if !RawPresent(e.Data) {
 		return ""
 	}
 	var text string

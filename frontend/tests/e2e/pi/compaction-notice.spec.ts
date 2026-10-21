@@ -1,4 +1,5 @@
-import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
+import { expect } from '@playwright/test'
+import { compactionIndicator, expectCompactionNoticeAfterReload, expectNoLiveCompaction } from '../helpers/compaction'
 import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 import { piTest } from '../pi-fixtures'
 import { exercisePiEmptyCompaction, PI_COMPACTION } from './compactionScenario'
@@ -8,6 +9,11 @@ piTest('replaces a failed native compaction start with its error', async ({ nati
 })
 
 piTest('draws and keeps the native notice after a manual compaction', async ({ native }) => {
-  await exerciseNativeCompaction(native, PI_COMPACTION)
-  await expectCompactionNoticeAfterReload(native.page)
+  await exerciseNativeCompaction(native, {
+    ...PI_COMPACTION,
+    summaryGate: 'pi-manual-summary',
+    onHeld: async () => { await expect(compactionIndicator(native.page)).toBeVisible() },
+  })
+  await expectCompactionNoticeAfterReload(native.page, { count: 1, divider: true })
+  await expectNoLiveCompaction(native.page)
 })

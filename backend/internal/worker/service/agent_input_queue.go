@@ -237,7 +237,10 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
+		return inputqueue.DispatchResult{
+			StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines,
+			SupplementalContent: resolvedInput.supplementalContent,
+		}, nil
 	}
 }
 
@@ -324,12 +327,15 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 			return inputqueue.DispatchResult{}, rowErr
 		}
 		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
+	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, attachments)
 	} else {
 		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
 	}
 	return inputqueue.DispatchResult{
-		StartsTurn: true,
-		SpanLines:  a.svc.Output.snapshotPassthroughSpanLines(item.AgentID),
+		StartsTurn:          true,
+		SpanLines:           a.svc.Output.snapshotPassthroughSpanLines(item.AgentID),
+		SupplementalContent: resolvedInput.supplementalContent,
 	}, classifyQueueSteerError(err)
 }
 
@@ -352,6 +358,14 @@ func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.Agen
 		return a.svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages
 	}
 	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+}
+
+func (a *agentInputQueueAdapter) PrepareSteer(agentID string) {
+	a.svc.Agents.PrepareSteer(agentID)
+}
+
+func (a *agentInputQueueAdapter) SteerPolicy(agentID string) agent.SteerPolicy {
+	return a.svc.Agents.SteerPolicy(agentID)
 }
 
 func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
@@ -443,6 +457,7 @@ func acceptedTranscriptProto(message inputqueue.AcceptedTranscript) *leapmuxv1.A
 	return &leapmuxv1.AgentChatMessage{
 		Id: message.ID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content: message.Content, ContentCompression: message.ContentCompression,
+		SupplementalContent: message.SupplementalContent, SupplementalContentCompression: message.SupplementalContentCompression,
 		Seq: message.Seq, AgentProvider: message.AgentProvider,
 		MarkType: message.MarkType, SpanLines: message.SpanLines,
 		CreatedAt: message.CreatedAt,
@@ -479,6 +494,10 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 	registerAgentGuardedByID(d, "EnqueueAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
+			if r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+				sendQueueError(sender, fmt.Errorf("%w: the worker creates question-answer inputs", inputqueue.ErrInvalidInput))
+				return
+			}
 			snapshot, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Text: r.GetText(),
 				Attachments:      queueAttachments(r.GetAttachments()),

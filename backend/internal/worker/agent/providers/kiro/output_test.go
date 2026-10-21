@@ -2,6 +2,7 @@ package kiro
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -129,8 +130,9 @@ func TestKiroJoinsTheChunksOfOneAnswer(t *testing.T) {
 
 	a.HandleOutput(messageChunk(t, "One, ", replay("answer-1-say")))
 	a.HandleOutput(messageChunk(t, "two, ", replay("answer-1-say")))
-	// A chunk that states no answer continues the one before it.
-	a.HandleOutput(messageChunk(t, "three.", nil))
+	// A chunk that states no answer continues the one before it: the kiro
+	// block is present, but it states no replayId.
+	a.HandleOutput(messageChunk(t, "three.", map[string]any{}))
 	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 
 	assert.Equal(t, []string{"One, two, three."}, assembled(sink.Messages(), agent.AssembledMessageKindText))
@@ -388,16 +390,12 @@ func TestKiroContextUsageBroadcastsThePercentage(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
 
-	// The probe's frame: the percentage twice, and a breakdown by source.
-	a.HandleOutput(infoUpdate(t, map[string]any{
-		"contextUsage": map[string]any{"usagePercentage": 0.8},
-		"breakdown":    map[string]any{"tools": map[string]any{"tokens": 3781, "percent": 0.4}},
-		"kind":         kiroKindContextUsage, "usagePercentage": 0.8,
-	}))
+	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindContextUsage, "usagePercentage": 0.8}))
 
-	value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
-	require.True(t, ok)
-	assert.Equal(t, map[string]any{contracts.ContextUsageFieldUsagePercent: 0.8}, value)
+	// No breakdown states no token count, so the meter keeps the percentage
+	// alone.
+	assert.Equal(t, map[string]any{contracts.ContextUsageFieldUsagePercent: 0.8},
+		sink.LastSessionInfo()[contracts.SessionInfoKeyContextUsage])
 }
 
 func TestKiroContextUsageReadsTheTopLevelPercentageAlone(t *testing.T) {
@@ -427,16 +425,22 @@ func TestKiroSummarizationStatesACompaction(t *testing.T) {
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
 
 	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationStart}))
-	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationDone, "summarization": map[string]any{"status": "success"}}))
-	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationFailed, "summarization": map[string]any{"status": "context_too_small"}}))
-	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationFailed}))
+	a.HandleOutput(infoUpdate(t, map[string]any{"kind": contracts.KiroKindSummarizationCompleted, "summarization": map[string]any{"status": "success"}}))
+	a.HandleOutput(infoUpdate(t, map[string]any{"kind": contracts.KiroKindSummarizationFailed, "summarization": map[string]any{"status": "context_too_small"}}))
+	a.HandleOutput(infoUpdate(t, map[string]any{"kind": contracts.KiroKindSummarizationFailed}))
 
-	assert.Equal(t, 1, countNotifications(sink, contracts.NotificationTypeCompacting))
-	assert.Equal(t, []string{
-		"Context compacted",
-		"Context compaction failed: context too small",
-		"Context compaction failed",
-	}, statusTexts(sink))
+	// The start is live state with no row; each end stores its native frame
+	// and ends the live key.
+	assert.Equal(t, []interface{}{
+		map[string]interface{}{contracts.CompactionFieldTrigger: "auto"},
+		nil, nil, nil,
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 3)
+	assert.Contains(t, string(rows[0].Content), "summarization_completed")
+	assert.Contains(t, string(rows[1].Content), "context_too_small")
+	assert.Contains(t, string(rows[2].Content), "summarization_failed")
+	assert.Empty(t, sink.Notifications(), "no worker status row")
 }
 
 func TestKiroHookUpdatesStateTheirEnd(t *testing.T) {
@@ -449,20 +453,20 @@ func TestKiroHookUpdatesStateTheirEnd(t *testing.T) {
 		})
 	}
 
+	// A v2 completed hook, a running hook, and a hook with no name state
+	// nothing: a v2 failure looks the same as a success.
 	a.HandleOutput(hook("running", ""))
 	a.HandleOutput(hook("completed", "ok"))
-	a.HandleOutput(hook("failed", "exit 1"))
-	a.HandleOutput(hook("failed", ""))
-	a.HandleOutput(hook("canceled", ""))
 	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindHookUpdate, "hook": map[string]any{"status": "completed"}}))
+	assert.Empty(t, sink.PersistedNotifications(), "a v2 completed hook states nothing")
 
-	assert.Equal(t, []string{
-		"Hook lint completed",
-		"Hook lint failed: exit 1",
-		"Hook lint failed",
-		"Hook lint canceled",
-		"Hook a hook completed",
-	}, statusTexts(sink))
+	// A v1 failure and cancellation persist their native frames.
+	a.HandleOutput(hook("failed", "exit 1"))
+	a.HandleOutput(hook("canceled", ""))
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 2)
+	assert.Contains(t, string(rows[0].Content), "exit 1")
+	assert.Contains(t, string(rows[1].Content), "canceled")
 }
 
 func TestKiroRecapStatesItsText(t *testing.T) {
@@ -721,4 +725,216 @@ func tailTruncations(sink progressSource, toolCallID string) []bool {
 		}
 	}
 	return out
+}
+
+// A content-filter refusal rides a text chunk of its own: the model's answer
+// keeps its text, and the refusal frame becomes its own row. Frames 31-32 of
+// the round-2 refusal probe.
+func TestKiroRefusalIsItsOwnRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	a.SetPromptActiveForTest(true)
+
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content":       map[string]any{"type": "text", "text": "Partial answer."},
+				"_meta":         map[string]any{"kiro": map[string]any{"replayId": "probe-say"}},
+			},
+		},
+	}))
+	refusal := frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content":       map[string]any{"type": "text", "text": "Probe refusal explanation."},
+				"_meta": map[string]any{"kiro": map[string]any{"refusal": map[string]any{
+					"category": "CYBER", "explanation": "Probe refusal explanation.", "recommendedModel": "kiro-probe-alt",
+				}}},
+			},
+		},
+	})
+	a.HandleOutput(refusal)
+	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"content_filtered"}`), nil)
+
+	texts := kiroAssembledTexts(t, sink)
+	require.Len(t, texts, 1, "the refusal leaves the model's own text alone")
+	assert.Equal(t, "Partial answer.", texts[0])
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1, "the refusal chunk persists its native frame")
+	assert.Contains(t, string(rows[0].Content), "CYBER")
+}
+
+// hooks-1 frames 28-29: a v2 completed hook states nothing a reader can use.
+// A v2 failure looks the same as a success, so neither reaches a row.
+func TestKiroHookCompletedWritesNoRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	for _, name := range []string{"probe-ok", "probe-fail"} {
+		a.HandleOutput(frame(t, map[string]any{
+			"method": "session/update",
+			"params": map[string]any{
+				"sessionId": kiroTestSession,
+				"update": map[string]any{
+					"sessionUpdate": "session_info_update",
+					"_meta": map[string]any{"kiro": map[string]any{
+						"kind": "hook_update",
+						"hook": map[string]any{"name": name, "status": "completed", "actionType": "runCommand"},
+					}},
+				},
+			},
+		}))
+	}
+	assert.Empty(t, sink.Notifications(), "a v2 completed hook states nothing")
+}
+
+// A v1 hook failure carries its command result, and the native frame becomes
+// the row the hook entry renders.
+func TestKiroHookFailurePersistsNative(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	failed := frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "session_info_update",
+				"_meta": map[string]any{"kiro": map[string]any{
+					"kind": "hook_update",
+					"hook": map[string]any{
+						"name": "probe", "status": "failed", "command": "echo probe",
+						"result": map[string]any{"output": "boom", "exitCode": 1},
+					},
+				}},
+			},
+		},
+	})
+	a.HandleOutput(failed)
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1, "the failed hook persists its native frame")
+	assert.Contains(t, string(rows[0].Content), "boom")
+	// A canceled hook persists its native frame too.
+	canceled := frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "session_info_update",
+				"_meta": map[string]any{"kiro": map[string]any{
+					"kind": "hook_update",
+					"hook": map[string]any{"name": "probe", "status": "canceled", "command": "echo probe"},
+				}},
+			},
+		},
+	})
+	a.HandleOutput(canceled)
+	rows = sink.PersistedNotifications()
+	require.Len(t, rows, 2)
+}
+
+// protocol-1 frame 16: the meter sums the breakdown's categories and keeps
+// the percentage. The window arrives only when the current model states one.
+func TestKiroContextUsageSumsTheBreakdown(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "session_info_update",
+				"_meta": map[string]any{"kiro": map[string]any{
+					"kind": "context_usage", "usagePercentage": 4.4,
+					"contextUsage": map[string]any{"usagePercentage": 4.4},
+					"breakdown": map[string]any{
+						"contextFiles":  map[string]any{"tokens": 0},
+						"tools":         map[string]any{"tokens": 4335},
+						"kiroResponses": map[string]any{"tokens": 0},
+						"yourPrompts":   map[string]any{"tokens": 4326},
+						"sessionFiles":  map[string]any{"tokens": 0},
+					},
+				}},
+			},
+		},
+	}))
+	usage, ok := sink.LastSessionInfo()[contracts.SessionInfoKeyContextUsage].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, 8661.0, usage[contracts.ContextUsageFieldContextTokens], "contextFiles+tools+kiroResponses+yourPrompts+sessionFiles")
+	assert.Equal(t, 4.4, usage[contracts.ContextUsageFieldUsagePercent])
+	_, hasWindow := usage[contracts.ContextUsageFieldContextWindow]
+	assert.False(t, hasWindow, "no window until the model states one")
+}
+
+// throttle-1 frames 29-34: a failed prompt writes its error, then the native
+// turn end as the divider.
+func TestKiroFailedPromptDivider(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "session_info_update",
+				"_meta": map[string]any{"kiro": map[string]any{
+					"kind": "display_error",
+					"displayError": map[string]any{
+						"message": "Kiro Probe is experiencing high traffic.", "errorType": "ModelThrottleError",
+					},
+				}},
+			},
+		},
+	}))
+	endFrame := json.RawMessage(`{"sessionUpdate":"session_info_update","_meta":{"kiro":{"kind":"turn_end","stopReason":"error","messageId":"probe-turn-end"}}}`)
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update":    json.RawMessage(endFrame),
+		},
+	}))
+	a.FinishPromptRequestForTest(kiroTestSession, nil, fmt.Errorf("throttled"))
+
+	notifications := sink.Notifications()
+	require.NotEmpty(t, notifications, "the error row lands")
+	assert.Equal(t, "Kiro Probe is experiencing high traffic.", notifications[0][contracts.NotificationFieldError])
+	rows := [1]agenttest.Message{}
+	_ = rows
+	messages := sink.Messages()
+	ended := false
+	for _, message := range messages {
+		if message.TurnEnd {
+			ended = true
+			assert.Contains(t, string(message.Content), "turn_end", "the native turn end is the divider")
+		}
+	}
+	assert.True(t, ended, "the failed prompt writes the native turn end divider")
+}
+
+// An aborted execution's answer arrives as a plain chunk with no _meta.kiro:
+// Kiro dropped the execution, so its text reaches no reader.
+func TestKiroAbortTextReachesNoTranscript(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	a.SetPromptActiveForTest(true)
+
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content":       map[string]any{"type": "text", "text": "text of the aborted execution"},
+			},
+		},
+	}))
+	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+
+	assert.Empty(t, kiroAssembledTexts(t, sink), "the aborted execution's text reaches no transcript")
 }

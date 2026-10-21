@@ -1,0 +1,7 @@
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "PARTIAL "}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "attempt "}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "one text"}}}}
+{"jsonrpc": "2.0", "method": "_x.ai/session_notification", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "retry_state", "type": "retrying", "attempt": 1, "max_retries": 15, "reason": "reqwest error stream: stream ended before a finish reason"}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "FULL an"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "swer #3"}}}}
+{"jsonrpc": "2.0", "id": 9, "result": {"stopReason": "end_turn"}}

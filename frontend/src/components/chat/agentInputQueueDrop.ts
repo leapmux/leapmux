@@ -22,6 +22,16 @@ export function dragIdOf(item: QueuedAgentInput): string {
   return `qi-${item.id}`
 }
 
+/** Lock inputs that the provider can already read. */
+export function isLockedInputState(state: AgentInputState): boolean {
+  return state === AgentInputState.DISPATCHING || state === AgentInputState.AWAITING_ECHO
+}
+
+/** Find the first input that does not await an echo, or return -1. */
+export function queueHeadIndex(items: readonly QueuedAgentInput[]): number {
+  return items.findIndex(item => item.state !== AgentInputState.AWAITING_ECHO)
+}
+
 /** The move a reorder stands for, in the shape `MoveQueuedAgentInput` takes. */
 export interface QueueMove {
   moved: QueuedAgentInput
@@ -31,21 +41,20 @@ export interface QueueMove {
 /**
  * The move from one index to another, or `undefined` when the queue refuses it.
  *
- * ONE definition of which reorder is legal. Every path reads it: the drag, the
- * two arrow buttons, and the `disabled` prop of each of those buttons. The rule
- * lived at five sites before, and two of them already disagreed.
+ * The drag and the arrow buttons use this rule to permit or refuse a move.
+ * The disabled state of each button uses the same rule.
  *
- * `beforeInputId` carries the Worker's BEFORE semantics, which
- * MoveQueuedAgentInput defines. The Worker takes the item out of the list
+ * `beforeInputId` identifies the item that must follow the moved item.
+ * MoveQueuedAgentInput defines this order. The Worker takes the item out of the list
  * first. It then puts the item back in front of `beforeInputId`. An empty
  * string moves the item to the end.
  *
- * So a DOWNWARD move points at the item AFTER the target, because the removal
+ * A downward move points at the item after the target, because the removal
  * already shifted every item below the source up by one slot. An upward move
  * points at the target itself.
  *
- * A DISPATCHING row is refused at BOTH ends. It cannot move, and it cannot be
- * displaced, because the Worker already sends it.
+ * DISPATCHING and AWAITING_ECHO lock a row. Neither endpoint can be locked.
+ * The provider can already read that input, so a move must not displace it.
  */
 export function resolveQueueMove(
   items: readonly QueuedAgentInput[],
@@ -56,7 +65,7 @@ export function resolveQueueMove(
   const target = items[toIndex]
   if (!moved || !target || fromIndex === toIndex)
     return undefined
-  if (moved.state === AgentInputState.DISPATCHING || target.state === AgentInputState.DISPATCHING)
+  if (isLockedInputState(moved.state) || isLockedInputState(target.state))
     return undefined
   return {
     moved,

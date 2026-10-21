@@ -1,11 +1,13 @@
 import { KIRO_CONFIG, KIRO_MODE } from '~/generated/contracts/kiro-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
+import { kiroAssistantTextSegments } from './assistantText'
 import { kiroAgentTurnEnd } from './classification'
 import { kiroControlResponseSummary, kiroPermissionRejectReason } from './controlResponse'
 import { kiroElicitation, kiroExtractControl } from './extractControl'
 import { kiroOutputFilePaths } from './extractors/outputFilePaths'
 import { kiroToolCallAdapter } from './extractors/toolCall'
+import { kiroNativeNotifications } from './notification'
 import { kiroPermissionPresets } from './permissionPresets'
 import { kiroQuestionHandling } from './pluginControls'
 
@@ -30,4 +32,6 @@ registerACPProvider({
   permissionRejectReason: kiroPermissionRejectReason,
   questionHandling: kiroQuestionHandling,
   agentTurnEnd: kiroAgentTurnEnd,
+  assistantTextSegments: kiroAssistantTextSegments,
+  nativeNotifications: kiroNativeNotifications,
 })

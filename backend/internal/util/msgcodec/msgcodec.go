@@ -28,8 +28,14 @@ func init() {
 }
 
 // Compress compresses the given data using zstd and returns the compressed
-// bytes along with the corresponding ContentCompression enum value.
+// bytes along with the corresponding ContentCompression enum value. Empty
+// input is no content at all: it stores no bytes under no compression, so a
+// field that carries nothing stays empty instead of holding a frame that
+// decodes back to nothing.
 func Compress(data []byte) ([]byte, leapmuxv1.ContentCompression) {
+	if len(data) == 0 {
+		return []byte{}, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
+	}
 	compressed := encoder.EncodeAll(data, make([]byte, 0, len(data)/2))
 	return compressed, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_ZSTD
 }

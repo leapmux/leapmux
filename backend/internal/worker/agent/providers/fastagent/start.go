@@ -60,7 +60,7 @@ func (a *Agent) hooks(model string, sink agent.ProviderServices) acp.Hooks {
 		ClearProviderState:         a.clearChildState,
 		BeforeWaitCleanup:          a.archiveWG.Wait,
 		PromptEnded:                a.retryChildArchives,
-		SessionNotificationMetadata: func(metadata map[string]json.RawMessage) {
+		SessionNotificationMetadata: func(_ string, metadata map[string]json.RawMessage) {
 			broadcastFastagentStatusLine(sink, metadata)
 		},
 	}

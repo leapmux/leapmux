@@ -421,7 +421,11 @@ type modelProgressResetControl struct {
 }
 
 func (s modelProgressResetControl) PublishControlRequest(request ControlRequest) error {
-	s.progress.ReportProgress(ResetModelProgress())
+	// A non-blocking request takes no answer from the model: the model keeps
+	// generating while the question waits, so nothing resets its progress.
+	if !request.NonBlocking {
+		s.progress.ReportProgress(ResetModelProgress())
+	}
 	return s.ControlServices.PublishControlRequest(request)
 }
 
@@ -448,7 +452,12 @@ func (s modelProgressResetChildren) PersistChildTurnEnd(childAgentID string, con
 }
 
 func NewModelProgressResetSink(inner ProviderServices) ProviderServices {
-	return providerServices{
+	queue := OutputQueueFor(inner)
+	if ordered, ok := inner.(*orderedProviderServices); ok {
+		inner = ordered.ProviderServices
+	}
+	decorated := providerServices{
+		OutputEffectServices: inner, SteerEchoServices: inner,
 		TranscriptServices: modelProgressResetTranscript{
 			TranscriptServices: inner,
 			progress:           inner,
@@ -467,4 +476,5 @@ func NewModelProgressResetSink(inner ProviderServices) ProviderServices {
 		ChildServices:          modelProgressResetChildren{ChildServices: inner},
 		BackgroundTaskServices: inner,
 	}
+	return NewOrderedProviderServices(queue, decorated)
 }

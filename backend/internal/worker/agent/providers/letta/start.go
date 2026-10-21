@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -63,7 +62,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		workingDir:    opts.WorkingDir,
 		taskLogRoot:   taskLogRoot,
 		taskLogDirect: taskLogDirect,
-		clock:         quartz.NewReal(),
+		cancelRuntime: cancel,
 	}
 	if err := a.StartCmd(); err != nil {
 		cancel()
@@ -84,7 +83,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		_ = a.Wait()
 	}
 	timeout := opts.EffectiveStartupTimeout()
-	url, err := ready.waiter.Wait(ctx, a.ProcessDone(), timeout)
+	url, err := ready.waiter.Wait(ctx, a.Clock(), a.ProcessDone(), timeout)
 	if err != nil {
 		cleanup()
 		if err == providerkit.ErrServerExited {
@@ -139,7 +138,7 @@ func (a *Agent) openConversation(opts agent.Options) error {
 	// runtime_start puts its fields at the top level, not under a payload, and
 	// the discriminator is `type`, not `kind`. A fresh agent is created through
 	// `create_agent`; `agent_id` alone fails with 401 because the agent does not
-	// exist yet. A resume names an existing pair instead. The response carries
+	// exist yet. A resume identifies an existing pair instead. The response carries
 	// the real agent and conversation ids either way.
 	// Install the waiter BEFORE the command leaves: adoptRuntime runs on the
 	// readLoop goroutine and can settle the moment the response arrives.
@@ -153,7 +152,7 @@ func (a *Agent) openConversation(opts agent.Options) error {
 
 	cmd := newLettaCommand("runtime_start", "rs-1")
 	if resume := strings.TrimSpace(opts.ResumeSessionID); resume != "" {
-		// A resume names an EXISTING conversation. runtime_start takes
+		// A resume identifies an existing conversation. runtime_start takes
 		// `conversation_id` + `agent_id` in place of the create_* fields: each
 		// pair is mutually exclusive on the wire. The agent id comes from the
 		// conversation record, because the runtime scope needs both.
@@ -184,7 +183,7 @@ func (a *Agent) openConversation(opts agent.Options) error {
 	if err := a.sendCommand(cmd); err != nil {
 		return err
 	}
-	if err := waiter.wait(a.Context(), a.ProcessDone(), opts.EffectiveStartupTimeout()); err != nil {
+	if err := waiter.wait(a.Context(), a.Clock(), a.ProcessDone(), opts.EffectiveStartupTimeout()); err != nil {
 		return err
 	}
 	a.Mu.Lock()

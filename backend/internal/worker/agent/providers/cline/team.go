@@ -57,10 +57,10 @@ func (s teamState) busy() bool {
 
 // teamRun is one teammate run.
 type teamRun struct {
+	*transcript
 	id       string
 	agentID  string
 	teamName string
-	childID  string
 	// rootSession is the session the run belongs to.
 	rootSession string
 	// startedAtMs is when Cline queued the run, in milliseconds since the Unix
@@ -154,6 +154,7 @@ func (a *Agent) teamRunFor(event hubEvent, runID, agentID, teamName string) *tea
 	}
 	a.Mu.Unlock()
 	run := &teamRun{
+		transcript:  newTranscript(""),
 		id:          runID,
 		agentID:     agentID,
 		teamName:    strings.TrimSpace(teamName),
@@ -173,7 +174,9 @@ func (a *Agent) teamRunFor(event hubEvent, runID, agentID, teamName string) *tea
 	if err != nil {
 		slog.Warn("cline teammate ensure child failed", "agent_id", a.AgentID(), "run_id", runID, "error", err)
 	}
-	run.childID = childID
+	if childID != "" {
+		run.transcript = newChildTranscript(a.sink, childID)
+	}
 	a.Mu.Lock()
 	if a.team.runs == nil {
 		a.team.runs = make(map[string]*teamRun)
@@ -193,6 +196,8 @@ func (a *Agent) endTeamRun(run *teamRun, status bgtask.Status) {
 	}
 	run.ended = true
 	a.Mu.Unlock()
+	completion, _ := spawnCompletions(status)
+	a.finishTranscriptCompaction(run.transcript, completion)
 	finalize := func() {
 		providerkit.LogRegistryRefusal("cline", "close teammate run", a.sink.CloseBackgroundTask(run.rowKey(), status))
 		if run.childID != "" {
@@ -205,7 +210,7 @@ func (a *Agent) endTeamRun(run *teamRun, status bgtask.Status) {
 	}
 	agentID := run.agentID
 	a.startBackfill(backfillJob{
-		target: newChildTranscript(a.sink, run.childID),
+		target: run.transcript,
 		match: func(stored storedSession) bool {
 			return stored.Metadata.ParentSessionID == run.rootSession &&
 				strings.Contains(stored.SessionID, teamTaskSessionMarker) &&
@@ -231,9 +236,32 @@ func (a *Agent) closeTeamRuns(status bgtask.Status) {
 	}
 	a.Mu.Unlock()
 	for _, run := range open {
+		completion, _ := spawnCompletions(status)
+		a.finishTranscriptCompaction(run.transcript, completion)
 		providerkit.LogRegistryRefusal("cline", "close teammate run", a.sink.CloseBackgroundTask(run.rowKey(), status))
 		if run.childID != "" {
 			a.sink.CleanupChildAgent(run.childID)
 		}
 	}
+}
+
+// teamRunOfAgent returns the only active run of the specified teammate.
+// Two active runs give no unambiguous destination for an agent-only notice.
+func (a *Agent) teamRunOfAgent(agentID string) *teamRun {
+	if agentID == "" {
+		return nil
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	var match *teamRun
+	for _, run := range a.team.runs {
+		if run.ended || run.agentID != agentID || run.rootSession != a.sessionID {
+			continue
+		}
+		if match != nil {
+			return nil
+		}
+		match = run
+	}
+	return match
 }

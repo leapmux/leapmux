@@ -8,6 +8,8 @@
   "required": [
     "_readme",
     "methods",
+    "compressionPhases",
+    "messageSources",
     "meta",
     "toolNames",
     "modes",
@@ -65,6 +67,8 @@
     }
   },
   "properties": {
+    "compressionPhases": { "$ref": "#/$defs/table" },
+    "messageSources": { "$ref": "#/$defs/table" },
     "_readme": {
       "type": "string",
       "minLength": 1

@@ -1,7 +1,7 @@
 import type { TurnEnd } from '../../../model/divider'
 import { PI_EVENT, PI_ROLE, PI_STOP_REASON } from '~/generated/contracts/pi-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isObject, pickBool, pickNumber, pickString } from '~/lib/jsonPick'
+import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
 
 function lastAssistantMessage(messages: unknown): Record<string, unknown> | null {
@@ -22,10 +22,7 @@ function lastAssistantMessage(messages: unknown): Record<string, unknown> | null
  * Pi reports no duration. The Worker supplies duration_ms.
  * An absent duration shows no time. A zero duration shows "(0ms)".
  *
- * willRetry states that Pi restarts the run. The divider shows "auto-retry".
- * That label matches the notice from the next auto_retry_start event.
- * The Worker holds its turn active across the retry.
- * The client derives its thinking indicator from that Worker state.
+ * The Worker stores the final run only after the native settlement.
  *
  * Worker completion takes precedence when the reader stops the turn.
  * A clean stop reports "aborted". A stop during a tool can report "error"
@@ -45,21 +42,20 @@ export function piResultDivider(parsed: unknown, completion?: MessageCompletion)
   const errorMessage = assistant ? pickString(assistant, 'errorMessage') : ''
 
   const durationMs = pickNumber(parsed, 'duration_ms')
-  const willRetry = pickBool(parsed, 'willRetry')
 
   if (stopReason === PI_STOP_REASON.Error) {
     return {
-      label: turnEndLabel('failed', { durationMs, qualifiers: [willRetry && 'auto-retry'], reason: errorMessage }),
+      label: turnEndLabel('failed', { durationMs, reason: errorMessage }),
       isError: true,
     }
   }
   // An aborted turn is not an error: the reader asked for it.
   if (stopReason === PI_STOP_REASON.Aborted)
-    return { label: turnEndLabel('interrupted', { durationMs, qualifiers: [willRetry && 'auto-retry'] }) }
+    return { label: turnEndLabel('interrupted', { durationMs }) }
   return {
     label: turnEndLabel('ended', {
       durationMs,
-      qualifiers: [stopReason === PI_STOP_REASON.Length && 'length limit', willRetry && 'auto-retry'],
+      qualifiers: [stopReason === PI_STOP_REASON.Length && 'length limit'],
     }),
   }
 }

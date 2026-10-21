@@ -3,7 +3,7 @@ package agent
 import "errors"
 
 // TurnRetrier is the one provider route for a turn retry: stop the running turn
-// and send its input again on another model. Native history excludes the stopped attempt.
+// and send its input again on a faster model. The provider reverts the attempt in its native history.
 // LeapMux retains the stopped attempt in its own transcript.
 //
 // The worker offers the retry only while the running provider broadcasts a

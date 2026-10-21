@@ -17,6 +17,3 @@ export const CODEX_EXEC_CANCELLATION = /^aborted by user after (\d+\.\d)s$/
 
 /** Codex serializes this dispatch failure as text and omits its internal success flag. */
 export const CODEX_EXEC_DISPATCH_FAILURE = `unsupported custom tool call: ${CODEX_RAW_TOOL.Exec}`
-
-/** Read-state metadata does not contain transcript content. */
-export const CODEX_READ_STATE_CHANGED_METHOD = 'thread/readState/changed'

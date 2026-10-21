@@ -6,6 +6,7 @@ import { grokControlResponseSummary, grokPermissionRejectReason } from './contro
 import { grokElicitation, grokExtractControl } from './extractControl'
 import { grokOutputFilePaths } from './extractors/outputFilePaths'
 import { grokToolCallAdapter } from './extractors/toolCall'
+import { grokNativeNotifications } from './notification'
 import { grokPermissionPresets } from './permissionPresets'
 import { grokQuestionHandling } from './pluginControls'
 
@@ -25,4 +26,5 @@ registerACPProvider({
   questionHandling: grokQuestionHandling,
   preservesSelectionNotes: true,
   agentTurnEnd: grokAgentTurnEnd,
+  nativeNotifications: grokNativeNotifications,
 })

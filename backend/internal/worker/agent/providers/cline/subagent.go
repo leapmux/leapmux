@@ -118,8 +118,17 @@ func (a *Agent) routeContent() *transcript {
 		}
 		a.ensureTurn()
 	}
+	return a.routeWithinTurn()
+}
+
+// routeWithinTurn finds the current transcript without starting a turn.
+// The caller holds dispatchMu. Ambiguous child output belongs to no transcript.
+func (a *Agent) routeWithinTurn() *transcript {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
+	if !a.turn.active && a.team.busy() {
+		return nil
+	}
 	t := a.out.lead
 	for {
 		switch len(t.spawns) {
@@ -323,6 +332,7 @@ func (a *Agent) finishSpawn(s *spawnCall, status bgtask.Status, report string) {
 		return
 	}
 	text, tools := spawnCompletions(status)
+	a.finishTranscriptCompaction(s.child, text)
 	a.flushPending(s.child, sessionID, text)
 	a.closeOpenTools(s.child, tools)
 	if !s.ambiguous {

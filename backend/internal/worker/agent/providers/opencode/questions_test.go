@@ -11,10 +11,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -31,7 +34,7 @@ func bridgeFakeDaemon(t *testing.T, daemon *opencodetest.FakeDaemon, sink agent.
 	questions.Configure(sink)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	questions.beginAt(ctx, "agent-1", daemon.Server.URL)
+	questions.beginAt(ctx, testutil.NewQuartzMock(t), "agent-1", daemon.Server.URL)
 	return questions, ctx
 }
 
@@ -313,7 +316,7 @@ func TestOpenCodeQuestions_RetiresEveryCardWhenTheAgentStops(t *testing.T) {
 	questions := &openCodeQuestions{}
 	questions.Configure(sink)
 	ctx, cancel := context.WithCancel(context.Background())
-	questions.beginAt(ctx, "agent-1", daemon.Server.URL)
+	questions.beginAt(ctx, testutil.NewQuartzMock(t), "agent-1", daemon.Server.URL)
 	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
 	require.Eventually(t, func() bool {
 		return len(sink.PublishedControls()) == 1
@@ -429,7 +432,7 @@ func TestOpenCodeQuestions_DiscoversTheServerOfARunningProcess(t *testing.T) {
 	questions := &openCodeQuestions{}
 	questions.Configure(&agenttest.ControlSink{})
 
-	base, err := questions.discover(context.Background(), int32(os.Getpid()))
+	base, err := questions.discover(testutil.DeadlineContext(t), testutil.NewQuartzMock(t), int32(os.Getpid()))
 	require.NoError(t, err)
 	assert.Equal(t, daemon.Server.URL, base)
 }
@@ -451,7 +454,7 @@ func TestOpenCodeQuestions_SkipsAPortThatIsNotTheDaemon(t *testing.T) {
 	questions := &openCodeQuestions{}
 	questions.Configure(&agenttest.ControlSink{})
 
-	base, err := questions.discover(context.Background(), int32(os.Getpid()))
+	base, err := questions.discover(testutil.DeadlineContext(t), testutil.NewQuartzMock(t), int32(os.Getpid()))
 	require.NoError(t, err)
 	assert.Equal(t, daemon.Server.URL, base)
 }
@@ -465,8 +468,116 @@ func TestOpenCodeQuestions_GivesUpWhenNoServerAnswers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := questions.discover(ctx, int32(os.Getpid()))
+	_, err := questions.discover(ctx, testutil.NewQuartzMock(t), int32(os.Getpid()))
 	require.Error(t, err)
+}
+
+func TestOpenCodeQuestions_DiscoveryUsesTheInjectedDeadline(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	deadline := clock.Trap().AfterFunc(QuestionsDiscoveryTag, "deadline")
+	t.Cleanup(func() { deadline.Close(); cancel() })
+	done := make(chan error, 1)
+	go func() {
+		_, err := discoverDaemonServer(ctx, clock, 1, func(searchCtx context.Context, _ int32) (string, bool) {
+			<-searchCtx.Done()
+			return "", false
+		})
+		done <- err
+	}()
+	assert.Equal(t, openCodeDiscoveryTimeout, testutil.WaitForTimer(t, ctx, deadline))
+	clock.Advance(openCodeDiscoveryTimeout).MustWait(ctx)
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), openCodeDiscoveryTimeout.String())
+	case <-ctx.Done():
+		t.Fatal("discovery did not end after its deadline")
+	}
+}
+
+func TestOpenCodeQuestions_DiscoveryBackoffUsesTheInjectedClock(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	guard := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(guard)
+	poll := clock.Trap().NewTimer(QuestionsDiscoveryTag, "poll")
+	t.Cleanup(func() { poll.Close(); cancel() })
+	done := make(chan error, 1)
+	var searches atomic.Int32
+	go func() {
+		_, err := discoverDaemonServer(ctx, clock, 1, func(context.Context, int32) (string, bool) {
+			searches.Add(1)
+			return "", false
+		})
+		done <- err
+	}()
+	for index, delay := range []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond, time.Second} {
+		assert.Equal(t, delay, testutil.WaitForTimer(t, guard, poll))
+		assert.Equal(t, int32(index+1), searches.Load())
+		if index == 5 {
+			cancel()
+		} else {
+			clock.Advance(delay).MustWait(guard)
+		}
+	}
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-guard.Done():
+		t.Fatal("discovery did not stop after cancellation")
+	}
+}
+
+func TestOpenCodeQuestions_ReconnectUsesTheInjectedClock(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	trap := clock.Trap().NewTimer(QuestionsReconnectTag)
+	var closeOnce sync.Once
+	closeTrap := func() { closeOnce.Do(trap.Close) }
+	questions := &openCodeQuestions{baseURL: server.URL}
+	questions.Configure(&agenttest.ControlSink{})
+	done := make(chan struct{})
+	go func() { questions.run(ctx, clock); close(done) }()
+	t.Cleanup(func() {
+		closeTrap()
+		cancel()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		select {
+		case <-done:
+		case <-cleanupCtx.Done():
+			t.Error("the question stream did not stop")
+		}
+	})
+	assert.Equal(t, openCodeQuestionRetryDelay, testutil.WaitForTimer(t, ctx, trap))
+	closeTrap()
+	assert.Equal(t, int32(1), requests.Load())
+	clock.Advance(openCodeQuestionRetryDelay / 2).MustWait(ctx)
+	assert.Equal(t, int32(1), requests.Load())
+	clock.Advance(openCodeQuestionRetryDelay / 2).MustWait(ctx)
+	testutil.RequireEventually(t, func() bool { return requests.Load() == 2 })
+}
+
+func TestOpenCodeQuestions_ForwardsNonQuestionEventsUnchanged(t *testing.T) {
+	t.Parallel()
+	questions := &openCodeQuestions{}
+	var observed []string
+	questions.observe = func(raw json.RawMessage) { observed = append(observed, string(raw)) }
+	for _, kind := range []string{"message.updated", "message.part.updated", "message.part.delta", "session.status", "session.compacted", "session.updated"} {
+		raw := []byte(fmt.Sprintf(` {"type":%q,"properties":{"sessionID":"session-1","large":9007199254740993}} `, kind))
+		questions.handleEvent(t.Context(), raw)
+		require.NotEmpty(t, observed)
+		assert.Equal(t, string(raw), observed[len(observed)-1])
+	}
 }
 
 // The launched process is the shell. A POSIX shell EXECs the daemon, so the pid is

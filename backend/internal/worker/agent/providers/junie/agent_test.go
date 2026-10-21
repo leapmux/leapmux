@@ -1,10 +1,12 @@
 package junie
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -123,4 +125,136 @@ func TestJunieUpdateSettingsSendsModeViaConfigOption(t *testing.T) {
 		"the mode write rides session/set_config_option, never session/set_mode")
 	assert.Equal(t, acp.ConfigOptionIDMode, recorded[0].Params["configId"])
 	assert.Equal(t, contracts.JunieModePlan, recorded[0].Params["value"])
+}
+
+// Junie steers through its own `_session/steering` method: the reply's
+// outcome states what the session did with the input. Frames from
+// .tmp/probe/junie/run2 and run6.
+func TestJunieSteerSendsTheNativeMethod(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		outcome    string
+		replyError *agenttest.RPCReply
+		wantErr    error
+	}{
+		{"injected delivers", "injected", nil, nil},
+		{"startedNewTurn delivers", "startedNewTurn", nil, nil},
+		{"an invalid-params refusal answers no active turn", "", &agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"no active session turn"}`)}, agent.ErrNoActiveTurn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			outcome, replyError := tc.outcome, tc.replyError
+			a, requests := acptest.NewAgentForRPCWithResponder(t,
+				func() *Agent { return &Agent{} },
+				func(a *Agent) *acp.Base { return &a.Base },
+				func(method string) agenttest.RPCReply {
+					if method == junieSteerMethod {
+						if replyError != nil {
+							return *replyError
+						}
+						return agenttest.RPCReply{Result: json.RawMessage(`{"outcome":"` + outcome + `"}`)}
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				})
+			a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+			a.SetSessionIDForTest("junie-session")
+			a.SetPromptActiveForTest(true)
+
+			err := a.SteerInput("Steer text while active.", nil)
+			assert.Equal(t, tc.wantErr, err)
+			sent := false
+			for _, request := range requests() {
+				if request.Method == junieSteerMethod {
+					sent = true
+					assert.Equal(t, "junie-session", request.Params["sessionId"])
+				}
+			}
+			assert.True(t, sent, "the steer rode the native method")
+			assert.False(t, hasMethod(requests(), acp.MethodSessionPrompt), "the steer never rode session/prompt")
+		})
+	}
+}
+
+func hasMethod(requests []agenttest.RecordedRequest, method string) bool {
+	for _, request := range requests {
+		if request.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+// junieSessionUpdateParams builds the params of one session/update, with the
+// `_meta` the update carries when it holds one.
+func junieSessionUpdateParams(sessionID, sessionUpdate, text string, meta map[string]any) json.RawMessage {
+	params := map[string]any{
+		"sessionId": sessionID,
+		"update": map[string]any{
+			"sessionUpdate": sessionUpdate,
+			"content":       map[string]any{"type": "text", "text": text},
+		},
+	}
+	if meta != nil {
+		params["_meta"] = meta
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+// A steer whose reply says `startedNewTurn` begins a turn of Junie's own that
+// waits for the running prompt, and the empty `_meta.lastRequestComplete`
+// chunk that ends the turn releases it with no turn-end row of its own.
+// Frames from .tmp/probe/junie/run2.
+func TestJunieStartedNewTurnEndsAtTheLastRequestCompleteMarker(t *testing.T) {
+	t.Parallel()
+	a, _ := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == junieSteerMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"outcome":"startedNewTurn"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.HooksForTest().SessionNotificationMetadata = a.observeJunieTurnEnd
+	a.SetPromptActiveForTest(true)
+
+	require.NoError(t, a.SteerInput("Steer text while active.", nil))
+	assert.False(t, a.AgentTurnActive(), "the turn of Junie's own waits for the prompt that runs")
+
+	// The prompt's response hands the busy state to the waiting turn.
+	a.FinishPromptRequestForTest("session-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	testutil.RequireEventually(t, func() bool { return a.AgentTurnActive() })
+	assert.True(t, a.PromptActive(), "the turn of Junie's own holds the busy state")
+
+	a.HandleSessionUpdateForTest(junieSessionUpdateParams("session-1", "agent_message_chunk", "STEERED-ANSWER", nil))
+	a.HandleSessionUpdateForTest(junieSessionUpdateParams("session-1", "agent_message_chunk", "", map[string]any{"lastRequestComplete": true}))
+
+	assert.False(t, a.AgentTurnActive(), "the marker chunk ended the turn")
+	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
+
+	steered := false
+	turnEnds := 0
+	for _, message := range sink.Messages() {
+		if message.TurnEnd {
+			turnEnds++
+			continue
+		}
+		var frame struct {
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(message.Content, &frame) == nil &&
+			frame.Kind == contracts.AssembledMessageKindText && frame.Text == "STEERED-ANSWER" {
+			steered = true
+		}
+	}
+	assert.True(t, steered, "the steered answer is stored as its own completed text")
+	assert.Equal(t, 1, turnEnds, "the prompt's divider is the only turn end: the marker stores no row")
 }

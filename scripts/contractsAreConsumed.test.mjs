@@ -170,6 +170,16 @@ function startupGroupReaders(spec, table, contract, key, side, sources) {
   }).map(source => source.path)
 }
 
+/** A read subset also reads the parent keys that it selects on that language side. */
+function subsetReaders(spec, table, contract, key, side, sources) {
+  return spec.tables
+    .filter(subset => subset.subsetOf === table.key && tableReaders(subset).includes(side)
+      && (key === undefined || contract[subset.key]?.includes(key)))
+    .flatMap(subset => mentions(sources, side === 'go'
+      ? `contracts.${spec.goPrefix}${subset.goTable}Members`
+      : `${spec.tsPrefix}_${subset.tsTable}`))
+}
+
 /** The Go files that read one key of one table. */
 function goKeyReaders(spec, table, contract, key) {
   const direct = mentions(goSources, `contracts.${spec.goPrefix}${table.goTable}${key}`)
@@ -182,7 +192,7 @@ function goKeyReaders(spec, table, contract, key) {
     if (iterated.length > 0)
       return iterated
   }
-  return [...structsThatRead(contract, table.key, key).flatMap(name => mentions(goSources, `contracts.${name}`)), ...startupGroupReaders(spec, table, contract, key, 'go', goSources)]
+  return [...structsThatRead(contract, table.key, key).flatMap(name => mentions(goSources, `contracts.${name}`)), ...startupGroupReaders(spec, table, contract, key, 'go', goSources), ...subsetReaders(spec, table, contract, key, 'go', goSources)]
 }
 
 /**
@@ -201,15 +211,16 @@ function tsLocalNames(text, symbol) {
 }
 
 /** The TS files that read one key of one table. */
-function tsKeyReaders(spec, table, key) {
+function tsKeyReaders(spec, table, contract, key) {
   const symbol = `${spec.tsPrefix}_${table.tsTable}`
-  return tsSources
+  const direct = tsSources
     .filter(source => tsLocalNames(source.text, symbol).some(local => wordPattern(`${local}.${key}`).test(source.text)))
     .map(source => source.path)
+  return [...direct, ...subsetReaders(spec, table, contract, key, 'ts', tsSources)]
 }
 
 function keyReaders(spec, table, contract, key, side) {
-  return side === 'go' ? goKeyReaders(spec, table, contract, key) : [...tsKeyReaders(spec, table, key), ...startupGroupReaders(spec, table, contract, key, 'ts', tsSources)]
+  return side === 'go' ? goKeyReaders(spec, table, contract, key) : [...tsKeyReaders(spec, table, contract, key), ...startupGroupReaders(spec, table, contract, key, 'ts', tsSources)]
 }
 
 /**
@@ -219,6 +230,8 @@ function keyReaders(spec, table, contract, key, side) {
  * moves them and Go keeps matching.
  */
 function goReaders(spec, table, contract) {
+  if (table.subsetOf !== undefined)
+    return mentions(goSources, `contracts.${spec.goPrefix}${table.goTable}Members`)
   const keys = Object.keys(contract[table.key] ?? {})
   const constants = keys.map(key => `contracts.${spec.goPrefix}${table.goTable}${key}`)
   const symbols = [...constants]
@@ -230,11 +243,11 @@ function goReaders(spec, table, contract) {
     if (backedByTable)
       symbols.push(`contracts.${name}`)
   }
-  return [...symbols.flatMap(symbol => mentions(goSources, symbol)), ...startupGroupReaders(spec, table, contract, undefined, 'go', goSources)]
+  return [...symbols.flatMap(symbol => mentions(goSources, symbol)), ...startupGroupReaders(spec, table, contract, undefined, 'go', goSources), ...subsetReaders(spec, table, contract, undefined, 'go', goSources)]
 }
 
 function tsReaders(spec, table, contract) {
-  return [...mentions(tsSources, `${spec.tsPrefix}_${table.tsTable}`), ...startupGroupReaders(spec, table, contract, undefined, 'ts', tsSources)]
+  return [...mentions(tsSources, `${spec.tsPrefix}_${table.tsTable}`), ...startupGroupReaders(spec, table, contract, undefined, 'ts', tsSources), ...subsetReaders(spec, table, contract, undefined, 'ts', tsSources)]
 }
 
 /**
@@ -304,7 +317,7 @@ describe('every generated contract table has a reader on each side it declares',
  * stale one cannot survive a call site that starts reading the key.
  */
 describe('every key of a generated contract table has a reader', () => {
-  const keyCases = cases.flatMap(({ spec, table, name }) => {
+  const keyCases = cases.filter(({ table }) => table.subsetOf === undefined).flatMap(({ spec, table, name }) => {
     const contract = contracts.get(spec.name)
     const structTables = new Set(Object.values(contract.structs ?? {})
       .flatMap(definition => [definition.table, ...definition.fields.map(field => field.table ?? definition.table)]))
@@ -389,5 +402,32 @@ describe('startupGroupReaders', () => {
     expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'ts', sources)).toEqual([])
     expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Other', 'ts', source('Object.values(PROBE_STARTUP_OPTION_GROUPS)'))).toEqual([])
     expect(startupGroupReaders(spec, { key: 'other' }, contract, 'Native', 'ts', source('Object.values(PROBE_STARTUP_OPTION_GROUPS)'))).toEqual([])
+  })
+})
+
+describe('subsetOf readers', () => {
+  const parent = { key: 'events', goTable: 'Event', tsTable: 'EVENT' }
+  const subset = { key: 'notices', subsetOf: 'events', goTable: 'ProbeNotice', tsTable: 'PROBE_NOTICE' }
+  const spec = { goPrefix: 'SubsetProbe', tsPrefix: 'SUBSET_PROBE', tables: [parent, subset] }
+  const contract = { events: { A: 'a', B: 'b' }, notices: ['B'] }
+
+  it('credits the parent keys that a read subset lists', () => {
+    const go = [{ path: 'go-reader', text: 'contracts.SubsetProbeProbeNoticeMembers' }]
+    const ts = [{ path: 'ts-reader', text: 'SUBSET_PROBE_PROBE_NOTICE.has(value)' }]
+    expect(subsetReaders(spec, parent, contract, 'B', 'go', go)).toEqual(['go-reader'])
+    expect(subsetReaders(spec, parent, contract, 'B', 'ts', ts)).toEqual(['ts-reader'])
+    expect(subsetReaders(spec, parent, contract, 'A', 'go', go)).toEqual([])
+    expect(subsetReaders(spec, parent, contract, 'A', 'ts', ts)).toEqual([])
+  })
+
+  it('reports an unread subset', () => {
+    expect(goReaders(spec, subset, contract)).toEqual([])
+    expect(tsReaders(spec, subset, contract)).toEqual([])
+  })
+
+  it('credits only the language sides that the subset declares', () => {
+    const goOnly = { ...spec, tables: [parent, { ...subset, readers: ['go'] }] }
+    const sources = [{ path: 'reader', text: 'SUBSET_PROBE_PROBE_NOTICE.has(value)' }]
+    expect(subsetReaders(goOnly, parent, contract, 'B', 'ts', sources)).toEqual([])
   })
 })

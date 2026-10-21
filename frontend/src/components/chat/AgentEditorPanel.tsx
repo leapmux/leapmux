@@ -7,8 +7,9 @@ import type { PermissionPresetController, ProviderSettingChangeHandler } from '.
 import type { BeginQueueEdit } from './queueEditSession'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
-import type { AgentActivityState, AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { PromptSuggestion } from '~/stores/chatPromptSuggestion'
 import type { TurnRetryOffer } from '~/stores/chatTurnRetryOffer'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
@@ -25,7 +26,7 @@ import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import { flavorFromOs } from '~/lib/paths'
@@ -53,6 +54,8 @@ import { useControlResponseHandling } from './controlResponseHandling'
 import { actionButtonClass } from './controls/ControlActionRow'
 import { createControlAnswerState } from './controls/types'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
+import { PendingQuestionsBanner } from './PendingQuestionsBanner'
+import { PromptSuggestionChip } from './PromptSuggestionChip'
 import { providerFor } from './providers/registry'
 import { activePermissionPreset, usablePresets } from './providerSettings'
 import { createQueueEditSession } from './queueEditSession'
@@ -97,6 +100,9 @@ export interface AgentEditorPanelProps {
   onSetQueuePaused?: (paused: boolean) => Promise<void>
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
+  /** Whether the reader opened this agent's non-blocking questions. */
+  questionsOpen?: boolean
+  onQuestionsOpenChange?: (open: boolean) => void
   onControlResponse?: ControlResponseHandler
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
   onSettingChange?: ProviderSettingChangeHandler
@@ -115,6 +121,8 @@ export interface AgentEditorPanelProps {
   settingsLoading?: boolean
   /** The live turn-retry offer that the worker made, or undefined when it made none. */
   turnRetryOffer?: TurnRetryOffer
+  promptSuggestion?: PromptSuggestion
+  onDismissPromptSuggestion?: () => void
   /**
    * Stop the offered attempt and send its input again on the offered model.
    * It resolves true when the worker accepts the retry and false when the
@@ -323,16 +331,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const addFiles = att.addFiles
   const removeAttachment = att.removeAttachment
   const clearAllAttachments = att.clearAllAttachments
-  const addFilesWhenReady = (...args: Parameters<typeof addFiles>) => enqueueInFlight() ? Promise.resolve(0) : addFiles(...args)
-  const addDropDataTransferWhenReady = (dataTransfer: DataTransfer) => enqueueInFlight() ? Promise.resolve(0) : att.addDroppedDataTransfer(dataTransfer)
-  const handleFileInputChange = () => {
-    if (enqueueInFlight()) {
-      if (fileInputRef)
-        fileInputRef.value = ''
-      return
-    }
-    att.handleFileInputChange(fileInputRef)
-  }
 
   const editorHeight = useEditorMinHeight({
     agentId: () => props.agentId,
@@ -354,7 +352,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let editorFocusFn: (() => void) | undefined
   let editorInsertFn: ((text: string) => void) | undefined
   // Whether the MarkdownEditor has fully initialized (draft loaded, cursor restored).
-  let editorReady = false
+  const [editorReady, setEditorReady] = createSignal(false)
 
   // Track the agent ID for which the editor ref is registered.  props.agentId
   // is a reactive getter that may return null/undefined at cleanup time (e.g.
@@ -364,7 +362,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   /** Register the editor ref if the editor is ready and both refs are available. */
   const tryRegisterEditorRef = (agentId: string) => {
-    if (editorReady && editorContentRef && editorFocusFn) {
+    if (editorReady() && editorContentRef && editorFocusFn) {
       // `writable` reads the SAME predicate that drives the disabled placeholder,
       // the send button, and the Enter-to-send plugin, so every surface agrees
       // about whether this composer takes input. It is passed as a thunk because
@@ -444,6 +442,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         }
       },
       get controlRequests() { return props.controlRequests },
+      get questionsOpen() { return props.questionsOpen },
+      get onQuestionsOpenChange() { return props.onQuestionsOpenChange },
       get messageContext() { return props.messageContext },
       get onControlResponse() { return props.onControlResponse },
       get onSettingChange() { return props.onSettingChange },
@@ -489,6 +489,23 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       }
     },
   )
+
+  /**
+   * The ONE predicate for whether the composer accepts attachments right now.
+   * A shown control request takes the input over, and an enqueue in flight must
+   * not change the list under the input being queued.
+   */
+  const acceptsAttachments = () => !ctrl.activeControlRequest() && !enqueueInFlight()
+  const handleFileInputChange = () => {
+    if (!acceptsAttachments()) {
+      if (fileInputRef)
+        fileInputRef.value = ''
+      return
+    }
+    att.handleFileInputChange(fileInputRef)
+  }
+  const addFilesWhenReady = (...args: Parameters<typeof addFiles>) => acceptsAttachments() ? addFiles(...args) : Promise.resolve(0)
+  const addDropDataTransferWhenReady = (dataTransfer: DataTransfer) => acceptsAttachments() ? att.addDroppedDataTransfer(dataTransfer) : Promise.resolve(0)
 
   /**
    * Whether an EMPTY composer still submits something.
@@ -682,6 +699,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           // none without onRetryTurn. The fallback only satisfies the type.
           onRetry={(turnId, model) => props.onRetryTurn?.(turnId, model) ?? Promise.resolve(false)}
         />
+        <PromptSuggestionChip
+          agentId={props.agentId}
+          suggestion={props.onDismissPromptSuggestion ? props.promptSuggestion : undefined}
+          idle={props.agentActivity === AgentActivityState.IDLE}
+          editorEmpty={editorReady() && !disabled() && !hasContent() && (editorContentRef?.get() ?? '') === ''}
+          onDismiss={() => props.onDismissPromptSuggestion?.()}
+        />
+        <PendingQuestionsBanner
+          count={ctrl.pendingQuestionCount()}
+          shown={ctrl.pendingQuestionCount() > 0 && !ctrl.activeControlRequest()}
+          onAnswer={ctrl.openQuestions}
+        />
         <AgentInputQueue
           clientId={props.queueClientId ?? ''}
           supportsSteering={props.agent?.supportsSteering ?? false}
@@ -718,7 +747,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           type="file"
           multiple
           accept={acceptAttribute()}
-          disabled={enqueueInFlight()}
+          disabled={!acceptsAttachments()}
           style={{ display: 'none' }}
           onChange={handleFileInputChange}
           data-testid="file-input"
@@ -786,18 +815,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               editorInsertFn = fn
             },
             onReady: () => {
-              editorReady = true
               const pending = queueEdit.takePendingText()
               if (pending !== undefined)
                 editorContentRef?.set(pending)
+              setEditorReady(true)
               tryRegisterEditorRef(props.agentId)
             },
           }}
-          // The ONE place that decides whether a control request blocks an
+          // `acceptsAttachments` decides whether a control request blocks an
           // attachment. `MarkdownEditor` reads these handlers at event time, so
           // an absent `attachments` refuses the paste and the drop by itself.
           // `addFiles`'s second argument marks a pasted image, which changes its filename.
-          {...(!ctrl.activeControlRequest() && !enqueueInFlight()
+          {...(acceptsAttachments()
             ? {
                 attachments: {
                   onPaste: files => addFiles(files, true),
@@ -834,6 +863,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     return agentProvider !== undefined ? { agentProvider } : {}
                   })()}
                   controlSurface={ctrl.activeControlSurface()}
+                  {...(request.nonBlocking ? { onAnswerLater: ctrl.closeQuestions } : {})}
                   {...(ctrl.showInterrupt() ? { onInterrupt: () => props.onInterrupt?.() } : {})}
                 />
               )}
@@ -846,7 +876,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               optionGroups={props.agent?.optionGroups}
               optionValues={currentOptionValues()}
               onAttachFile={() => fileInputRef?.click()}
-              canAttach={!ctrl.activeControlRequest() && !enqueueInFlight()}
+              canAttach={acceptsAttachments()}
               workingTree={workingTree()}
               enterKeyMode={preferences.enterKeyMode}
               onToggleEnterMode={() => {

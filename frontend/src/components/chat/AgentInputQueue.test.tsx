@@ -65,6 +65,30 @@ function renderQueue(overrides: {
 }
 
 describe('AgentInputQueue', () => {
+  it('labels an awaiting-echo row and disables its actions', () => {
+    renderQueue({ items: [item('sent', { state: AgentInputState.AWAITING_ECHO }), item('next')] })
+    const row = screen.getByTestId('queued-input-sent')
+    expect(row).toHaveTextContent('Sent, waiting for the agent to read it')
+    for (const name of ['Move Up', 'Move Down', 'Edit', 'Delete'])
+      expect(within(row).getByRole('button', { name })).toBeDisabled()
+    expect(screen.getByTestId('queue-drag-handle-sent').className).toContain('dragHandleInert')
+    expect(row).toHaveAttribute('data-input-state', String(AgentInputState.AWAITING_ECHO))
+  })
+
+  it('offers Steer on the first queued row behind an awaiting-echo row', async () => {
+    const handlers = renderQueue({
+      supportsSteering: true,
+      items: [item('sent', { state: AgentInputState.AWAITING_ECHO }), item('next', { canSteer: true })],
+    })
+    await fireEvent.click(within(screen.getByTestId('queued-input-next')).getByRole('button', { name: 'Steer' }))
+    expect(handlers.onSteer).toHaveBeenCalledWith(expect.objectContaining({ id: 'next' }))
+  })
+
+  it('disables takeover on an awaiting-echo row when another row has an edit owner', () => {
+    renderQueue({ items: [item('sent', { state: AgentInputState.AWAITING_ECHO }), item('edited', { editOwnerClientId: 'other' })] })
+    expect(within(screen.getByTestId('queued-input-sent')).getByRole('button', { name: 'Take Over' })).toBeDisabled()
+  })
+
   it('renders operation, state, text, and attachment metadata', () => {
     renderQueue({
       items: [item('compact', {
@@ -75,6 +99,14 @@ describe('AgentInputQueue', () => {
     })
     expect(screen.getByText('/compact')).toBeInTheDocument()
     expect(screen.getByText(/Compact context · Queued · a\.txt \(4 B\)/)).toBeInTheDocument()
+  })
+
+  it('renders the Answer label for a question answer input', () => {
+    renderQueue({
+      items: [item('answer', { text: 'Red', kind: AgentInputKind.QUESTION_ANSWER })],
+    })
+    expect(screen.getByText('Red')).toBeInTheDocument()
+    expect(screen.getByText(/Answer · Queued/)).toBeInTheDocument()
   })
 
   it('moves an input up with the keyboard action', async () => {

@@ -15,7 +15,7 @@ export function classifyMuseMessage(input: ClassificationInput): MessageCategory
   if (!payload)
     return { kind: 'unknown' }
   if (!payload.method && typeof payload.content === 'string')
-    return payload.hidden === true ? { kind: 'hidden' } : payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
+    return payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
   if (payload.method === MUSE_METHOD.TurnCompleted)
     return { kind: 'result_divider' }
   if (payload.method === MUSE_METHOD.TodoListChanged)
@@ -34,14 +34,11 @@ export function classifyMuseMessage(input: ClassificationInput): MessageCategory
     case MUSE_ITEM_KIND.UserShell:
       return museItemLifecycle(item.status, input.completion).facts.rowFinal ? { kind: 'tool_result' } : { kind: 'tool_use' }
     case MUSE_ITEM_KIND.Workflow:
-      return museItemLifecycle(item.status, input.completion).facts.rowFinal ? { kind: 'tool_result' } : { kind: 'hidden' }
+      return museItemLifecycle(item.status, input.completion).facts.rowFinal ? { kind: 'tool_result' } : { kind: 'unknown' }
     case MUSE_ITEM_KIND.Compaction:
       return notificationClassifierFor(input.agentProvider, museNotificationEntry)([payload], 'hidden')
-    case MUSE_ITEM_KIND.Subagent:
-    case MUSE_ITEM_KIND.ReminderChild:
-      return { kind: 'hidden' }
     case MUSE_ITEM_KIND.HookRun:
-      return { kind: 'unknown' }
+      return notificationClassifierFor(input.agentProvider, museNotificationEntry)([payload])
     default:
       return { kind: 'unknown' }
   }

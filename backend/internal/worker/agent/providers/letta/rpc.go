@@ -10,10 +10,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/coder/websocket"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // The WebSocket command/response transport. One socket per agent, opened after
@@ -63,31 +66,37 @@ func (a *Agent) sendCommand(command any) error {
 	return conn.writeJSON(ctx, command)
 }
 
-// readLoop pumps inbound frames until the socket or process ends.
+// readLoop reads inbound frames until the socket or process ends.
 func (a *Agent) readLoop(ctx context.Context, conn *wsConn) {
 	for {
 		_, data, err := conn.conn.Read(ctx)
 		if err != nil {
-			if ctx.Err() == nil && !a.IsStopped() {
-				slog.Debug("letta: websocket read ended", "agent_id", a.AgentID(), "error", err)
+			failure := fmt.Errorf("the Letta WebSocket ended before requests settled: %w", err)
+			a.Mu.Lock()
+			unexpected := ctx.Err() == nil && !a.StoppedLocked()
+			if unexpected && a.transportErr == nil {
+				a.transportErr = failure
 			}
-			// A handshake that never settles must fail at once, not at its
-			// timeout: the socket is gone, so no response can arrive.
-			a.settleRuntime(fmt.Errorf("the WebSocket ended before runtime_start was answered: %w", err))
-			a.failPendingRequests(fmt.Errorf("the Letta WebSocket ended before requests settled: %w", err))
+			cancelRuntime := a.cancelRuntime
+			a.Mu.Unlock()
+			a.settleRuntime(failure)
+			a.failPendingRequests(failure)
+			// This adapter has no reconnect path. A runtime without its socket reader cannot receive or complete commands.
+			if unexpected {
+				slog.Warn("letta native connection ended", "agent_id", a.AgentID(), "error", err)
+				if cancelRuntime != nil {
+					cancelRuntime()
+				}
+			}
 			return
 		}
 		a.handleFrame(data)
 	}
 }
 
-// runtimeWaiter holds the runtime_start handshake. The response settles it with
-// the error that ended the handshake, or nil once the runtime identity is known.
-//
-// Start waits on it. An input sent before the identity exists carries an empty
-// runtime scope, and the App Server DROPS that input without an error -- no
-// `input_accepted`, no `loop_error`, nothing. The turn then never starts and
-// the worker logs only silence.
+// runtimeWaiter retains one native control outcome for startup or a later request.
+// Startup waits for the runtime identity before it accepts user input.
+// The native server drops an input without a runtime scope and sends no receipt for it.
 type runtimeWaiter struct {
 	once sync.Once
 	done chan struct{}
@@ -108,33 +117,21 @@ func (w *runtimeWaiter) settle(err error) {
 	})
 }
 
-// wait returns the handshake outcome. It fails when exited closes first (the
-// process ended), when the timeout elapses, or when ctx ends.
-//
-// The outcome wins a tie with the exit, the same way ListenWaiter reports an
-// address a server printed and then died with.
-func (w *runtimeWaiter) wait(ctx context.Context, exited <-chan struct{}, timeout time.Duration) error {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-w.done:
+// wait returns the native reply outcome on the injected clock.
+// A ready reply wins against process exit and timeout.
+func (w *runtimeWaiter) wait(ctx context.Context, clock quartz.Clock, exited <-chan struct{}, timeout time.Duration) error {
+	outcome := providerkit.AwaitSignal(ctx, clock, w.done, exited, timeout, "letta runtime")
+	switch outcome {
+	case providerkit.SignalArrived:
 		return w.err
-	default:
-	}
-	select {
-	case <-w.done:
-		return w.err
-	case <-exited:
-		select {
-		case <-w.done:
-			return w.err
-		default:
-		}
-		return fmt.Errorf("%w: the server exited before runtime_start was answered", errAgentStopped)
-	case <-timer.C:
-		return fmt.Errorf("the server answered no runtime_start within %s", timeout)
-	case <-ctx.Done():
+	case providerkit.SignalExited:
+		return fmt.Errorf("%w before the reply arrived", errAgentStopped)
+	case providerkit.SignalTimedOut:
+		return fmt.Errorf("the Letta runtime did not reply within %s", timeout)
+	case providerkit.SignalCancelled:
 		return ctx.Err()
+	default:
+		return fmt.Errorf("unknown Letta wait outcome: %d", outcome)
 	}
 }
 
@@ -149,56 +146,52 @@ func (a *Agent) settleRuntime(err error) {
 }
 
 // handleFrame dispatches one protocol_v2 message.
+// Each server message carries its body in a dedicated field:
+//   - stream_delta uses delta.
+//   - control_request uses request.
+//   - update_loop_status uses loop_status.
+//   - update_subagent_state uses subagents.
 //
-// Each server->client message names its body in its OWN field, never under
-// `payload`: `stream_delta` carries `delta`, `control_request` carries
-// `request`, `update_loop_status` carries `loop_status` and
-// `update_subagent_state` carries `subagents`. A handler that reads `payload`
-// reads nothing and drops the frame.
-//
-// Only frames the transcript draws become rows. A protocol state snapshot or a
-// command acknowledgement becomes nothing at all: each `update_device_status`
-// alone is 3 KB, and a chat that stored them pushed the reader's own answer out
-// of the virtualized transcript.
+// Known protocol state and acknowledgements remain internal.
+// Repeated snapshots would displace visible replies in the virtualized transcript.
+// An unknown frame persists only when its runtime matches the current session.
 func (a *Agent) handleFrame(line []byte) {
 	if a.IsDiscardingOutput() {
 		return
 	}
-	// The wire discriminator is `type`, not `kind`, on both directions.
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	if a.outputEnded || a.IsDiscardingOutput() {
+		return
+	}
 	var head struct {
 		Type       string          `json:"type"`
-		Kind       string          `json:"kind"`
+		Runtime    *runtimeScope   `json:"runtime"`
 		Delta      json.RawMessage `json:"delta"`
 		Request    json.RawMessage `json:"request"`
 		LoopStatus json.RawMessage `json:"loop_status"`
 		Subagents  json.RawMessage `json:"subagents"`
 		SubagentID string          `json:"subagent_id"`
 		RequestID  string          `json:"request_id"`
-		Error      string          `json:"error"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
-		slog.Debug("letta: unparseable frame", "agent_id", a.AgentID(), "error", err)
+		slog.Debug("letta could not decode the frame header", "agent_id", a.AgentID(), "error", err)
+		a.persistUnknownFrame(line)
 		return
 	}
 	typ := head.Type
-	if typ == "" {
-		typ = head.Kind
-	}
-
-	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
 
 	slog.Debug("letta: frame", "agent_id", a.AgentID(), "type", typ, "len", len(line))
 	switch typ {
-	case "stream_delta":
-		a.onStreamDelta(head.Delta, head.SubagentID)
-	case "turn_finished":
+	case contracts.LettaMessageStreamDelta:
+		a.onStreamDelta(head.Delta, head.SubagentID, head.Runtime)
+	case contracts.LettaMessageTurnFinished:
 		a.onTurnFinished(line)
-	case "update_subagent_state":
-		a.onSubagentState(line, head.Subagents)
-	case "update_loop_status":
+	case contracts.LettaMessageUpdateSubagentState:
+		a.onSubagentState(head.Subagents)
+	case contracts.LettaMessageUpdateLoopStatus:
 		a.onLoopStatus(head.LoopStatus)
-	case "control_request":
+	case contracts.LettaMessageControlRequest:
 		a.onControlRequest(line, head.Request, head.RequestID)
 	case "runtime_start_response":
 		a.adoptRuntime(line)
@@ -210,21 +203,25 @@ func (a *Agent) handleFrame(line []byte) {
 		a.handleDeviceStatus(line)
 	case "sync_response":
 		a.handleSettingsSyncResponse(line)
-	case "loop_error":
-		a.persistNotification(line)
-	case "input_accepted":
+	case contracts.LettaMessageInputAccepted:
 		a.handlePermissionReceipt(line, head.RequestID)
-	case "abort_message_response":
+	case contracts.LettaMessageAbortMessageResponse:
 		// The native turn events report the result of an interrupt.
+	case contracts.LettaMessageUpdateQueue, contracts.LettaMessageAppServerInfoResponse:
+		// These frames contain protocol state, not transcript content.
+	case "file_ops":
+		// Letta synchronizes its editor here. The native tool result already records the file write.
 	default:
-		// An unknown message kind, a `*_response` ack and a state snapshot
-		// (`update_queue`) all move nothing.
+		a.persistUnknownFrame(line)
 	}
 }
 
 func (a *Agent) failPendingRequests(err error) {
 	a.Mu.Lock()
 	var waiters []*runtimeWaiter
+	if a.catalogPending != nil {
+		waiters = append(waiters, a.catalogPending.waiter)
+	}
 	if a.modelPending != nil {
 		waiters = append(waiters, a.modelPending.waiter)
 	}
@@ -240,20 +237,13 @@ func (a *Agent) failPendingRequests(err error) {
 	}
 }
 
-// persistNotification stores a notification row verbatim.
-func (a *Agent) persistNotification(payload []byte) {
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
-		slog.Debug("letta: persist notification failed", "agent_id", a.AgentID(), "error", err)
-	}
-}
-
 // persistRowTo stores one transcript row in its native session.
 func (a *Agent) persistRowTo(target agent.ProviderServices, payload []byte, span agent.SpanInfo) {
 	a.Mu.Lock()
 	sessionID := a.conversationID
 	a.Mu.Unlock()
 	if err := target.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload, AgentSessionID: sessionID}, span); err != nil {
-		slog.Debug("letta: persist message failed", "agent_id", a.AgentID(), "error", err)
+		slog.Error("letta: persist message failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
@@ -274,7 +264,7 @@ func dial(ctx context.Context, url string) (*wsConn, error) {
 // adoptRuntime records the agent and conversation ids the runtime_start
 // response returns, and settles the handshake Start waits on.
 //
-// A response that names no runtime, or reports a failure, settles it with that
+// A response that identifies no runtime, or reports a failure, settles it with that
 // error: an agent that never learned its runtime identity cannot take input.
 func (a *Agent) adoptRuntime(payload []byte) {
 	var result struct {

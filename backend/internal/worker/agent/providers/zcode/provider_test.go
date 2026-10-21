@@ -29,22 +29,21 @@ func TestZCodeClassifiesConsolidatableNotifications(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		payload string
-		kind    agent.NotificationKind
-		key     string
+		want    agent.NotificationClassification
 	}{
-		{"a started compaction", `{"operationId":"c1","status":"started","trigger":"auto"}`, agent.NotificationKindStatus, "zcode:compaction"},
-		{"a retrying compaction", `{"operationId":"c1","status":"retrying","trigger":"auto","attempt":2,"maxAttempts":5}`, agent.NotificationKindStatus, "zcode:compaction"},
-		{"a completed compaction", `{"operationId":"c1","status":"completed","trigger":"auto"}`, agent.NotificationKindCompactionBoundary, "zcode:compaction"},
-		{"a skipped compaction", `{"operationId":"c1","status":"skipped","trigger":"auto"}`, agent.NotificationKindCompactionBoundary, "zcode:compaction"},
-		{"a failed compaction", `{"operationId":"c1","status":"failed","trigger":"auto"}`, agent.NotificationKindCompactionBoundary, "zcode:compaction"},
-		{"an interrupted compaction", `{"operationId":"c1","status":"interrupted","trigger":"auto"}`, agent.NotificationKindCompactionBoundary, "zcode:compaction"},
-		{"a scheduled retry", `{"type":"model_retry_scheduled","requestId":"q1","_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2}}}}`, agent.NotificationKindAPIRetry, "zcode:api_retry"},
-		{"a workspace hook admission", `{"pendingCount":2,"bundleDigest":"abc"}`, agent.NotificationKindProviderScoped, "zcode:hook_admission"},
-		{"a discarded steer input", `{"pendingInputIds":["p1"],"reason":"user_removed","targetTurnId":"turn_1"}`, agent.NotificationKindStatus, "zcode:steer"},
+		{"a started compaction", `{"operationId":"c1","status":"started","trigger":"auto"}`, agent.NotificationClassification{}},
+		{"a retrying compaction", `{"operationId":"c1","status":"retrying","trigger":"auto","attempt":2,"maxAttempts":5}`, agent.NotificationClassification{}},
+		{"a completed compaction", `{"operationId":"c1","status":"completed","trigger":"auto"}`, agent.CompactionBoundaryNotification()},
+		{"a skipped compaction", `{"operationId":"c1","status":"skipped","trigger":"auto"}`, agent.CompactionBoundaryNotification()},
+		{"a failed compaction", `{"operationId":"c1","status":"failed","trigger":"auto"}`, agent.CompactionBoundaryNotification()},
+		{"an interrupted compaction", `{"operationId":"c1","status":"interrupted","trigger":"auto"}`, agent.CompactionBoundaryNotification()},
+		{"a scheduled retry", `{"type":"model_retry_scheduled","requestId":"q1","_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2}}}}`, agent.APIRetryNotification()},
+		{"a workspace hook admission", `{"pendingCount":2,"bundleDigest":"abc"}`, agent.ProviderScopedNotification("zcode:hook_admission")},
+		{"a discarded steer input", `{"pendingInputIds":["p1"],"reason":"user_removed","targetTurnId":"turn_1"}`, agent.ProviderScopedNotification("zcode:steer")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, agent.NotificationClassification{Kind: tc.kind, Key: tc.key},
+			assert.Equal(t, tc.want,
 				Registration().Plugin.Classify(sessionUpdated(tc.payload)))
 		})
 	}
@@ -62,4 +61,15 @@ func TestZCodeClassifiesConsolidatableNotifications(t *testing.T) {
 			assert.Equal(t, agent.NotificationClassification{}, Registration().Plugin.Classify(raw))
 		})
 	}
+}
+
+func TestZCodeClassify_SteerNoticesAreNotACompactionSlot(t *testing.T) {
+	t.Parallel()
+	for _, event := range []string{contracts.ZCodeEventTurnSteerQueued, contracts.ZCodeEventTurnSteerDrained} {
+		raw, err := json.Marshal(map[string]any{"type": event, "payload": map[string]any{}})
+		assert.NoError(t, err)
+		assert.Equal(t, agent.ProviderScopedNotification("zcode:steer"), Registration().Plugin.Classify(raw))
+	}
+	assert.Equal(t, agent.NotificationClassification{}, Registration().Plugin.Classify(json.RawMessage(`{"type":"session.updated","payload":{"operationId":"c1","status":"started","trigger":"auto"}}`)))
+	assert.Equal(t, agent.CompactionBoundaryNotification(), Registration().Plugin.Classify(json.RawMessage(`{"type":"session.updated","payload":{"operationId":"c1","status":"completed","trigger":"auto"}}`)))
 }

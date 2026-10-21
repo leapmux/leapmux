@@ -2,7 +2,6 @@ package junie
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Agent manages one Junie ACP process.
@@ -47,11 +47,31 @@ var _ agent.Agent = (*Agent)(nil)
 // false, with no build error, for a provider that stops satisfying
 // InputSteerer, so this assertion makes that regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerPreparer = (*Agent)(nil)
 
-// SteerInput queues text for the running turn as a follow-up prompt. Junie
-// advertises steering (`_meta.steering.supported`) but states no separate
-// steer method, so the input rides `session/prompt`, which Junie queues for the
-// turn that runs.
+// junieSteerMethod is Junie's own steering method: it injects into the running
+// turn without refusing the concurrent `session/prompt` that a plain follow-up
+// prompt raises.
+const junieSteerMethod = "_session/steering"
+
+// observeJunieTurnEnd reads the `_meta.lastRequestComplete` marker that ends a
+// turn Junie started by itself: a steer whose reply said `startedNewTurn`
+// began it (see SteerInput), and the marked empty chunk is that turn's only
+// end, so the agent turn ends there with no turn-end row. A turn LeapMux
+// started ends at its session/prompt response, where ending no agent turn is a
+// no-op.
+func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessage) {
+	if providerkit.RawBool(metadata["lastRequestComplete"]) {
+		a.EndAgentTurnWithoutRow()
+	}
+}
+
+// SteerInput injects text into the running turn through Junie's own
+// `_session/steering`. The reply's outcome states what the session did:
+// `injected` reached the running turn, and `startedNewTurn` began a new turn of
+// Junie's own, which the provider tracks as an agent turn so its end still
+// closes the turn state. A refused request answers ErrNoActiveTurn, so the
+// queue keeps the input for the next turn.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	if content == "" {
 		return nil
@@ -59,17 +79,31 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if !a.PromptActive() {
 		return agent.ErrNoActiveTurn
 	}
-	return a.WithSessionID(func(sessionID string) error {
-		params, err := json.Marshal(map[string]any{
-			"sessionId": sessionID,
-			"prompt":    acp.BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
-		})
-		if err != nil {
-			return fmt.Errorf("marshal the Junie steer: %w", err)
+	result, err := a.SendSessionRPCObserved(junieSteerMethod, map[string]interface{}{
+		"prompt": acp.BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
+	}, func(response json.RawMessage, replyErr error) {
+		if replyErr != nil {
+			return
 		}
-		if _, err := a.SendRequest(acp.MethodSessionPrompt, params, a.APITimeout()); err != nil {
+		var reply struct {
+			Outcome string `json:"outcome"`
+		}
+		if json.Unmarshal(response, &reply) != nil {
+			return
+		}
+		// A steer that started a new turn of Junie's own runs outside the
+		// prompt of LeapMux: track it as an agent turn so the turn state and
+		// the reader follow it to its own end.
+		if reply.Outcome == "startedNewTurn" {
+			a.BeginAgentTurn()
+		}
+	})
+	if err != nil {
+		if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
 			return agent.ErrNoActiveTurn
 		}
-		return nil
-	})
+		return providerkit.ClassifyJSONRPCDeliveryError(junieSteerMethod, err)
+	}
+	_ = result
+	return nil
 }

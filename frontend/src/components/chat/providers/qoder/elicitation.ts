@@ -1,4 +1,5 @@
 import type { ElicitationRequest } from '../../model/controlPrompt'
+import { MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { QODER_CONTROL_REQUEST_SUBTYPE } from '~/generated/contracts/qoder-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
@@ -8,7 +9,7 @@ export function qoderElicitation(payload: Record<string, unknown>): ElicitationR
   if (request.subtype !== QODER_CONTROL_REQUEST_SUBTYPE.Elicitation)
     return undefined
   return {
-    mode: pickString(request, 'mode', 'form'),
+    mode: pickString(request, 'mode', MCP_ELICITATION_MODE.Form),
     message: pickString(request, 'message', ''),
     server: pickString(request, 'display_name', pickString(request, 'mcp_server_name', '')),
     schema: request.requested_schema,

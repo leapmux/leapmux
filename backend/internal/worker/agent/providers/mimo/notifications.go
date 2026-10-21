@@ -1,37 +1,56 @@
 package mimo
 
 import (
+	"encoding/json"
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// mimoQueuedNotification is one native observation retained for a later
-// write. A FAILED write keeps its captured write, so a retry repeats no side
-// effect and never rewrites a row that succeeded. A HELD entry has not been
-// attempted at all: the root destination is unsettled while a native failure
-// can still claim the main transcript, and an observation written before its
-// neighbor's destination resolves would order itself ahead of the divider
-// that belongs there instead.
+// mimoQueuedNotification retains a notice until its destination is known or its writer accepts it.
+// A held notice has no writer yet. An unattributed failure can still put an earlier divider in the main transcript.
+// Captured writes retain their payload and destination across refused attempts.
 type mimoQueuedNotification struct {
-	content agent.MessageContent
-	write   agent.CapturedTranscript
-	held    bool
-	done    bool
+	content       agent.MessageContent
+	write         agent.CapturedTranscript
+	held          bool
+	done          bool
+	workerWritten bool
+}
+
+// mimoWorkerNotifications keeps retry resolutions on the worker reduction path, behind any held native notice.
+type mimoWorkerNotifications struct {
+	agent *Agent
+	sink  agent.ProviderServices
+	main  bool
+}
+
+func (sink mimoWorkerNotifications) PersistLeapMuxNotification(content map[string]interface{}) {
+	raw, err := json.Marshal(content)
+	if err != nil {
+		slog.Error("encode a MiMo worker notification", "agent_id", sink.agent.AgentID(), "error", err)
+		return
+	}
+	sink.agent.persistNotice(sink.sink, agent.MessageContent{Original: raw}, sink.main && sink.agent.rootHoldsNotifications(), true)
+}
+
+func writeMiMoNotification(write agent.CapturedTranscript, workerWritten bool) (bool, error) {
+	if workerWritten {
+		return write.PersistWorkerNotification()
+	}
+	return write.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
 }
 
 // queueNotification retains one observation in native arrival order.
-func (a *Agent) queueNotification(content agent.MessageContent, write agent.CapturedTranscript, held bool) {
+func (a *Agent) queueNotification(content agent.MessageContent, write agent.CapturedTranscript, held, workerWritten bool) {
 	a.notifMu.Lock()
 	defer a.notifMu.Unlock()
-	a.notificationQueue = append(a.notificationQueue, &mimoQueuedNotification{content: content, write: write, held: held})
+	a.notificationQueue = append(a.notificationQueue, &mimoQueuedNotification{content: content, write: write, held: held, workerWritten: workerWritten})
 }
 
-// rootHoldsNotifications reports whether a native failure without an
-// attributed owner can still claim the main transcript: until the failure
-// names its message, a root notification written now could precede the
-// divider that the same failure later puts in front of it.
+// rootHoldsNotifications reports whether an unattributed failure can still belong to the main transcript.
+// Until it identifies its message, a root notice could precede an earlier failure's divider.
 func (a *Agent) rootHoldsNotifications() bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -43,38 +62,40 @@ func (a *Agent) rootHoldsNotifications() bool {
 	return false
 }
 
-// persistCapturedNotification writes one native observation to its exact
-// destination now, and retains it for an ordered retry when the write fails
-// or the destination itself is still unsettled.
+// persistCapturedNotification writes a native notice or retains it until its destination settles.
+// The shared output queue owns accepted writes, including failed storage attempts.
 func (a *Agent) persistCapturedNotification(sink agent.ProviderServices, content agent.MessageContent, rootHeld bool) {
+	a.persistNotice(sink, content, rootHeld, false)
+}
+
+func (a *Agent) persistNotice(sink agent.ProviderServices, content agent.MessageContent, rootHeld, workerWritten bool) {
 	if rootHeld {
-		// The destination is the main transcript only until the pending
-		// failure resolves; hold the bytes and attempt them after it does.
-		a.queueNotification(content.Clone(), agent.CapturedTranscript{}, true)
+		// Keep the bytes until the earlier failure resolves its destination.
+		a.queueNotification(content.Clone(), agent.CapturedTranscript{}, true, workerWritten)
 		return
 	}
 	captured := agent.CaptureTranscript(sink, content, agent.SpanInfo{})
-	if _, err := captured.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT); err != nil {
+	if _, err := writeMiMoNotification(captured, workerWritten); !agent.OutputRetained(err) {
 		slog.Error("mimo persist captured notification", "agent_id", a.AgentID(), "error", err)
-		a.queueNotification(agent.MessageContent{}, captured, false)
+		a.queueNotification(agent.MessageContent{}, captured, false, workerWritten)
 	}
 }
 
-// flushCapturedNotifications retries the retained observations in their
-// native order. The first entry that still fails stops the walk, so a later
-// observation can never write itself ahead of an earlier one that has not
-// landed. A held entry resolves its destination at flush time: the pending
-// failure that held it has either claimed the child transcript or written
-// its divider to the main one before this walk runs.
+// flushCapturedNotifications submits retained notices in order and stops at a refused write.
+// A held notice receives its owner here, after the earlier failure selected a child transcript or wrote its main divider.
+// The caller serializes dispatch. The queue lock protects concurrent additions and releases completed captures.
 func (a *Agent) flushCapturedNotifications() {
 	for {
 		a.notifMu.Lock()
+		for len(a.notificationQueue) > 0 && a.notificationQueue[0].done {
+			a.notificationQueue[0] = nil
+			a.notificationQueue = a.notificationQueue[1:]
+		}
 		var next *mimoQueuedNotification
-		for _, queued := range a.notificationQueue {
-			if !queued.done {
-				next = queued
-				break
-			}
+		if len(a.notificationQueue) > 0 {
+			next = a.notificationQueue[0]
+		} else {
+			a.notificationQueue = nil
 		}
 		a.notifMu.Unlock()
 		if next == nil {
@@ -82,7 +103,7 @@ func (a *Agent) flushCapturedNotifications() {
 		}
 		if next.held {
 			captured := agent.CaptureTranscript(a.sink, next.content, agent.SpanInfo{})
-			if _, err := captured.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT); err != nil {
+			if _, err := writeMiMoNotification(captured, next.workerWritten); !agent.OutputRetained(err) {
 				slog.Error("mimo persist held notification", "agent_id", a.AgentID(), "error", err)
 				next.write = captured
 				next.held = false
@@ -91,7 +112,7 @@ func (a *Agent) flushCapturedNotifications() {
 			next.done = true
 			continue
 		}
-		if _, err := next.write.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT); err != nil {
+		if _, err := writeMiMoNotification(next.write, next.workerWritten); !agent.OutputRetained(err) {
 			slog.Error("mimo persist retained notification", "agent_id", a.AgentID(), "error", err)
 			return
 		}

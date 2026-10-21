@@ -9,8 +9,8 @@ import { bypassToolRequests } from './scenarios'
 
 /**
  * The facts of a held Copilot child.
- * The Bypass preset lets the spawn run without a permission request. The start event of the child selects it by the
- * spawn call, so the row title does not.
+ * The Bypass preset lets the spawn run without a permission request.
+ * The Worker's child links identify the exact spawning call and native child, independently of the row title.
  */
 export const COPILOT_CHILD: NativeChildProfile = {
   childTask: copilotChildTaskMatcher,

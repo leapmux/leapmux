@@ -121,8 +121,10 @@ export function extractChatRow(
           return row({ kind: 'assistant-thinking', text: assembled.text })
         case 'assistant_plan':
           return row({ kind: 'assistant-plan', text: assembled.text })
-        case 'assistant_text':
-          return row({ kind: 'assistant-text', text: assembled.text })
+        case 'assistant_text': {
+          const segments = plugin?.transcript.assistantTextSegments?.(assembled.text)
+          return row({ kind: 'assistant-text', text: assembled.text, ...(segments ? { segments } : {}) })
+        }
       }
     }
     // The plugin reads its native turn-end frame for the divider label.

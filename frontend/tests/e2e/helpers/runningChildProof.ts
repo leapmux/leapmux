@@ -224,8 +224,13 @@ export interface NativeChildProfile {
   prepare?: (context: ManagedNativeScenarioContext) => Promise<void>
   /** Register report handling that the provider owns while the child is held. */
   beforeRelease?: (context: ManagedNativeScenarioContext, child: ProfiledNativeChild) => Promise<void>
-  /** Resolve the exact native task ID of the child from the native frames of its parent. */
+  /** Resolve the native task ID from the parent's native frames or the Worker's authoritative child links. */
   resolveTaskId?: (context: ManagedNativeScenarioContext, parentId: string, child: ProfiledNativeChild) => Promise<string>
+  /**
+   * Build the child's final model step. A provider whose child ends through its own built-in tool supplies that
+   * call; the default is a text step that answers the report marker.
+   */
+  finalStep?: (child: ProfiledNativeChild) => MockModelStep
 }
 
 /** What a profiled child may vary: the rows of earlier children, and a tool turn before its final answer. */
@@ -243,7 +248,7 @@ export function profiledChildOptions(
 ): RunningChildOptions {
   const script = nativeChildScriptContext(context)
   const matcher = profile.childTask(child.task)
-  const finalStep = script.textStep(child.report)
+  const finalStep = profile.finalStep?.(child) ?? script.textStep(child.report)
   const { prepare, beforeRelease, resolveTaskId } = profile
   return {
     spawn: child.spawn,

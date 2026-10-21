@@ -14,6 +14,14 @@ const provider = AgentProvider.DEEPSEEK_HARNESS
 const event = (type: string, data: Record<string, unknown> = {}) => ({ type, seq: 1, time: 1000, data })
 
 describe('deepseek harness provider', () => {
+  it('identifies a stored compaction start only for the history filter', () => {
+    const plugin = providerFor(provider)
+    expect(plugin?.transcript.compactionStart?.(event('compaction/start'))).toBe(true)
+    expect(plugin?.transcript.compactionStart?.(event('compaction/end'))).toBe(false)
+    expect(plugin?.transcript.compactionStart?.({ type: 'compaction/start', data: 'invalid' })).toBe(false)
+    expect(classifyDeepseekHarnessMessage(input(event('compaction/start'), null, provider)).kind).toBe('unknown')
+  })
+
   it('declares separate native plan and permission axes', () => {
     const plugin = providerFor(provider)
     expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, binary: true })
@@ -36,7 +44,7 @@ describe('deepseek harness provider', () => {
     { frame: event('user/message', { role: 'user', content: [{ type: 'text', text: 'Child prompt' }] }), kind: 'user_content' },
     { frame: event('turn/end', { reason: { kind: 'completed' } }), kind: 'result_divider' },
     { frame: event('compaction/end'), kind: 'notification' },
-    { frame: event('tool-workflow/run-start', { runId: 'run', name: 'Native workflow' }), kind: 'hidden' },
+    { frame: event('tool-workflow/run-start', { runId: 'run', name: 'Native workflow' }), kind: 'unknown' },
     { frame: event('future/event'), kind: 'unknown' },
   ])('classifies the native event as $kind', ({ frame, kind }) => {
     expect(classifyDeepseekHarnessMessage(input(frame, null, provider)).kind).toBe(kind)
@@ -48,7 +56,7 @@ describe('deepseek harness provider', () => {
     const result = classifyDeepseekHarnessMessage(input(undefined, { old_seqs: [], messages: [completed, failed] }, provider))
     expect(result).toMatchObject({ kind: 'notification', entries: [
       { kind: 'compaction', phase: 'end' },
-      { kind: 'text', text: 'Native compaction failed: Native failure' },
+      { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'Native failure' },
     ] })
     expect(deepseekHarnessCompactionBoundary(input(completed, null, provider))).toEqual({})
     expect(deepseekHarnessCompactionBoundary(input(failed, null, provider))).toBeNull()

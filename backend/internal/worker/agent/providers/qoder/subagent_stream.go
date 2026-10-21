@@ -32,7 +32,8 @@ type qoderChildBlock struct {
 }
 
 type qoderStreamEvent struct {
-	Event struct {
+	ParentToolUseID json.RawMessage `json:"parent_tool_use_id"`
+	Event           struct {
 		Type         string `json:"type"`
 		Index        int    `json:"index"`
 		ContentBlock *struct {
@@ -59,6 +60,9 @@ func (a *Agent) handleChildStreamFrame(childID, spawnID string, raw []byte) {
 	if err := json.Unmarshal(raw, &frame); err != nil {
 		slog.Warn("qoder child stream frame is unreadable", "agent_id", a.AgentID(), "error", err)
 		return
+	}
+	if frame.Event.Type == "content_block_start" || frame.Event.Type == "content_block_delta" {
+		a.notificationState(spawnID).retry.Resolve(a.sink.ChildSink(childID))
 	}
 
 	var completed []*qoderChildBlock

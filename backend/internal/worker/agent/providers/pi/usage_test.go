@@ -24,17 +24,20 @@ func TestPiMessageUsagePreservesOriginalBytes(t *testing.T) {
 
 func TestPiTurnUsagePreservesOriginalBytes(t *testing.T) {
 	t.Parallel()
-	for _, retry := range []bool{false, true} {
+	for _, completion := range []agent.MessageCompletion{agent.MessageCompletionComplete, agent.MessageCompletionInterrupted} {
 		sink := &agenttest.ControlSink{}
 		a := newPiAgentWithSink(agent.NewProviderServices(sink))
 		raw := []byte(" {\"type\":\"agent_end\",\"duration_ms\":\"provider value\",\"future\":9007199254740993,\"messages\":[]} \n")
 		duration := int64(12)
-		a.persistPiAgentEnd(piAgentEndContent(raw, piUsageSnapshot{HasTotalCost: true, TotalCostUsd: 0}, &duration), retry)
+		content := piAgentEndContent(raw, piUsageSnapshot{HasTotalCost: true, TotalCostUsd: 0}, &duration)
+		content.Completion = completion
+		a.persistPiAgentEnd(content)
 		messages := sink.Messages()
 		require.Len(t, messages, 1)
 		assert.Equal(t, raw, messages[0].Content)
 		assert.NotEmpty(t, messages[0].Metadata)
-		assert.Equal(t, !retry, messages[0].TurnEnd)
+		assert.True(t, messages[0].TurnEnd)
+		assert.Equal(t, completion, messages[0].Completion)
 	}
 }
 

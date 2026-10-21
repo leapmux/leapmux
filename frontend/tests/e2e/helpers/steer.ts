@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { assistantBubbles, sendMessage } from './ui'
 
 /**
@@ -7,8 +8,8 @@ import { assistantBubbles, sendMessage } from './ui'
  *
  * A message sent while a turn runs waits in LeapMux's input queue. The queue
  * offers to steer with it, and the Steer button sends it into the running turn
- * as a steering line. The row leaves the queue once the worker sent the steer,
- * and the reply the steered turn ends on lands in the transcript.
+ * as a steering line. The row leaves at acceptance or waits for the provider's echo.
+ * The echo confirms that the model read the steer and fixes its transcript position.
  */
 
 /**
@@ -48,7 +49,7 @@ export function steerButton(row: Locator): Locator {
 /**
  * Queue `input.message` during a running turn and steer it into that turn.
  *
- * The row leaves the queue once the worker sent the steer.
+ * Accept either a removed row or a row that awaits the provider's echo.
  */
 export async function steerQueuedInput(page: Page, input: SteerInput): Promise<void> {
   await sendMessage(page, input.message)
@@ -57,7 +58,7 @@ export async function steerQueuedInput(page: Page, input: SteerInput): Promise<v
   const steer = steerButton(queued)
   await expect(steer).toBeVisible()
   await steer.click()
-  await expect(queued).toHaveCount(0)
+  await expect(queued.and(page.locator(`:not([data-input-state="${AgentInputState.AWAITING_ECHO}"])`))).toHaveCount(0)
 }
 
 /**

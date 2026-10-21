@@ -178,10 +178,10 @@ describe('museWorkflowResult', () => {
     expect(call?.result).toEqual({ content: [{ type: 'text', text: summary }] })
   })
 
-  it('keeps active native workflow state on its background-task surface', () => {
+  it('returns no row for a stored active workflow', () => {
     const frame = completedWorkflowFrame()
     frame.params.item.status = 'inProgress'
-    expect(providerRow(AgentProvider.MUSE_CODE, frame)).toEqual({ kind: 'hidden' })
+    expect(providerRow(AgentProvider.MUSE_CODE, frame)).toBeNull()
   })
 
   it('keeps retained finality without treating it as a computed native result', () => {

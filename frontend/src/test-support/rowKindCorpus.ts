@@ -70,7 +70,6 @@ export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], DrawnRowKind
   notification: 'notification',
   tool_use: 'tool',
   tool_result: 'tool',
-  agent_prompt: 'agent-prompt',
   assistant_text: 'assistant-text',
   assistant_thinking: 'assistant-thinking',
   assistant_plan: 'assistant-plan',
@@ -79,7 +78,6 @@ export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], DrawnRowKind
   plan_execution: 'plan-execution',
   result_divider: 'divider',
   control_response: 'control-response',
-  compact_summary: 'compact-summary',
   unknown: 'unrecognized',
   unsupported_provider: 'hidden',
 }
@@ -221,32 +219,6 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     },
     category: 'assistant_plan',
     spanType: 'ExitPlanMode',
-  },
-  {
-    provider: Provider.CLAUDE_CODE,
-    name: 'prompt to a subagent',
-    payload: {
-      type: 'user',
-      parent_tool_use_id: 'toolu_3',
-      message: { role: 'user', content: [{ type: 'text', text: 'Read the parser and report what it rejects.' }] },
-    },
-    category: 'agent_prompt',
-  },
-  {
-    provider: Provider.CLAUDE_CODE,
-    name: 'local command output',
-    payload: { type: 'user', message: { role: 'user', content: 'Context: 42% used.' } },
-    category: 'user_text',
-  },
-  {
-    provider: Provider.CLAUDE_CODE,
-    name: 'compact summary',
-    payload: {
-      type: 'user',
-      isCompactSummary: true,
-      message: { role: 'user', content: [{ type: 'text', text: 'The session corrected the token check.' }] },
-    },
-    category: 'compact_summary',
   },
   {
     // An assistant envelope whose content array holds no block the classifier knows.
@@ -509,7 +481,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     provider: Provider.PI,
     name: 'session entry',
     payload: { type: 'entry_appended', entry: { type: 'model_change', provider: 'anthropic', modelId: 'claude-opus-5' } },
-    category: 'hidden',
+    category: 'unknown',
   },
   {
     provider: Provider.PI,
@@ -756,7 +728,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     provider: Provider.MIMO_CODE,
     name: 'busy status',
     payload: statusFrame(MIMO_STATUS_TYPE.Busy),
-    category: 'hidden',
+    category: 'unknown',
   },
   {
     provider: Provider.MIMO_CODE,
@@ -951,35 +923,27 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'unsupported_provider',
   },
   // --- Letta Code --------------------------------------------------------
+  // The worker assembles streamed text and reasoning into the shared envelope,
+  // and it stores each tool delta flat, with its message_type at the top level
+  // exactly as the wire sent it. A wrapped `{kind, payload}` frame is the wire
+  // envelope, never a stored row.
   {
     provider: Provider.LETTA,
-    name: 'assistant text',
-    payload: { kind: 'stream_delta', payload: { message_type: 'assistant_message', content: [{ type: 'text', text: 'Hello from the mock model.' }] } },
-    category: 'assistant_text',
-  },
-  {
-    provider: Provider.LETTA,
-    name: 'reasoning',
-    payload: { kind: 'stream_delta', payload: { message_type: 'reasoning_message', content: [{ type: 'text', text: 'The user says hello.' }] } },
+    name: 'assembled reasoning',
+    payload: { type: 'assembled_message', kind: 'reasoning', text: 'The user says hello.', completion: 'complete' },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.LETTA,
-    name: 'tool call',
-    payload: { kind: 'stream_delta', payload: { message_type: 'client_tool_start', tool_call_id: 'call_1', tool_name: 'Bash', tool_input: { command: 'echo hi' } } },
+    name: 'tool call of the stored delta',
+    payload: { message_type: 'client_tool_start', tool_call_id: 'call_1', tool_name: 'Bash', tool_input: { command: 'echo hi' } },
     category: 'tool_use',
   },
   {
     provider: Provider.LETTA,
-    name: 'tool result',
-    payload: { kind: 'stream_delta', payload: { message_type: 'tool_return_message', tool_call_id: 'call_1', tool_name: 'Bash', tool_return: 'hi\n' } },
+    name: 'tool result of the stored delta',
+    payload: { message_type: 'tool_return_message', tool_call_id: 'call_1', tool_name: 'Bash', tool_return: 'hi\n' },
     category: 'tool_result',
-  },
-  {
-    provider: Provider.LETTA,
-    name: 'turn end',
-    payload: { kind: 'turn_finished', payload: { turn_id: 't1', stop_reason: 'end_turn' } },
-    category: 'result_divider',
   },
   // The shapes the worker really persists. The wire discriminator of a
   // protocol_v2 message is `type`, never `kind`, and the turn end is FLAT: its
@@ -1007,7 +971,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.DROID,
     name: 'assistant text',
-    payload: { type: 'assembled', kind: 'text', text: 'Hello from the mock model.' },
+    payload: { type: 'assembled_message', kind: 'text', text: 'Hello from the mock model.', completion: 'complete' },
     category: 'assistant_text',
   },
   {
@@ -1032,6 +996,6 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     provider: Provider.DROID,
     name: 'working state bookkeeping',
     payload: { type: 'droid_working_state_changed', newState: 'idle' },
-    category: 'hidden',
+    category: 'unknown',
   },
 ]

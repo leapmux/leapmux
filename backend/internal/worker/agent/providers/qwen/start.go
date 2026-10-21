@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 var _ agent.StartFunc = Start
@@ -80,6 +81,7 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		// the tool call that spawned it.
 		ChildUpdateRoute:           childUpdateRoute,
 		SessionMetadataHandler:     a.handleSessionMetadata,
+		ChunkMessageID:             a.chunkMessageID,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		ControlRequestObserver:     a.observeControlRequest,
@@ -87,6 +89,8 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		// advertises that.
 		SteersByOwnRoute:   true,
 		FollowUpPrompt:     a.followUpPrompt,
+		PromptEnded:        a.handlePromptEnded,
+		PromptPrepared:     a.preparePrompt,
 		ClearProviderState: a.clearProviderState,
 		// Qwen advertises no session/close, so the provider stops the background
 		// work of a session that a context clear replaced itself.
@@ -99,11 +103,15 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 // and input queued for its turn goes with the turn.
 func (a *Agent) clearProviderState() {
 	a.stopAllBackgroundTranscripts()
+	a.resetRequestRetries()
+	a.clearPromptSuggestion()
+	providerkit.EndCompaction(a.Sink())
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	a.children.spawns = nil
 	a.tools = toolInputs{}
 	a.steer = steerQueue{}
+	a.compressPending = nil
 }
 
 // Stop stops the readers of background transcripts, then the process.

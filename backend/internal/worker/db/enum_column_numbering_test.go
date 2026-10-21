@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,23 +24,38 @@ const workerMigration = "migrations/00001_initial.sql"
 type integerEnumColumn struct {
 	label, update, read string
 	minimum, maximum    int64
+	// admitted lists the ordinals the column accepts when the set is NOT the
+	// plain minimum-to-maximum range. Nil means every ordinal in that range.
+	admitted []int64
+}
+
+// accepts reports whether the column takes one ordinal.
+func (c integerEnumColumn) accepts(ordinal int64) bool {
+	if c.admitted == nil {
+		return c.minimum <= ordinal && ordinal <= c.maximum
+	}
+	return slices.Contains(c.admitted, ordinal)
 }
 
 func integerEnumColumns() []integerEnumColumn {
 	return []integerEnumColumn{
-		{"agents.agent_provider", "UPDATE agents SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM agents", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
-		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5},
-		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2},
-		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2},
-		{"messages.agent_provider", "UPDATE messages SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM messages", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
-		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 6},
-		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 4},
-		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4},
-		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2},
-		{"control_response_payloads.agent_provider", "UPDATE control_response_payloads SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_payloads", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
-		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5},
-		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3},
-		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8},
+		{"agents.agent_provider", "UPDATE agents SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM agents", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil},
+		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5, nil},
+		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2, nil},
+		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2, nil},
+		{"messages.agent_provider", "UPDATE messages SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM messages", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil},
+		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 7, nil},
+		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5, nil},
+		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4, nil},
+		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2, nil},
+		{"control_response_payloads.agent_provider", "UPDATE control_response_payloads SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_payloads", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil},
+		// The tie CHECK demands follow_up text exactly when the kind is non-zero,
+		// so the update writes both from one bound parameter (?1 appears twice).
+		// A range refusal then cannot hide behind a tie refusal.
+		{"control_response_payloads.follow_up_kind", "UPDATE control_response_payloads SET follow_up_kind = ?1, follow_up = CASE WHEN ?1 = 0 THEN '' ELSE 'answer' END", "SELECT typeof(follow_up_kind), follow_up_kind FROM control_response_payloads", 0, 7, []int64{0, 6, 7}},
+		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5, nil},
+		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3, nil},
+		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8, nil},
 	}
 }
 
@@ -73,6 +89,9 @@ func TestEnumColumnsRejectFractionalOrdinals(t *testing.T) {
 		t.Run(column.label, func(t *testing.T) {
 			store := integerEnumStore(t)
 			for ordinal := column.minimum; ordinal <= column.maximum; ordinal++ {
+				if !column.accepts(ordinal) {
+					continue
+				}
 				_, err := store.ExecContext(t.Context(), column.update, ordinal)
 				assert.NoError(t, err, "every declared stored ordinal must remain valid")
 				if err != nil {
@@ -86,9 +105,23 @@ func TestEnumColumnsRejectFractionalOrdinals(t *testing.T) {
 			}
 			_, err := store.ExecContext(t.Context(), column.update, column.minimum)
 			require.NoError(t, err)
-			for _, invalid := range []any{float64(max(column.minimum, 1)) + 0.5, column.minimum - 1, column.maximum + 1, int64(1 << 40), nil} {
+			for _, invalid := range []any{float64(max(column.minimum, 1)) + 0.5, int64(1 << 40), nil} {
 				_, err := store.ExecContext(t.Context(), column.update, invalid)
 				assert.Error(t, err, "a non-ordinal must fail at the actual storage boundary")
+				var storageType string
+				var stored any
+				require.NoError(t, store.QueryRowContext(t.Context(), column.read).Scan(&storageType, &stored))
+				assert.Equal(t, "integer", storageType)
+				assert.Equal(t, column.minimum, stored, "a refused value must leave the actual stored ordinal unchanged")
+				_, err = store.ExecContext(t.Context(), column.update, column.minimum)
+				require.NoError(t, err)
+			}
+			for ordinal := column.minimum - 1; ordinal <= column.maximum+1; ordinal++ {
+				if column.accepts(ordinal) {
+					continue
+				}
+				_, err := store.ExecContext(t.Context(), column.update, ordinal)
+				assert.Errorf(t, err, "the ordinal %d lies outside the admitted set and must fail at the actual storage boundary", ordinal)
 				var storageType string
 				var stored any
 				require.NoError(t, store.QueryRowContext(t.Context(), column.read).Scan(&storageType, &stored))
@@ -139,6 +172,22 @@ func TestEnumColumnIntegerChecksMatchTheirStorage(t *testing.T) {
 	}
 }
 
+// The tie CHECK binds follow_up text to follow_up_kind: a queued kind without
+// its text, and a text without its kind, each fails at the storage boundary
+// instead of reaching finalization as a value nobody chose.
+func TestFollowUpTieCheckTiesTextToKind(t *testing.T) {
+	t.Parallel()
+	store := integerEnumStore(t)
+	_, err := store.ExecContext(t.Context(), "UPDATE control_response_payloads SET follow_up = '', follow_up_kind = 6")
+	assert.ErrorContains(t, err, "CHECK constraint failed", "a follow-up kind with no text must fail")
+	_, err = store.ExecContext(t.Context(), "UPDATE control_response_payloads SET follow_up = 'answer', follow_up_kind = 0")
+	assert.ErrorContains(t, err, "CHECK constraint failed", "a follow-up text with no kind must fail")
+	_, err = store.ExecContext(t.Context(), "UPDATE control_response_payloads SET follow_up = 'answer', follow_up_kind = 6")
+	assert.NoError(t, err, "control feedback with its text must remain valid")
+	_, err = store.ExecContext(t.Context(), "UPDATE control_response_payloads SET follow_up = '', follow_up_kind = 0")
+	assert.NoError(t, err, "no follow-up input must remain valid")
+}
+
 func TestGoalUnknownStorageAcceptsFiveAndRejectsDerivedDormantSix(t *testing.T) {
 	t.Parallel()
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
@@ -170,11 +219,11 @@ func TestGoalUnknownStorageAcceptsFiveAndRejectsDerivedDormantSix(t *testing.T) 
 //
 // A lower limit of 1 is the rule, because proto3 fixes UNSPECIFIED at 0 and an
 // unset Go field holds 0, so a write that forgot the value fails instead of
-// recording a state nobody chose. Five columns start at 0, and in each the zero
+// recording a state nobody chose. Six columns start at 0, and in each the zero
 // IS a state the code chose: goal_status means "no goal", assembled_kind and
 // completion both mean "this message is not an assembled one and reports no
-// completion", pause_reason means "not paused", and pause_owner means "nobody
-// owns this pause".
+// completion", pause_reason means "not paused", pause_owner means "nobody
+// owns this pause", and follow_up_kind means "no follow-up input".
 func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	t.Parallel()
 
@@ -184,6 +233,10 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		check        string
 		lastAccepted int32
 		lastDeclared int32
+		// admitted lists the ordinals the CHECK accepts when the set is not a
+		// plain minimum-to-maximum range. Nil means every ordinal from zero to
+		// lastAccepted.
+		admitted []int32
 		// columns is how many columns carry this exact CHECK text, where more
 		// than one does. A Contains assertion cannot tell three columns that
 		// share a CHECK from one column that kept it, so this counts them.
@@ -211,9 +264,25 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_items.kind",
-			check:        "CHECK (kind BETWEEN 1 AND 6)",
-			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK),
+			check:        "CHECK (kind BETWEEN 1 AND 7)",
+			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
+		},
+		{
+			column:       "control_response_payloads.follow_up_kind",
+			check:        "CHECK (follow_up_kind IN (0, 6, 7))",
+			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
+			admitted:     []int32{0, 6, 7},
+			narrower:     "an answer queues only control feedback or a question answer; 0 means no follow-up",
+		},
+		{
+			column:       "control_response_payloads follow_up tie",
+			check:        "CHECK ((follow_up_kind = 0) = (follow_up = ''))",
+			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
+			admitted:     []int32{0, 6, 7},
+			narrower:     "an answer queues only control feedback or a question answer; 0 means no follow-up",
 		},
 		{
 			column:       "messages.source",
@@ -235,9 +304,8 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_items.state",
-			columns:      2,
-			check:        "CHECK (state BETWEEN 1 AND 4)",
-			lastAccepted: int32(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN),
+			check:        "CHECK (state BETWEEN 1 AND 5)",
+			lastAccepted: int32(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputState_name),
 		},
 		{
@@ -267,7 +335,7 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 				"the CHECK is what makes that unrepresentable rather than merely unwritten",
 		},
 		{
-			column: "control_deliveries.state", check: "CHECK (state BETWEEN 1 AND 4)", columns: 2,
+			column: "control_deliveries.state", check: "CHECK (state BETWEEN 1 AND 4)",
 			lastAccepted: int32(leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ControlDeliveryState_name),
 		},
@@ -304,7 +372,24 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			assert.Equalf(t, want, strings.Count(sql, c.check),
 				"%d column(s) must carry %q; %s is one of them", want, c.check, c.column)
 			if c.narrower != "" {
-				assert.Lessf(t, c.lastAccepted, c.lastDeclared,
+				admitted := c.admitted
+				if admitted == nil {
+					for ordinal := int32(0); ordinal <= c.lastAccepted; ordinal++ {
+						admitted = append(admitted, ordinal)
+					}
+				}
+				for _, ordinal := range admitted {
+					assert.LessOrEqualf(t, ordinal, c.lastDeclared,
+						"%s admits %d, which its enum does not declare", c.column, ordinal)
+				}
+				refusesSomeDeclaredOrdinal := false
+				for ordinal := int32(0); ordinal <= c.lastDeclared; ordinal++ {
+					if !slices.Contains(admitted, ordinal) {
+						refusesSomeDeclaredOrdinal = true
+						break
+					}
+				}
+				assert.Truef(t, refusesSomeDeclaredOrdinal,
 					"%s no longer admits less than its enum declares; delete the `narrower` note (%s)", c.column, c.narrower)
 				return
 			}

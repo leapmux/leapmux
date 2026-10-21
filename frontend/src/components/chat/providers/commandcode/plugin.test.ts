@@ -12,6 +12,14 @@ const provider = AgentProvider.COMMAND_CODE
 const event = (type: string, fields: Record<string, unknown> = {}) => ({ type: 'event', seq: 1, event: { type, ...fields } })
 
 describe('command code provider', () => {
+  it('identifies a stored start only for the history filter', () => {
+    const plugin = providerFor(provider)
+    expect(plugin?.transcript.compactionStart?.(event('compaction_start'))).toBe(true)
+    expect(plugin?.transcript.compactionStart?.(event('compaction_outcome', { outcome: 'summarized' }))).toBe(false)
+    expect(plugin?.transcript.compactionStart?.({ event: { type: 'compaction_start' } })).toBe(false)
+    expect(classifyCommandCodeMessage(input(event('compaction_start'), null, provider)).kind).toBe('unknown')
+  })
+
   it('declares the native attachment and permission options', () => {
     const plugin = providerFor(provider)
     expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, binary: false })
@@ -31,7 +39,7 @@ describe('command code provider', () => {
     [event('tool_errored', { toolCallId: 'call', error: 'Native error.' }), 'tool_result'],
     [event('api_retry', { attempt: 0, delayMs: 0, error: 'Native retry.' }), 'notification'],
     [event('subagent_progress', { toolCallId: 'spawn', toolName: 'read_file', toolInput: '/work/file' }), 'notification'],
-    [event('run_end', { result: { nextState: [{ text: 'Repeated context.' }] } }), 'hidden'],
+    [event('run_end', { result: { nextState: [{ text: 'Repeated context.' }] } }), 'unknown'],
     [event('new_native_event'), 'unknown'],
     [{ event: { type: 'message_end', content: [{ type: 'text', text: 'Wrong envelope.' }] } }, 'unknown'],
     [{ jsonrpc: '2.0', method: 'turn/completed', params: { turnId: 'turn_1', stopReason: 'end_turn' } }, 'result_divider'],
@@ -48,7 +56,7 @@ describe('command code provider', () => {
 
   it('keeps retry zero values and omits absent values', () => {
     expect(commandCodeNotificationEntry(event('api_retry', { attempt: 0, delayMs: 0, error: { message: 'Native retry.' } }))).toEqual([{ kind: 'retry', scope: 'api', attempt: 0, delayMs: 0, error: 'Native retry.' }])
-    expect(commandCodeNotificationEntry(event('api_retry'))).toEqual([{ kind: 'retry', scope: 'api', error: '' }])
+    expect(commandCodeNotificationEntry(event('api_retry'))).toEqual([{ kind: 'retry', scope: 'api' }])
   })
 
   it('pairs only native opening and finished tool frames', () => {

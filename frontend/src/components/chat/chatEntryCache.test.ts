@@ -1,8 +1,9 @@
 import type { ClassifiedEntryCacheDeps } from './chatEntryCache'
+import type { NotificationEntry } from './model/notification'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentChatMessageSchema, AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
@@ -10,6 +11,88 @@ import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/setting
 import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
 import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
+import * as rowPreparation from './rowPreparation'
+
+describe('createClassifiedEntryCache compaction history', () => {
+  it('hides a native stored start through the real provider reader', () => {
+    createRoot((dispose) => {
+      try {
+        const native = (id: string, seq: bigint, method: string) => create(AgentChatMessageSchema, {
+          id,
+          seq,
+          source: MessageSource.AGENT,
+          agentProvider: AgentProvider.CODEX,
+          contentCompression: ContentCompression.NONE,
+          content: new TextEncoder().encode(JSON.stringify({ method, params: { threadId: 'thread', item: { id: 'compact', type: 'contextCompaction' } } })),
+        })
+        const messages = [native('start', 1n, 'item/started'), native('end', 2n, 'item/completed')]
+        const cache = createClassifiedEntryCache({ messages: () => messages, role: () => 'other', showHiddenMessages: () => false })
+        const ids = cache.visibleEntries().map(entry => entry.message.id)
+        expect(cache.getEntry('end')?.category.kind).toBe('notification')
+        expect(ids).toEqual(['end'])
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+  it.each([
+    ['keeps an unknown start without an end', false, false, false, ['start']],
+    ['keeps an unknown start before a micro end', true, true, false, ['start', 'end']],
+    ['shows an unknown start when hidden messages are enabled', true, false, true, ['start', 'end']],
+  ] as const)('%s', (_, hasEnd, micro, showHidden, expected) => {
+    createRoot((dispose) => {
+      try {
+        const frame = (id: string, content: unknown) => create(AgentChatMessageSchema, {
+          id,
+          source: MessageSource.AGENT,
+          agentProvider: AgentProvider.CLAUDE_CODE,
+          contentCompression: ContentCompression.NONE,
+          content: new TextEncoder().encode(JSON.stringify(content)),
+        })
+        const messages = [frame('start', { type: 'system', subtype: 'status', status: 'compacting' })]
+        if (hasEnd)
+          messages.push(frame('end', { type: 'system', subtype: micro ? 'microcompact_boundary' : 'compact_boundary' }))
+        const cache = createClassifiedEntryCache({ messages: () => messages, role: () => 'other', showHiddenMessages: () => showHidden })
+        expect(cache.visibleEntries().map(entry => entry.message.id)).toEqual(expected)
+        expect(cache.getEntry('start')?.category.kind).toBe('unknown')
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+  it.each([
+    ['hides a stored start that a later end follows', true, false, false, false, ['middle', 'end']],
+    ['keeps a start without a later end', false, false, false, false, ['start', 'middle']],
+    ['keeps a mixed row', true, true, false, false, ['start', 'middle', 'end']],
+    ['shows the start with hidden messages enabled', true, false, true, false, ['start', 'middle', 'end']],
+    ['keeps a start before a micro end', true, false, false, true, ['start', 'middle', 'end']],
+  ] as const)('%s', (_, hasEnd, mixed, showHidden, micro, expected) => {
+    const original = rowPreparation.prepareMessage
+    const prepare = vi.spyOn(rowPreparation, 'prepareMessage').mockImplementation((message, options) => {
+      const prepared = original(message, options)
+      const entries: NotificationEntry[] = message.id === 'start'
+        ? [{ kind: 'compaction', phase: 'start' }, ...(mixed ? [{ kind: 'text' as const, text: 'Keep this notice' }] : [])]
+        : [{ kind: 'compaction', phase: 'end', micro }]
+      return message.id === 'middle' ? prepared : { ...prepared, category: { kind: 'notification', entries }, compactionStartOnly: message.id === 'start' && !mixed }
+    })
+    try {
+      createRoot((dispose) => {
+        const messages = [assistantText('start', 1n, ''), assistantText('middle', 2n, 'Answer')]
+        if (hasEnd)
+          messages.push(assistantText('end', 3n, ''))
+        const cache = createClassifiedEntryCache({ messages: () => messages, role: () => 'other', showHiddenMessages: () => showHidden })
+        expect(cache.visibleEntries().map(entry => entry.message.id)).toEqual(expected)
+        expect(cache.visibleEntries().find(entry => entry.message.id === 'middle')).toBe(cache.getEntry('middle'))
+        dispose()
+      })
+    }
+    finally {
+      prepare.mockRestore()
+    }
+  })
+})
 
 /**
  * A ZCode `scheduled` ExitPlanMode call whose own frame carries no arguments: the
@@ -578,12 +661,7 @@ describe('createClassifiedEntryCache', () => {
 
   it('rebuilds a forwarded row when the tab\'s parent link hydrates', () => {
     createRoot((dispose) => {
-    // A subagent tab is placed BEFORE listAgents hydrates its parentAgentId, and
-    // the child's own messages are subscribed immediately -- so a forwarded row
-    // can be classified while isChildTranscript still reads false. Inside the
-    // child's transcript that row is an ordinary user message; in the parent's it
-    // is the prompt SENT to the subagent. Without this dimension the row froze on
-    // the pre-hydration answer and rendered as a collapsed "Prompt" card forever.
+      // Parent metadata can arrive after the first row. The cache must update its freshness and measurement key.
       const [isChild, setIsChild] = createSignal(false)
       const messages = [forwardedUserText('fu1', 3n, 'toolu_spawn')]
       const cache = createTestClassifiedEntryCache({
@@ -593,7 +671,7 @@ describe('createClassifiedEntryCache', () => {
       })
       cache.visibleEntries()
       const before = cache.getEntry('fu1')!
-      expect(before.category.kind).toBe('agent_prompt')
+      expect(before.category.kind).toBe('unknown')
       expect(before.freshness.isChildTranscript).toBe(false)
       const beforeHeightKey = heightKeyForEntry(before, 0)
 
@@ -601,7 +679,7 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const after = cache.getEntry('fu1')!
       expect(after.freshness.isChildTranscript).toBe(true)
-      expect(after.category.kind).toBe('user_text')
+      expect(after.category.kind).toBe('unknown')
       expect(after).not.toBe(before)
       expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
       dispose()

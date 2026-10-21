@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -195,4 +198,101 @@ func TestModeSetterKeepsANativeChangeAfterItsAcknowledgment(t *testing.T) {
 	}
 	require.NoError(t, b.setSecondary("yolo"))
 	assert.Equal(t, "plan", b.PermissionModeForTest(), "the later native event must survive the return of the setter")
+}
+
+func TestSetModeAckKeepsTheReportedMode(t *testing.T) {
+	for _, channel := range []ModeChannel{ModeChannelPermissionMode, ModeChannelPrimaryAgent} {
+		for _, initial := range []string{"default", "vibe"} {
+			for _, update := range []string{
+				`{"sessionUpdate":"current_mode_update","currentModeId":"vibe"}`,
+				`{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","category":"mode","name":"Mode","type":"select","currentValue":"vibe","options":[{"value":"vibe","name":"Vibe"},{"value":"plan","name":"Plan"}]}]}`,
+			} {
+				t.Run(fmt.Sprintf("channel=%d/initial=%s/update=%s", channel, initial, update), func(t *testing.T) {
+					b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
+					b.sessionID = "session-1"
+					b.hooks.ModeChannel = channel
+					axis := b.secondaryChannel()
+					*axis.field = initial
+					b.hooks.ModeSetter = func(value string, acknowledge func(string)) error {
+						b.HandleOutput([]byte(`{"method":"session/update","params":{"sessionId":"session-1","update":` + update + `}}`))
+						acknowledge(value)
+						return nil
+					}
+					require.NoError(t, b.setSecondary("plan"))
+					assert.Equal(t, "vibe", *axis.field)
+				})
+			}
+		}
+	}
+}
+
+func TestSetModeAckIgnoresUnrelatedReports(t *testing.T) {
+	for _, frame := range []string{
+		`{"method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"current_mode_update","currentModeId":"vibe"}}}`,
+		`{"method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"effort","category":"thought_level","name":"Effort","type":"select","currentValue":"high","options":[{"value":"high","name":"High"}]}]}}}`,
+	} {
+		b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
+		b.sessionID = "session-1"
+		b.hooks.ModeChannel = ModeChannelPermissionMode
+		b.hooks.ModeSetter = func(value string, acknowledge func(string)) error {
+			b.HandleOutput([]byte(frame))
+			acknowledge(value)
+			return nil
+		}
+		require.NoError(t, b.setSecondary("plan"))
+		assert.Equal(t, "plan", b.PermissionModeForTest())
+	}
+}
+
+func TestStartupKeepsTheReportedModeWhenTheStoredModeIsGone(t *testing.T) {
+	a, requests := newTestAgentForRPC(t)
+	sink := &agenttest.Sink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.permissionMode = "vibe"
+	a.availableModes = []*leapmuxv1.AvailableOption{nil, {Id: "vibe", Name: "Vibe"}, {Id: "plan", Name: "Plan"}}
+	require.NoError(t, a.applyStartupPermissionMode("probe-agent", false))
+	assert.Equal(t, "vibe", a.permissionMode)
+	assert.Empty(t, requests())
+	require.Len(t, sink.LeapMuxNotifications(), 1)
+	assert.Equal(t, contracts.NotificationTypeAgentStatus, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+	assert.Equal(t, "The session does not offer the mode probe-agent. It runs the mode Vibe.", sink.LeapMuxNotifications()[0][contracts.NotificationFieldText])
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "vibe", sink.LastSettingsRefresh().PermissionMode)
+}
+
+func TestStartupFallbackHookSuppressesTheRow(t *testing.T) {
+	a, requests := newTestAgentForRPC(t)
+	sink := &agenttest.Sink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.permissionMode = "vibe"
+	a.availableModes = []*leapmuxv1.AvailableOption{{Id: "vibe", Name: "Vibe"}}
+	a.hooks.AgentStatesModeFallback = true
+	require.NoError(t, a.applyStartupPermissionMode("probe-agent", false))
+	assert.Empty(t, requests())
+	assert.Empty(t, sink.LeapMuxNotifications())
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "vibe", sink.LastSettingsRefresh().PermissionMode)
+}
+
+func TestStartupDefaultedModeKeepsTheSilentFallback(t *testing.T) {
+	a, requests := newTestAgentForRPC(t)
+	sink := &agenttest.Sink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.permissionMode = "vibe"
+	a.availableModes = []*leapmuxv1.AvailableOption{{Id: "vibe", Name: "Vibe"}}
+	require.NoError(t, a.applyStartupPermissionMode("safe-default", true))
+	assert.Empty(t, requests())
+	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Zero(t, sink.SettingsRefreshCount())
+}
+
+func TestStartupWithoutAReportedModeKeepsTheNativeCheck(t *testing.T) {
+	a, requests := newTestAgentForRPC(t)
+	sink := &agenttest.Sink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.availableModes = []*leapmuxv1.AvailableOption{{Id: "vibe", Name: "Vibe"}}
+	require.Error(t, a.applyStartupPermissionMode("probe-agent", false))
+	assert.Empty(t, requests())
+	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Zero(t, sink.SettingsRefreshCount())
 }

@@ -635,7 +635,10 @@ func TestCompactContext(t *testing.T) {
 	requests := server.requestsTo("POST /session/ses_test/summarize")
 	require.Len(t, requests, 1)
 	assert.JSONEq(t, `{"providerID":"mock","modelID":"alpha"}`, string(requests[0].Body))
-	assert.Equal(t, 1, sink.NotificationCount())
+	assert.Zero(t, sink.NotificationCount())
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
 	assert.Nil(t, a.compactionAck)
 }
 
@@ -672,7 +675,7 @@ func TestManualCompactionCompletionReleasesTheNextInput(t *testing.T) {
 	}})
 	feed(a, messageEvent(t, "msg_manual", roleUser, mainActorID, false), ended, ended)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
-	assert.Len(t, sink.PersistedNotifications(), 2, "the repeated completed part persists no second notification")
+	assert.Len(t, sink.PersistedNotifications(), 1, "the repeated completed part persists no second notification")
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
 	assert.Equal(t, []bool{true, false}, sink.TurnActives(), "a late busy restatement cannot hold the next input")
 	require.NoError(t, a.SendInput("continue", nil))
@@ -735,6 +738,9 @@ func TestManualCompactionIdleBeforeCompletionKeepsTheQueueHeld(t *testing.T) {
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "msg_manual", roleUser, mainActorID, false), started)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
 	assert.True(t, a.turnActive, "an idle before the summary must not release the queued prompt")
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value, "the native summary still runs after the early idle")
 	assert.Equal(t, []bool{true}, sink.TurnActives())
 	assert.ErrorIs(t, a.SendInput("too early", nil), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
@@ -822,6 +828,35 @@ func TestManualCompactionSuccessfulRouteWithoutCompletedPartReleasesTheQueue(t *
 	require.NoError(t, a.SendInput("continue after no-op", nil))
 }
 
+func TestMiMoFailedManualCompactionWritesNoSecondRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	a.compactionAck = make(chan struct{})
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "compact-message", roleUser, mainActorID, false),
+		compactionPhaseEvent(t, "compact-part", "compact-message", false), failedCompactionSummary(t, "compact-message", mainActorID),
+		eventJSON(t, "message.removed", map[string]any{"sessionID": testSessionID, "messageID": "compact-message"}),
+		statusEvent(t, contracts.MiMoStatusTypeIdle))
+	a.settleManualCompactionRoute(testSessionID, a.compactionRequestID, nil)
+	notices := sink.LeapMuxNotifications()
+	require.Len(t, notices, 1)
+	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notices[0][contracts.NotificationFieldType])
+	assert.Equal(t, "Compaction produced no usable summary", notices[0][contracts.NotificationFieldError])
+	assert.False(t, a.turnActive)
+}
+
+func TestMiMoManualCompactionReplyCannotEndALaterRequest(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	a.compactionRequestID = 2
+	a.manualCompactionID = "later-part"
+	a.turnActive = true
+	a.settleManualCompactionRoute(testSessionID, 1, nil)
+	assert.Equal(t, "later-part", a.manualCompactionID)
+	assert.True(t, a.turnActive)
+	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, server.requestsTo("GET /session/ses_test/message"))
+}
+
 func TestManualCompactionRouteFindsADelayedCompletedPart(t *testing.T) {
 	t.Parallel()
 	a, sink, server := newSinkTestAgent(t)
@@ -860,7 +895,7 @@ func TestManualCompactionRouteFindsADelayedCompletedPart(t *testing.T) {
 	}})
 	feed(a, ended)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives(), "the delayed event releases no second turn")
-	assert.Len(t, sink.PersistedNotifications(), 2, "the native start and completion both reach the transcript")
+	assert.Len(t, sink.PersistedNotifications(), 1, "only the native completion reaches the transcript")
 	require.NoError(t, a.SendInput("continue after summary", nil))
 }
 
@@ -1105,7 +1140,10 @@ func TestCompactContextStartWait(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("the compaction's start did not confirm the call")
 		}
-		assert.Equal(t, 1, sink.NotificationCount())
+		assert.Zero(t, sink.NotificationCount())
+		value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+		require.True(t, exists)
+		assert.Equal(t, map[string]any{}, value)
 		_, pending := clock.Peek()
 		assert.False(t, pending, "the call stops the wait's timer")
 	})
@@ -1140,7 +1178,11 @@ func TestSubagentCompactionDoesNotConfirmTheMainOne(t *testing.T) {
 	)
 	assert.Equal(t, ack, a.compactionAck)
 	assert.Zero(t, sink.NotificationCount())
-	assert.Equal(t, 1, sink.Child("child-of-"+spawnSpanID).NotificationCount(), "the notice goes to the subagent's transcript")
+	child := sink.Child("child-of-" + spawnSpanID)
+	assert.Zero(t, child.NotificationCount())
+	value, exists := child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
 }
 
 func TestLateOmittedSessionCannotChangeARetainedOldPart(t *testing.T) {

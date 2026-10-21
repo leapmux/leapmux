@@ -106,6 +106,7 @@ function rows(kind: RowKind, texts: readonly string[] = []) {
     readCount: matching,
     // The helper counts the pre-close answer bubbles through the locator's own count.
     count: async () => matching(),
+    allTextContents: async () => source.filter(text => texts.every(part => text.includes(part))),
     filter: ({ hasText }: { hasText: string }) => rows(kind, [...texts, hasText]),
   }
 }
@@ -980,6 +981,73 @@ describe('interruptedToolTotals', () => {
 })
 
 describe('exerciseInterruptedPartialAnswer', () => {
+  it('checks additional transcript assertions before and after reload', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    const options = {
+      cut: async () => {},
+      checkTranscript: async () => { resume.events.push('provider check') },
+    }
+    await exerciseInterruptedPartialAnswer(partialContext(script), options)
+    expect(resume.events.filter(event => event === 'provider check' || event === 'reload'))
+      .toEqual(['provider check', 'reload', 'provider check'])
+  })
+
+  it('propagates an additional transcript failure and releases the stream', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    const failure = new Error('The provider notice remains visible.')
+    const options = {
+      cut: async () => {},
+      checkTranscript: async () => { throw failure },
+    }
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script), options)).rejects.toBe(failure)
+    expect(script.releaseGateIfHeld).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['', ' \t\n'])('refuses an empty follow-up answer: %j', async (answer) => {
+    const { script } = partialScript(() => {})
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script), { followUp: { answer } })).rejects.toThrow('nonempty answer')
+    expect(script.queue).not.toHaveBeenCalled()
+  })
+
+  it('uses the supplied cut instead of the interrupt button', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    const context = partialContext(script)
+    const cut = vi.fn(async () => {})
+    await exerciseInterruptedPartialAnswer(context, { cut })
+    expect(cut).toHaveBeenCalledExactlyOnceWith(context)
+    expect(resume.events).not.toContain('click:interrupt-button')
+  })
+
+  it.each([false, true])('checks the follow-up order, reversed=%s', async (reversed) => {
+    const reply = 'FOLLOWUPANSWER'
+    const { script, queued } = partialScript((marker) => {
+      const partial = `PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`
+      const texts = reversed ? [reply, partial] : [partial, reply]
+      resume.assistantRows.push(...texts)
+      resume.contentRows.push(...texts)
+    })
+    const waitForSteps = vi.fn(async () => {})
+    const outcome = exerciseInterruptedPartialAnswer(partialContext({ ...script, waitForSteps }), {
+      cut: async () => {},
+      followUp: { answer: reply },
+    })
+    if (reversed)
+      await expect(outcome).rejects.toThrow('comes before')
+    else
+      await expect(outcome).resolves.toBeUndefined()
+    expect(queued[1]?.text).toBe(reply)
+    expect(waitForSteps).toHaveBeenCalledExactlyOnceWith(5)
+  })
+
   beforeEach(() => {
     vi.resetAllMocks()
     resume.events.length = 0
@@ -1003,6 +1071,7 @@ describe('exerciseInterruptedPartialAnswer', () => {
       allowUnconsumed: vi.fn((reason: string) => {
         resume.events.push(`allow-unconsumed:${reason}`)
       }),
+      waitForSteps: vi.fn(async () => {}),
       waitForGate: vi.fn(async (gate: string) => {
         resume.events.push(`gate:${gate}`)
         arrive(gate.replace('native-partial-answer-', ''))

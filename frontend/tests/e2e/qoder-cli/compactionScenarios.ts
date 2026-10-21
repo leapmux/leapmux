@@ -1,8 +1,9 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { compactionNoticeRow, expectCompactionNotice } from '../helpers/compaction'
+import { compactionNoticeRow, expectCompactionNoticeAfterReload, expectNoLiveCompaction } from '../helpers/compaction'
 import { CLAUDE_SUMMARIZER_PATTERN } from '../helpers/manualCompaction'
-import { sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { expectNoUnrenderedRow } from '../helpers/nativeConversation'
+import { messageContents, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
 /** Exercise the actual native compaction path and preserve its context assertions. */
 export async function exerciseCompletedManualCompaction(context: NativeScenarioContext): Promise<void> {
@@ -13,7 +14,7 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
   const olderAnswer = Array.from({ length: 3000 }, (_, index) => `${oldMarker} item ${index} records detail ${index * 7}.`).join(' ')
   await modelScript.rule({
     name: 'qoder manual summary',
-    // Qoder CLI derives from Claude Code, and its summarizer prompt holds the same directive.
+    // Qoder's native summarizer prompt holds this directive.
     when: { body: CLAUDE_SUMMARIZER_PATTERN },
     respond: {
       text: `<analysis>Keep only the task state.</analysis><summary>${summaryMarker} The prior work recorded the task state and recent decisions.</summary>`,
@@ -35,7 +36,8 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
   await sendMessage(page, '/compact')
   await expect.poll(async () => (await modelScript.status()).ruleMatches['qoder manual summary'] ?? 0).toBeGreaterThan(0)
   await waitForAgentIdle(page)
-  await expectCompactionNotice(page)
+  await expectCompactionNoticeAfterReload(page, { count: 1, divider: true })
+  await expectNoLiveCompaction(page)
 
   const next = await modelScript.queue({ text: 'The compacted task continued.' })
   await sendMessage(page, modelScript.prompt('Continue after the native compaction.'))
@@ -62,5 +64,8 @@ export async function exerciseFailedManualCompaction(context: NativeScenarioCont
   expect(status.requests.some(request => request.fallback)).toBe(true)
   await expect(visibleOnly(page.getByText('Turn failed', { exact: false })).first()).toBeVisible()
   await expect(compactionNoticeRow(page)).toHaveCount(0)
-  await expect(visibleOnly(page.getByText('LeapMux has no display for this row', { exact: true }))).toHaveCount(0)
+  await expect(messageContents(page).filter({ hasText: 'Compaction failed' })).toHaveCount(1)
+  await expectNoLiveCompaction(page)
+  await expect(messageContents(page).filter({ hasText: 'Compaction failed' })).toHaveCount(1)
+  await expectNoUnrenderedRow(page)
 }

@@ -6,7 +6,7 @@ import { attachFile, sendWithAttachment, writeAttachmentFixture } from '../helpe
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
 import { queuedInputRow, steerButton, steerQueuedInput } from '../helpers/steer'
-import { chooseSettingsOption, interruptButton, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { assistantBubbles, chooseSettingsOption, interruptButton, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
 test.describe('agent input queue', () => {
   test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -18,7 +18,7 @@ test.describe('agent input queue', () => {
       // The HOLD is what keeps it active: against the mock endpoint a long prompt
       // finishes as fast as a short one, so the turn has to be held open.
       const start = await modelScript.queue({ text: 'A report.', gate: 'claude-code-steer-mid-turn-hold-1' })
-      modelScript.allowUnconsumed('the steer ends the turn before the held answer arrives')
+      modelScript.allowUnconsumed('the cleanup releases the held answer after the steer reaches the queue')
       await sendMessage(page, modelScript.prompt('Write a 2,000-word technical report about Go concurrency.'))
       await modelScript.waitForSteps(start + 1)
       await expect(interruptButton(page)).toBeVisible()
@@ -77,4 +77,36 @@ claudeTest('delivers steering to the actual native tool turn before its single t
   // transcript only with the tool result, after the steer. The helper still
   // proves that the next native request read both outputs of the command.
   await exerciseSteerAfterTool(native, { expectDisplayedOutput: false })
+})
+
+claudeTest('keeps the turn active while a steer that waited at the turn end runs', async ({ native }) => {
+  const { page, modelScript } = native
+  const firstGate = 'claude-first-answer'
+  const steerGate = 'claude-steered-answer'
+  await withCleanup(async () => {
+    const start = await modelScript.queue(
+      { text: 'A report.', gate: firstGate },
+      { text: 'STEERED', gate: steerGate },
+      { text: 'THIRD_ANSWER' },
+    )
+    await sendMessage(page, modelScript.prompt('Write the report.'))
+    await modelScript.waitForGate(firstGate)
+    await steerQueuedInput(page, { message: modelScript.prompt('Reply STEERED'), match: 'Reply STEERED' })
+    await modelScript.releaseGate(firstGate)
+    await expect(assistantBubbles(page).filter({ hasText: 'A report.' })).toHaveCount(1)
+    await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
+    await modelScript.waitForGate(steerGate)
+    await expect(interruptButton(page)).toBeVisible()
+    await sendMessage(page, modelScript.prompt('Deliver the third prompt.'))
+    await expect(queuedInputRow(page, 'Deliver the third prompt.')).toBeVisible()
+    expect((await modelScript.status()).requests.some(request => request.stepIndex === start + 2)).toBe(false)
+    await modelScript.releaseGate(steerGate)
+    await modelScript.waitForSteps(start + 3)
+    await waitForAgentIdle(page)
+    await expect(assistantBubbles(page).filter({ hasText: 'STEERED' })).toHaveCount(1)
+    await expect(assistantBubbles(page).filter({ hasText: 'THIRD_ANSWER' })).toHaveCount(1)
+    await expect(queuedInputRow(page, 'Deliver the third prompt.')).toHaveCount(0)
+  }, async () => {
+    await finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(steerGate)])
+  })
 })

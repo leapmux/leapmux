@@ -1,4 +1,4 @@
-import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
+import { exerciseSteerBeforeTool, exerciseSteerDuringText } from '../helpers/nativeToolSteering'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -8,4 +8,8 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
  */
 ohMyPiTest('steers a queued message into the active turn', async ({ native }) => {
   await exerciseSteerBeforeTool(native)
+})
+
+ohMyPiTest('places a steer after the complete answer that precedes it', async ({ native }) => {
+  await exerciseSteerDuringText(native, { answer: 'continue' })
 })

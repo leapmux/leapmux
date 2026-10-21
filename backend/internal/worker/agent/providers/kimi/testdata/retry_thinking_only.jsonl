@@ -1,0 +1,9 @@
+{"type":"turn.step.started","session_id":"session_1","payload":{"type":"turn.step.started","agentId":"main","turnId":0}}
+{"type":"thinking.delta","session_id":"session_1","payload":{"type":"thinking.delta","agentId":"main","turnId":0,"delta":"DISCARDED-THOUGHT-ONE "}}
+{"type":"thinking.delta","session_id":"session_1","payload":{"type":"thinking.delta","agentId":"main","turnId":0,"delta":"DISCARDED-THOUGHT-TWO "}}
+{"type":"turn.step.retrying","session_id":"session_1","payload":{"type":"turn.step.retrying","agentId":"main","turnId":0,"failedAttempt":1,"nextAttempt":2,"maxAttempts":10,"delayMs":598.703039100604,"errorName":"APIConnectionError","errorMessage":"terminated"}}
+{"type":"turn.step.started","session_id":"session_1","payload":{"type":"turn.step.started","agentId":"main","turnId":0}}
+{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"RETRIED-"}}
+{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"ANSWER"}}
+{"type":"turn.step.completed","session_id":"session_1","payload":{"type":"turn.step.completed","agentId":"main","turnId":0}}
+{"type":"turn.ended","session_id":"session_1","payload":{"type":"turn.ended","agentId":"main","turnId":0,"reason":"completed"}}

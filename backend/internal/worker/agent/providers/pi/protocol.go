@@ -65,11 +65,19 @@ const (
 // The key stays on the Go side: no browser code reads it.
 const piGoalDisplayKey = "goal"
 
-// Pi `prompt` command's `streamingBehavior` — how Pi should treat a new
-// prompt that arrives while a turn is already streaming. "steer" injects
-// the new message into the in-flight turn; the default (omit) starts a
-// fresh turn.
-const StreamingBehaviorSteer = "steer"
+// Pi steers into the current turn or queues a regular prompt after that turn.
+const (
+	StreamingBehaviorSteer    = "steer"
+	StreamingBehaviorFollowUp = "followUp"
+)
+
+// Only the worker reads these message roles. It stores assistant and custom messages.
+const (
+	piRoleUser          = "user"
+	piRoleToolResult    = "toolResult"
+	piRoleSystem        = "system"
+	piRoleBashExecution = "bashExecution"
+)
 
 // Pi content-block types. The `tool_execution_*` partialResult and result
 // envelopes carry an array of typed content blocks, and the streaming delta

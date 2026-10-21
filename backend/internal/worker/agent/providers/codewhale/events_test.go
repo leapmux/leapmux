@@ -221,7 +221,7 @@ func TestTheStreamSkipsDataThatIsNotAnEvent(t *testing.T) {
 // Each event the switch lists as ignored, each event of an ignored family, and
 // an event of a later release persist nothing. Each one still moves the
 // sequence, so a reconnect does not ask for it again.
-func TestEventsTheWorkerIgnoresPersistNothing(t *testing.T) {
+func TestKnownEventsAreConsumedAndUnknownEventsPersist(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
 	names := []string{
@@ -231,7 +231,9 @@ func TestEventsTheWorkerIgnoresPersistNothing(t *testing.T) {
 	for i, name := range names {
 		a.HandleOutput(runtimeEvent(uint64(i+1), name, testTurnID, "", map[string]any{"turn": map[string]any{"id": "turn_x", "status": "in_progress"}}))
 	}
-	assert.Empty(t, sink.Messages())
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Contains(t, string(rows[0].Content), "a_later.event")
 	assert.Empty(t, sink.PersistedNotifications())
 	assert.Zero(t, sink.PublishedControlCount())
 	assert.Empty(t, sink.TurnActives())

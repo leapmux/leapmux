@@ -20,7 +20,7 @@ func notice(kind, phase string) json.RawMessage {
 	return data
 }
 
-func TestClassifyGroupsTheNoticesThatRepeat(t *testing.T) {
+func TestClineClassifyNotices(t *testing.T) {
 	t.Parallel()
 	p := clineProvider{}
 	for _, tc := range []struct {
@@ -28,13 +28,14 @@ func TestClassifyGroupsTheNoticesThatRepeat(t *testing.T) {
 		raw  json.RawMessage
 		want agent.NotificationClassification
 	}{
-		{"compaction start", notice(contracts.ClineNoticeKindAutoCompaction, contracts.ClineNoticePhaseStarted), agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: noticeKey}},
-		{"compaction skip", notice(contracts.ClineNoticeKindManualCompaction, contracts.ClineNoticePhaseSkipped), agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: noticeKey}},
-		{"compaction end", notice(contracts.ClineNoticeKindAutoCompaction, contracts.ClineNoticePhaseCompleted), agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: noticeKey}},
-		{"overflow compaction end", notice(contracts.ClineNoticeKindOverflowRecoveryCompaction, contracts.ClineNoticePhaseCompleted), agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: noticeKey}},
-		{"retry", notice(contracts.ClineNoticeKindProviderErrorRetry, contracts.ClineNoticePhaseStarted), agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "cline:retry"}},
-		{"other status", notice(contracts.ClineNoticeKindMaxTokensRecovery, contracts.ClineNoticePhaseFailed), agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "cline:status"}},
-		{"team run", json.RawMessage(`{"event":"team.progress","payload":{"lastEvent":{"runId":"r1"}}}`), agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: teamRowPrefix + "r1"}},
+		{"compaction start", notice(contracts.ClineNoticeKindAutoCompaction, contracts.ClineNoticePhaseStarted), agent.NotificationClassification{}},
+		{"compaction skip", notice(contracts.ClineNoticeKindManualCompaction, contracts.ClineNoticePhaseSkipped), agent.CompactionBoundaryNotification()},
+		{"compaction failure", notice(contracts.ClineNoticeKindAutoCompaction, contracts.ClineNoticePhaseFailed), agent.CompactionBoundaryNotification()},
+		{"compaction end", notice(contracts.ClineNoticeKindAutoCompaction, contracts.ClineNoticePhaseCompleted), agent.CompactionBoundaryNotification()},
+		{"overflow compaction end", notice(contracts.ClineNoticeKindOverflowRecoveryCompaction, contracts.ClineNoticePhaseCompleted), agent.CompactionBoundaryNotification()},
+		{"retry", notice(contracts.ClineNoticeKindProviderErrorRetry, contracts.ClineNoticePhaseStarted), agent.APIRetryNotification()},
+		{"other status", notice(contracts.ClineNoticeKindMaxTokensRecovery, contracts.ClineNoticePhaseFailed), agent.ProviderScopedNotification("cline:status")},
+		{"team run", json.RawMessage(`{"event":"team.progress","payload":{"lastEvent":{"runId":"r1"}}}`), agent.ProviderScopedNotification(teamRowPrefix + "r1")},
 		{"team event with no run", json.RawMessage(`{"event":"team.progress","payload":{"lastEvent":{}}}`), agent.NotificationClassification{}},
 		{"another row", json.RawMessage(`{"event":"assistant.finished","payload":{}}`), agent.NotificationClassification{}},
 		{"not json", json.RawMessage(`nope`), agent.NotificationClassification{}},

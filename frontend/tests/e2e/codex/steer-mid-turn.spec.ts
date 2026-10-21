@@ -1,14 +1,10 @@
 import { expect } from '@playwright/test'
-import { INTERRUPTION_MARKER } from '../../../src/components/chat/assembledMessage'
 import { codexTest } from '../codex-fixtures'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
-import { parseGenerationCounters } from '../helpers/generationProgress'
 import { submitGoal } from '../helpers/goalsAndTodos'
-import { expectNoUnrenderedRow } from '../helpers/nativeConversation'
-import { exerciseSteerAfterTool, NATIVE_TOOL_STEERING_TEXT } from '../helpers/nativeToolSteering'
-import { uniqueMarker } from '../helpers/shellArguments'
+import { exerciseSteerAfterTool, exerciseSteerDuringText, NATIVE_TOOL_STEERING_TEXT } from '../helpers/nativeToolSteering'
 import { steerQueuedInput } from '../helpers/steer'
-import { assistantBubbles, interruptButton, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { interruptButton, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { codexAsyncExecRules } from './asyncExec'
 
 codexTest.describe('steering during a Codex goal turn', () => {
@@ -51,55 +47,6 @@ codexTest('delivers steering to the actual native tool turn before its single tu
   await exerciseSteerAfterTool(native, { expectDisplayedOutput: false })
 })
 
-// A steer preempts the response that streams (Codex's instant_interrupt
-// feature). Codex drops that response: its partial answer never completes, and
-// the follow-up request answers the steer. The partial answer stays in the
-// transcript with its interruption marker, before the follow-up answer, and not
-// after it at the turn end.
-codexTest('keeps the answer that a steer preempts, marked and before the follow-up answer', async ({ native }) => {
-  const { page, modelScript } = native
-  const marker = uniqueMarker()
-  const head = `PREEMPTEDHEAD${marker}`
-  const tail = `NEVERSTREAMED${marker}`
-  const reply = `STEEREDREPLY${marker}`
-  const gate = `codex-preempted-answer-${marker}`
-  try {
-    const start = await modelScript.queue(
-      { text: `${head} ${tail} ends the answer.`, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } },
-      { text: reply },
-    )
-    modelScript.allowUnconsumed('The steer preempts the held answer after its first chunk, and Codex drops that response.')
-    await sendMessage(page, modelScript.prompt('Stream the scripted answer.'))
-    await modelScript.waitForGate(gate)
-    // The first child of each count holds its text for a screen reader, such as
-    // "8 tokens". A count above zero shows that the Worker received the first chunk.
-    const counts = page.locator('[data-testid="thinking-indicator"]:visible [data-animated-count] > :first-child')
-    await expect.poll(async () => (await counts.allTextContents()).some(count => (parseGenerationCounters(count).tokens ?? 0) > 0), {
-      message: 'the live token counter shows that the Worker received the first chunk',
-    }).toBe(true)
-
-    await steerQueuedInput(page, {
-      message: modelScript.prompt('Stop that answer and reply with the steered reply.'),
-      match: 'Stop that answer',
-    })
-    await modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(page)
-
-    for (const reload of [false, true]) {
-      if (reload)
-        await page.reload()
-      await expect(assistantBubbles(page).filter({ hasText: head }).filter({ hasText: INTERRUPTION_MARKER }), 'the preempted answer keeps its interruption marker').toHaveCount(1)
-      await expect(messageContents(page).filter({ hasText: tail }), 'no row draws the text that never streamed').toHaveCount(0)
-      await expect(assistantBubbles(page).filter({ hasText: reply })).toHaveCount(1)
-      const texts = await messageContents(page).allTextContents()
-      const preempted = texts.findIndex(text => text.includes(head))
-      const followUp = texts.findIndex(text => text.includes(reply))
-      expect(preempted, 'the transcript draws the preempted answer').toBeGreaterThanOrEqual(0)
-      expect(preempted, 'the preempted answer stays before the follow-up answer').toBeLessThan(followUp)
-      await expectNoUnrenderedRow(page)
-    }
-  }
-  finally {
-    await modelScript.releaseGateIfHeld(gate)
-  }
+codexTest('keeps the interrupted partial, steer, and reply in native read order', async ({ native }) => {
+  await exerciseSteerDuringText(native, { answer: 'preempt' })
 })

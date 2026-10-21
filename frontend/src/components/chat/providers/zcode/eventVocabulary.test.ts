@@ -5,13 +5,8 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
 
-// Every event type the app-server sends must reach a row the reader can read. A type
-// that no rule covers classifies as `unknown`, and the transcript draws it as a
-// raw-JSON bubble that says nothing a reader can act on.
-//
-// The known world is the generated `ZCODE_EVENT` table, whose values come from
-// contracts/zcode-protocol.json -- the Go worker reads the same names, so a type
-// added there is a type both sides see.
+// Every current stored event needs a reader.
+// Events that the worker consumes remain unknown if they reach a stored row.
 
 /**
  * The payload each type needs to produce its row.
@@ -33,7 +28,7 @@ const PAYLOAD: Record<string, Record<string, unknown>> = {
   },
   [ZCODE_EVENT.TurnCompleted]: { resultType: 'success', duration: 1200 },
   [ZCODE_EVENT.TurnFailed]: { error: { message: 'the model refused' } },
-  [ZCODE_EVENT.PermissionResolved]: { decision: 'allow', toolName: 'Read' },
+  [ZCODE_EVENT.PermissionResolved]: { decision: 'deny', toolName: 'Read' },
 }
 
 function classify(type: string): string {
@@ -65,11 +60,14 @@ describe('zcode event vocabulary', () => {
       expect(kind).toBe(expected)
       return
     }
-    expect(
-      kind,
-      `${type} reaches no rule, so the row draws raw JSON. Add it to `
-      + 'ZCODE_HIDDEN_TYPES or ZCODE_NOTIFICATION_TYPES.',
-    ).not.toBe('unknown')
+    const notifications = new Set<string>([
+      ZCODE_EVENT.PermissionResolved,
+      ZCODE_EVENT.TurnSteerQueued,
+      ZCODE_EVENT.TurnSteerDrained,
+      ZCODE_EVENT.SessionClosed,
+    ])
+    expect(kind, `${type} must match the current worker's stored-row policy`)
+      .toBe(notifications.has(type) ? 'notification' : 'unknown')
   })
 
   // A type from a release later than this one still has to render as something. It

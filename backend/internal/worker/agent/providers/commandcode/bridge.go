@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -21,9 +22,12 @@ import (
 //go:embed bridge.mjs
 var bridgeSource []byte
 
+const compactionWaitLabel = "commandcode-compaction"
+
 type compactionAttempt struct {
 	done     chan struct{}
 	outcome  string
+	failure  error
 	finished bool
 }
 
@@ -105,8 +109,16 @@ func (a *Agent) CompactContext() error {
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 	// Native compaction runs a full model request before its HTTP reply.
-	ctx, cancel := context.WithTimeout(a.Context(), max(a.APITimeout(), 5*time.Minute))
-	defer cancel()
+	clock := a.clock
+	if clock == nil {
+		clock = a.Clock()
+	}
+	limit := max(a.APITimeout(), 5*time.Minute)
+	deadline := clock.Now().Add(limit)
+	ctx, cancel := context.WithCancelCause(a.Context())
+	defer cancel(nil)
+	requestTimer := clock.AfterFunc(limit, func() { cancel(context.DeadlineExceeded) }, compactionWaitLabel, "request")
+	defer requestTimer.Stop()
 	var reply struct {
 		Completed bool `json:"completed"`
 	}
@@ -114,34 +126,73 @@ func (a *Agent) CompactContext() error {
 		var status *providerkit.HTTPStatusError
 		var network *net.OpError
 		if errors.As(err, &status) || errors.As(err, &network) && network.Op == "dial" {
-			a.endRejectedCompaction(attempt)
+			a.endAbandonedCompaction(attempt, err)
+		} else if !a.IsStopped() && a.Context().Err() == nil {
+			// Closing the HTTP request does not cancel cmd.sessions.compact in the native host.
+			// Stop unresolved work before the queue can accept another prompt. The reader owns its final row.
+			err = errors.Join(err, context.Cause(ctx))
+			a.Mu.Lock()
+			unresolved := a.manualCompaction == attempt
+			if unresolved {
+				attempt.failure = err
+			}
+			a.Mu.Unlock()
+			if unresolved {
+				a.Stop()
+			}
 		}
 		return err
 	}
 	if !reply.Completed {
-		a.endRejectedCompaction(attempt)
-		return fmt.Errorf("the Command Code host did not confirm native compaction")
+		err := errors.New("the Command Code host did not confirm native compaction")
+		a.endAbandonedCompaction(attempt, err)
+		return err
 	}
-	select {
-	case <-attempt.done:
-	case <-ctx.Done():
-		return fmt.Errorf("wait for the native Command Code compaction boundary: %w", ctx.Err())
+	requestTimer.Stop()
+	// One deadline covers both phases. The reader closes done after it drains the native completion frame.
+	outcome := providerkit.AwaitSignal(ctx, clock, attempt.done, nil, max(0, clock.Until(deadline)), compactionWaitLabel)
+	if outcome != providerkit.SignalArrived {
+		waitErr := context.DeadlineExceeded
+		if outcome == providerkit.SignalCancelled {
+			waitErr = context.Cause(ctx)
+		}
+		a.endAbandonedCompaction(attempt, waitErr)
+		return fmt.Errorf("wait for the native Command Code compaction boundary: %w", waitErr)
 	}
 	a.Mu.Lock()
-	outcome := attempt.outcome
+	compactionOutcome := attempt.outcome
 	a.Mu.Unlock()
-	if outcome != "summarized" {
-		return fmt.Errorf("the native Command Code compaction did not summarize the context: %s", outcome)
+	if compactionOutcome != contracts.CommandCodeCompactionOutcomeSummarized {
+		return fmt.Errorf("the native Command Code compaction did not summarize the context: %s", compactionOutcome)
 	}
 	return nil
 }
 
-func (a *Agent) endRejectedCompaction(attempt *compactionAttempt) {
+func (a *Agent) endAbandonedCompaction(attempt *compactionAttempt, reason error) {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	// During shutdown, the reader can still receive a native end. Its EOF path owns the final outcome.
+	if a.IsStopped() || a.Context().Err() != nil {
+		return
+	}
 	a.Mu.Lock()
 	if a.manualCompaction != attempt {
 		a.Mu.Unlock()
 		return
 	}
+	live := a.compactionLive
+	a.compactionLive = false
+	a.Mu.Unlock()
+	if live {
+		providerkit.EndCompaction(a.sink)
+		detail := ""
+		if reason != nil {
+			detail = reason.Error()
+		}
+		providerkit.PersistCompactionEnded(commandCodeWorkerNotifications{a: a}, providerkit.CompactionEndFailed, detail)
+	}
+	a.Mu.Lock()
+	attempt.outcome = contracts.CommandCodeCompactionOutcomeFailed
 	attempt.finish()
 	a.manualCompaction = nil
 	a.compacting = false

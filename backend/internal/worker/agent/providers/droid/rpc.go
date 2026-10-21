@@ -3,7 +3,28 @@ package droid
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+// requestInput waits for Droid's enqueue reply. A missing reply does not prove rejection.
+func (a *Agent) requestInput(id string, params addUserMessageParams) error {
+	reply := a.registerReply(id)
+	defer a.unregisterReply(id)
+	if err := a.writeRequest(id, droidMethodAddUserMessage, params); err != nil {
+		// Process.WriteStdin marks a partial write uncertain and preserves a definite failure before the first byte.
+		return fmt.Errorf("send Droid input: %w", err)
+	}
+	response, err := providerkit.AwaitReply(&a.Process, a.Context(), reply, droidMethodAddUserMessage, a.APITimeout())
+	if err != nil {
+		return fmt.Errorf("%w: Droid did not confirm input delivery: %v", agent.ErrDeliveryUncertain, err)
+	}
+	if response.Error != nil {
+		return response.Error
+	}
+	return nil
+}
 
 // request writes a native request whose reply does not change its caller's result.
 func (a *Agent) request(method string, params any) error {

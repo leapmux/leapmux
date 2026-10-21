@@ -15,6 +15,12 @@ import (
 // provider block that read two fields under one lock thus stays one atomic
 // read.
 
+// PromptEnding describes the native end frame and any failure note that the provider already wrote.
+type PromptEnding struct {
+	NoteWritten bool
+	EndFrame    json.RawMessage
+}
+
 // Hooks is what one ACP provider changes about the shared base. The Configure
 // function of the StartSpec returns it once, before the process starts. The
 // base keeps it in a field that no provider writes, so no hook changes after the
@@ -136,9 +142,11 @@ type Hooks struct {
 	// that it started by itself with an update, which becomes the turn-end row.
 	SessionMetadataHandler func(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool
 	// SessionNotificationMetadata reads the `_meta` on the outer session/update
-	// notification. It stays separate from the update's own `_meta`, which can
-	// identify a child transcript or another provider update.
-	SessionNotificationMetadata func(metadata map[string]json.RawMessage)
+	// notification, with the kind of update that carried it. It stays separate
+	// from the update's own `_meta`, which can identify a child transcript or
+	// another provider update. It runs before the update joins a conversation,
+	// so a provider can act on the metadata ahead of the update's own content.
+	SessionNotificationMetadata func(updateType string, metadata map[string]json.RawMessage)
 	// SubagentFromToolCall and SubagentFromToolCallUpdate translate a tool_call
 	// and a tool_call_update into a neutral SubagentObservation. The
 	// observation drives the background-task registry and the child transcripts.
@@ -184,6 +192,8 @@ type Hooks struct {
 	// Nil selects the shared session/set_mode writer.
 	// A provider whose mode uses a config option supplies SetModeViaConfigOption.
 	ModeSetter func(string, func(string)) error
+	// AgentStatesModeFallback suppresses the shared notice when the agent supplies its own fallback notice.
+	AgentStatesModeFallback bool
 	// ModelWriteRevealsOptions states that the agent reports some config
 	// options of a model only after the client writes that model. Kiro reports
 	// the effort axis of a model this way: its session/new and session/load
@@ -221,16 +231,22 @@ type Hooks struct {
 	// each update of a foreground subagent with the id of the tool call that
 	// spawned it. See children.go for the other route, a session of its own.
 	ChildUpdateRoute func(updateType string, metadata map[string]json.RawMessage) string
-	// ChunkMessageID reads the identity of the message that one
-	// agent_message_chunk or agent_thought_chunk belongs to, from the `_meta` of
-	// the update. It returns "" for a chunk that states none, and such a chunk
-	// continues the buffered text. The protocol states no message boundary, so a
-	// provider whose agent sends two answers with no update between them states
-	// the boundary here: Kiro gives each answer its own `_meta.kiro.replayId`,
-	// and its plan mode hands a plan to the default mode that way. A chunk of
-	// another message stores the buffered text first, as a message of its own.
-	// Nil keeps a run of chunks one message until another update ends it.
-	ChunkMessageID func(metadata map[string]json.RawMessage) string
+	// ChunkMessageID reads a provider's own message identity from a content
+	// chunk's _meta. The kind tells answer text from reasoning before the
+	// provider selects an identity. A nonempty result overrides the spec's
+	// messageId field; an empty result uses that field. Kiro reads
+	// _meta.kiro.replayId to separate a plan answer from the default mode's
+	// answer.
+	// A changed identity closes the previous segment before the next chunk.
+	ChunkMessageID func(kind agent.AssembledMessageKind, metadata map[string]json.RawMessage) string
+	// SegmentText selects the stored text of one completed main-conversation segment.
+	// An empty result stores no row. The caller still completes the live progress scope.
+	// The hook can run on the reader or an off-reader flush, so it must limit any I/O.
+	SegmentText func(kind agent.AssembledMessageKind, messageID, text string) string
+	// CaptureTurnOutputCleanup captures cleanup for the output that just drained.
+	// It runs under Mu and must read only provider-owned state. It must not call the base or sink.
+	// Its returned callback runs after pending output writes. A queued agent turn postpones capture.
+	CaptureTurnOutputCleanup func() func()
 	// ChildUserMessages states that a user_message_chunk that reaches the
 	// transcript of a subagent is a message that the agent gave that subagent:
 	// the instruction that opens a workflow step of Kiro, in the step's own
@@ -256,15 +272,14 @@ type Hooks struct {
 	// becomes of the input -- Qwen Code drops it and says so in the transcript,
 	// because the reader stopped the turn that the input was for.
 	FollowUpPrompt func(stopped bool) (content string, attachments []*leapmuxv1.Attachment, ok bool)
-	// PromptEnded reads how a prompt of LeapMux's ended, before the base writes
-	// the turn-end row or the failure note of that prompt. err is the error of a
-	// prompt that failed, and nil for a prompt that returned a result. stopped
-	// states that the reader stopped the prompt or that the agent stopped: the
-	// base then writes no failure note for an error. The base calls it only for
-	// a prompt of the current session. A provider that holds state for the
-	// running prompt settles it here: Kiro holds the display error of a prompt,
-	// and writes it unless the prompt's failure note states the same text.
-	PromptEnded func(err error, stopped bool)
+	// PromptPrepared runs after admission and before any per-request preparation or native write.
+	// It also runs for a continuation prompt. No turn or state mutex is held.
+	PromptPrepared func()
+	// PromptEnded observes a current-session prompt before the base stores its end.
+	// err is nil for a successful response. stopped also includes a stopped process.
+	// The result can suppress a failure note or supply the agent's native failure frame.
+	// A stop ignores that frame and writes no failure note.
+	PromptEnded func(err error, stopped bool) PromptEnding
 	// DisableHostTerminal withholds the host terminal capability from the
 	// initialize request. A provider that runs its shell commands itself and
 	// would otherwise route them through the host terminal of LeapMux sets it:

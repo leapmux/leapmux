@@ -32,7 +32,7 @@ type ControlRequestIdentity struct {
 // number.
 func NewControlRequestIdentity(nativeID json.RawMessage) (ControlRequestIdentity, bool) {
 	nativeID = bytes.TrimSpace(nativeID)
-	if len(nativeID) == 0 || bytes.Equal(nativeID, []byte("null")) {
+	if jsonAbsentOrNull(nativeID) {
 		return ControlRequestIdentity{}, false
 	}
 	if nativeID[0] == '"' {
@@ -145,7 +145,7 @@ func ExtractJSONRPCID(content []byte) (json.RawMessage, string, bool) {
 		slog.Warn("json-rpc id unmarshal failed", "error", err)
 		return nil, "", false
 	}
-	if len(payload.ID) == 0 || string(payload.ID) == "null" {
+	if jsonAbsentOrNull(payload.ID) {
 		return nil, "", false
 	}
 

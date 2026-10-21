@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_METHOD, COPILOT_PERMISSION_DECISION_SOURCE, COPILOT_PERMISSION_OUTCOME } from '~/generated/contracts/copilot-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { COMPACTING_LABEL, compactionContextTokens, flattenNotificationEntries } from '../../../notificationEntries'
+import { compactionContextTokens, flattenNotificationEntries } from '../../../notificationEntries'
 import { input } from '../../testUtils'
 import { classifyCopilotMessage } from '../classification'
 import { copilotCompactionBoundary, copilotNotificationEntry, describeCopilotNotification } from './notification'
@@ -287,7 +287,7 @@ describe('copilotCompactionBoundary', () => {
   })
 })
 
-/** The two rows one compaction draws, and the sentence each of them states. */
+/** Native compaction ends share the neutral rendering model. */
 describe('copilotNotificationEntry', () => {
   const blocks = (msg: Record<string, unknown>) => flattenNotificationEntries(copilotNotificationEntry(msg))
 
@@ -300,13 +300,23 @@ describe('copilotNotificationEntry', () => {
     }))).toStrictEqual([{ kind: 'divider', text: 'Context compacted (threshold, 1.0M → 34.2k)' }])
   })
 
-  it('draws the spinner while a compaction runs', () => {
+  it('leaves stored compaction starts without a normal reader', () => {
     expect(blocks(row(COPILOT_EVENT.SessionCompactionStart, { trigger: 'manual' })))
-      .toStrictEqual([{ kind: 'divider', text: COMPACTING_LABEL, loading: true }])
+      .toStrictEqual([])
   })
 
   // The boundary rule claims a rewrite. A pass that failed made none, so the row states
   // the reason the runtime gave instead.
+  it('reads a failed compaction as the failed outcome', () => {
+    expect(copilotNotificationEntry(row(COPILOT_EVENT.SessionCompactionComplete, { success: false, error: 'Failed.' })))
+      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'Failed.' }])
+  })
+
+  it('preserves the ordinary session info message', () => {
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SessionInfo, { message: 'Session information.' })))
+      .toBe('Session information.')
+  })
+
   it('states the reason a pass that did not succeed gave', () => {
     expect(blocks(row(COPILOT_EVENT.SessionCompactionComplete, { success: false, error: 'the model returned an empty response' })))
       .toStrictEqual([{ kind: 'text', text: 'Compaction failed (the model returned an empty response)' }])
@@ -319,5 +329,43 @@ describe('copilotNotificationEntry', () => {
       .toStrictEqual([{ kind: 'text', text: 'Compaction failed (HTTP 413)' }])
     expect(blocks(row(COPILOT_EVENT.SessionCompactionComplete, { success: false })))
       .toStrictEqual([{ kind: 'text', text: 'Compaction failed (unknown reason)' }])
+  })
+})
+
+describe('describeCopilotNotification system notices', () => {
+  // The idle, shell, and instruction frames come from .tmp/verify-c29/copilot/round2/bg-*.
+  it.each([
+    [{ type: 'agent_completed', displayName: 'worker', status: 'completed' }, 'Background agent worker completed'],
+    [{ type: 'agent_completed', displayName: 'worker', status: 'failed' }, 'Background agent worker failed'],
+    [{ type: 'agent_idle', displayName: 'gp-child' }, 'Background agent gp-child is idle'],
+    [{ type: 'shell_completed', description: 'Background probe', exitCode: 0 }, 'Shell Background probe exited (code 0)'],
+    [{ type: 'shell_detached_completed', description: 'Detached probe' }, 'Detached shell Detached probe exited'],
+    [{ type: 'instruction_discovered', sourcePath: 'sub/AGENTS.md' }, 'Read the instructions in sub/AGENTS.md'],
+    [{ type: 'factory_completed', factoryName: 'build', status: 'completed' }, 'Factory build completed'],
+  ])('reads the structured notice %j', (kind, text) => {
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind, content: 'native fallback' }))).toBe(text)
+  })
+
+  it.each(['unclassified', 'future-kind'])('reads %s from its content', (type) => {
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, {
+      kind: { type },
+      content: '<system_notification>\nNative notice.\n</system_notification>',
+    }))).toBe('Native notice.')
+  })
+
+  it('keeps tags inside the notice and ignores an empty content field', () => {
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { content: 'Before <system_notification>inside</system_notification> after' })))
+      .toBe('Before <system_notification>inside</system_notification> after')
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { content: '  ' }))).toBeNull()
+  })
+
+  it('does not invent a successful outcome or an invalid exit code', () => {
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind: { type: 'agent_completed' }, content: 'Unknown outcome.' })))
+      .toBe('Unknown outcome.')
+    for (const exitCode of [Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, 0.5]) {
+      expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind: { type: 'shell_completed', exitCode } })))
+        .toBe('Shell exited')
+    }
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind: { type: 'agent_idle' } }))).toBe('Background agent is idle')
   })
 })

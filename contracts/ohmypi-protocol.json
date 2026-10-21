@@ -1,5 +1,5 @@
 {
-  "_readme": "This contract holds the Oh My Pi RPC values that both the Go provider and TypeScript plugin read. The native command is omp --mode rpc-ui. Every JSONL frame carries a type. A dialog frame also carries a method. Both languages dispatch through those values.\n\nOh My Pi began as a Pi fork. Its events, frame shapes, and tools now differ from Pi. This contract shares no table with pi-protocol.json.\n\nThese tables hold native values:\n- events and assistantEvents identify native event types.\n- messageRoles and stopReasons identify native messages and outcomes.\n- dialogMethods and extensionMethods identify native dialog and extension operations.\n- toolNames and todoStatuses identify native tools and to-do states.\n- frameFields, askQuestion, and askOption describe native frame and question fields.\n- approvalModes holds the values accepted by --approval-mode.\n- approvalDialog holds the native approval title prefix and two choices.\n- dialogResponse holds native reply fields.\n- customTypes identifies the native message that reports a completed background job.\n- commands includes compact because both languages read its persisted response.\n- asyncJobStates identifies a native background job that still runs.\n\n\nThe Worker selects approvalModes at launch. The browser offers the same values as permission modes. The Worker uses approvalDialog to associate a dialog with its tool call. The browser displays those choices as Approve and Deny.\n\nLeapMux owns askTypes, askEnvelope, and askAnswer. It publishes one question request for the entire ask call. Oh My Pi presents each question through a separate chain of dialogs. The Worker converts the browser's single answer envelope into that native chain.\n\nLeapMux owns the incomplete-result supplement. A retained start frame keeps the final partial result beside its unchanged native bytes. An artifact ID alone identifies no filesystem path. LeapMux reads no saved text file.\n\nOther Go-only command names stay in providers/ohmypi/protocol.go. The native labels that the question bridge answers also stay there. The one-side-only contract rule permits both sets.",
+  "_readme": "This contract holds the Oh My Pi RPC values that both the Go provider and TypeScript plugin read. The native command is omp --mode rpc-ui. Every JSONL frame carries a type. A dialog frame also carries a method. Both languages dispatch through those values.\n\nOh My Pi began as a Pi fork. Its events, frame shapes, and tools now differ from Pi. This contract shares no table with pi-protocol.json.\n\nThese tables hold native values:\n- events and assistantEvents identify native event types.\n- messageRoles and stopReasons identify native messages and outcomes.\n- dialogMethods and extensionMethods identify native dialog and extension operations.\n- toolNames and todoStatuses identify native tools and to-do states.\n- frameFields, askQuestion, and askOption describe native frame and question fields.\n- approvalModes holds the values accepted by --approval-mode.\n- approvalDialog holds the native approval title prefix and two choices.\n- dialogResponse holds native reply fields.\n- customTypes identifies the native message that reports a completed background job.\n- commands includes compact because both languages read its persisted response.\n- asyncJobStates identifies a native background job that still runs.\n\n\nThe Worker selects approvalModes at launch. The browser offers the same values as permission modes. The Worker uses approvalDialog to associate a dialog with its tool call. The browser displays those choices as Approve and Deny.\n\nLeapMux owns askTypes, askEnvelope, and askAnswer. It publishes one question request for the entire ask call. Oh My Pi presents each question through a separate chain of dialogs. The Worker converts the browser's single answer envelope into that native chain.\n\nLeapMux owns the incomplete-result supplement. A retained start frame keeps the final partial result beside its unchanged native bytes. An artifact ID alone identifies no filesystem path. LeapMux reads no saved text file.\n\nOther Go-only command names stay in providers/ohmypi/protocol.go. The native labels that the question bridge answers also stay there. The one-side-only contract rule permits both sets.\n\nnotificationEvents lists the frames that the Worker persists as notifications. The browser threads them as one row. A compaction start is live session state, not a row. The Worker consumes cache_warming_start and cache_warming_end.",
   "events": {
     "Ready": "ready",
     "RpcChunk": "rpc_chunk",
@@ -41,6 +41,8 @@
     "AvailableCommandsUpdate": "available_commands_update",
     "SessionInfoUpdate": "session_info_update",
     "TtsrTriggered": "ttsr_triggered",
+    "CacheWarmingStart": "cache_warming_start",
+    "CacheWarmingEnd": "cache_warming_end",
     "AdvisorCostChanged": "advisor_cost_changed",
     "AdvisorYielded": "advisor_yielded",
     "ConfigWarningsChanged": "config_warnings_changed",
@@ -305,5 +307,19 @@
         }
       ]
     }
-  }
+  },
+  "notificationEvents": [
+    "AutoCompactionEnd",
+    "AutoRetryStart",
+    "AutoRetryEnd",
+    "RetryFallbackApplied",
+    "RetryFallbackSucceeded",
+    "Notice",
+    "ExtensionError",
+    "CommandOutput",
+    "TodoReminder",
+    "IrcMessage",
+    "RpcFrameError",
+    "TtsrTriggered"
+  ]
 }

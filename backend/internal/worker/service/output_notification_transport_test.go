@@ -122,7 +122,7 @@ func notificationTransportOriginal(random *rand.Rand) []byte {
 
 func notificationTransportEvent(content, supplement []byte) *leapmuxv1.AgentEvent {
 	compressedContent, contentCompression := msgcodec.Compress(content)
-	compressedSupplement, supplementCompression := compressOptionalSupplement(supplement)
+	compressedSupplement, supplementCompression := msgcodec.Compress(supplement)
 	return &leapmuxv1.AgentEvent{AgentId: "transport-owner", Event: &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{
 		Id: "transport-row", Seq: 1, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, AgentSessionId: "native",
@@ -359,7 +359,7 @@ func TestNotificationJournalTransportRejectsOversizedVisiblePayloadAndContinuesR
 func notificationTransportByteMetrics(t *testing.T, event *leapmuxv1.AgentEvent, payload, envelope, supplement []byte, originals [][]byte, budget int) map[string]any {
 	t.Helper()
 	message := event.GetAgentMessage()
-	storedCompressed, storedCompression := compressOptionalSupplement(supplement)
+	storedCompressed, storedCompression := msgcodec.Compress(supplement)
 	visible, err := msgcodec.Decompress(message.Content, message.ContentCompression)
 	require.NoError(t, err)
 	messageBytes, err := proto.Marshal(message)

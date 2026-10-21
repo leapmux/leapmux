@@ -12,6 +12,10 @@ function classify(parent: Record<string, unknown> | undefined, wrapper?: { old_s
 }
 
 describe('classifyCodewhaleMessage', () => {
+  it('leaves a stored compaction start unknown', () => {
+    expect(classify(codewhaleEvent(CODEWHALE_EVENT.ItemStarted, { item: { kind: CODEWHALE_ITEM_KIND.ContextCompaction } }))).toEqual({ kind: 'unknown' })
+  })
+
   it('reads a reply and a reasoning step, and hides one with no text', () => {
     expect(classify(itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'Hello.'))).toStrictEqual({ kind: 'assistant_text' })
     expect(classify(itemFinished(CODEWHALE_ITEM_KIND.AgentReasoning, 'Hmm.'))).toStrictEqual({ kind: 'assistant_thinking' })
@@ -75,8 +79,8 @@ describe('classifyCodewhaleMessage', () => {
     expect(classify(itemFinished(CODEWHALE_ITEM_KIND.Status, ''))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('hides the runtime\'s echo of a user message', () => {
-    expect(classify(itemFinished(CODEWHALE_ITEM_KIND.UserMessage, 'Say hello.'))).toStrictEqual({ kind: 'hidden' })
+  it('classifies an old user-message item as unknown', () => {
+    expect(classify(itemFinished('user_message', 'Say hello.'))).toStrictEqual({ kind: 'unknown' })
   })
 
   it('reads the rows of a subagent\'s transcript', () => {
@@ -97,7 +101,7 @@ describe('classifyCodewhaleMessage', () => {
 
   it('reads LeapMux\'s own rows', () => {
     expect(classify({ content: 'Say hello.' })).toStrictEqual({ kind: 'user_content' })
-    expect(classify({ content: 'x', hidden: true })).toStrictEqual({ kind: 'hidden' })
+    expect(classify({ content: 'x', hidden: true })).toStrictEqual({ kind: 'user_content' })
     expect(classify({ content: 'x', planExecution: true })).toStrictEqual({ kind: 'plan_execution' })
     expect(classify({ type: 'interrupted' })).toMatchObject({ kind: 'notification' })
   })

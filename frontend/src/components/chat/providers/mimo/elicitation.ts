@@ -1,4 +1,5 @@
 import type { ElicitationRequest } from '../../model/controlPrompt'
+import { MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { MIMO_QUESTION_KEY } from './protocol'
@@ -36,7 +37,7 @@ export function mimoElicitation(payload: Record<string, unknown>): ElicitationRe
   const prefix = `${server}\n\n`
   const message = server && text.startsWith(prefix) ? text.slice(prefix.length) : text
   return {
-    mode: 'form',
+    mode: MCP_ELICITATION_MODE.Form,
     ...(server ? { server } : {}),
     message,
     schema: { type: 'object', properties: {} },

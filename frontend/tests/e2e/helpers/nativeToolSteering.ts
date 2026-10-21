@@ -2,17 +2,167 @@ import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
+import { INTERRUPTION_MARKER } from '../../../src/components/chat/assembledMessage'
 import { AgentActivityState, AgentInputState, SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
+import { parseGenerationCounters } from './generationProgress'
 import { readNativeInputQueue } from './nativeInputQueueIdle'
-import { currentNativeAgent, nativeAgentById, nativeModelContextText, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
+import { exerciseInterruptedPartialAnswer } from './nativeLifecycle'
+import { currentNativeAgent, nativeAgentById, nativeModelContextText, nativeModelConversationTurns, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
 import { expectSteeredReply, queuedInputRow, steerQueuedInput } from './steer'
 import { createToolOutputControl } from './toolOutputControl'
-import { answerControl, assistantBubbles, interruptButton, messageContents, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, assistantBubbles, expectRowsInOrder, interruptButton, messageContents, resumePausedQueue, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from './ui'
+
+export interface SteerDuringTextOptions {
+  answer: 'preempt' | 'continue'
+  steerOrder?: 'strict' | 'any'
+  /** Use the held model stream when native stdout emits no text deltas. */
+  progress?: 'counter' | 'model-stream'
+  /** Run provider assertions on the live transcript and after a reload. */
+  checkTranscript?: () => Promise<void>
+  /**
+   * The steer lands inside the streamed answer, so the text before it forms its
+   * own bubble above the steer row and the rest of the answer follows below.
+   * The default keeps the whole answer in one bubble above the steer row.
+   */
+  splitAnswer?: boolean
+  /**
+   * The provider's own tool cards echo the reply text (Dirac's respond tool
+   * call and result both state it), so the reply may appear in more than one
+   * row. The default requires exactly one row.
+   */
+  toolEchoesReply?: boolean
+}
+
+export interface StopWithPendingSteerOptions {
+  /** Acceptance-time rows remain when the provider returns their input to the queue. */
+  rowAt?: 'echo' | 'acceptance'
+}
+
+/** Stop before the model reads a steer, then send the requeued input exactly once. */
+export async function exerciseStopWithPendingSteer(context: ManagedNativeScenarioContext, options: StopWithPendingSteerOptions = {}): Promise<void> {
+  if (options.rowAt !== undefined && options.rowAt !== 'echo' && options.rowAt !== 'acceptance')
+    throw new Error('The pending steer scenario needs echo or acceptance row timing.')
+  const acceptedRows = options.rowAt === 'acceptance' ? 1 : 0
+  const { page, modelScript } = context
+  const agent = await currentNativeAgent(context)
+  const marker = uniqueMarker()
+  const steering = `PENDINGSTEER${marker}`
+  const answer = `REQUEUEDREPLY${marker}`
+  const gate = `native-stop-steer-${marker}`
+  await withCleanup(async () => {
+    const start = await modelScript.queue(
+      { ...nativeTextStep(context, `UNREADANSWER${marker}`), gate },
+      nativeTextStep(context, answer),
+    )
+    await sendMessage(page, modelScript.prompt('Hold the scripted answer for a stop.'))
+    await modelScript.waitForGate(gate)
+    await steerQueuedInput(page, { message: modelScript.prompt(steering), match: steering })
+    await expect(userBubbles(page).filter({ hasText: steering })).toHaveCount(acceptedRows)
+    await interruptButton(page).click()
+    await retryUntilPass(async () => {
+      const queue = await readNativeInputQueue(context.leapmuxServer, agent.id)
+      expect(queue.activeTurn, 'the native turn ended').toBe(false)
+      expect(queue.items.filter(item => item.text.includes(steering)).map(item => item.state), 'the steer returned to the queue once').toEqual([AgentInputState.QUEUED])
+    })
+    await expect(queuedInputRow(page, steering)).toBeVisible()
+    await expect(userBubbles(page).filter({ hasText: steering })).toHaveCount(acceptedRows)
+    await modelScript.releaseGateIfHeld(gate)
+    await resumePausedQueue(page)
+    await modelScript.waitForSteps(start + 2)
+    await waitForAgentIdle(page)
+    const request = await modelScript.requestAt(start + 1)
+    const turns = (context.readConversationTurns ?? nativeModelConversationTurns)(request)
+    const occurrences = turns.filter(turn => turn.role === 'user').reduce((count, turn) => count + turn.text.split(steering).length - 1, 0)
+    expect(occurrences, 'the next request reads the requeued steer exactly once').toBe(1)
+    for (const reload of [false, true]) {
+      if (reload) {
+        await page.reload()
+        await waitForAgentIdle(page)
+      }
+      await expect(userBubbles(page).filter({ hasText: steering })).toHaveCount(acceptedRows + 1)
+      await expect(assistantBubbles(page).filter({ hasText: answer })).toHaveCount(1)
+      await expect(queuedInputRow(page, steering)).toHaveCount(0)
+    }
+  }, async () => { await modelScript.releaseGateIfHeld(gate) })
+}
+
+/** Check the answer and the steer in their native read order, before and after a reload. */
+export async function exerciseSteerDuringText(context: ManagedNativeScenarioContext, options: SteerDuringTextOptions): Promise<void> {
+  if (options.answer !== 'preempt' && options.answer !== 'continue')
+    throw new Error('The steer scenario needs a preempt or continue answer.')
+  if (options.steerOrder !== undefined && options.steerOrder !== 'strict' && options.steerOrder !== 'any')
+    throw new Error('The steer scenario needs a strict or any steer order.')
+  if (options.progress !== undefined && options.progress !== 'counter' && options.progress !== 'model-stream')
+    throw new Error('The steer scenario needs counter or model-stream evidence.')
+  if (options.answer === 'preempt' && options.progress === 'model-stream')
+    throw new Error('The steer scenario needs native partial output for a preempted answer.')
+  const marker = uniqueMarker()
+  const steering = `STEERINPUT${marker}`
+  const reply = `STEEREDREPLY${marker}`
+  const steer = async () => {
+    await steerQueuedInput(context.page, { message: context.modelScript.prompt(steering), match: steering })
+  }
+  if (options.answer === 'preempt') {
+    await exerciseInterruptedPartialAnswer(context, {
+      cut: steer,
+      followUp: { answer: reply },
+      checkTranscript: async () => {
+        await expect(userBubbles(context.page).filter({ hasText: steering })).toHaveCount(1)
+        if (options.steerOrder !== 'any')
+          await expectRowsInOrder(messageContents(context.page), [INTERRUPTION_MARKER, steering, reply])
+        await options.checkTranscript?.()
+      },
+    })
+    return
+  }
+  const head = `ANSWERHEAD${marker}`
+  const tail = `ANSWERTAIL${marker}`
+  const answer = `${head} ${tail}`
+  const gate = `native-continue-steer-${marker}`
+  await withCleanup(async () => {
+    const start = await context.modelScript.queue(
+      { ...nativeTextStep(context, answer), text: answer, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } },
+      nativeTextStep(context, reply),
+    )
+    await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer.'))
+    await context.modelScript.waitForGate(gate)
+    if (options.progress !== 'model-stream') {
+      const counts = context.page.locator('[data-testid="thinking-indicator"]:visible [data-animated-count] > :first-child')
+      await expect.poll(async () => (await counts.allTextContents()).some(count => (parseGenerationCounters(count).tokens ?? 0) > 0), {
+        message: 'the live token counter shows that the Worker received the first chunk',
+      }).toBe(true)
+    }
+    await steer()
+    await context.modelScript.releaseGate(gate)
+    await context.modelScript.waitForSteps(start + 2)
+    await waitForAgentIdle(context.page)
+    expect(nativeScenarioModelContextText(context, await context.modelScript.requestAt(start + 1))).toContain(steering)
+    for (const reload of [false, true]) {
+      if (reload)
+        await context.page.reload()
+      if (options.splitAnswer) {
+        await expect(assistantBubbles(context.page).filter({ hasText: head })).toHaveCount(1)
+        await expect(messageContents(context.page).filter({ hasText: tail })).toHaveCount(1)
+      }
+      else {
+        await expect(assistantBubbles(context.page).filter({ hasText: answer })).toHaveCount(1)
+      }
+      if (options.toolEchoesReply)
+        await expect(assistantBubbles(context.page).filter({ hasText: reply }).first()).toBeVisible()
+      else
+        await expect(assistantBubbles(context.page).filter({ hasText: reply })).toHaveCount(1)
+      await expect(userBubbles(context.page).filter({ hasText: steering })).toHaveCount(1)
+      await expect(messageContents(context.page).filter({ hasText: INTERRUPTION_MARKER })).toHaveCount(0)
+      await expectRowsInOrder(messageContents(context.page), options.steerOrder === 'any' ? [head, reply] : [head, steering, reply])
+      await options.checkTranscript?.()
+    }
+  }, async () => { await context.modelScript.releaseGateIfHeld(gate) })
+}
 
 export const NATIVE_TOOL_STEERING_TEXT = 'Also append the word steered to your final reply.'
 

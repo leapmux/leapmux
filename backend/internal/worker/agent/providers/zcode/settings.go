@@ -905,7 +905,7 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 	if notif.Scope != ScopeSession {
 		return
 	}
-	// A context clear creates a new session without stopping the previous one.
+	// A context clear opens a new session before the old session stops.
 	// A late patch from the previous session must not change the current settings.
 	//
 	// An empty ID cannot contradict the current session, so it passes.
@@ -924,17 +924,20 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 	if !body.hasSettings() {
 		return
 	}
+	a.applyZCodeSettingsSnapshot(&body.zcodeSettingsSnapshot)
+}
+
+// applyZCodeSettingsSnapshot persists the settings only when their values change.
+func (a *Agent) applyZCodeSettingsSnapshot(snap *zcodeSettingsSnapshot) {
 	a.Mu.Lock()
 	before := zcodeSettingsTriple{a.model, a.thoughtLevel, a.permissionModeLocked()}
-	a.applySettingsSnapshotLocked(&body.zcodeSettingsSnapshot)
+	a.applySettingsSnapshotLocked(snap)
 	after := zcodeSettingsTriple{a.model, a.thoughtLevel, a.permissionModeLocked()}
 	a.Mu.Unlock()
 	if before == after {
 		return
 	}
-	// The AGENT changed a setting, so the persisted row is stale. Refreshing it here
-	// is what makes a native mode or a model that changed during a turn survive a
-	// restart.
+	// Persist the native change so a restart keeps the same settings.
 	a.sink.PersistSettingsRefresh(map[string]string{
 		agent.OptionIDModel:          after.model,
 		agent.OptionIDEffort:         after.effort,

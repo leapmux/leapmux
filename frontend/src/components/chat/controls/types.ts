@@ -278,6 +278,11 @@ export interface BannerContentProps extends Omit<ContentProps, 'request'>, Banne
    * and a button next to Allow and Deny would read as one.
    */
   onInterrupt?: () => void
+  /**
+   * Closes the question and restores the normal composer, leaving the question
+   * to wait. Set only for a non-blocking request.
+   */
+  onAnswerLater?: () => void
 }
 
 export interface BannerActionsProps extends Omit<ActionsProps, 'request'>, BannerProps {

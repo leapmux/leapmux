@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"maps"
 	"slices"
 	"sort"
@@ -128,6 +127,13 @@ func reduceNotificationThread(messages []json.RawMessage, state agent.Notificati
 	providerEntries := map[string]reductionRaw{}
 
 	var keepAll []indexedRaw
+	applyCompactionBoundary := func(i int, raw json.RawMessage) {
+		status = indexedRaw{idx: -1}
+		if contextCleared.idx >= 0 && i > contextCleared.idx {
+			contextCleared = indexedRaw{idx: -1}
+		}
+		keepAll = append(keepAll, indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindCompactionBoundary})
+	}
 
 	for i, raw := range messages {
 		var env envelope
@@ -207,39 +213,27 @@ func reduceNotificationThread(messages []json.RawMessage, state agent.Notificati
 			}
 			rateLimitByType[key] = indexedRaw{idx: i, raw: raw}
 
-		case contracts.NotificationTypeCompacting:
-			status = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
+		case contracts.NotificationTypeApiRetry, contracts.NotificationTypeApiRetryResolved:
+			apiRetry = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindAPIRetry}
+		case contracts.NotificationTypeCompactionEnded:
+			applyCompactionBoundary(i, raw)
 
 		default:
 			class := agent.NotificationClassification{}
 			if key, retained := providerKeys[i]; retained {
-				class = agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: key}
+				class = agent.ProviderScopedNotification(key)
 			} else {
 				class = plugin.Classify(raw)
 			}
-			switch class.Kind {
+			switch class.Kind() {
 			case agent.NotificationKindStatus:
-				status = indexedRaw{idx: i, raw: raw, kind: class.Kind}
+				status = indexedRaw{idx: i, raw: raw, kind: class.Kind()}
 			case agent.NotificationKindAPIRetry:
-				apiRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind}
+				apiRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind()}
 			case agent.NotificationKindCompactionBoundary:
-				status = indexedRaw{idx: -1}
-				if contextCleared.idx >= 0 && i > contextCleared.idx {
-					contextCleared = indexedRaw{idx: -1}
-				}
-				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw, kind: class.Kind})
+				applyCompactionBoundary(i, raw)
 			case agent.NotificationKindProviderScoped:
-				prev, ok := providerEntries[class.Key]
-				if ok {
-					merged, err := plugin.Merge(class, prev.raw, raw)
-					if err != nil {
-						slog.Warn("consolidate provider notification merge failed", "key", class.Key, "error", err)
-						merged = raw
-					}
-					providerEntries[class.Key] = reductionRaw{indexedRaw: indexedRaw{idx: i, raw: merged, kind: class.Kind}, providerKey: class.Key}
-				} else {
-					providerEntries[class.Key] = reductionRaw{indexedRaw: indexedRaw{idx: i, raw: raw, kind: class.Kind}, providerKey: class.Key}
-				}
+				providerEntries[class.Key()] = reductionRaw{indexedRaw: indexedRaw{idx: i, raw: raw, kind: class.Kind()}, providerKey: class.Key()}
 			default:
 				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw})
 			}

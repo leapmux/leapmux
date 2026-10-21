@@ -983,6 +983,6 @@ func TestGoal_AnAbsentManagerNeverClaimsDormant(t *testing.T) {
 	t.Parallel()
 
 	assert.PanicsWithValue(t, "service: NewOutputHandler requires an agent manager", func() {
-		NewOutputHandler(nil, nil, nil, nil, nil)
+		NewOutputHandler(nil, nil, nil, nil, nil, nil)
 	})
 }

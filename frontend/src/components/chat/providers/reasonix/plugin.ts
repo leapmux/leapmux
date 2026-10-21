@@ -3,6 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { reasonixElicitation } from './elicitation'
 import { reasonixToolCallAdapter } from './extractors/toolCall'
+import { reasonixNativeNotifications } from './notification'
 import { reasonixPermissionPresets } from './permissionPresets'
 
 registerACPProvider({
@@ -12,6 +13,7 @@ registerACPProvider({
   planValue: REASONIX_MODE.Plan,
   elicitation: reasonixElicitation,
   permissionPresets: reasonixPermissionPresets,
+  nativeNotifications: reasonixNativeNotifications,
   // Reasonix advertises text input without image support.
   attachments: { text: true, image: false, pdf: false, binary: false },
 })

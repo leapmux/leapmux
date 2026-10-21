@@ -1,0 +1,7 @@
+{"method":"session.event","params":{"sessionId":"session-1","event":{"id":"0","type":"assistant.turn_start","data":{"turnId":"0"},"ephemeral":true}}}
+{"method":"session.event","params":{"sessionId":"session-1","event":{"id":"1","type":"assistant.message_delta","data":{"messageId":"m1","deltaContent":"partial "},"ephemeral":true}}}
+{"method":"session.event","params":{"sessionId":"session-1","event":{"id":"2","type":"model.call_failure","data":{"errorMessage":"{\"message\":\"The stream broke.\",\"code\":\"stream_error\"}"},"ephemeral":true}}}
+{"method":"session.event","params":{"sessionId":"session-1","event":{"id":"3","type":"model.turn_retry","data":{"kind":"turn_retry","reason":"api_error"},"ephemeral":true}}}
+{"method":"session.event","params":{"sessionId":"session-1","event":{"id":"4","type":"assistant.message_delta","data":{"messageId":"m2","deltaContent":"OK"},"ephemeral":true}}}
+{"method":"session.event","params":{"sessionId":"session-1","event":{"id":"5","type":"assistant.message","data":{"messageId":"m2","content":"OK","toolRequests":[]}}}}
+{"method":"session.event","params":{"sessionId":"session-1","event":{"id":"6","type":"session.idle","data":{"mode":"interactive"},"ephemeral":true}}}

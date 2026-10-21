@@ -14,19 +14,25 @@ import (
 
 func TestGenerationBufferKeepsRowsUntilPersistenceSucceeds(t *testing.T) {
 	t.Parallel()
-
 	var buffer GenerationBuffer
 	buffer.Append("answer", agent.AssembledMessageKindText, "kept", JoinVerbatim)
 	wantErr := errors.New("database unavailable")
-	err := buffer.PersistAll(agent.MessageCompletionInterrupted, func([]byte) error { return wantErr })
-	assert.ErrorIs(t, err, wantErr)
-
+	fail := true
 	var persisted [][]byte
-	require.NoError(t, buffer.PersistAll(agent.MessageCompletionInterrupted, func(raw []byte) error {
+	persist := func(raw []byte) error {
+		if fail {
+			return wantErr
+		}
 		persisted = append(persisted, raw)
 		return nil
-	}))
+	}
+	assert.ErrorIs(t, buffer.PersistAll(agent.MessageCompletionInterrupted, persist), wantErr)
+	assert.True(t, buffer.HasPendingWrites())
+	fail = false
+	require.NoError(t, buffer.PersistAll(agent.MessageCompletionComplete, persist))
 	require.Len(t, persisted, 1)
+	assert.Equal(t, "interrupted", StringField(persisted[0], "completion"))
+	assert.False(t, buffer.HasPendingWrites())
 }
 
 func TestGenerationBufferFinishesEachScopeOnce(t *testing.T) {
@@ -200,4 +206,141 @@ func TestGenerationBufferScopeSnapshotDuringConcurrentAppends(t *testing.T) {
 	_, text, present := buffer.ScopeSnapshot("scope")
 	require.True(t, present)
 	assert.Len(t, text, 1006)
+}
+
+func TestGenerationBufferPersistenceReleasesTheBufferLock(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"scope", "kind", "all"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			var buffer GenerationBuffer
+			buffer.Append("scope", agent.AssembledMessageKindText, "answer", JoinVerbatim)
+			persist := func([]byte) error {
+				if !buffer.mu.TryLock() {
+					t.Error("the persistence callback holds the buffer lock")
+					return nil
+				}
+				buffer.mu.Unlock()
+				assert.Empty(t, buffer.ScopeIDs())
+				assert.True(t, buffer.HasPendingWrites())
+				buffer.Append("scope", agent.AssembledMessageKindText, " later", JoinVerbatim)
+				return nil
+			}
+			switch operation {
+			case "scope":
+				_, err := buffer.PersistScope("scope", agent.MessageCompletionComplete, persist)
+				require.NoError(t, err)
+			case "kind":
+				require.NoError(t, buffer.PersistKind(agent.AssembledMessageKindText, agent.MessageCompletionComplete, persist))
+			case "all":
+				require.NoError(t, buffer.PersistAll(agent.MessageCompletionComplete, persist))
+			}
+			_, text, present := buffer.ScopeSnapshot("scope")
+			assert.True(t, present)
+			assert.Equal(t, " later", text)
+		})
+	}
+}
+
+func TestGenerationBufferDiscardMatchingReturnsScopesInFirstSeenOrder(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	for _, scope := range []string{"z", "keep", "a"} {
+		buffer.Append(scope, agent.AssembledMessageKindText, scope, JoinVerbatim)
+	}
+	assert.Equal(t, []string{"z", "a"}, buffer.DiscardMatching(func(scope string) bool { return scope != "keep" }))
+	assert.Equal(t, []string{"keep"}, buffer.ScopeIDs())
+	assert.Empty(t, buffer.DiscardMatching(func(string) bool { return false }))
+}
+
+func TestGenerationBufferFailedWriteKeepsConcurrentAppends(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	buffer.Append("scope", agent.AssembledMessageKindText, "first", JoinVerbatim)
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	wantErr := errors.New("write failed")
+	var texts []string
+	fail := true
+	go func() {
+		_, err := buffer.PersistScope("scope", agent.MessageCompletionInterrupted, func(raw []byte) error {
+			assert.Equal(t, "first", StringField(raw, "text"))
+			assert.Equal(t, "interrupted", StringField(raw, "completion"))
+			if fail {
+				close(entered)
+				<-release
+				return wantErr
+			}
+			texts = append(texts, StringField(raw, "text"))
+			return nil
+		})
+		done <- err
+	}()
+	<-entered
+	buffer.Append("scope", agent.AssembledMessageKindText, " second", JoinVerbatim)
+	buffer.Append("later", agent.AssembledMessageKindText, "third", JoinVerbatim)
+	close(release)
+	require.ErrorIs(t, <-done, wantErr)
+	fail = false
+	require.NoError(t, buffer.PersistAll(agent.MessageCompletionComplete, func(raw []byte) error {
+		texts = append(texts, StringField(raw, "text"))
+		return nil
+	}))
+	assert.Equal(t, []string{"first", " second", "third"}, texts)
+}
+
+func TestGenerationBufferConcurrentPersistenceWritesEachPrefixOnce(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	buffer.Append("scope", agent.AssembledMessageKindText, "first", JoinVerbatim)
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 2)
+	var texts []string
+	go func() {
+		done <- buffer.PersistAll(agent.MessageCompletionComplete, func(raw []byte) error {
+			texts = append(texts, StringField(raw, "text"))
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	buffer.Append("scope", agent.AssembledMessageKindText, " second", JoinVerbatim)
+	go func() {
+		done <- buffer.PersistAll(agent.MessageCompletionComplete, func(raw []byte) error {
+			texts = append(texts, StringField(raw, "text"))
+			return nil
+		})
+	}()
+	close(release)
+	require.NoError(t, <-done)
+	require.NoError(t, <-done)
+	assert.Equal(t, []string{"first", " second"}, texts)
+	assert.Empty(t, buffer.ScopeIDs())
+}
+
+func TestGenerationBufferPersistenceKeepsAReplacementScope(t *testing.T) {
+	t.Parallel()
+	for _, reset := range []bool{false, true} {
+		for _, fail := range []bool{false, true} {
+			var buffer GenerationBuffer
+			buffer.Append("scope", agent.AssembledMessageKindText, "old", JoinVerbatim)
+			_, err := buffer.PersistScope("scope", agent.MessageCompletionComplete, func([]byte) error {
+				if reset {
+					buffer.Reset()
+				} else {
+					buffer.Discard("scope")
+				}
+				buffer.Append("scope", agent.AssembledMessageKindText, "replacement", JoinVerbatim)
+				if fail {
+					return errors.New("write failed")
+				}
+				return nil
+			})
+			assert.Equal(t, fail, err != nil)
+			_, text, present := buffer.ScopeSnapshot("scope")
+			assert.True(t, present)
+			assert.Equal(t, "replacement", text)
+		}
+	}
 }

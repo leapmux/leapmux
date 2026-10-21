@@ -8,7 +8,6 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -243,7 +242,7 @@ func (a *Agent) fetchPiSessionStats(timeout time.Duration) (piSessionStats, bool
 		slog.Warn("pi get_session_stats failed", "agent_id", a.AgentID(), "error", err)
 		return stats, false
 	}
-	if len(raw) == 0 || string(raw) == "null" {
+	if !providerkit.RawPresent(raw) {
 		return stats, false
 	}
 	if err := json.Unmarshal(raw, &stats); err != nil {
@@ -298,20 +297,9 @@ func (a *Agent) piMessageEndContent(raw []byte) agent.MessageContent {
 	return content
 }
 
-// persistPiAgentEnd writes the agent_end divider.
-//
-// A run that Pi will retry is NOT a turn end. It persists as a plain agent
-// message, so the divider still draws. The turn-end event and the git-status
-// refresh then wait for the run that really ends the turn. That event drives
-// the completion sound and the off-screen tab's notification dot.
-func (a *Agent) persistPiAgentEnd(content agent.MessageContent, willRetry bool) {
-	var err error
-	if willRetry {
-		err = a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
-	} else {
-		err = a.sink.PersistTurnEnd(content, agent.SpanInfo{})
-	}
-	if err != nil {
-		slog.Error("pi persist agent_end", "agent_id", a.AgentID(), "error", err)
+// persistPiAgentEnd writes the final native divider after the session settles.
+func (a *Agent) persistPiAgentEnd(content agent.MessageContent) {
+	if err := a.orderedSink().PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
+		slog.Error("pi failed to persist agent_end", "agent_id", a.AgentID(), "error", err)
 	}
 }

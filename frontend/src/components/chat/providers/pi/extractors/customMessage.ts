@@ -1,5 +1,5 @@
 import type { AgentRun } from '../../../model/tools/agent'
-import { PI_CUSTOM_TYPE, PI_EVENT } from '~/generated/contracts/pi-protocol'
+import { PI_CUSTOM_TYPE, PI_EVENT, PI_ROLE } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { formatDuration, formatNumber } from '../../../rendererUtils'
 import { piContentText } from '../messageContent'
@@ -7,7 +7,7 @@ import { piContentText } from '../messageContent'
 /** Pi custom messages can carry plain text or content blocks. */
 export function piVisibleCustomMessage(payload: Record<string, unknown>): Record<string, unknown> | null {
   const message = pickObject(payload, 'message')
-  return payload.type === PI_EVENT.MessageEnd && message?.role === 'custom' && message.display !== false ? message : null
+  return payload.type === PI_EVENT.MessageEnd && message?.role === PI_ROLE.Custom && message.display !== false ? message : null
 }
 
 /** Match each XML report to its structured child ID. Invalid or duplicate records cannot replace the preview. */

@@ -85,7 +85,7 @@ func (a *Agent) applyState(raw json.RawMessage) bool {
 	defer a.Mu.Unlock()
 	hasModel := state.Model != nil && state.Model.ID != ""
 	if hasModel {
-		a.model = joinModelID(state.Model.Provider, state.Model.ID)
+		a.applyReportedModelLocked(joinModelID(state.Model.Provider, state.Model.ID))
 	}
 	level := state.ThinkingLevel
 	if level == "" && hasModel {
@@ -142,6 +142,9 @@ func (a *Agent) ClearContext() (string, error) {
 	if *response.Cancelled {
 		return "", agent.ErrContextClearCancelled
 	}
+	a.finishOpenCompactions()
+	a.steers.DropAll()
+	a.steers.Settle(a.sink)
 	stateRaw, err := a.sendCommand(CommandGetState, nil, a.APITimeout())
 	if err != nil {
 		return "", fmt.Errorf("read the new omp session: %w", err)

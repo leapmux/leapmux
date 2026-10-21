@@ -7,7 +7,7 @@ import { turnEndLabel } from '../../../turnEndLabel'
  * A CodeBuddy `result` row read into the turn-end divider, or null for another
  * row.
  *
- * CodeBuddy reports a terminal abort as `subtype:"success"` with `is_error:false`
+ * CodeBuddy reports an aborted turn as `subtype:"success"` with `is_error:false`
  * and an empty result, and its `total_cost_usd` is always 0. The native `result`
  * row states the turn duration in `duration_ms`. The Worker adds no duration.
  */
@@ -17,7 +17,10 @@ export function codebuddyResultDivider(parsed: unknown, completion?: MessageComp
   const durationMs = pickNumber(parsed, 'duration_ms')
   if (completion === MessageCompletion.INTERRUPTED)
     return { label: turnEndLabel('interrupted', { durationMs }) }
-  if (parsed.is_error === true || pickString(parsed, 'subtype') === 'error_during_execution')
-    return { label: turnEndLabel('failed', { durationMs }), isError: true }
+  if (parsed.is_error === true || pickString(parsed, 'subtype') === 'error_during_execution') {
+    const firstError = parsed.is_error === true && Array.isArray(parsed.errors) ? parsed.errors[0] : undefined
+    const reason = typeof firstError === 'string' ? firstError.trim() : ''
+    return { label: turnEndLabel('failed', { durationMs, reason }), isError: true }
+  }
   return { label: turnEndLabel('ended', { durationMs }) }
 }

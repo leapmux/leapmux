@@ -34,19 +34,6 @@ func codebuddyPermissionInterruptedResult(result resultMessage) bool {
 // the refused call.
 const codebuddyInterruptedPermissionReason = "The user interrupted the turn."
 
-// forgetControl retires one native request. Its publisher retires a card that appears afterwards.
-func (a *Agent) forgetControl(requestID string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	record := a.controls[requestID]
-	if record == nil {
-		return false
-	}
-	delete(a.controls, requestID)
-	record.publicationOnce.Do(func() { close(record.publicationDone) })
-	return record.published
-}
-
 func (a *Agent) hasOpenRootPermissionLocked() bool {
 	for _, record := range a.controls {
 		if record.rootPermission && !record.answering {

@@ -26,6 +26,11 @@ function makeContext(overrides: Partial<ToolLayoutContext> = {}): ToolLayoutCont
 }
 
 describe('ToolUseLayout', () => {
+  it('places an optional test id on the tool root', () => {
+    const view = render(() => <ToolUseLayout testId="test-layout" toolName="Tool" title="Title" />)
+    expect(view.getByTestId('test-layout')).toHaveAttribute('data-tool-message')
+  })
+
   it('omits an empty conditional summary and adds the body when the summary arrives', () => {
     const [summary, setSummary] = createSignal('')
     const { container } = render(() => (

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 
@@ -22,12 +23,41 @@ const (
 )
 
 type NotificationClassification struct {
-	Kind NotificationKind
-	Key  string
+	kind NotificationKind
+	key  string
 }
 
 func (c NotificationClassification) Consolidatable() bool {
-	return c.Kind != NotificationKindNone
+	return c.kind != NotificationKindNone
+}
+
+// Kind returns the notification reduction kind.
+func (c NotificationClassification) Kind() NotificationKind { return c.kind }
+
+// Key returns the provider key. Only provider-scoped notifications have a key.
+func (c NotificationClassification) Key() string { return c.key }
+
+// StatusNotification selects the transient status slot.
+func StatusNotification() NotificationClassification {
+	return NotificationClassification{kind: NotificationKindStatus}
+}
+
+// APIRetryNotification selects the API retry slot.
+func APIRetryNotification() NotificationClassification {
+	return NotificationClassification{kind: NotificationKindAPIRetry}
+}
+
+// CompactionBoundaryNotification ends the transient status and retains the boundary.
+func CompactionBoundaryNotification() NotificationClassification {
+	return NotificationClassification{kind: NotificationKindCompactionBoundary}
+}
+
+// ProviderScopedNotification keeps the latest notice for a nonempty provider key.
+func ProviderScopedNotification(key string) NotificationClassification {
+	if key == "" {
+		return NotificationClassification{}
+	}
+	return NotificationClassification{kind: NotificationKindProviderScoped, key: key}
 }
 
 type PlanModeControlKind int
@@ -56,15 +86,9 @@ type Provider interface {
 	// ResolveProviderData combines native supplemental fields without changing either source.
 	ResolveProviderData(MessageContent) []byte
 	// Classify categorizes a persisted notification frame for consolidation
-	// in consolidateNotificationThread. Frames the plugin doesn't recognize
+	// in reduceNotificationThread. Frames the plugin does not recognize
 	// return NotificationClassification{} (Consolidatable() == false).
 	Classify(raw json.RawMessage) NotificationClassification
-	// Merge combines two notifications previously classified into the same
-	// group. The default keeps the newer entry verbatim; providers override
-	// when they want a richer reduction (e.g. accumulating retry counts).
-	// Merge combines the previous left-fold result with the next original notification.
-	// The service retains the original group even when the result has another native shape.
-	Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error)
 	// IsInterrupt reports whether raw input contains a provider interrupt
 	// frame. The normal frontend path uses the InterruptAgent RPC instead.
 	//
@@ -113,6 +137,9 @@ type Provider interface {
 	// persisted alongside it (plus plan-mode metadata), but the service owns
 	// persistence, control-request deletion, option changes, and process I/O.
 	ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution
+	// QuestionReply turns the answer to a question that the provider published
+	// without waiting into the input that the provider reads. It is pure: no I/O.
+	QuestionReply(requestPayload json.RawMessage, answer string) (string, error)
 	// ControlResponseRequestID extracts the stored-control-request lookup id from a raw
 	// frontend control response, so the service can find the pending control_request row to
 	// answer. Both wire shapes it reads -- the neutral approve/reject envelope
@@ -259,16 +286,22 @@ type PlanExitModeDeferrer interface {
 
 type ProviderDefaults struct{}
 
+// ErrQuestionReplyUnsupported reports that the provider publishes no question
+// that LeapMux owns.
+var ErrQuestionReplyUnsupported = errors.New("the provider publishes no question that LeapMux owns")
+
+// QuestionReply defaults to ErrQuestionReplyUnsupported: a provider that
+// publishes no LeapMux-owned question receives no answer to one.
+func (ProviderDefaults) QuestionReply(json.RawMessage, string) (string, error) {
+	return "", ErrQuestionReplyUnsupported
+}
+
 func (ProviderDefaults) ResolveProviderData(content MessageContent) []byte {
 	return content.Original
 }
 
 func (ProviderDefaults) Classify(json.RawMessage) NotificationClassification {
 	return NotificationClassification{}
-}
-
-func (ProviderDefaults) Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
 }
 
 func (ProviderDefaults) IsInterrupt(string) bool { return false }

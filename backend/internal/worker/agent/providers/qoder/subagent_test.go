@@ -1,6 +1,6 @@
 //
 // This suite needs a Windows bring-up that only a local Windows run can state:
-// this file shares the workflow fixtures of the gated qoder suite.
+// this file shares the workflow fixtures of the platform-specific Qoder suite.
 // The suite keeps its full coverage on macOS and Linux.
 
 package qoder
@@ -27,6 +27,22 @@ const qoderChildAnswer = `{"type":"assistant","parent_tool_use_id":"spawn-1","me
 const qoderChildFinished = `{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"spawn-1","status":"completed"}`
 
 const qoderWorkflowLaunch = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"run-workflow","content":"Workflow launched in background."}]},"tool_use_result":{"summary":"Ask two children.","payload":"{\"status\":\"async_launched\",\"taskId\":\"wf-1\",\"runId\":\"wf_1\"}"}}`
+
+func TestQoderChildPermissionRequestPublishesOnTheRootSink(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newGoalAgent(t)
+	sink := &agenttest.ControlSink{}
+	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
+	// Source: .tmp/probe/qoder/run6/logs/frames.jsonl, frame 26.
+	raw := []byte(`{"type":"control_request","request_id":"child-permission","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"child-call","agent_id":"child-native","input":{"command":"printf child"}}}`)
+	a.HandleOutput(raw)
+	require.Equal(t, 1, sink.PublishedControlCount())
+	request := sink.LastPublishedControl()
+	assert.Equal(t, "child-permission", request.RequestID)
+	assert.Equal(t, raw, request.Payload)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.BackgroundTasks())
+}
 
 func qoderWorkflowUserNotification(t *testing.T, sessionID, taskID, callID, outputFile, status string) []byte {
 	t.Helper()
@@ -63,8 +79,8 @@ func TestQoderWorkflowUserCompletionClosesExactZeroChildRun(t *testing.T) {
 			assert.Equal(t, expected, workflow.Status)
 			assert.Empty(t, workflow.ChildAgentID)
 			assert.Len(t, sink.BackgroundTasks(), 1)
-			require.Len(t, sink.Messages(), before+1)
-			assert.JSONEq(t, string(notification), string(sink.Messages()[before].Content))
+			require.Len(t, sink.Messages(), before)
+			assert.JSONEq(t, qoderWorkflowLaunch, string(sink.Messages()[0].Content))
 			assert.Empty(t, a.workflows)
 		})
 	}
@@ -151,7 +167,7 @@ func TestQoderWorkflowUserCompletionRejectsMalformedOrUnrelatedText(t *testing.T
 	}
 }
 
-func TestQoderWorkflowUserCompletionReplayKeepsClosedRowAndOriginalBytes(t *testing.T) {
+func TestQoderWorkflowUserCompletionReplayKeepsClosedRowWithoutReplayRows(t *testing.T) {
 	t.Parallel()
 	fixture := newQoderWorkflowFixture(t)
 	writeQoderWorkflowFixtureFile(t, fixture.outputFile, `{"runId":"wf_1","taskId":"wf-1","workflowName":"native-code","status":"completed","result":"NATIVEWORKFLOW42","agentCount":0}`)
@@ -169,9 +185,8 @@ func TestQoderWorkflowUserCompletionReplayKeepsClosedRowAndOriginalBytes(t *test
 	assert.Len(t, sink.BackgroundTasks(), 1)
 	assert.Empty(t, a.workflows)
 	rows := sink.Messages()
-	require.GreaterOrEqual(t, len(rows), 2)
-	assert.JSONEq(t, string(notification), string(rows[len(rows)-2].Content))
-	assert.JSONEq(t, string(notification), string(rows[len(rows)-1].Content))
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, qoderWorkflowLaunch, string(rows[0].Content))
 }
 
 func TestQoderWorkflowUserCompletionKeepsMissingCanonicalArchivePending(t *testing.T) {
@@ -286,8 +301,8 @@ func TestQoderChildTaskLifecycleRoutesItsTranscript(t *testing.T) {
 	a.HandleOutput([]byte(qoderChildAnswer))
 	assert.Empty(t, sink.Messages(), "child frames must not enter the root transcript")
 	childMessages := child.Messages()
-	require.Len(t, childMessages, 3)
-	assert.Contains(t, string(childMessages[2].Content), "PONG")
+	require.Len(t, childMessages, 2)
+	assert.Contains(t, string(childMessages[1].Content), "PONG")
 
 	a.HandleOutput([]byte(qoderChildFinished))
 	row, ok = sink.BackgroundTask("spawn-1")

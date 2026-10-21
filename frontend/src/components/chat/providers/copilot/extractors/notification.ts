@@ -5,7 +5,47 @@ import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 import { toTokenCount } from '../../../model/notification'
 import { formatDuration, formatNumber } from '../../../rendererUtils'
-import { copilotEvent, copilotEventData } from '../protocol'
+import { COPILOT_SYSTEM_NOTIFICATION_KIND, copilotEvent, copilotEventData } from '../protocol'
+
+/** Read the native kind before falling back to the notification's content. */
+function copilotSystemNotification(data: Record<string, unknown>): string | null {
+  const kind = pickObject(data, 'kind')
+  const name = pickString(kind, 'displayName').trim()
+  const agent = `Background agent${name ? ` ${name}` : ''}`
+  const description = pickString(kind, 'description').trim()
+  switch (pickString(kind, 'type')) {
+    case COPILOT_SYSTEM_NOTIFICATION_KIND.AgentCompleted: {
+      const status = pickString(kind, 'status')
+      if (status === 'completed' || status === 'failed')
+        return `${agent} ${status}`
+      break
+    }
+    case COPILOT_SYSTEM_NOTIFICATION_KIND.AgentIdle:
+      return `${agent} is idle`
+    case COPILOT_SYSTEM_NOTIFICATION_KIND.ShellCompleted: {
+      const code = pickNumber(kind, 'exitCode', undefined)
+      return `Shell${description ? ` ${description}` : ''} exited${code !== undefined && Number.isSafeInteger(code) ? ` (code ${code})` : ''}`
+    }
+    case COPILOT_SYSTEM_NOTIFICATION_KIND.ShellDetachedCompleted:
+      return `Detached shell${description ? ` ${description}` : ''} exited`
+    case COPILOT_SYSTEM_NOTIFICATION_KIND.InstructionDiscovered: {
+      const path = pickString(kind, 'sourcePath').trim()
+      if (path)
+        return `Read the instructions in ${path}`
+      break
+    }
+    case COPILOT_SYSTEM_NOTIFICATION_KIND.FactoryCompleted: {
+      const factory = pickString(kind, 'factoryName').trim()
+      const status = pickString(kind, 'status').trim()
+      if (status)
+        return `Factory${factory ? ` ${factory}` : ''} ${status}`
+      break
+    }
+  }
+  const content = pickString(data, 'content').trim()
+  const wrapped = /^<system_notification>([\s\S]*)<\/system_notification>$/.exec(content)
+  return (wrapped?.[1] ?? content).trim() || null
+}
 
 /** The sentence a subagent outcome reads as, with what the runtime measured. */
 function copilotSubagentLine(data: Record<string, unknown>, failed: boolean): string {
@@ -54,31 +94,11 @@ function copilotDeniedByRules(result: Record<string, unknown>): string {
 }
 
 /**
- * Why one permission ended WITHOUT the reader ever seeing it.
- *
- * Five of the nine outcomes record an answer the reader gave, and the saved
- * control-response row already states those -- they return null here, which the
- * classifier reads as hidden. The other four, the `denied-by-*` ones, are refusals
- * the runtime made on its own: no request reached a reader, so no row states them,
- * and the call simply failed with nothing to explain it.
- *
- * The outcome is `result.kind`. `result` is an OBJECT whose variant carries its own
- * fields beside the kind, so reading it as a word matches nothing at all.
- */
-/**
- * Who decided one permission, when that was NOT the reader.
- *
- * `human_response` answers null: the reader made that decision through the control
- * surface, and the saved control-response row already states it. Every other source
- * produces the SAME `result` a person does with no row behind it, so this is the only
- * thing that stops an automatic grant from reading as one the reader gave.
- *
- * An ABSENT field also answers null, which is the silent case rather than a claim
- * either way. Copilot states the field from 1.0.84-5, so every completion an earlier
- * build wrote omits it, and the SDK requires a consumer to read that absence as "not a
- * human decision" rather than assuming one. A line on every one of those completions
- * would word a source nothing reported; saying nothing asserts nothing, and the
- * control-response row remains the only evidence, exactly as before the field existed.
+ * Identify a permission decision that the reader did not make.
+ * A human_response returns null because the saved control-response row already records that decision.
+ * Automatic decisions can carry the same result as human decisions. The source field distinguishes them.
+ * An absent source returns null also. Absence proves neither a human decision nor a particular automatic source.
+ * The saved control-response row remains the evidence for a human decision.
  */
 function copilotDecisionSourceLine(data: Record<string, unknown>): string | null {
   switch (pickString(data, 'decisionSource')) {
@@ -111,11 +131,8 @@ function copilotPermissionOutcomeLine(data: Record<string, unknown>): string | n
       return 'Denied by the content exclusion policy'
     case COPILOT_PERMISSION_OUTCOME.DeniedByPermissionRequestHook:
       return 'Denied by a permission hook'
-    // An approval the READER never saw. The three approve outcomes and the two
-    // reader-owned refusals all have a control-response row when a person decided
-    // them, so they stayed silent here -- and an automatic decision carries the same
-    // outcome word with no row at all, which left a tool running with elevated
-    // permission and nothing on screen saying who allowed it.
+    // Human decisions have a control-response row. An automatic decision can use the same outcome without that row.
+    // State the automatic source when the runtime supplies it.
     default:
       return decidedBy ? `${copilotOutcomeVerb(pickString(result, 'kind'))} by ${decidedBy}` : null
   }
@@ -159,9 +176,10 @@ function copilotControlLine(type: string, data: Record<string, unknown>): string
       const message = pickString(data, 'message')
       return message ? `Asked for input: ${message}` : 'Asked for input'
     }
-    // The five asks below follow the same `<name>.requested` pattern and carry a
-    // `requestId` the runtime waits on. LeapMux answers none of them yet, so the row
-    // states the ask and the reader can see WHY the turn stopped.
+    // The Worker answers these native asks through its control surfaces:
+    // - Tool permission and user input.
+    // - Plan exit and elicitation.
+    // - Sampling and an Auto model switch.
     case COPILOT_EVENT.SamplingRequested: {
       const server = pickString(data, 'serverName')
       return server ? `The MCP server ${server} asked the model to answer` : 'An MCP server asked the model to answer'
@@ -169,10 +187,6 @@ function copilotControlLine(type: string, data: Record<string, unknown>): string
     case COPILOT_EVENT.ExternalToolRequested: {
       const tool = pickString(data, 'name') || pickString(data, 'toolName')
       return tool ? `Asked the client to run ${tool}` : 'Asked the client to run a tool'
-    }
-    case COPILOT_EVENT.CommandExecute: {
-      const command = pickString(data, 'command')
-      return command ? `Asked to run ${command}` : 'Asked to run a command'
     }
     case COPILOT_EVENT.ToolUserRequested: {
       const tool = pickString(data, 'toolName') || pickString(data, 'name')
@@ -182,8 +196,6 @@ function copilotControlLine(type: string, data: Record<string, unknown>): string
       const code = pickString(data, 'errorCode')
       return code ? `Asked to switch the model after ${code}` : 'Asked to switch the model'
     }
-    case COPILOT_EVENT.SessionLimitsExhaustedRequested:
-      return 'Asked to raise the credit limit'
     default:
       return null
   }
@@ -217,9 +229,8 @@ function copilotScheduleLine(data: Record<string, unknown>, head: string): strin
 /**
  * A readable line for one Copilot notification row.
  *
- * Null for a shape Copilot does not own, so the shared provider-neutral notification
- * switch can try it instead, and for a row of Copilot's own that states nothing to
- * read -- which is hidden rather than shown as an empty notification.
+ * Return null for a shape outside Copilot's vocabulary so the shared notification reader can try it.
+ * Return null for an empty native notice also. The classifier hides that notice.
  */
 export function describeCopilotNotification(parsed: unknown): string | null {
   const event = copilotEvent(parsed)
@@ -235,8 +246,7 @@ export function describeCopilotNotification(parsed: unknown): string | null {
     // approval admitted a second call.
     case COPILOT_EVENT.PermissionCarriedForward:
       return 'Ran under an earlier approval of yours in this session'
-    case COPILOT_EVENT.SessionError:
-    case COPILOT_EVENT.ModelCallFailure: {
+    case COPILOT_EVENT.SessionError: {
       const message = pickString(data, 'message') || pickString(data, 'errorType')
       return message ? `Error: ${message}` : null
     }
@@ -245,15 +255,9 @@ export function describeCopilotNotification(parsed: unknown): string | null {
       return message ? `Warning: ${message}` : null
     }
     case COPILOT_EVENT.SessionInfo:
-    case COPILOT_EVENT.SystemMessage:
-    case COPILOT_EVENT.SystemNotification:
       return pickString(data, 'message') || null
-    // The compaction pair states a sentence here although no row draws it:
-    // `copilotNotificationEntry` answers the structured `compaction` entry for both
-    // types before it asks this function. `classifyCopilotMessage` reads a null here as
-    // HIDDEN, so a pair that worded nothing would keep both rows out of the transcript.
-    case COPILOT_EVENT.SessionCompactionStart:
-      return 'Compacting the conversation'
+    case COPILOT_EVENT.SystemNotification:
+      return copilotSystemNotification(data)
     case COPILOT_EVENT.SessionCompactionComplete:
       return 'Conversation compacted'
     case COPILOT_EVENT.SessionContextCleared:
@@ -264,7 +268,8 @@ export function describeCopilotNotification(parsed: unknown): string | null {
         ? `Removed ${formatNumber(removed)} messages to fit the context window`
         : 'Removed older messages to fit the context window'
     }
-    case COPILOT_EVENT.SkillInvoked: {
+    case COPILOT_EVENT.SkillInvoked:
+    case COPILOT_EVENT.SkillInvokedRef: {
       const skill = pickString(data, 'skill') || pickString(data, 'name')
       return skill ? `Loaded the skill ${skill}` : null
     }
@@ -317,21 +322,16 @@ export function describeCopilotNotification(parsed: unknown): string | null {
 }
 
 /**
- * The three parts of the context Copilot counts after it rewrites one.
- *
- * Every part is optional, and the runtime sends them only for the pass that computed
- * them -- so their SUM is the whole context and not a partial figure.
+ * The components of the context size after compaction.
+ * Each field is optional. When the runtime supplies the breakdown, the sum represents the whole context.
  */
 const COPILOT_CONTEXT_TOKEN_PARTS = ['systemTokens', 'conversationTokens', 'toolDefinitionsTokens'] as const
 
 /**
  * The context size one completed compaction left behind.
  *
- * Copilot states it two ways, and its own interface prefers the BREAKDOWN: the three
- * parts above add up to the whole context window, where `postCompactionTokens` counts
- * the conversation alone and leaves the system message and the tool definitions out.
- * The conversation total answers for a pass that carried no part at all, which is what
- * a real `session.compaction_complete` frame records.
+ * Copilot's interface prefers the breakdown because it includes the system message and tool definitions.
+ * postCompactionTokens counts only the conversation. Use it when the frame supplies no breakdown component.
  */
 function copilotPostCompactionTokens(data: Record<string, unknown>): number | undefined {
   const parts = COPILOT_CONTEXT_TOKEN_PARTS.map(key => pickNumber(data, key, undefined))
@@ -343,13 +343,10 @@ function copilotPostCompactionTokens(data: Record<string, unknown>): number | un
 /**
  * What one successful `session.compaction_complete` frame states about the context.
  *
- * `trigger` is the runtime's own word for what asked for the pass -- `threshold`,
- * `manual`, `context_limit_retry`, `memory_pressure` or `model_switch` -- and the row
- * states it beside the transition.
+ * The row displays the native trigger beside the size change.
  */
 function copilotCompactionDetail(data: Record<string, unknown>): CompactionDetails {
-  // Each field is optional on the meta, so a count the frame stated as absent or
-  // unreadable stays ABSENT rather than present with `undefined`.
+  // Omit an absent or invalid count instead of adding a field with undefined.
   const trigger = pickString(data, 'trigger') || undefined
   const pre = toTokenCount(pickNumber(data, 'preCompactionTokens', undefined))
   const post = toTokenCount(copilotPostCompactionTokens(data))
@@ -379,12 +376,8 @@ function copilotCompactionError(data: Record<string, unknown>): string {
 /**
  * The compaction boundary a Copilot message states, or null when it states none.
  *
- * A sibling of Claude's, Codex's and Pi's, and it serves the same two readers: the
- * context-usage grid outside the render tree, and the notification extractor below.
- *
- * `success` is the one field `session.compaction_complete` always carries, and a pass
- * that did not succeed rewrote nothing -- so its numbers describe a context that still
- * holds what it held before, and the grid must not refresh from them.
+ * The context-usage grid and the notification extractor both read this result.
+ * A failed compaction changes no context, so its counts must not update the grid.
  */
 export function copilotCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const data = copilotEventData(getInnerMessage(parsed), COPILOT_EVENT.SessionCompactionComplete)
@@ -396,21 +389,23 @@ export function copilotCompactionBoundary(parsed: ParsedMessageContent): Compact
  * consolidated thread alike. Without it a multi-event thread would render only its
  * first message.
  *
- * The compaction pair becomes a `compaction` entry so it draws the same rule every
- * other provider's boundary draws, and the cleared-context event becomes the neutral
- * entry rather than a sentence of Copilot's own.
+ * Native compaction ends use the shared compaction entry.
+ * A context clear uses the shared context-clear entry.
  */
 export function copilotNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const event = copilotEvent(msg)
-  if (event?.type === COPILOT_EVENT.SessionCompactionStart)
-    return [{ kind: 'compaction', phase: 'start' }]
   if (event?.type === COPILOT_EVENT.SessionCompactionComplete) {
     return event.data.success === true
       ? [{ kind: 'compaction', phase: 'end', detail: copilotCompactionDetail(event.data) }]
-      : [{ kind: 'compaction', phase: 'end', error: copilotCompactionError(event.data) }]
+      : [{ kind: 'compaction', phase: 'end', outcome: 'failed', error: copilotCompactionError(event.data) }]
   }
   if (event?.type === COPILOT_EVENT.SessionContextCleared)
     return [{ kind: 'context-cleared' }]
   const text = describeCopilotNotification(msg)
   return text === null ? [] : [{ kind: 'text', text }]
+}
+
+/** Identify an old stored start without changing its ordinary category. */
+export function copilotCompactionStart(message: Record<string, unknown>): boolean {
+  return copilotEvent(message)?.type === COPILOT_EVENT.SessionCompactionStart
 }

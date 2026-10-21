@@ -1,18 +1,340 @@
 package qwen
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
+
+type qwenNoticeOrderSink struct {
+	*agenttest.ControlSink
+	textBeforeNotice     [][]string
+	rowsBeforeResolution []int
+	workerNoticeTexts    [][]string
+}
+
+func (s *qwenNoticeOrderSink) PersistLeapMuxNotification(content map[string]interface{}) {
+	s.workerNoticeTexts = append(s.workerNoticeTexts, assembledTexts(&s.Sink))
+	if content[contracts.NotificationFieldType] == contracts.NotificationTypeApiRetryResolved {
+		s.rowsBeforeResolution = append(s.rowsBeforeResolution, len(s.Messages()))
+	}
+	s.ControlSink.PersistLeapMuxNotification(content)
+}
+
+func TestQwenWorkerNoticesFollowTheBufferedAnswer(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		frame []byte
+	}{
+		{"recording failure", qwenNotifyFrame(t, "qwen/notify/session/recording-degraded", qwenTestSession, map[string]any{"reason": "write_failed"})},
+		{"background completion", backgroundNotice(t, contracts.QwenMessageSourceBackgroundTaskCompleted, map[string]any{"kind": qwenBackgroundMonitor, "status": "completed", "taskId": "monitor"})},
+		{"notification overflow", backgroundNotice(t, contracts.QwenMessageSourceBackgroundNotification, map[string]any{"kind": qwenBackgroundQueue, "status": "recorded"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, sink, _ := newQwenAgent(t, nil, nil)
+			ordered := &qwenNoticeOrderSink{ControlSink: sink}
+			a.SetSinkForTest(agent.NewProviderServices(ordered))
+			a.HandleOutput(metaChunk(t, "before", nil))
+			a.HandleOutput(tc.frame)
+			assert.Equal(t, [][]string{{"before"}}, ordered.workerNoticeTexts)
+		})
+	}
+}
+
+func (s *qwenNoticeOrderSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	s.textBeforeNotice = append(s.textBeforeNotice, assembledTexts(&s.Sink))
+	return s.ControlSink.PersistNotification(source, content)
+}
+
+func TestQwenDiscreteNoticeIsItsOwnRow(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"vision_bridge_notice", "todo_stop_guard", ""} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newQwenAgent(t, nil, nil)
+			ordered := &qwenNoticeOrderSink{ControlSink: sink}
+			a.SetSinkForTest(agent.NewProviderServices(ordered))
+			a.SetPromptActiveForTest(true)
+			a.HandleOutput(metaChunk(t, "before", nil))
+			a.HandleOutput(metaChunk(t, "notice", map[string]any{"qwenDiscreteMessage": true, "source": source}))
+			a.HandleOutput(metaChunk(t, "after", nil))
+			a.FinishPromptRequestForTest(qwenTestSession, []byte(`{"stopReason":"end_turn"}`), nil)
+			assert.Equal(t, []string{"before", "after"}, assembledTexts(&sink.Sink))
+			assert.Equal(t, [][]string{{"before"}}, ordered.textBeforeNotice)
+			require.Len(t, sink.PersistedNotifications(), 1)
+			assert.Contains(t, string(sink.PersistedNotifications()[0].Content), `"text":"notice"`)
+		})
+	}
+}
+
+func TestQwenBackgroundResponseIsItsOwnSegment(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput(metaChunk(t, "before", nil))
+	a.HandleOutput(metaChunk(t, "background answer", map[string]any{"qwenDiscreteMessage": true, "source": "background_notification_response"}))
+	a.HandleOutput(metaChunk(t, "second background answer", map[string]any{"qwenDiscreteMessage": true, "source": "background_notification_response"}))
+	a.HandleOutput(metaChunk(t, "after", nil))
+	a.FinishPromptRequestForTest(qwenTestSession, []byte(`{"stopReason":"end_turn"}`), nil)
+	assert.Equal(t, []string{"before", "background answer", "second background answer", "after"}, assembledTexts(&sink.Sink))
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestQwenStopHookLoopPersists(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	// MessageEmitter.emitStopHookLoop sends an empty text chunk with this metadata.
+	a.HandleOutput(metaChunk(t, "", map[string]any{"stopHookLoop": map[string]any{
+		"iterationCount": 2, "reasons": []string{"Run the checks"}, "stopHookCount": 1,
+	}}))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), "Run the checks")
+	assert.Empty(t, sink.Messages())
+}
+
+func TestQwenDiscreteMarkerRequiresTrue(t *testing.T) {
+	t.Parallel()
+	for _, value := range []any{nil, false, 0, "true"} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			a, sink, _ := newQwenAgent(t, nil, nil)
+			a.HandleOutput(metaChunk(t, "answer", map[string]any{"qwenDiscreteMessage": value}))
+			a.FlushBufferedOutput(agent.MessageCompletionComplete)
+			assert.Equal(t, []string{"answer"}, assembledTexts(&sink.Sink))
+			assert.Empty(t, sink.PersistedNotifications())
+		})
+	}
+}
+
+func TestQwenBlankDiscreteNoticeDoesNotStoreOrSplitText(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(metaChunk(t, "before", nil))
+	a.HandleOutput(metaChunk(t, "", map[string]any{"qwenDiscreteMessage": true}))
+	a.HandleOutput(metaChunk(t, "after", nil))
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Equal(t, []string{"beforeafter"}, assembledTexts(&sink.Sink))
+}
+
+func TestQwenDiscreteMarkerDoesNotSplitThoughts(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	for _, text := range []string{"first ", "second"} {
+		a.HandleOutput(sessionUpdate(t, map[string]any{
+			"sessionUpdate": "agent_thought_chunk", "messageId": "thought",
+			"content": map[string]any{"type": "text", "text": text},
+			"_meta":   map[string]any{"qwenDiscreteMessage": true},
+		}))
+	}
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	require.Len(t, sink.Messages(), 1)
+	kind, text, _, ok := agenttest.DecodeAssembledMessage(sink.Messages()[0].Content)
+	require.True(t, ok)
+	assert.Equal(t, agent.AssembledMessageKindReasoning, kind)
+	assert.Equal(t, "first second", text)
+}
+
+func TestQwenDiscreteNoticeOfAnotherSessionStoresNothing(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "session/update", "params": map[string]any{
+			"sessionId": "other-session", "update": map[string]any{
+				"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "notice"},
+				"_meta": map[string]any{"qwenDiscreteMessage": true},
+			},
+		},
+	}))
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func qwenExecutionChunk(t *testing.T, phase, outcome string) []byte {
+	t.Helper()
+	// Trimmed from qwen/logs/r2-retrylong-1.log. The native lifecycle states no error text or attempt count.
+	return metaChunk(t, "", map[string]any{"executionLifecycle": map[string]any{
+		"v": 1, "kind": "request", "phase": phase, "outcome": outcome,
+	}})
+}
+
+func TestQwenRetryRoundsFoldIntoOneRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	for range 3 {
+		a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+		a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	}
+	require.Len(t, sink.Notifications(), 3)
+	for index, notice := range sink.Notifications() {
+		assert.Equal(t, map[string]any{"type": "api_retry", "count": int64(index + 1)}, notice)
+	}
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestQwenRetryResolvesOnSuccess(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
+	require.Len(t, sink.Notifications(), 2)
+	assert.Equal(t, map[string]any{"type": "api_retry_resolved"}, sink.Notifications()[1])
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	assert.Equal(t, int64(1), sink.Notifications()[2]["count"])
+}
+
+func TestQwenRetryResolvesBeforeModelOutput(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	ordered := &qwenNoticeOrderSink{ControlSink: sink}
+	a.SetSinkForTest(agent.NewProviderServices(ordered))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	a.HandleOutput(sessionUpdate(t, map[string]any{
+		"sessionUpdate": "agent_thought_chunk", "content": map[string]any{"type": "text", "text": "working"},
+	}))
+	a.HandleOutput(metaChunk(t, "answer", nil))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
+	assert.Equal(t, []int{0}, ordered.rowsBeforeResolution)
+	require.Len(t, sink.Notifications(), 2)
+}
+
+func TestQwenSubagentLifecycleChangesNothing(t *testing.T) {
+	t.Parallel()
+	for _, lifecycle := range []map[string]any{
+		{"v": 1, "kind": "request", "phase": "ended", "outcome": "error", "subagentId": "memory"},
+		{"v": 1, "kind": "tool", "phase": "ended", "outcome": "error"},
+	} {
+		a, sink, _ := newQwenAgent(t, nil, nil)
+		a.HandleOutput(sessionUpdate(t, map[string]any{
+			"sessionUpdate": "agent_thought_chunk", "content": map[string]any{"type": "text", "text": "working"},
+		}))
+		a.HandleOutput(metaChunk(t, "", map[string]any{"executionLifecycle": lifecycle}))
+		assert.Empty(t, sink.Messages(), "a lifecycle frame must not flush the thought")
+		assert.Empty(t, sink.Notifications())
+	}
+}
+
+func TestQwenRetryResetAtPromptEnd(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	a.FinishPromptRequestForTest(qwenTestSession, []byte(`{"stopReason":"end_turn"}`), nil)
+	a.HandleOutput(metaChunk(t, "new answer", nil))
+	require.Len(t, sink.Notifications(), 1)
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	require.Len(t, sink.Notifications(), 2)
+	assert.Equal(t, int64(1), sink.Notifications()[1]["count"])
+}
+
+func TestQwenRetryCancellationDoesNotResolve(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"cancelled", "interrupted"} {
+		t.Run(outcome, func(t *testing.T) {
+			a, sink, _ := newQwenAgent(t, nil, nil)
+			a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+			a.HandleOutput(qwenExecutionChunk(t, "ended", outcome))
+			a.HandleOutput(metaChunk(t, "next request", nil))
+			require.Len(t, sink.Notifications(), 1)
+			a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+			assert.Equal(t, int64(1), sink.Notifications()[1]["count"])
+		})
+	}
+}
+
+func TestQwenRetryUnknownOutcomeKeepsThePendingRetry(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	for _, outcome := range []string{"", "future"} {
+		a.HandleOutput(qwenExecutionChunk(t, "ended", outcome))
+	}
+	require.Len(t, sink.Notifications(), 1)
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
+	require.Len(t, sink.Notifications(), 2)
+	assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.Notifications()[1]["type"])
+}
+
+func TestQwenRetryResetAtNativeTurnEnd(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	require.True(t, a.BeginAgentTurn())
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	a.HandleOutput(frame(t, map[string]any{"method": contracts.QwenMethodEndTurn, "params": map[string]any{"sessionId": qwenTestSession}}))
+	a.HandleOutput(metaChunk(t, "next request", nil))
+	require.Len(t, sink.Notifications(), 1)
+}
+
+func qwenThoughtChunk(t *testing.T, text string) []byte {
+	t.Helper()
+	return sessionUpdate(t, map[string]any{
+		"sessionUpdate": "agent_thought_chunk", "content": map[string]any{"type": "text", "text": text},
+	})
+}
+
+func TestQwenThoughtReplayKeepsTheSecondAttempt(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	// Trimmed from qwen/logs/thoughtcut-1.log. Qwen retries the request after it drops the first thought.
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+	a.HandleOutput(qwenThoughtChunk(t, "THINK-ATTEMPT-1 "))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	assert.Empty(t, sink.Messages())
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress("acp:"+contracts.ACPUpdateAgentThoughtChunk))
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+	a.HandleOutput(qwenThoughtChunk(t, "THINK-ATTEMPT-2 "))
+	a.HandleOutput(metaChunk(t, "OK", nil))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	require.Len(t, sink.Messages(), 2)
+	kind, text, _, ok := agenttest.DecodeAssembledMessage(sink.Messages()[0].Content)
+	require.True(t, ok)
+	assert.Equal(t, agent.AssembledMessageKindReasoning, kind)
+	assert.Equal(t, "THINK-ATTEMPT-2 ", text)
+	assert.Equal(t, []string{"OK"}, assembledTexts(&sink.Sink))
+}
+
+func TestQwenTextCutKeepsBothTexts(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	// Trimmed from qwen/logs/textcut-1.log. Qwen retains the first answer text in its own history.
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+	a.HandleOutput(metaChunk(t, "PARTIAL-ATTEMPT-1 ", nil))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+	a.HandleOutput(metaChunk(t, "OK", nil))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	assert.Equal(t, []string{"PARTIAL-ATTEMPT-1 OK"}, assembledTexts(&sink.Sink))
+}
+
+func TestQwenThoughtReplayResetsTheTextFlagForEachRequest(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+	a.HandleOutput(metaChunk(t, "first answer", nil))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+	a.HandleOutput(qwenThoughtChunk(t, "discard this thought"))
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	require.Len(t, sink.Messages(), 1)
+	assert.Equal(t, []string{"first answer"}, assembledTexts(&sink.Sink))
+}
 
 // metaChunk is an agent message that carries `_meta` beside its text.
 func metaChunk(t *testing.T, text string, meta map[string]any) []byte {
@@ -63,11 +385,16 @@ func TestQwenUsageNeverStatesANegativeInput(t *testing.T) {
 	assert.Equal(t, 1, sink.SessionInfoCount(), "an unreadable usage broadcasts nothing")
 }
 
-func TestQwenCompressionReachesTheTranscriptAsStatus(t *testing.T) {
+func TestQwenCompactionStoresNativeEndsAndKeepsUnknownPhases(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
 	a.HandleOutput(metaChunk(t, "Compressing context...", map[string]any{"contextCompression": map[string]any{"phase": "progress"}, "source": "slash_command"}))
+	live, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, ok)
+	assert.NotNil(t, live)
+	assert.Empty(t, sink.Notifications())
+	assert.Empty(t, sink.PersistedNotifications())
 	a.HandleOutput(metaChunk(t, "Context compressed (900 -> 300).", map[string]any{"contextCompression": map[string]any{
 		"phase": "done", "originalTokenCount": 900, "newTokenCount": 300,
 	}}))
@@ -76,18 +403,35 @@ func TestQwenCompressionReachesTheTranscriptAsStatus(t *testing.T) {
 	}}))
 	a.HandleOutput(metaChunk(t, "x", map[string]any{"contextCompression": map[string]any{"phase": "unknown"}}))
 
-	var texts []string
-	for _, notification := range sink.Notifications() {
-		assert.Equal(t, contracts.NotificationTypeAgentStatus, notification[contracts.NotificationFieldType])
-		texts = append(texts, notification[contracts.NotificationFieldText].(string))
+	assert.Empty(t, sink.Notifications())
+	require.Len(t, sink.PersistedNotifications(), 2)
+	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), `"originalTokenCount":900`)
+	assert.Contains(t, string(sink.PersistedNotifications()[1].Content), `"warning":"little was saved"`)
+	for _, notice := range sink.PersistedNotifications() {
+		assert.Equal(t, agent.CompactionBoundaryNotification(), (qwenProvider{}).Classify(notice.Content))
 	}
-	assert.Equal(t, []string{
-		"Compacting the context",
-		"Context compacted from 900 to 300 tokens",
-		"Context compacted from 900 to 850 tokens: little was saved",
-	}, texts)
+	live, ok = sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, ok)
+	assert.Nil(t, live)
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), `"phase":"unknown"`)
 	a.FinishPromptRequestForTest(qwenTestSession, []byte(`{"stopReason":"end_turn"}`), nil)
 	assert.Empty(t, assembledTexts(&sink.Sink), "Qwen's progress words do not become the agent's text")
+}
+
+func TestQwenCompactionDoneFollowsTheBufferedAnswer(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	ordered := &qwenNoticeOrderSink{ControlSink: sink}
+	a.SetSinkForTest(agent.NewProviderServices(ordered))
+	a.HandleOutput(metaChunk(t, "before", nil))
+	// Trimmed from qwen/logs/r2-compress-3.log. The native end can arrive without a stored start.
+	a.HandleOutput(metaChunk(t, "Context compressed.", map[string]any{"contextCompression": map[string]any{
+		"phase": "done", "originalTokenCount": 60000, "newTokenCount": 44624,
+	}}))
+	assert.Equal(t, [][]string{{"before"}}, ordered.textBeforeNotice)
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Equal(t, agent.CompactionBoundaryNotification(), (qwenProvider{}).Classify(sink.PersistedNotifications()[0].Content))
 }
 
 func TestQwenOrdinaryTextIsNotConsumed(t *testing.T) {
@@ -249,4 +593,36 @@ func TestQwenUnreadableCompressionIsConsumedSilently(t *testing.T) {
 
 	assert.Empty(t, sink.Notifications())
 	assert.Empty(t, assembledTexts(&sink.Sink))
+}
+
+func TestQwenRetryAttemptCase(t *testing.T) {
+	t.Parallel()
+	// The recorded mid-stream retry: the failed attempt's answer is discarded
+	// and the retry row resolves at the successful attempt's first content.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name:       "a retry discards the failed attempt and resolves at the next content",
+		FramesPath: "testdata/retry_attempt.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			a, _, _ := newQwenAgent(t, nil, nil)
+			a.SetSinkForTest(agent.NewModelProgressResetSink(agent.NewProviderServices(sink)))
+			a.SetPromptActiveForTest(true)
+			return func(frame []byte) {
+				var envelope struct {
+					Result *json.RawMessage                  `json:"result"`
+					Error  *providerkit.JSONRPCResponseError `json:"error"`
+					ID     *int64                            `json:"id"`
+				}
+				if json.Unmarshal(frame, &envelope) != nil {
+					return
+				}
+				if envelope.Result != nil && envelope.ID != nil {
+					a.FinishPromptRequestForTest(qwenTestSession, *envelope.Result, nil)
+					return
+				}
+				a.HandleOutput(frame)
+			}
+		},
+		Want:      []agenttest.RetryAttemptText{{Text: "ANSWER-AFTER-RETRY", Completion: agent.MessageCompletionComplete}},
+		Discarded: []string{"partial reasoning "},
+	})
 }

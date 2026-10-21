@@ -6,11 +6,16 @@ import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { createTestDirectory } from './runDirectory'
+import { createTranscriptGuard, runTranscriptGuard } from './transcriptGuard'
 import { loginViaToken, openWorkspace } from './ui'
 import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, openProviderAgent, showWorkspaceWithAgents, withAgentWorkspace, withTestWorkspace } from './workspace'
 
 vi.mock('./api', () => ({ createWorkspaceViaAPI: vi.fn(), deleteWorkspaceViaAPI: vi.fn(), openAgentViaAPI: vi.fn() }))
 vi.mock('./runDirectory', () => ({ createTestDirectory: vi.fn(() => '/private-directory') }))
+vi.mock('./transcriptGuard', async importOriginal => ({
+  ...await importOriginal<typeof import('./transcriptGuard')>(),
+  runTranscriptGuard: vi.fn(async () => {}),
+}))
 vi.mock('./ui', () => ({ loginViaToken: vi.fn(), openWorkspace: vi.fn() }))
 
 const server = { hubUrl: 'http://hub.test', adminToken: 'session', workerId: 'worker' }
@@ -24,6 +29,7 @@ beforeEach(() => {
   vi.mocked(openAgentViaAPI).mockReset().mockResolvedValue('agent')
   vi.mocked(loginViaToken).mockReset().mockResolvedValue(undefined)
   vi.mocked(openWorkspace).mockReset().mockResolvedValue(undefined)
+  vi.mocked(runTranscriptGuard).mockReset().mockResolvedValue(undefined)
 })
 
 /** The open request of the one agent that the test opened. */
@@ -354,7 +360,7 @@ describe('authenticatedAgentWorkspace', () => {
   async function run(options: Parameters<typeof authenticatedAgentWorkspace>[0], body: () => Promise<void>, failed: boolean) {
     const testInfo = { status: 'passed', expectedStatus: 'passed', attach: vi.fn(async () => {}) }
     const fixture = authenticatedAgentWorkspace(options)
-    const outcome = fixture({ page, leapmuxServer }, async (workspace) => {
+    const outcome = fixture({ page, leapmuxServer, transcriptGuard: createTranscriptGuard() }, async (workspace) => {
       expect(workspace).toEqual({ workspaceId: 'workspace', workingDir: '/private-directory' })
       await body()
       if (failed)
@@ -389,6 +395,30 @@ describe('authenticatedAgentWorkspace', () => {
     const { outcome } = await run({ ...pi, openOptions: { optionValues: { permissionMode: 'yolo' } } }, async () => {}, false)
     await outcome
     expect(openRequest()).toMatchObject({ optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.PI].effort, permissionMode: 'yolo' } })
+  })
+
+  it('checks the transcript after the test and before workspace deletion', async () => {
+    const order: string[] = []
+    vi.mocked(runTranscriptGuard).mockImplementation(async () => {
+      order.push('guard')
+    })
+    vi.mocked(deleteWorkspaceViaAPI).mockImplementation(async () => {
+      order.push('delete')
+    })
+    const { outcome, testInfo } = await run(pi, async () => {
+      order.push('test')
+    }, false)
+    await outcome
+    expect(order).toEqual(['test', 'guard', 'delete'])
+    expect(runTranscriptGuard).toHaveBeenCalledExactlyOnceWith(page, expect.any(Object), testInfo)
+  })
+
+  it('deletes the workspace when the transcript guard fails', async () => {
+    const error = new Error('the transcript contains a raw frame')
+    vi.mocked(runTranscriptGuard).mockRejectedValueOnce(error)
+    const { outcome } = await run(pi, async () => {}, false)
+    await expect(outcome).rejects.toBe(error)
+    expect(deleteWorkspaceViaAPI).toHaveBeenCalledOnce()
   })
 
   it('runs no diagnostic after a passed test', async () => {
@@ -428,7 +458,7 @@ describe('authenticatedAgentWorkspace', () => {
     const error = new Error('the test failed')
     const onFailure = vi.fn(async () => {})
     const testInfo = { status: 'failed', expectedStatus: 'passed', attach: vi.fn(async () => {}) }
-    const outcome = authenticatedAgentWorkspace({ ...pi, onFailure })({ page, leapmuxServer }, async () => {
+    const outcome = authenticatedAgentWorkspace({ ...pi, onFailure })({ page, leapmuxServer, transcriptGuard: createTranscriptGuard() }, async () => {
       throw error
     }, testInfo as unknown as TestInfo)
     await expect(outcome).rejects.toBe(error)

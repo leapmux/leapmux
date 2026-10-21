@@ -122,7 +122,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		a.clearModelPending(pending)
 		return agent.RestartRequiredSettings(options)
 	}
-	if err := pending.waiter.wait(a.Context(), a.ProcessDone(), lettaSendWait); err != nil {
+	if err := pending.waiter.wait(a.Context(), a.Clock(), a.ProcessDone(), lettaSendWait); err != nil {
 		a.clearModelPending(pending)
 		a.Mu.Lock()
 		current := a.settings
@@ -210,7 +210,7 @@ func (a *Agent) applyPermissionMode(mode string) error {
 	if err := a.sendCommand(syncCommand); err != nil {
 		return err
 	}
-	if err := pending.waiter.wait(a.Context(), a.ProcessDone(), lettaSendWait); err != nil {
+	if err := pending.waiter.wait(a.Context(), a.Clock(), a.ProcessDone(), lettaSendWait); err != nil {
 		return err
 	}
 	a.Mu.Lock()

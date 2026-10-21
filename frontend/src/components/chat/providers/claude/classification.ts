@@ -1,10 +1,10 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationContext, ClassificationInput } from '../registry'
-import { CLAUDE_FRAME_KIND, CLAUDE_HOOK_OUTCOME, CLAUDE_INFORMATIONAL_LEVEL, CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
+import { CLAUDE_FRAME_KIND, CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
-import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
+import { isNotificationThreadWrapper } from '../../messageUtils'
 import { classifyNotifications } from '../../notificationClassification'
 import { claudeNotificationEntry, claudeReadsSystemSubtype, claudeSystemSubtypeHidden } from './extractors/notification'
 import { claudeExitPlanText } from './extractors/plan'
@@ -28,30 +28,8 @@ function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper i
 }
 
 /**
- * Per-message hidden rules shared by the standalone `system`/`rate_limit_event`
- * classifiers and the consolidated-thread filter, so a notification that is
- * hidden on its own stays hidden when Hub threads it into a
- * `notification_thread` wrapper. Without this single source of truth the two
- * paths drift: the wrapper branch used to drop only allowed `rate_limit_event`s,
- * so a final compaction status leaked through as a `notification` and
- * rendered as raw JSON.
- *
- * Covers the type/subtype-driven rules only. The `task_started`/`task_progress`
- * rule needs the envelope's `parentSpanId` (absent from a consolidated inner
- * message), so it stays inline in the `system` classifier.
- *
- * - `rate_limit_event` whose `rate_limit_info.status` is "allowed" -- a no-op
- *   refresh, not a throttle the user needs to see.
- * - `system` whose subtype {@link claudeSystemSubtypeHidden} lists.
- * - `informational` at level "info" -- the interface shows that level in its own
- *   transcript mode only.
- * - `hook_response` whose outcome is not "error" -- a hook that blocks a call
- *   reports itself in that call's own result, and a passing hook states nothing
- *   to show.
- * - `system` `status` updates other than the live "compacting" one -- e.g. the
- *   final `{status:null, compact_result:"success"}` ending a compaction. The
- *   user-facing "Context compacted (...)" line comes from compact_boundary, so
- *   this final status carries nothing to show.
+ * Apply the same hidden rules to standalone notices and members of a notification thread.
+ * An allowed rate-limit refresh needs no row. The system-subtype rule reads the Worker's shared contract table.
  */
 function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
   const type = pickString(m, 'type')
@@ -62,12 +40,6 @@ function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
   if (type === CLAUDE_FRAME_KIND.System) {
     const subtype = pickString(m, 'subtype')
     if (claudeSystemSubtypeHidden(subtype))
-      return true
-    if (subtype === CLAUDE_SYSTEM_SUBTYPE.Informational && pickString(m, 'level') === CLAUDE_INFORMATIONAL_LEVEL.Info)
-      return true
-    if (subtype === CLAUDE_SYSTEM_SUBTYPE.HookResponse && pickString(m, 'outcome') !== CLAUDE_HOOK_OUTCOME.Error)
-      return true
-    if (isFinalCompactingStatus(m))
       return true
   }
   return false
@@ -81,7 +53,7 @@ type ClaudeTypeClassifier = (
 
 /**
  * Classifiers for type-keyed Claude messages whose result preempts
- * `isCompactSummary` and synthetic-control-response checks. These are
+ * synthetic-control-response checks. These are
  * notification-shaped: their type alone determines the category.
  *
  * Every entry here needs a rule of its OWN. A type that only draws as a plain row
@@ -94,6 +66,8 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     const subtype = pickString(parent, 'subtype')
     if (isHiddenClaudeNotification(parent))
       return { kind: 'hidden' }
+    if (subtype === CLAUDE_SYSTEM_SUBTYPE.Status && claudeNotificationEntry(parent).length === 0)
+      return { kind: 'unknown' }
     // A known subtype that states no words draws nothing. An unknown subtype
     // keeps the no-display card, because that card is the signal that a new
     // frame exists.
@@ -104,16 +78,12 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
       return { kind: 'hidden' }
     return classifyNotifications([parent], input.agentProvider, claudeNotificationEntry)
   },
-  // `/clear`, and the plan exit that starts a new conversation. A transcript
-  // recorded before the worker rewrote it still carries this type.
-  conversation_reset: (parent, input) => classifyNotifications([parent], input.agentProvider, claudeNotificationEntry),
   [CLAUDE_FRAME_KIND.Result]: () => ({ kind: 'result_divider' }),
 }
 
 /**
  * Classifiers for content-shaped Claude messages (`assistant`/`user`). These
- * run AFTER the `isCompactSummary` / synthetic-control-response guards so
- * that those flags can preempt the content dispatch.
+ * run after the neutral control-response check.
  */
 const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
   [CLAUDE_FRAME_KIND.Assistant](parent, input) {
@@ -149,7 +119,7 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     }
     return { kind: 'unknown' }
   },
-  [CLAUDE_FRAME_KIND.User](parent, input, context) {
+  [CLAUDE_FRAME_KIND.User](parent, input) {
     // The span column states the tool on every row of a span, so one test answers
     // for a result row whose own bytes state no tool -- `EnterPlanMode` carries
     // no `tool_result` block at all, and its row is hidden all the same.
@@ -162,23 +132,12 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     const message = pickObject(parent, 'message')
     if (message) {
       const content = message.content
-      if (typeof content === 'string')
-        return { kind: 'user_text' }
       if (Array.isArray(content)) {
-        // tool_result takes priority over agent_prompt (subagent tool results
-        // also have parent_tool_use_id but should be rendered as tool results).
+        // Forwarded tool results keep the same category as root tool results.
         if (content.some(c => isObject(c) && c.type === 'tool_result'))
           return { kind: 'tool_result' }
       }
     }
-    // A user message carrying parent_tool_use_id is the prompt sent TO a
-    // subagent -- but only in the transcript that spawned it. Inside the
-    // subagent's OWN transcript every forwarded message carries that same id,
-    // including its interrupt notices and local command output, and none of
-    // those is a prompt. The child's real prompt is persisted separately, as a
-    // plain user message, so nothing here is ever one.
-    if (typeof parent.parent_tool_use_id === 'string')
-      return context?.isChildTranscript ? { kind: 'user_text' } : { kind: 'agent_prompt' }
     return { kind: 'unknown' }
   },
 }
@@ -191,7 +150,7 @@ export function classifyClaudeCodeMessage(
   const parentObject = input.parentObject
   const wrapper = input.wrapper
 
-  // Empty wrapper (all notifications consolidated to no-ops) — hide.
+  // Hide an empty wrapper after the reducer removes every entry.
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
 
@@ -211,7 +170,7 @@ export function classifyClaudeCodeMessage(
 
   const type = pickString(parentObject, 'type')
 
-  // Notification-shaped types preempt compact-summary / control-response.
+  // Read native notification types before content-shaped types.
   if (type) {
     // `Object.hasOwn`, not a bare read: `type` comes straight off the wire, and a
     // value that spells an `Object.prototype` member answers with a function the
@@ -221,15 +180,9 @@ export function classifyClaudeCodeMessage(
       return notif(parentObject, input)
   }
 
-  // The LeapMux envelope every provider answers the same way. The shared predicate is
-  // the one list, and it sits at the same depth the table above sits at, so a plain row
-  // still preempts the compact-summary read below.
+  // The shared predicate identifies worker envelopes before native content parsing.
   if (isPlainNotificationType(type))
     return classifyNotifications([parentObject], input.agentProvider, claudeNotificationEntry)
-
-  // Compact summary preempts content-shaped types.
-  if (parentObject.isCompactSummary === true)
-    return { kind: 'compact_summary' }
 
   // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
   // classifyMessage, before any plugin?.transcript.classify runs, since it is a LeapMux-neutral shape.)
@@ -245,8 +198,6 @@ export function classifyClaudeCodeMessage(
   // Plain object with string .content and no .type → user_content (or hidden /
   // plan_execution variants).
   if (!type && typeof parentObject.content === 'string') {
-    if (parentObject.hidden === true)
-      return { kind: 'hidden' }
     if (parentObject.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }

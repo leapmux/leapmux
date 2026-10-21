@@ -9,6 +9,7 @@ package ohmypi
 const (
 	CommandNegotiateProtocol       = "negotiate_protocol"
 	CommandSetSubagentSubscription = "set_subagent_subscription"
+	CommandSetEventFilter          = "set_event_filter"
 	CommandPrompt                  = "prompt"
 	CommandAbort                   = "abort"
 	CommandNewSession              = "new_session"
@@ -80,6 +81,8 @@ const asyncJobTypeBash = "bash"
 // contentBlockText is the `type` of a text content block in a message or a tool
 // result.
 const contentBlockText = "text"
+
+const contentBlockImage = "image"
 
 // contentBlockThinking is the `type` of a thinking content block in an assistant
 // message. Its text is in the block's `thinking` field.

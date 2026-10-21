@@ -35,6 +35,8 @@ type transcriptOwner struct {
 	spanColor        int32
 	passthroughLines string
 	span             agent.SpanInfo
+	// beforeSessionInfoAdmission controls the cache/admission lock boundary in tests.
+	beforeSessionInfoAdmission func()
 }
 
 // transcriptThread shares only its committed notification reference.
@@ -103,6 +105,16 @@ func (owner *transcriptOwner) PublishSessionInfo(info map[string]interface{}) bo
 		encoded[key] = data
 	}
 	sink := owner.sink
+	if owner.beforeSessionInfoAdmission != nil {
+		owner.beforeSessionInfoAdmission()
+	}
+	// Turn completion and goal publication take activity admission before the session-info cache.
+	// Use the same order so a pending progress update cannot block their completion.
+	owner.activity.mu.Lock()
+	if !owner.currentLocked() {
+		owner.activity.mu.Unlock()
+		return false
+	}
 	sink.sessionInfoMu.Lock()
 	changed := make(map[string]interface{}, len(info))
 	for key, data := range encoded {
@@ -115,12 +127,7 @@ func (owner *transcriptOwner) PublishSessionInfo(info map[string]interface{}) bo
 	event := sessionInfoEvent(sink.agentID, changed)
 	if len(changed) == 0 || event == nil {
 		sink.sessionInfoMu.Unlock()
-		return false
-	}
-	owner.activity.mu.Lock()
-	if !owner.currentLocked() {
 		owner.activity.mu.Unlock()
-		sink.sessionInfoMu.Unlock()
 		return false
 	}
 	if sink.lastSessionInfo == nil {
@@ -134,8 +141,8 @@ func (owner *transcriptOwner) PublishSessionInfo(info map[string]interface{}) bo
 		}
 	}
 	sink.h.watcher.EnqueueAgentEvent(sink.agentID, event)
-	owner.activity.mu.Unlock()
 	sink.sessionInfoMu.Unlock()
+	owner.activity.mu.Unlock()
 	sink.h.watcher.DrainAgentEvents(sink.agentID)
 	return true
 }

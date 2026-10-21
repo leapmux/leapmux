@@ -71,7 +71,7 @@ export function droidCompleteToolCatalog(request: MockModelRequestRecord): Droid
  * `waitForMs` field, but the model-facing schema (`llmInputSchema`) omits it, so a
  * catalog never lists it. A call may still send the field.
  */
-export const DROID_SCRIPT_ARGUMENTS = { script: 'string', inputs: 'object' } as const
+export const DROID_SCRIPT_ARGUMENTS = { script: 'string' } as const
 
 /** Detect execution capability from native descriptions and argument schemas. */
 export function droidScriptExecutors(catalog: readonly NativeToolDescriptor[]): NativeToolDescriptor[] {

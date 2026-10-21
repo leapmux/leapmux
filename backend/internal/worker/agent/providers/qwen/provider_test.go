@@ -18,6 +18,29 @@ import (
 // browser answers under that key.
 const qwenStoredRequestID = "jsonrpc:5"
 
+func TestQwenCompactionDoneIsABoundary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		payload  string
+		boundary bool
+	}{
+		{`{"sessionUpdate":"agent_message_chunk","_meta":{"contextCompression":{"phase":"done"}}}`, true},
+		{`{"sessionUpdate":"agent_message_chunk","_meta":{"contextCompression":{"phase":"progress"}}}`, false},
+		{`{"sessionUpdate":"agent_message_chunk","_meta":{"contextCompression":{"phase":"future"}}}`, false},
+		{`{"sessionUpdate":"agent_thought_chunk","_meta":{"contextCompression":{"phase":"done"}}}`, false},
+		{`{"_meta":{"contextCompression":{"phase":"done"}}}`, false},
+		{`null`, false},
+		{`invalid`, false},
+	} {
+		got := (qwenProvider{}).Classify([]byte(tc.payload))
+		if tc.boundary {
+			assert.Equal(t, agent.CompactionBoundaryNotification(), got, tc.payload)
+		} else {
+			assert.False(t, got.Consolidatable(), tc.payload)
+		}
+	}
+}
+
 // planApprovalPayload is Qwen's plan approval, as the worker stores it.
 const planApprovalPayload = `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s",` +
 	`"options":[{"optionId":"restore_previous","name":"Yes, restore previous mode (default)","kind":"allow_once"},` +
@@ -104,7 +127,7 @@ func TestQwenPlanApprovalReplies(t *testing.T) {
 			id, option := selectedOptionOf(t, result.Content)
 			assert.Equal(t, "5", id, "the reply restores the native id")
 			assert.Equal(t, tc.option, option)
-			assert.Equal(t, tc.feedback, result.Feedback, "Qwen's reply has no reason field, so the reason follows as a message")
+			assert.Equal(t, agent.FeedbackFollowUp(tc.feedback), result.FollowUp, "Qwen's reply has no reason field, so the reason follows as a message")
 			if tc.exit {
 				assert.Equal(t, agent.PlanModeControlExit, result.PlanModeControl)
 			} else {

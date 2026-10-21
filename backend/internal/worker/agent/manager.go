@@ -531,7 +531,8 @@ func deliverProviderInput(p Agent, expected *string, content string, attachments
 // Every route that reaches a provider process calls this, because the provider
 // alone knows which channel its command parser reads. A route that skipped it
 // would leave the CLI holding a goal the card never shows, for the life of the
-// session: no text-route provider reports a command-driven goal change back.
+// session. Kilo needs no observer: it reports its goal through its daemon's
+// native session metadata, so the card follows that report instead.
 func observeGoalCommand(p Agent, delivery GoalCommandDelivery, content string) {
 	if commander, ok := p.(GoalTextCommander); ok {
 		commander.ObserveGoalCommand(delivery, content)
@@ -568,6 +569,45 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	err = steerer.SteerInput(content, attachments)
 	if err == nil {
 		observeGoalCommand(p, GoalDeliverySteer, content)
+	}
+	return err
+}
+
+// SteerPolicy reads the running provider's constant steering declarations.
+func (m *Manager) SteerPolicy(agentID string) SteerPolicy {
+	m.mu.RLock()
+	provider := m.agents[agentID].providerOrNil()
+	m.mu.RUnlock()
+	var policy SteerPolicy
+	if reporter, ok := provider.(SteerEchoReporter); ok {
+		policy.RowAtEcho = reporter.SteerRowAtEcho()
+	}
+	if survivor, ok := provider.(SteerSurvivor); ok {
+		policy.SurvivesTurnEnd = survivor.SteerSurvivesTurnEnd()
+	}
+	return policy
+}
+
+// PrepareSteer lets the provider persist buffered text before a steer row.
+// The provider call runs outside the manager lock. An unknown agent changes nothing.
+func (m *Manager) PrepareSteer(agentID string) {
+	m.mu.RLock()
+	provider := m.agents[agentID].providerOrNil()
+	m.mu.RUnlock()
+	if preparer, ok := provider.(SteerPreparer); ok {
+		preparer.PrepareSteer()
+	}
+}
+
+// SteerInputToSession uses the provider instance and session that the caller validated.
+func SteerInputToSession(provider Agent, sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	steerer, ok := provider.(SessionInputSteerer)
+	if !ok {
+		return ErrSteeringUnsupported
+	}
+	err := steerer.SteerInputForSession(sessionID, content, attachments)
+	if err == nil {
+		observeGoalCommand(provider, GoalDeliverySteer, content)
 	}
 	return err
 }

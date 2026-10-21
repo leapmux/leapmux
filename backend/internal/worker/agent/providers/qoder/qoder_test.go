@@ -109,7 +109,6 @@ func newOfflineAgentWithRuntime(t *testing.T, sink *agenttest.Sink, clock quartz
 		sink:           agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
 		sessionID:      "session-1",
 		permissionMode: "default",
-		pendingControl: make(map[string]chan<- qoderControlResult),
 	}
 	t.Cleanup(func() {
 		cancel()
@@ -145,7 +144,7 @@ func TestQoderRejectsMissingAndReplacedSessions(t *testing.T) {
 func TestQoderTurnFrames(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertTurnFrames(t, []agenttest.TurnFrameCase{
-		{Name: "assistant arms the turn", Line: `{"type":"assistant","session_id":"s","message":{"content":[]}}`, Moves: true},
+		{Name: "assistant starts the turn", Line: `{"type":"assistant","session_id":"s","message":{"content":[]}}`, Moves: true},
 		{Name: "result ends the turn", Line: `{"type":"result","num_tool_uses":0}`, Moves: true},
 		{Name: "system init is inert", Line: `{"type":"system","subtype":"init","session_id":"s"}`, Moves: false},
 		{Name: "stream_event is inert", Line: `{"type":"stream_event"}`, Moves: false},

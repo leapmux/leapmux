@@ -7,6 +7,7 @@ import { qwenControlResponseSummary } from './controlResponse'
 import { qwenExtractControl } from './extractControl'
 import { qwenOutputFilePaths } from './extractors/outputFilePaths'
 import { qwenToolCallAdapter } from './extractors/toolCall'
+import { qwenNativeNotifications } from './notification'
 import { qwenPermissionPresets } from './permissionPresets'
 import { qwenQuestionHandling } from './pluginControls'
 
@@ -24,4 +25,5 @@ registerACPProvider({
   controlResponseDisplay: qwenControlResponseSummary,
   questionHandling: qwenQuestionHandling,
   agentTurnEnd: qwenAgentTurnEnd,
+  nativeNotifications: qwenNativeNotifications,
 })

@@ -13,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type droidCompaction struct {
@@ -50,6 +51,17 @@ func (a *Agent) CompactContext() error {
 		a.finishCompaction(pending, false)
 		return err
 	}
+	a.dispatchMu.Lock()
+	a.Mu.Lock()
+	current := a.compaction == pending
+	a.Mu.Unlock()
+	if current {
+		// The reader can finish compaction during the write. A finished request must not publish a late start.
+		target, _ := a.outputTargetFor(sessionID)
+		providerkit.PublishCompaction(target.sink, "manual")
+		target.state.compactionLive = true
+	}
+	a.dispatchMu.Unlock()
 	go a.awaitCompactionResult(pending)
 	return nil
 }
@@ -70,19 +82,41 @@ func (a *Agent) awaitCompactionResult(pending *droidCompaction) {
 	select {
 	case <-pending.done:
 	case <-a.ProcessDone():
-		a.dispatchMu.Lock()
-		a.finishCompaction(pending, false)
-		a.dispatchMu.Unlock()
+		a.endAbortedCompaction(pending)
 	case <-ctx.Done():
-		a.finishCompactionAfterWait(pending, ctx.Err())
+		select {
+		case <-a.ProcessDone():
+			a.endAbortedCompaction(pending)
+		default:
+			a.finishCompactionAfterWait(pending, ctx.Err())
+		}
 	case <-timer.C:
 		a.finishCompactionAfterWait(pending, context.DeadlineExceeded)
+	}
+}
+
+func endDroidCompaction(target droidOutputTarget) {
+	providerkit.EndCompaction(target.sink)
+	target.state.compactionLive = false
+}
+
+func (a *Agent) endAbortedCompaction(pending *droidCompaction) {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	if !a.finishCompaction(pending, false) {
+		return
+	}
+	target, _ := a.outputTargetFor(pending.sessionID)
+	if target.state.compactionLive {
+		endDroidCompaction(target)
+		providerkit.PersistCompactionEnded(target.sink, providerkit.CompactionEndAborted, "")
 	}
 }
 
 // finishCompactionAfterWait serializes a missing native result with reader frames.
 func (a *Agent) finishCompactionAfterWait(pending *droidCompaction, reason error) {
 	if a.IsStopped() {
+		a.endAbortedCompaction(pending)
 		return
 	}
 	a.dispatchMu.Lock()
@@ -98,7 +132,7 @@ func (a *Agent) finishCompactionAfterWait(pending *droidCompaction, reason error
 	if waitingForCompletion {
 		phase = "completion"
 	}
-	a.reportCompactionFailure(fmt.Errorf("droid compaction %s: %w", phase, reason))
+	a.endFailedCompaction(fmt.Errorf("droid compaction %s: %w", phase, reason))
 	a.finishCompaction(pending, false)
 	a.DiscardOutput()
 	a.dispatchMu.Unlock()
@@ -115,7 +149,7 @@ func (a *Agent) handleCompactionResponse(response droidEnvelope) bool {
 		return false
 	}
 	if response.Error != nil {
-		a.reportCompactionFailure(response.Error)
+		a.endFailedCompaction(response.Error)
 		a.finishCompactionFromReader(pending, false)
 		return true
 	}
@@ -124,7 +158,7 @@ func (a *Agent) handleCompactionResponse(response droidEnvelope) bool {
 		RemovedCount *int64 `json:"removedCount"`
 	}
 	if err := json.Unmarshal(response.Result, &result); err != nil || result.NewSessionID != pending.sessionID || result.RemovedCount == nil || *result.RemovedCount < 0 {
-		a.reportCompactionFailure(errors.New("droid returned an invalid compaction result"))
+		a.endFailedCompaction(errors.New("droid returned an invalid compaction result"))
 		a.finishCompaction(pending, false)
 		a.DiscardOutput()
 		// Stop runs separately because child transcript tails can need dispatchMu.
@@ -172,14 +206,13 @@ func (a *Agent) finishCompactionFromNotification() {
 	}
 }
 
-func (a *Agent) reportCompactionFailure(err error) {
+func (a *Agent) endFailedCompaction(err error) {
 	if a.IsStopped() {
 		return
 	}
-	a.sink.PersistLeapMuxNotification(map[string]any{
-		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-		contracts.NotificationFieldError: err.Error(),
-	})
+	target, _ := a.outputTargetFor("")
+	endDroidCompaction(target)
+	providerkit.PersistCompactionEnded(target.sink, providerkit.CompactionEndFailed, err.Error())
 }
 
 // droidContextStats is Droid's estimated context report after a turn.

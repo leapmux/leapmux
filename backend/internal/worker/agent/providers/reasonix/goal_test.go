@@ -97,10 +97,25 @@ func TestReasonixStatusUpdateReportsUsageAndPhaseChanges(t *testing.T) {
 	// A working phase says what every other surface already says.
 	assert.Empty(t, sink.Notifications())
 
-	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_permission"}}`))
-	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_permission"}}`))
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"paused"}}`))
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"paused"}}`))
 	notifications := sink.Notifications()
 	require.Len(t, notifications, 1, "a restated phase states nothing new")
 	assert.Equal(t, contracts.NotificationTypeAgentStatus, notifications[0]["type"])
-	assert.Equal(t, "Waiting for permission", notifications[0]["text"])
+	assert.Equal(t, "Paused", notifications[0]["text"])
+}
+
+// The permission wait has its own card and waiting_input is the goal card's
+// own state, so neither phase writes a row.
+func TestReasonixPermissionAndInputPhasesStateNothing(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := &Agent{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("session")
+
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_permission"}}`))
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_input"}}`))
+
+	assert.Empty(t, sink.Notifications())
 }

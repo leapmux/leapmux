@@ -1,12 +1,17 @@
 package codex
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -29,6 +34,220 @@ const (
 	codexDecisionAccept           = "accept"
 	codexDecisionAcceptForSession = "acceptForSession"
 )
+
+// Codex's async question words belong to Codex's wire format and only the Go
+// worker reads them, so no contract table carries them.
+const (
+	codexAsyncDelivery = "async"
+	// codexAsyncQuestionTool is the Codex tool whose call id identifies one
+	// async question. The question identity repeats it for Codex's reply.
+	codexAsyncQuestionTool          = "request_user_input_async"
+	codexQuestionReplyTag           = "send_user_message_question_reply"
+	codexAsyncQuestionRequestPrefix = "codex-async-question-"
+	// codexQuestionReplyMaxBytes is the byte limit that Codex applies to a
+	// question identity and to a question title in a reply, and that its own
+	// question UI applies to an option.
+	codexQuestionReplyMaxBytes   = 512
+	codexAsyncQuestionMaxOptions = 32
+)
+
+// publishAsyncQuestions publishes the questions of an async agent message as
+// non-blocking control requests. Codex accepts the tool call at once, so the
+// turn continues and the user answers each question later. One request per
+// question: Codex's own identity is per question, and the user skips one
+// question at a time.
+func (a *Agent) publishAsyncQuestions(sink agent.ProviderServices, event codexItemEvent) {
+	if event.delivery != codexAsyncDelivery {
+		return
+	}
+	var message struct {
+		Questions []struct {
+			Title   string   `json:"title"`
+			Options []string `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(event.item, &message); err != nil {
+		return
+	}
+	for index, question := range message.Questions {
+		if strings.TrimSpace(question.Title) == "" {
+			continue
+		}
+		questionItemID, err := encodeCodexQuestionItemID(event.itemID, index)
+		if err != nil {
+			slog.Error("codex encode async question identity", "agent_id", a.AgentID(), "item_id", event.itemID, "error", err)
+			continue
+		}
+		input := contracts.CodexAsyncQuestionInput{
+			QuestionItemID: questionItemID,
+			Title:          question.Title,
+			Options:        codexAsyncQuestionOptions(question.Options),
+		}
+		requestID := codexAsyncQuestionRequestPrefix + event.itemID + "-" + strconv.Itoa(index)
+		payload, err := json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": requestID,
+			"request": map[string]any{
+				"tool_name": contracts.CodexControlToolAsyncQuestion,
+				"input":     input,
+			},
+		})
+		if err != nil {
+			slog.Error("codex marshal async question", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
+			continue
+		}
+		// The native identity remains the same after a restart or a repeated event.
+		identity, _ := json.Marshal([]any{event.threadID, event.itemID, index})
+		instanceID := fmt.Sprintf("%x", sha256.Sum256(identity))
+		if err := sink.PublishControlRequest(agent.ControlRequest{
+			AgentSessionID: event.threadID, RequestID: requestID, InstanceID: instanceID,
+			Payload: payload, NonBlocking: true,
+		}); err != nil {
+			slog.Error("codex publish async question", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
+		}
+	}
+}
+
+// codexAsyncQuestionOptions keeps the options that Codex's own question UI
+// shows: the first 32 non-blank entries of at most 512 bytes, in order.
+func codexAsyncQuestionOptions(options []string) []string {
+	var kept []string
+	for _, option := range options {
+		if strings.TrimSpace(option) == "" || len(option) > codexQuestionReplyMaxBytes {
+			continue
+		}
+		kept = append(kept, option)
+		if len(kept) == codexAsyncQuestionMaxOptions {
+			break
+		}
+	}
+	return kept
+}
+
+// encodeCodexQuestionItemID builds the identity that Codex's reply carries for
+// one question: the compact JSON the browser's own JSON.stringify produces.
+func encodeCodexQuestionItemID(itemID string, index int) (string, error) {
+	encoded, err := encodeCodexJSON([]any{codexAsyncQuestionTool, itemID, index})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+// encodeCodexJSON encodes like the browser's JSON.stringify. Go's encoder
+// escapes <, > and & by default, and the browser's does not.
+func encodeCodexJSON(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	encoded := bytes.TrimRight(buffer.Bytes(), "\n")
+	output := encoded[:0]
+	for index := 0; index < len(encoded); {
+		if encoded[index] != '\\' || index+1 == len(encoded) {
+			output = append(output, encoded[index])
+			index++
+			continue
+		}
+		// JSON.stringify retains these separators. Escaped backslashes stay unchanged.
+		if index+6 <= len(encoded) && bytes.Equal(encoded[index:index+5], []byte(`\u202`)) && (encoded[index+5] == '8' || encoded[index+5] == '9') {
+			output = append(output, 0xe2, 0x80, 0xa8+encoded[index+5]-'8')
+			index += 6
+			continue
+		}
+		output = append(output, encoded[index:index+2]...)
+		index += 2
+	}
+	return output, nil
+}
+
+// resolveCodexAsyncQuestionResponse reads the neutral answer to one async
+// question. An allow with an answer queues the question answer. A deny skips
+// the question: Codex keeps no pending question state, so a skip sends nothing.
+func resolveCodexAsyncQuestionResponse(res agent.ControlResponseResolution, content []byte) agent.ControlResponseResolution {
+	var envelope struct {
+		Response struct {
+			Response struct {
+				Behavior string `json:"behavior"`
+				Answer   string `json:"answer"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		res.Refuse(agent.RefusalUnreadableAnswer)
+		return res
+	}
+	answer := strings.TrimSpace(envelope.Response.Response.Answer)
+	switch strings.TrimSpace(envelope.Response.Response.Behavior) {
+	case agent.ControlBehaviorAllow:
+		if answer == "" {
+			res.Refuse(agent.RefusalUnreadableAnswer)
+			return res
+		}
+		res.LeapMuxOwned = true
+		res.FollowUp = agent.QuestionAnswerFollowUp(answer)
+	case agent.ControlBehaviorDeny:
+		res.LeapMuxOwned = true
+	default:
+		res.Refuse(agent.RefusalUnreadableAnswer)
+	}
+	return res
+}
+
+// QuestionReply builds the native input for the user's answer
+// to one async question. The input is Codex's own reply envelope when the
+// question identity fits it, else a plain quote-and-answer message that the
+// model reads as the user's next words.
+func (codexProvider) QuestionReply(requestPayload json.RawMessage, answer string) (string, error) {
+	var body struct {
+		Request struct {
+			Input contracts.CodexAsyncQuestionInput `json:"input"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(requestPayload, &body); err != nil {
+		return "", fmt.Errorf("read the async question request: %w", err)
+	}
+	input := body.Request.Input
+	if strings.TrimSpace(input.QuestionItemID) == "" {
+		return "", errors.New("the async question has no identity")
+	}
+	if strings.TrimSpace(input.Title) == "" {
+		return "", errors.New("the async question has no title")
+	}
+	question := codexQuestionLine(input.Title)
+	if len(input.QuestionItemID) > codexQuestionReplyMaxBytes {
+		return "> " + question + "\n\n" + answer, nil
+	}
+	// The entry keys come in this order to match Codex's answered-question
+	// fragment; a struct keeps the order stable.
+	entry := struct {
+		Answer         string `json:"answer"`
+		Question       string `json:"question"`
+		QuestionItemID string `json:"questionItemId"`
+	}{Answer: answer, Question: question, QuestionItemID: input.QuestionItemID}
+	encoded, err := encodeCodexJSON([]any{entry})
+	if err != nil {
+		return "", fmt.Errorf("encode the question reply: %w", err)
+	}
+	return "<" + codexQuestionReplyTag + ">\n" + string(encoded) + "\n</" + codexQuestionReplyTag + ">", nil
+}
+
+// codexQuestionLine narrows the title to the one-line form a reply carries:
+// line breaks become spaces, and the text cuts at a rune boundary at or below
+// codexQuestionReplyMaxBytes.
+func codexQuestionLine(title string) string {
+	line := strings.NewReplacer("\n", " ", "\r", " ").Replace(title)
+	if len(line) <= codexQuestionReplyMaxBytes {
+		return line
+	}
+	cut := codexQuestionReplyMaxBytes
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	return line[:cut]
+}
 
 // codexStandingApprovalAnswer returns the result that the bypass preset sends for a
 // permission request. ok is false for a request that only the user can answer: a
@@ -527,7 +746,7 @@ func codexGuardianAction(raw json.RawMessage) (codexGuardianActionValue, error) 
 // never both, so the legacy roots win when the request states them: Codex fills both
 // forms from legacy roots.
 func codexGuardianFileSystemPermissions(raw json.RawMessage) (codexGuardianFileSystem, error) {
-	if isJSONNullOrAbsent(raw) {
+	if !providerkit.RawPresent(raw) {
 		return nil, nil
 	}
 	var permissions struct {
@@ -564,11 +783,6 @@ func mappedSpelling(table map[string]string, value, what string) (string, error)
 		return mapped, nil
 	}
 	return "", fmt.Errorf("codex auto-review %s %q has no core spelling", what, value)
-}
-
-func isJSONNullOrAbsent(raw json.RawMessage) bool {
-	trimmed := strings.TrimSpace(string(raw))
-	return trimmed == "" || trimmed == "null"
 }
 
 // codexFileURI converts an absolute path into a file URI. A value that is already a

@@ -19,34 +19,36 @@ type Agent struct {
 	sink agent.ProviderServices
 	opts agent.Options
 
-	mu                   sync.Mutex
-	sessionID            string
-	model                string
-	models               []qoderModel
-	configuredModelsOnce sync.Once
-	configuredModels     []qoderModel
-	permissionMode       string
-	planMode             bool
-	effort               string
-	active               bool
-	turnOrder            providerkit.TurnSeq
-	activityRev          uint64
-	capabilities         []string
-	childStreamMu        sync.Mutex
-	childStreams         map[string]*qoderChildStream
-	workflows            map[qoderWorkflowKey]*qoderWorkflowRun
-	archiveMu            sync.Mutex
-	archiveJobs          map[qoderWorkflowKey]*qoderArchiveJob
-	archiveStopped       bool
-	archiveRetries       sync.WaitGroup
+	mu                       sync.Mutex
+	sessionID                string
+	model                    string
+	models                   []qoderModel
+	modelsReported           bool
+	configuredModelsOnce     sync.Once
+	configuredModels         []qoderModel
+	permissionMode           string
+	planMode                 bool
+	effort                   string
+	active                   bool
+	turnOrder                providerkit.TurnSeq
+	activityRev              uint64
+	capabilities             []string
+	childStreamMu            sync.Mutex
+	childStreams             map[string]*qoderChildStream
+	rootStreamKinds          map[int]string // Native block kinds for live progress, under mu.
+	storedInstructionWarning bool
+	notifications            map[string]*qoderNotificationState // The empty key identifies the root transcript. Guarded by mu.
+	workflows                map[qoderWorkflowKey]*qoderWorkflowRun
+	archiveMu                sync.Mutex
+	archiveJobs              map[qoderWorkflowKey]*qoderArchiveJob
+	archiveStopped           bool
+	archiveRetries           sync.WaitGroup
 
-	// interruptRequested records that the user stopped the RUNNING turn. The
-	// `result` that ends that turn spends the note, and a turn end without a
-	// `result` drops it. Guarded by mu. See noteInterruptRequested.
+	// interruptRequested records the user's stop for the active turn, under mu.
+	// Its result consumes the flag. A turn end without a result clears it also.
 	interruptRequested bool
 
-	pendingControlMu sync.Mutex
-	pendingControl   map[string]chan<- qoderControlResult
+	controls providerkit.Correlator[string]
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -73,10 +75,10 @@ func (a *Agent) setTurnActive(active bool) {
 	a.mu.Lock()
 	a.active = active
 	if !active {
-		// The note belongs to the turn that ends now. A turn can end without a
-		// `result` that spends the note: a stop, a process exit, or a failed
-		// send. An interrupt can also arrive after handleResult read the note.
-		// The next turn must not inherit the note in any of these cases.
+		// Clear the stop flag when a turn ends without a result.
+		// A stop, process exit, or failed send can cause that end.
+		// An interrupt can also arrive after handleResult reads the flag.
+		// The next turn must not inherit the flag in any of these cases.
 		a.interruptRequested = false
 	}
 	a.activityRev++
@@ -132,7 +134,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 // marshalUserFrame encodes one stream-json user frame that carries content.
 func marshalUserFrame(content any) ([]byte, error) {
 	return json.Marshal(UserInputMessage{
-		Type:    MessageTypeUser,
+		Type:    contracts.QoderFrameKindUser,
 		Message: UserInputContent{Role: "user", Content: content},
 	})
 }
@@ -140,7 +142,7 @@ func marshalUserFrame(content any) ([]byte, error) {
 // qoderUserContent builds the content of one stream-json user frame. A prompt
 // without attachments stays a plain string.
 //
-// Qoder reads the LAST content block as the prompt text, and only when that
+// Qoder reads the last content block as the prompt text, and only when that
 // block is a text block. Qoder runs its per-prompt work on that text alone:
 //
 //   - The @-mention reads.
@@ -185,15 +187,12 @@ func qoderUserContent(content string, attachments []*leapmuxv1.Attachment) (any,
 	return append(blocks, qoderTextBlock{Type: "text", Text: content}), nil
 }
 
-// SupportsSteering reports true when the runtime advertises steering. Qoder
-// carries a modelSteering setting and a user-steering injection, so the
-// capability is always offered once the process is up.
+// SupportsSteering reports Qoder's native input support during an active turn.
+// The runtime accepts these user frames without capability discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-// SteerInput sends one user frame during the RUNNING turn. The frame carries
-// the same content as a new prompt, attachments included. Qoder queues a user
-// frame that arrives during a turn with its content unchanged, and reads that
-// content again when the queued prompt starts a turn of its own.
+// SteerInput sends one user frame during the active turn, with its attachments.
+// Qoder keeps queued content unchanged and reads it when the queued prompt starts its own turn.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	if a.IsStopped() {
 		return fmt.Errorf("the Qoder process is stopped")
@@ -230,10 +229,9 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if err != nil {
 		return err
 	}
-	// Take the note BEFORE the request goes out. Qoder writes the `result` of
-	// the aborted turn as soon as it reads the request, and the reader goroutine
-	// spends the note on that `result`. A note taken after the send can lose
-	// that race, and the turn then reads as the failure that its subtype states.
+	// Record the stop before the send. Qoder can return the aborted result as soon as it reads the request.
+	// The reader consumes the flag for that result.
+	// A flag set after the send could arrive too late and leave the turn marked as failed.
 	a.noteInterruptRequested()
 	if err := a.sendControlFire(string(body)); err != nil {
 		// The request never reached Qoder, so no `result` answers it.
@@ -243,17 +241,16 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	return nil
 }
 
-// noteInterruptRequested records that the USER stopped the running turn, so
-// the `result` that ends it carries LeapMux's own completion.
+// noteInterruptRequested records the user's stop so the native result carries an interrupted completion.
 //
 // qodercli 1.1.65 reports an aborted turn as `subtype: error_during_execution`
 // with `is_error: true` and `errors: ["Operation aborted"]`. It uses the same
 // subtype and flag for a genuine failure, so the frame alone cannot tell the
 // two apart. LeapMux can, because LeapMux sent the stop.
 //
-// The note is taken only while a turn runs. Qoder acknowledges an interrupt
-// that arrives outside a turn and sends no `result` for it. A note taken there
-// would wait and then mislabel the outcome of the NEXT turn.
+// Record the flag only while a turn runs.
+// Qoder acknowledges an interrupt outside a turn but sends no result for it.
+// A flag set there would incorrectly mark the next turn as interrupted.
 func (a *Agent) noteInterruptRequested() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -262,8 +259,7 @@ func (a *Agent) noteInterruptRequested() {
 	}
 }
 
-// takeInterruptRequest reports whether the user stopped the turn that ends now,
-// and clears the note. One `result` ends one turn, so that `result` spends it.
+// takeInterruptRequest reads and clears the user's stop flag for the turn that ends now.
 func (a *Agent) takeInterruptRequest() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

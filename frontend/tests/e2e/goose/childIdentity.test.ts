@@ -28,27 +28,37 @@ describe('gooseChildTaskMatcher', () => {
 
 const encoder = new TextEncoder()
 const prompt = 'ACTUAL_CHILD_TASK\n\nLEAPMUXE2ESCENARIO:current-task'
+const childSession = 'native-child-session'
 function event(id = 'spawn', instructions = prompt) {
   return { sessionUpdate: 'tool_call', toolCallId: id, title: 'delegate', rawInput: { instructions }, _meta: { goose: { toolCall: { toolName: 'delegate', extensionName: 'summon' } } } }
+}
+/** The ack that completes the delegate call before the child runs. */
+function ack(id = 'spawn', session = childSession) {
+  return { sessionUpdate: 'tool_call_update', toolCallId: id, content: [{ content: { type: 'text', text: `Delegated to subagent ${session}` } }] }
 }
 
 describe('gooseChildTaskId', () => {
   it('uses the actual delegate call and prompt independently of its display title', () => {
-    expect(gooseChildTaskId(nativeFrameSnapshot(event('other'), { ...event(), title: 'Another native label' }), 'spawn', prompt)).toBe('spawn')
+    expect(gooseChildTaskId(nativeFrameSnapshot(event('other'), { ...event(), title: 'Another native label' }, ack()), 'spawn', prompt)).toBe(childSession)
   })
 
   it.each(['', ' '])('refuses an invalid native session before decoding a matching delegate frame: "%s"', (session) => {
-    const source = nativeFrameSnapshot(event())
+    const source = nativeFrameSnapshot(event(), ack())
     source.agentSessionId = session
-    const message = onlyNativeMessage(source)
-    message.agentSessionId = session
+    for (const message of source.messages)
+      message.agentSessionId = session
     expect(() => gooseChildTaskId(source, 'spawn', prompt)).toThrow('nonempty session ID')
-    message.content = encoder.encode('{broken')
+    source.messages[0]!.content = encoder.encode('{broken')
     expect(() => gooseChildTaskId(source, 'spawn', prompt)).toThrow('nonempty session ID')
   })
 
   it('retains repeated native receipts with the same identity and prompt', () => {
-    expect(gooseChildTaskId(nativeFrameSnapshot(event(), event()), 'spawn', prompt)).toBe('spawn')
+    expect(gooseChildTaskId(nativeFrameSnapshot(event(), event(), ack()), 'spawn', prompt)).toBe(childSession)
+  })
+
+  it('reads the session id only from the ack of the delegate call', () => {
+    expect(gooseChildTaskId(nativeFrameSnapshot(event(), ack('other'), ack()), 'spawn', prompt)).toBe(childSession)
+    expect(() => gooseChildTaskId(nativeFrameSnapshot(event()), 'spawn', prompt)).toThrow('no subagent session id')
   })
 
   it('refuses absent calls, stale sessions, and another exact task prompt', () => {

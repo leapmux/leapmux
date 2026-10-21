@@ -39,6 +39,78 @@ func spawnAZCodeSubagent(t *testing.T) (*Agent, *agenttest.ControlSink) {
 	return a, sink
 }
 
+func TestZCodeSubagentAutomaticDenialPersistsInTheChildTranscript(t *testing.T) {
+	t.Parallel()
+	a, sink := spawnAZCodeSubagent(t)
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventPermissionResolved,
+		`{"requestId":"automatic","toolCallId":"sub-1","toolName":"Bash","decision":"deny","reason":"Plan mode"}`))
+	assert.Zero(t, sink.NotificationCount())
+	child := sink.Child(sink.ChildAgentIDs()[0])
+	require.Len(t, child.PersistedNotifications(), 1)
+	assert.Contains(t, string(child.PersistedNotifications()[0].Content), "Plan mode")
+}
+
+func TestZCodeSubagentDenialAfterTheCallEndedUsesTheChildSession(t *testing.T) {
+	t.Parallel()
+	a, sink := spawnAZCodeSubagent(t)
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSubagentResult))
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventPermissionResolved,
+		`{"requestId":"automatic","toolCallId":"sub-1","childSessionId":"sess_subagent_agent-1","toolName":"Bash","decision":"deny","reason":"Plan mode"}`))
+	assert.Zero(t, sink.NotificationCount())
+	child := sink.Child(sink.ChildAgentIDs()[0])
+	require.Len(t, child.PersistedNotifications(), 1)
+}
+
+func TestZCodeDenialOfAnUnknownChildStaysInTheRoot(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventPermissionResolved,
+		`{"requestId":"automatic","toolCallId":"unknown-call","childSessionId":"unknown-session","toolName":"Bash","decision":"deny","reason":"Plan mode"}`))
+	assert.Len(t, sink.PersistedNotifications(), 1)
+	assert.Empty(t, sink.ChildAgentIDs())
+}
+
+func TestZCodeBackgroundChildDenialUsesTheChildSession(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"task-1","toolCallId":"spawn-1","taskKind":"subagent","childSessionId":"child-session","status":"running"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventPermissionResolved,
+		`{"requestId":"automatic","childSessionId":"child-session","toolName":"Bash","decision":"deny","reason":"Plan mode"}`))
+	assert.Zero(t, sink.NotificationCount())
+	require.Len(t, sink.ChildAgentIDs(), 1)
+	assert.Len(t, sink.Child(sink.ChildAgentIDs()[0]).PersistedNotifications(), 1)
+}
+
+func TestZCodeChildSessionRoutesEndWithTheirSpawn(t *testing.T) {
+	t.Parallel()
+	var index zcodeChildIndex
+	index.rememberChild("first", "call-1", "child-1")
+	index.rememberSession("first", "session-1")
+	index.rememberChild("second", "call-2", "child-2")
+	index.rememberSession("second", "session-2")
+	index.rememberSession("second", "session-1")
+	index.takeChild("first")
+	child, ok := index.sessionChild("session-1")
+	assert.True(t, ok)
+	assert.Equal(t, "child-2", child, "the new owner keeps a reused session route")
+	index.takeChild("second")
+	_, ok = index.sessionChild("session-1")
+	assert.False(t, ok)
+	assert.Empty(t, index.sessionSpawns)
+	index.rememberChild("third", "call-3", "child-3")
+	index.rememberSession("third", "session-3")
+	index.clear()
+	_, ok = index.sessionChild("session-3")
+	assert.False(t, ok)
+	assert.Empty(t, index.sessionSpawns)
+	index.rememberSession("", "session-4")
+	index.rememberSession("fourth", "")
+	assert.Empty(t, index.sessionSpawns)
+}
+
 func TestZCodeSubagent_ToolCallsLandInTheChildTranscript(t *testing.T) {
 	t.Parallel()
 

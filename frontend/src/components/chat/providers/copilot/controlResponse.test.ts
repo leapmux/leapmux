@@ -21,6 +21,28 @@ function answered(kind: string): Record<string, unknown> {
 }
 
 describe('copilotControlResponseSummary', () => {
+  it.each([['allow', 'Allow'], ['deny', 'Deny']])('reads the sampling %s decision', (decision, text) => {
+    expect(copilotControlResponseSummary({
+      claimToken: 'claim',
+      requestId: 'sample',
+      request: { method: 'session.event', params: { event: { type: 'sampling.requested', data: {} } } },
+      response: { response: { response: { decision } } },
+    })).toEqual({ kind: 'label', text })
+  })
+
+  it.each([
+    ['yes', 'Switched to Auto for this turn'],
+    ['yes_always', 'Switched to Auto from now on'],
+    ['no', 'Declined the switch to Auto'],
+  ])('summarizes a saved %s answer', (answer, text) => {
+    expect(copilotControlResponseSummary({
+      claimToken: 'claim',
+      requestId: 'switch',
+      request: { method: 'session.event', params: { event: { type: 'auto_mode_switch.requested', data: {} } } },
+      response: { response: { response: answer } },
+    })).toEqual({ kind: 'label', text })
+  })
+
   // The saved row states the option that the decision selected, in the words of that
   // option, exactly as the Agent Client Protocol providers do. Before this, Copilot
   // alone spoke in the past tense ("Allowed once") and the same decision read two ways

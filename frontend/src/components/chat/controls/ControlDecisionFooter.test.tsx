@@ -18,9 +18,10 @@ describe('ControlDecisionFooter', () => {
         positiveAction={{ label: 'Allow', testId: 'allow', onSelect: select, disabled: disabled() }}
         negativeAction={{ label: 'Deny', testId: 'deny', onSelect: select, disabled: disabled() }}
         additionalActions={() => [{ label: 'Cancel', testId: 'cancel', onSelect: select, disabled: disabled() }]}
+        independentActions={() => [{ label: 'Choose', testId: 'choose', onSelect: select, disabled: disabled() }]}
       />
     ))
-    for (const id of ['allow', 'deny']) {
+    for (const id of ['allow', 'deny', 'choose']) {
       expect(screen.getByTestId(id)).toBeDisabled()
       screen.getByTestId(id).click()
     }
@@ -35,6 +36,9 @@ describe('ControlDecisionFooter', () => {
     expect(select).toHaveBeenCalledOnce()
     expect(screen.getByTestId('allow')).toBeEnabled()
     expect(screen.getByTestId('deny')).toBeEnabled()
+    expect(screen.getByTestId('choose')).toBeEnabled()
+    screen.getByTestId('choose').click()
+    expect(select).toHaveBeenCalledTimes(2)
   })
 
   it('keeps additional decisions in an accessible menu', () => {

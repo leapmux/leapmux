@@ -1,7 +1,6 @@
 package pi
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type piGoalSync struct {
@@ -39,8 +39,9 @@ type piGoalSync struct {
 const (
 	// Pi can write the transcript or focused goal after the first read.
 	// These defaults allow about five seconds for either source.
-	piGoalRetryDelay = 250 * time.Millisecond
-	piGoalRetryLimit = 20
+	piGoalRetryDelay     = 250 * time.Millisecond
+	piGoalSourceTimerTag = "pi-goal-source"
+	piGoalRetryLimit     = 20
 	// Native get_entries has no page limit. Refuse large in-memory histories before requesting it.
 	// The existing stdout scanner still enforces the response byte limit.
 	piGoalMemoryMessageLimit = 32
@@ -113,13 +114,13 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 	// Wait for the reply on a separate goroutine.
 	// The output reader must remain free to route the answer.
 	// The caller must not hold an RPC open while the user decides.
-	if err := a.sendPiCommandDetached(CommandPrompt, map[string]any{"message": message}, func(err error) {
+	if err := a.sendPiCommandDetached(CommandPrompt, map[string]any{"message": message}, func(_ json.RawMessage, err error) {
 		if activation {
 			a.finishPiGoalActivation(activationSession)
 		}
 		if err != nil && !a.IsStopped() {
 			slog.Error("pi goal command failed", "agent_id", a.AgentID(), "command", command, "error", err)
-			a.sink.PersistLeapMuxNotification(map[string]any{
+			a.orderedSink().PersistLeapMuxNotification(map[string]any{
 				contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
 				contracts.NotificationFieldError: err.Error(),
 			})
@@ -245,7 +246,7 @@ func (a *Agent) runPiGoalRefresh() {
 // waitForPiGoalSource waits between reads until the transcript or focused goal appears.
 // A canceled context ends the wait early.
 func (a *Agent) waitForPiGoalSource(delay time.Duration) {
-	timer := time.NewTimer(delay)
+	timer := a.Clock().NewTimer(delay, piGoalSourceTimerTag)
 	defer timer.Stop()
 	select {
 	case <-a.Context().Done():
@@ -285,7 +286,7 @@ func (a *Agent) readPiGoalSnapshot(path, directory, sessionID string) (*piGoalRe
 		return nil, errors.New("the Pi session response has no branch data")
 	}
 	var leafID string
-	if !bytes.Equal(bytes.TrimSpace(response.LeafID), []byte("null")) {
+	if providerkit.RawKindOf(response.LeafID) != providerkit.RawNull {
 		if err := json.Unmarshal(response.LeafID, &leafID); err != nil {
 			return nil, err
 		}

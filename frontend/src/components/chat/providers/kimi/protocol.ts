@@ -2,14 +2,10 @@ import { KIMI_EVENT } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
- * Kimi Code vocabulary that only the frontend reads, and the one reader of a
- * persisted event row.
- *
- * The worker persists every event of the kap-server VERBATIM: a row is the event
- * payload itself, whose `type` is the event type and whose `agentId` states the agent
- * of the session that produced it. A row the worker builds itself -- the assembled
- * text and thinking, a user message, LeapMux's own notices -- carries no Kimi event
- * type, which is how every reader here tells the two apart.
+ * Kimi vocabulary for the frontend and the common reader for stored native events.
+ * The Worker stores selected native payloads and unknown session events.
+ * It removes repeated global warnings and recreates profile warnings in their native event shape.
+ * Each native event states its type and agentId. Worker-owned rows carry no Kimi event type.
  *
  * Vocabulary that Go and TypeScript both read lives in contracts/kimi-protocol.json.
  */

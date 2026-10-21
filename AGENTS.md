@@ -127,8 +127,10 @@ message or RPC) if it has no enum yet.
 
 - **CHECK the range, starting at 1.** Proto3 fixes UNSPECIFIED at 0 and an unset
   Go field holds 0, so a forgotten write fails instead of storing a value nobody
-  chose. Sole exception: `agents.goal_status`, where 0 means "no goal", as its
-  column states.
+  chose. Two exceptions, each with its reason at the column: `agents.goal_status`,
+  where 0 means "no goal", and `control_response_payloads.follow_up_kind`, where 0
+  means "no follow-up input" and a CHECK ties 0 to an empty `follow_up`, so a
+  forgotten kind write still fails.
 - **Admit less than the enum declares** for a derived value or one another table
   owns — `AGENT_GOAL_STATUS_DORMANT` and the two `ControlResponseState` values
   for a request with no answer row, each with its reason at the column.

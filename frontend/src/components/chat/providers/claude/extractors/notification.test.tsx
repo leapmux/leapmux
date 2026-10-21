@@ -298,10 +298,10 @@ describe('claudeNotificationEntry', () => {
 
   it('reads a failing hook_response and omits a missing exit code', () => {
     expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: 'boom', exit_code: 2, outcome: 'error' }))
-      .toEqual([{ kind: 'text', text: 'Hook SessionStart (setup.sh) failed (exit 2)' }])
+      .toEqual([{ kind: 'hook', outcome: 'failed', event: 'SessionStart', name: 'setup.sh', exitCode: 2 }])
     // `exit_code` is optional on the wire.
     expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: 'boom', outcome: 'error' }))
-      .toEqual([{ kind: 'text', text: 'Hook SessionStart (setup.sh) failed' }])
+      .toEqual([{ kind: 'hook', outcome: 'failed', event: 'SessionStart', name: 'setup.sh' }])
     expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: '', exit_code: 0, outcome: 'success' }))
       .toEqual([])
     expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'cancelled' }))
@@ -311,11 +311,11 @@ describe('claudeNotificationEntry', () => {
   it('reads a failing hook_response that states no event or no name', () => {
     // The row never shows an empty pair of brackets or a double space.
     expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_event: 'SessionStart', outcome: 'error', exit_code: 1 }))
-      .toEqual([{ kind: 'text', text: 'Hook SessionStart failed (exit 1)' }])
+      .toEqual([{ kind: 'hook', outcome: 'failed', event: 'SessionStart', exitCode: 1 }])
     expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', outcome: 'error' }))
-      .toEqual([{ kind: 'text', text: 'Hook (setup.sh) failed' }])
+      .toEqual([{ kind: 'hook', outcome: 'failed', name: 'setup.sh' }])
     expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', outcome: 'error' }))
-      .toEqual([{ kind: 'text', text: 'Hook failed' }])
+      .toEqual([{ kind: 'hook', outcome: 'failed' }])
   })
 
   it('reads ui_log and ui_toast frames', () => {
@@ -342,14 +342,6 @@ describe('claudeNotificationEntry', () => {
       .toEqual([{ kind: 'retry', scope: 'api' }])
   })
 
-  // `/clear`, and the plan exit that starts a fresh conversation. The worker
-  // rewrites it into the neutral `context_cleared` type; a transcript recorded
-  // before that still carries the frame.
-  it('reads a conversation_reset frame as the context-cleared row', () => {
-    expect(claudeNotificationEntry({ type: 'conversation_reset', new_conversation_id: 'conv-2' }))
-      .toEqual([{ kind: 'context-cleared' }])
-  })
-
   it('reads a permission_denied frame with and without its tool and reason', () => {
     expect(claudeNotificationEntry({ type: 'system', subtype: 'permission_denied', tool_name: 'Bash', decision_reason: 'the command removes a directory' }))
       .toEqual([{ kind: 'text', text: 'Permission denied: Bash - the command removes a directory' }])
@@ -359,13 +351,26 @@ describe('claudeNotificationEntry', () => {
       .toEqual([{ kind: 'text', text: 'Permission denied' }])
   })
 
-  it('reads an api_error frame and falls back to its bare words', () => {
-    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_error', error: 'overloaded' }))
-      .toEqual([{ kind: 'text', text: 'API error: overloaded' }])
-    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_error', message: 'boom' }))
-      .toEqual([{ kind: 'text', text: 'API error: boom' }])
-    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_error' }))
-      .toEqual([{ kind: 'text', text: 'API error' }])
+  it('reads a failed final status as a failed compaction with its error', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'status', status: null, compact_result: 'failed', compact_error: 'too_few_groups' }))
+      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'too_few_groups' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'status', compact_result: 'failed' }))
+      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed' }])
+  })
+
+  it('reads no entry for a compacting status', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'status', status: 'compacting' })).toEqual([])
+  })
+
+  it('validates retry counters through the neutral constructor', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_retry', attempt: -1, max_retries: 1.5, retry_delay_ms: 0.5, error: '  temporary error  ' }))
+      .toEqual([{ kind: 'retry', scope: 'api', delayMs: 0.5, error: 'temporary error' }])
+  })
+
+  it('reads the stop-hook-error notification as a failed Stop hook', () => {
+    const frame = { type: 'system', subtype: 'notification', key: 'stop-hook-error', text: 'Stop hook error occurred · ctrl+o to see' }
+    expect(claudeNotificationEntry(frame)).toEqual([{ kind: 'hook', outcome: 'failed', event: 'Stop' }])
+    expect(elementText(renderThreadElement([frame], AgentProvider.CLAUDE_CODE))).toBe('Hook Stop failed')
   })
 
   // A frame that carries no words gets no entry: an empty notification is worse
@@ -392,8 +397,6 @@ describe('claudeReadsSystemSubtype', () => {
   it('knows each subtype that draws its own words', () => {
     for (const subtype of [
       ...Object.values(CLAUDE_SYSTEM_SUBTYPE),
-      'api_error',
-      'notification',
       'memory_recall',
       'ui_log',
       'ui_toast',
@@ -403,10 +406,9 @@ describe('claudeReadsSystemSubtype', () => {
     }
   })
 
-  it('does not know an unknown subtype, the status subtype, or a key of the object prototype', () => {
-    // `status` has words only at `compacting`, so another value of it must keep
-    // the no-display card. A prototype key off the wire must not read as known.
-    for (const subtype of ['some_future_event', '', 'status', 'toString', 'constructor', '__proto__'])
+  it('does not know an unknown subtype or a key of the object prototype', () => {
+    // A prototype key from the wire must not select an inherited property.
+    for (const subtype of ['some_future_event', '', 'api_error', 'toString', 'constructor', '__proto__'])
       expect(claudeReadsSystemSubtype(subtype), subtype).toBe(false)
   })
 

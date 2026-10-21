@@ -35,14 +35,25 @@ type codewhaleProvider struct {
 // runtime works through one turn, so a thread of them shows the latest.
 func (codewhaleProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	env, ok := parseEnvelope(raw)
-	if !ok || env.Event != contracts.CodewhaleEventItemCompleted {
+	if !ok {
+		return agent.NotificationClassification{}
+	}
+	switch env.Event {
+	case contracts.CodewhaleEventItemCompleted, contracts.CodewhaleEventItemFailed, contracts.CodewhaleEventItemInterrupted, contracts.CodewhaleEventItemCanceled:
+	default:
 		return agent.NotificationClassification{}
 	}
 	var payload itemEventPayload
-	if json.Unmarshal(env.Payload, &payload) != nil || payload.Item.Kind != contracts.CodewhaleItemKindStatus {
+	if json.Unmarshal(env.Payload, &payload) != nil {
 		return agent.NotificationClassification{}
 	}
-	return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: codewhaleProviderName + ":status"}
+	if payload.Item.Kind == contracts.CodewhaleItemKindContextCompaction {
+		return agent.CompactionBoundaryNotification()
+	}
+	if payload.Item.Kind == contracts.CodewhaleItemKindStatus {
+		return agent.ProviderScopedNotification("codewhale:status")
+	}
+	return agent.NotificationClassification{}
 }
 
 // IsInterrupt recognizes the interrupt frame that SendRawInput runs. The
@@ -103,6 +114,6 @@ func (codewhaleProvider) ResolveControlResponse(ctx agent.ControlResponseContext
 		return res
 	}
 	res.Content = encoded
-	res.Feedback = feedback
+	res.FollowUp = agent.FeedbackFollowUp(feedback)
 	return res
 }

@@ -1,5 +1,5 @@
 {
-  "_readme": "This contract is the single source of truth for worker wire vocabulary. It defines persisted notification types, the notification-thread discriminator, shared Codex rate-limit tokens, and model sentinels. The generator emits the Go NotificationType constants and the TypeScript NOTIFICATION_TYPE table. workerWrittenNotificationTypes lists notifications that only the Worker writes. The browser uses this list to identify standalone rows. Move a type between regimes only by editing this contract. Add a notification type here, then run task generate. Both dispatch switches then compile against the generated value. GoalUpdated and GoalCleared are worker-written by design. Each provider that reports a goal uses its own wire shape. The Worker normalizes each shape into one neutral row, so the browser keeps one goal renderer. goalStatusTokens and goalTransitions define separate payload vocabularies. goal_status stores the neutral state. goal_transition states the change that occurred. notificationRenderers reads both values for the transcript line. Before this contract, Go and TypeScript each defined these values. The agents.goal_status column does not store these tokens. It stores the AgentGoalStatus ordinal, and enum_column_numbering_test.go checks its CHECK range. Separate transition tokens distinguish changes that end at the same state. For example, a first set and a resume both end at active. The applier uses the prior row to select the transition. goalTransitionKind must produce every transition token in this contract. Add a token only with the branch that writes it. AgentStatus is worker-written for the same normalization reason. Goose sends a status_message notice, while Reasonix sends a session phase. The Worker converts both into one status row. A status row carries only text because the status is a sentence. TurnRetried is worker-written because the Worker owns the retry. A provider stops the running turn and sends its input again on another model. The Worker writes one row that states the new model. SubagentReport is worker-written because providers expose reports through different channels. The Worker mirrors each report into its owning transcript. It also adds a parent row when the provider's parent result omits the report. InputRequeued is worker-written because the input queue writes it. A provider hands back a message that the agent accepted during a turn and then dropped before the model read it. The Worker queues that message again and writes this row, so the reader learns why the same message appears twice. AutoReviewApproved is worker-written because the user approves a denied auto-review action from the browser, and the provider records no row for that approval. Its review_id field identifies the review. The worker reserves each approval in its durable delivery table before it calls the provider. An uncertain delivery retains the claim and prevents a second call. A delivered approval projects its review id into the auto_review_approvals metadata field of the review row. The browser uses that field to restore the approved state after a reload. A retry completes missing transcript writes without another provider call. PendingRequestsApproved is worker-written because a switch to Bypass makes the Worker answer the permission requests that were still pending. Its count field states how many it answered, so the reader learns why those cards left. notificationFields defines each payload key that the Worker writes and the browser reads. This includes type, label, old_label, and new_label. The envelope discriminator previously appeared beside generated notification types at 31 Go writers. Every value uses snake_case, and the schema rejects other forms. This table selects each wire key, and Go struct tags follow it. New entries cannot select a separate convention. The goal fields stay in one table because goal_transition prevents a resumed goal from appearing new. The comment in output_goal.go documents this invariant. Renaming only that key restores the regression. backgroundTaskStatusTokens defines the neutral background-task payload vocabulary. The database stores BackgroundTaskStatus ordinals. The generator checks every enum value against this table. Succeeded reports a known success. EndedWithUnknownOutcome reports an end without a known outcome.",
+  "_readme": "This contract is the single source of truth for worker wire vocabulary. It defines persisted notification types, the notification-thread discriminator, and model sentinels. The generator emits the Go NotificationType constants and the TypeScript NOTIFICATION_TYPE table. workerWrittenNotificationTypes lists notifications that only the Worker writes. The browser uses this list to identify standalone rows. Move a type between regimes only by editing this contract. Add a notification type here, then run task generate. Both dispatch switches then compile against the generated value. GoalUpdated and GoalCleared are worker-written by design. Each provider that reports a goal uses its own wire shape. The Worker normalizes each shape into one neutral row, so the browser keeps one goal renderer. goalStatusTokens and goalTransitions define separate payload vocabularies. goal_status stores the neutral state. goal_transition states the change that occurred. notificationRenderers reads both values for the transcript line. Before this contract, Go and TypeScript each defined these values. The agents.goal_status column does not store these tokens. It stores the AgentGoalStatus ordinal, and enum_column_numbering_test.go checks its CHECK range. Separate transition tokens distinguish changes that end at the same state. For example, a first set and a resume both end at active. The applier uses the prior row to select the transition. goalTransitionKind must produce every transition token in this contract. Add a token only with the branch that writes it. AgentStatus is worker-written for the same normalization reason. Goose sends a status_message notice, while Reasonix sends a session phase. The Worker converts both into one status row. A status row carries only text because the status is a sentence. TurnRetried is worker-written because the Worker owns the retry. A provider stops the running turn and sends its input again on a faster model. The Worker writes one row that states the new model. SubagentReport is worker-written because providers expose reports through different channels. The Worker mirrors each report into its owning transcript. It also adds a parent row when the provider's parent result omits the report. InputRequeued is worker-written because the input queue writes it. A provider hands back a message that the agent accepted during a turn and then dropped before the model read it. The Worker queues that message again and writes this row, so the reader learns why the same message appears twice. AutoReviewApproved is worker-written because the user approves a denied auto-review action from the browser, and the provider records no row for that approval. Its review_id field identifies the review. The worker reserves each approval in its durable delivery table before it calls the provider. An uncertain delivery retains the claim and prevents a second call. A delivered approval projects its review id into the auto_review_approvals metadata field of the review row. The browser uses that field to restore the approved state after a reload. A retry completes missing transcript writes without another provider call. PendingRequestsApproved is worker-written because a switch to Bypass makes the Worker answer the permission requests that were still pending. Its count field states how many it answered, so the reader learns why those cards left. notificationFields defines each payload key that the Worker writes and the browser reads. This includes type, label, old_label, and new_label. The envelope discriminator previously appeared beside generated notification types at 31 Go writers. Every value uses snake_case, and the schema rejects other forms. This table selects each wire key, and Go struct tags follow it. New entries cannot select a separate convention. The goal fields stay in one table because goal_transition prevents a resumed goal from appearing new. The comment in output_goal.go documents this invariant. Renaming only that key restores the regression. backgroundTaskStatusTokens defines the neutral background-task payload vocabulary. The database stores BackgroundTaskStatus ordinals. The generator checks every enum value against this table. Succeeded reports a known success. EndedWithUnknownOutcome reports an end without a known outcome. ApiRetry is worker-written when native retry frames state no attempt count. Qwen Code and GitHub Copilot use it. Its count field states the failed attempts that the Worker counted. Its optional error field states the provider's reason. ApiRetryResolved is worker-written because the first model output after a retry proves that the retry worked. ApiRetry follows ordinary notification threading. ApiRetryResolved updates the newest retry in the consecutive notification rows at the transcript end. The update retains the retry row source. Ordinary notifications from different sources keep separate rows. A resolution writes no row when no retry remains in that session or the sink no longer owns it. Pi and Oh My Pi report success natively and write neither. CompactionEnded is worker-written because some agents never end a failed compaction. Codex completes its compaction item only on success. MiMo removes its compaction message on failure. The Worker writes this row to report that the compaction did not finish. Its outcome is failed or aborted, from compactionEndOutcomes. Its optional error field states the reason. The reducer treats it as a compaction boundary.",
   "notificationTypes": {
     "AgentError": "agent_error",
     "SettingsChanged": "settings_changed",
@@ -9,7 +9,6 @@
     "InputRequeued": "input_requeued",
     "PlanExecution": "plan_execution",
     "PlanUpdated": "plan_updated",
-    "Compacting": "compacting",
     "AgentSessionInfo": "agent_session_info",
     "RateLimit": "rate_limit",
     "RateLimitEvent": "rate_limit_event",
@@ -19,7 +18,10 @@
     "AgentStatus": "agent_status",
     "AutoReviewApproved": "auto_review_approved",
     "PendingRequestsApproved": "pending_requests_approved",
-    "TurnRetried": "turn_retried"
+    "TurnRetried": "turn_retried",
+    "ApiRetry": "api_retry",
+    "ApiRetryResolved": "api_retry_resolved",
+    "CompactionEnded": "compaction_ended"
   },
   "goalStatusTokens": {
     "None": "",
@@ -48,7 +50,10 @@
     "AgentStatus",
     "AutoReviewApproved",
     "PendingRequestsApproved",
-    "TurnRetried"
+    "TurnRetried",
+    "ApiRetry",
+    "ApiRetryResolved",
+    "CompactionEnded"
   ],
   "assembledMessage": {
     "fields": {
@@ -116,7 +121,8 @@
     "Status": "status",
     "ReviewID": "review_id",
     "Count": "count",
-    "Model": "model"
+    "Model": "model",
+    "Outcome": "outcome"
   },
   "messageSupplementFields": {
     "Provider": "provider",
@@ -125,11 +131,13 @@
   "rpcMethods": {
     "GetAgentSpanMessages": "GetAgentSpanMessages"
   },
-  "codexRateLimitReachedTimeWindow": "rate_limit_reached",
-  "codexRateLimitAccountBlockKey": "account_block",
   "modelSentinels": {
     "accountDefaultModel": "default",
     "effortAuto": "auto"
+  },
+  "compactionEndOutcomes": {
+    "Failed": "failed",
+    "Aborted": "aborted"
   },
   "backgroundTaskStatusTokens": {
     "Unspecified": "",

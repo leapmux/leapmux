@@ -160,7 +160,7 @@ func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runti
 	}
 
 	timeout := l.opts.EffectiveStartupTimeout()
-	address, err := waiter.Wait(ctx, a.ProcessDone(), timeout)
+	address, err := waiter.Wait(ctx, a.Clock(), a.ProcessDone(), timeout)
 	if err != nil {
 		return fail("runtime start", err)
 	}

@@ -276,3 +276,57 @@ func (a *Agent) enrichTool(observation nativeToolObservation) {
 		slog.Warn("persist Muse supplemental records", "error", err)
 	}
 }
+
+// handleLogGap recovers a gap only for the session that owns the subscription.
+func (a *Agent) handleLogGap(raw []byte) {
+	var gap struct {
+		SubscriptionID int64           `json:"subscriptionId"`
+		After          json.RawMessage `json:"after"`
+		Next           json.RawMessage `json:"next"`
+	}
+	if json.Unmarshal(raw, &gap) != nil || gap.SubscriptionID <= 0 {
+		return
+	}
+	a.stateMu.Lock()
+	var state *sessionState
+	var id string
+	for sessionID, candidate := range a.sessions {
+		if a.currentSessionState(sessionID, candidate) && candidate.log != nil && candidate.log.subscriptionID == gap.SubscriptionID {
+			state, id = candidate, sessionID
+			break
+		}
+	}
+	a.stateMu.Unlock()
+	if state == nil {
+		return
+	}
+	var after, next nativePosition
+	if json.Unmarshal(gap.After, &after) != nil || json.Unmarshal(gap.Next, &next) != nil ||
+		after.ID == "" || after.Sequence <= 0 || next.ID == "" || next.Sequence <= after.Sequence {
+		a.markLogUnavailable(state, "the Muse log reported a gap")
+		return
+	}
+	// The reader must remain free to receive the page reply.
+	go func() {
+		records, err := a.readLogPages(id, &after, next, a.APITimeout())
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.stateMu.Lock()
+		if !a.currentSessionState(id, state) || state.log.subscriptionID != gap.SubscriptionID {
+			a.stateMu.Unlock()
+			return
+		}
+		for _, record := range records {
+			if addErr := state.log.add(record); addErr != nil {
+				err = addErr
+				break
+			}
+		}
+		a.stateMu.Unlock()
+		if err != nil {
+			a.markLogUnavailable(state, "the Muse log reported a gap: "+err.Error())
+			return
+		}
+		a.enrichLogItems(state)
+	}()
+}

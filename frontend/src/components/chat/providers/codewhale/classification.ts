@@ -1,34 +1,13 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import type { CodewhaleToolFrame } from './extractors/toolCommon'
-import { CODEWHALE_EVENT, CODEWHALE_ITEM_KIND } from '~/generated/contracts/codewhale-protocol'
+import { CODEWHALE_EVENT, CODEWHALE_NOTIFICATION_EVENT, CODEWHALE_NOTIFICATION_ITEM_KIND } from '~/generated/contracts/codewhale-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { codewhaleMessageText } from './extractors/message'
 import { codewhaleNotificationEntry } from './extractors/notification'
 import { codewhaleEnvelope, codewhaleFrameDrawsNothing, codewhaleItem, codewhaleToolFrame, codewhaleToolSpanRole } from './extractors/toolCommon'
-
-/**
- * The runtime events the worker persists as notification rows.
- *
- * Each states something the reader must know and nothing about the conversation: a
- * steer that the runtime dropped and that nothing sends again, an approval nobody
- * answered in time, a sandbox refusal, and a failure to save the thread.
- */
-const CODEWHALE_NOTIFICATION_EVENTS: ReadonlySet<string> = new Set<string>([
-  CODEWHALE_EVENT.TurnSteerDropped,
-  CODEWHALE_EVENT.ApprovalTimeout,
-  CODEWHALE_EVENT.SandboxDenied,
-  CODEWHALE_EVENT.StoreFailure,
-])
-
-/** The non-tool items the worker persists as notification rows. */
-const CODEWHALE_NOTIFICATION_ITEMS: ReadonlySet<string> = new Set<string>([
-  CODEWHALE_ITEM_KIND.Status,
-  CODEWHALE_ITEM_KIND.ContextCompaction,
-  CODEWHALE_ITEM_KIND.Error,
-])
 
 /** Codewhale message classification. */
 export function classifyCodewhaleMessage(input: ClassificationInput): MessageCategory {
@@ -54,8 +33,6 @@ export function classifyCodewhaleMessage(input: ClassificationInput): MessageCat
   // carry a `type` it never has.
   const type = pickString(parent, 'type')
   if (!type && typeof parent.content === 'string') {
-    if (parent.hidden === true)
-      return { kind: 'hidden' }
     if (parent.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }
@@ -96,8 +73,8 @@ function classifyEvent(
   const parent = input.parentObject ?? {}
   if (event === CODEWHALE_EVENT.TurnCompleted)
     return { kind: 'result_divider' }
-  if (CODEWHALE_NOTIFICATION_EVENTS.has(event))
-    return notification([parent], 'hidden')
+  if (CODEWHALE_NOTIFICATION_EVENT.has(event))
+    return notification([parent])
 
   const frame = codewhaleToolFrame(parent)
   if (frame)
@@ -105,11 +82,9 @@ function classifyEvent(
   const item = codewhaleItem(parent)
   if (!item)
     return { kind: 'unknown' }
-  // LeapMux already persisted what the reader sent, and the worker drops the runtime's
-  // own echo; a stored one repeats it.
-  if (item.kind === CODEWHALE_ITEM_KIND.UserMessage)
-    return { kind: 'hidden' }
-  if (CODEWHALE_NOTIFICATION_ITEMS.has(item.kind))
+  if (item.outcome === 'open')
+    return { kind: 'unknown' }
+  if (CODEWHALE_NOTIFICATION_ITEM_KIND.has(item.kind))
     return notification([parent], 'hidden')
   return messageCategory(parent) ?? { kind: 'unknown' }
 }

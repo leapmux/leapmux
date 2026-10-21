@@ -54,6 +54,21 @@ func (s *agentOutputSink) ownsControlPublisher() bool {
 // lockControlMutation retains one activity entry before it waits for the mutation mutex.
 // Entry deletion and admission check the same activity mutex and map identity.
 func (h *OutputHandler) lockControlMutation(agentID, rootAgentID string) (*agentActivity, *activityScope, func()) {
+	return h.lockControlMutationLease(agentID, rootAgentID, true)
+}
+
+// lockControlMutationRetainingEntry is lockControlMutation for a mutation that
+// leaves its agent running, such as a session-change retirement. Its release
+// never retires the activity entry. A session change can leave a published,
+// retirable entry behind: retiring it here mints a replacement at the next
+// read, and that replacement's first publish retires again. A concurrent
+// transcript write reads that churn as a vanished owner (see
+// transcriptOwner.currentLocked) and drops the event it was about to publish.
+func (h *OutputHandler) lockControlMutationRetainingEntry(agentID, rootAgentID string) (*agentActivity, *activityScope, func()) {
+	return h.lockControlMutationLease(agentID, rootAgentID, false)
+}
+
+func (h *OutputHandler) lockControlMutationLease(agentID, rootAgentID string, retireEntryOnRelease bool) (*agentActivity, *activityScope, func()) {
 	for {
 		st := h.activityFor(agentID, rootAgentID)
 		st.mu.Lock()
@@ -71,7 +86,7 @@ func (h *OutputHandler) lockControlMutation(agentID, rootAgentID string) (*agent
 			st.controlMu.Unlock()
 			st.mu.Lock()
 			st.controlMutations--
-			retire := rootAgentID != agentID && st.hasPublished && st.published != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING && st.retirableLocked()
+			retire := retireEntryOnRelease && rootAgentID != agentID && st.hasPublished && st.published != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING && st.retirableLocked()
 			st.mu.Unlock()
 			if retire {
 				h.retireActivity(agentID, st)

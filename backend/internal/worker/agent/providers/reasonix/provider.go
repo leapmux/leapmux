@@ -2,7 +2,9 @@ package reasonix
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -15,6 +17,21 @@ import (
 // where Reasonix keeps its sessions and its text-only attachment policy.
 type reasonixProvider struct {
 	acp.Provider
+}
+
+// Classify identifies a stored compaction notice as a compaction boundary.
+// The worker stores the notice chunk whole, so the classification reads the
+// chunk's text prefix.
+func (reasonixProvider) Classify(content json.RawMessage) agent.NotificationClassification {
+	var chunk struct {
+		Content struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(content, &chunk) == nil && strings.HasPrefix(chunk.Content.Text, contracts.ReasonixNoticePrefixCompacted) {
+		return agent.CompactionBoundaryNotification()
+	}
+	return agent.NotificationClassification{}
 }
 
 // ResolveControlResponse answers Reasonix's MCP request on its own method.

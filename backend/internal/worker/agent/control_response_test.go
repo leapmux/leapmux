@@ -3,8 +3,34 @@ package agent
 import (
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestControlFollowUpConstructors(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, ControlFollowUp{}, FeedbackFollowUp(""), "an empty text gives the zero value")
+	assert.Equal(t, ControlFollowUp{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "x",
+	}, FeedbackFollowUp("x"))
+	assert.Equal(t, ControlFollowUp{}, QuestionAnswerFollowUp(""), "an empty text gives the zero value")
+	assert.Equal(t, ControlFollowUp{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "y",
+	}, QuestionAnswerFollowUp("y"))
+}
+
+func TestControlFollowUpValid(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, ControlFollowUp{}.Valid(), "the zero value queues nothing")
+	assert.False(t, ControlFollowUp{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK}.Valid(),
+		"a kind with no text queues no input")
+	assert.False(t, ControlFollowUp{Text: "answer"}.Valid(), "text with no kind names no input")
+	assert.False(t, ControlFollowUp{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "answer",
+	}.Valid(), "only the two reply kinds are queueable")
+}
 
 func TestResolveControlResponse_NoopKeepsRawResponse(t *testing.T) {
 	t.Parallel()

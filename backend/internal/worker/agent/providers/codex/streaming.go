@@ -6,12 +6,54 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // This file owns streamed model text, reasoning deltas, and tool-output deltas.
+
+// discardFailedCodexAttempt drops only the selected open scopes. A nil match selects every scope.
+// Call it on arrival, before child events enter the replay queue.
+func (a *Agent) discardFailedCodexAttempt(threadID string, match func(string, agent.AssembledMessageKind) bool) {
+	buffer := &a.generationBuffer
+	mainThread := a.isMainThreadID(threadID)
+	if !mainThread {
+		buffer = a.codexChildGenerationBuffer(threadID)
+	}
+	selected := make(map[string]bool)
+	for _, scopeID := range buffer.ScopeIDs() {
+		kind, _, present := buffer.ScopeSnapshot(scopeID)
+		if present && (match == nil || match(scopeID, kind)) {
+			selected[scopeID] = true
+		}
+	}
+	// DiscardMatching holds the buffer mutex. Read each kind before its callback runs.
+	removed := buffer.DiscardMatching(func(scopeID string) bool { return selected[scopeID] })
+	if len(removed) == 0 {
+		return
+	}
+	remainingBytes := 0
+	if !mainThread {
+		for _, scopeID := range buffer.ScopeIDs() {
+			_, text, _ := buffer.ScopeSnapshot(scopeID)
+			remainingBytes += len(text)
+		}
+	}
+	a.Mu.Lock()
+	for _, scopeID := range removed {
+		a.deleteCodexReasoningStateLocked(codexReasoningKey(threadID, scopeID))
+	}
+	if !mainThread {
+		// A discarded attempt releases its share of the unresolved child's memory limit.
+		a.codexChildStateLocked(threadID).pendingGenerationBytes = remainingBytes
+	}
+	a.Mu.Unlock()
+	if sink, routed := a.codexReadyThreadSink(threadID); routed {
+		for _, scopeID := range removed {
+			sink.ReportProgress(agent.ResetModelScopeProgress(scopeID))
+		}
+	}
+}
 
 func (a *Agent) clearReasoningStateForThread(threadID string) {
 	prefix := threadID + "\x00"
@@ -78,10 +120,8 @@ func (a *Agent) discardCodexModelText(scopeID, threadID string) {
 // open item is certainly dropped. A response that ended normally left no open
 // item, so the input that starts a turn finds nothing here.
 //
-// The input queue writes the steer's own row after Codex accepts the steer, on
-// another goroutine, so the partial rows can land on either side of that row.
-// They always precede the follow-up answer, and they state that the model
-// stopped.
+// The steer ledger writes the steer row at this echo, after the partial rows.
+// The partial rows retain their original order and state that the model stopped.
 func (a *Agent) persistDroppedCodexResponse(threadID string) {
 	if a.isMainThreadID(threadID) {
 		a.persistDroppedCodexGeneration(&a.generationBuffer, a.sink, a.generationBuffer.ScopeIDs())
@@ -89,7 +129,7 @@ func (a *Agent) persistDroppedCodexResponse(threadID string) {
 	}
 	buffer := a.codexChildGenerationBuffer(threadID)
 	scopeIDs := buffer.ScopeIDs()
-	if len(scopeIDs) == 0 {
+	if len(scopeIDs) == 0 && !buffer.HasPendingWrites() {
 		return
 	}
 	route, routed := a.ensureCodexChildRoute(threadID)
@@ -107,16 +147,8 @@ func (a *Agent) persistDroppedCodexResponse(threadID string) {
 // interrupted, in the order given, and ends its model progress. A segment that
 // fails to persist stays in the buffer for the turn end.
 func (a *Agent) persistDroppedCodexGeneration(buffer *providerkit.GenerationBuffer, sink providerkit.GenerationServices, scopeIDs []string) {
-	discarding := a.IsDiscardingOutput()
-	for _, scopeID := range scopeIDs {
-		if discarding {
-			buffer.Discard(scopeID)
-		} else if _, err := buffer.PersistScope(scopeID, agent.MessageCompletionInterrupted, func(raw []byte) error {
-			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-		}); err != nil {
-			slog.Error("codex persist dropped partial generation", "agent_id", a.AgentID(), "scope", scopeID, "error", err)
-		}
-		sink.ReportProgress(agent.CompleteModelProgress(scopeID))
+	if err := providerkit.PersistGenerationScopes(buffer, sink, scopeIDs, agent.MessageCompletionInterrupted, a.IsDiscardingOutput()); err != nil {
+		slog.Error("persist interrupted codex generation", "agent_id", a.AgentID(), "error", err)
 	}
 }
 

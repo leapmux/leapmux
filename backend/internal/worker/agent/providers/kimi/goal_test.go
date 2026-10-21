@@ -49,6 +49,36 @@ func TestKimiGoalUpdated(t *testing.T) {
 	assert.Equal(t, created, goal.CreatedAt, "the same goal keeps the time the worker first saw it")
 }
 
+func TestKimiGoalDetailStatesTheNativeReason(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		endReason any
+		change    any
+		want      string
+	}{
+		{"end reason first", "tests pass", map[string]any{"reason": "the change reason"}, "tests pass"},
+		{"change reason", nil, map[string]any{"reason": "waiting for input"}, "waiting for input"},
+		{"blank end reason", " ", map[string]any{"reason": " waiting for input "}, "waiting for input"},
+		{"status fallback", nil, nil, "blocked"},
+		{"blank change reason", nil, map[string]any{"reason": " "}, "blocked"},
+		{"malformed end reason", 7, map[string]any{"reason": "waiting for input"}, "waiting for input"},
+		{"malformed change", nil, "unknown", "blocked"},
+		{"malformed change reason", nil, map[string]any{"reason": 7}, "blocked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newKimiOutputRig(t)
+			snapshot := goalSnapshot("blocked")
+			snapshot["terminalReason"] = tc.endReason
+			rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": snapshot, "change": tc.change})
+			goal, ok := rig.sink.LastGoal()
+			require.True(t, ok, "optional diagnostic fields must not discard a valid goal snapshot")
+			assert.Equal(t, agent.GoalStatusBlocked, goal.Status)
+			assert.Equal(t, tc.want, goal.StatusDetail)
+		})
+	}
+}
+
 func TestKimiGoalRemoval(t *testing.T) {
 	t.Parallel()
 

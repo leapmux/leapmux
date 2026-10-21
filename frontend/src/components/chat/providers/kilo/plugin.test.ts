@@ -147,9 +147,10 @@ describe('kilo classify', () => {
     expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'user_content' })
   })
 
-  it('hides hidden user content', () => {
+  it('classifies a stored envelope with a hidden flag as user content', () => {
+    // No worker writes the field (F2): the row draws as user content.
     const parent = { content: 'internal', hidden: true }
-    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'user_content' })
   })
 
   it('hides JSON-RPC response envelope', () => {
@@ -181,24 +182,21 @@ describe('kilo classify', () => {
 
 /**
  * KILO SENDS NO `system` FRAME, and neither does any other daemon of this family. The
- * two objects below are hand-built, in Claude Code's stream-json shape, so a reader
- * must not take them as evidence that the shape occurs. They pin the answer of a
- * forward-compatibility guard: the worker persists one unrecognized stdout line byte
- * for byte and never reads a top-level `type`, so the browser must still classify one.
- * `isHiddenACPNotification` in `../acp/classification` holds the whole standing
- * property.
+ * objects below are hand-built, in Claude Code's stream-json shape, so a reader must
+ * not take them as evidence that the shape occurs. The worker persists one
+ * unrecognized stdout line byte for byte and never reads a top-level `type`, so such
+ * a row can still reach the browser, and it draws the no-display card. The family
+ * classifier holds that answer for every member; these cases pin it through Kilo's
+ * registered plugin, beside its native notification reader.
  */
-describe('the system-frame guard (kilo)', () => {
+describe('stored system frames (kilo)', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
-  it('hides the init lifecycle frame', () => {
-    const parent = { type: 'system', subtype: 'init' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
-  })
-
-  it('keeps a system frame with no entry for the last-resort card', () => {
-    const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', entries: [] })
+  it('leaves a stored system frame unknown', () => {
+    for (const parent of [{ type: 'system', subtype: 'init' }, { type: 'system', subtype: 'compact_boundary' }]) {
+      expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'unknown' })
+      expect(plugin?.transcript.classify(input(parent, { old_seqs: [], messages: [parent] }))).toStrictEqual({ kind: 'unknown' })
+    }
   })
 })
 

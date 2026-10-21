@@ -390,11 +390,28 @@ function identifierFrom(description: string): string {
 }
 
 /**
- * The Markdown checklist that Goose and Copilot read as a whole to-do list. Only an `x` marker reads as completed, and
+ * The Markdown checklist that Goose reads as a whole to-do list. Only an `x` marker reads as completed, and
  * every other marker reads as pending, so the checklist states no other status.
  */
 function markdownChecklist(tool: string, steps: readonly TodoStep[]): string {
   return steps.map(step => `- [${acceptedTodoStatus(tool, BASE_TODO_STATUSES, step.status) === 'completed' ? 'x' : ' '}] ${step.step}`).join('\n')
+}
+
+const COPILOT_SQL_TODO_STATUSES = [...BASE_TODO_STATUSES, 'blocked'] as const satisfies readonly TodoStatus[]
+
+/** Replace Copilot's native SQL list through its model-visible tool. */
+function copilotSqlTodosToolCall(id: string, steps: readonly TodoStep[]): MockModelToolCall {
+  const rows = steps.map((step, index) => {
+    const status = acceptedTodoStatus('Copilot sql', COPILOT_SQL_TODO_STATUSES, step.status)
+    if (!step.step.trim() || step.step.includes('\0'))
+      throw new Error('The Copilot to-do title must be nonblank and contain no null byte.')
+    const title = step.step.replaceAll('\'', '\'\'')
+    return `('todo-${index + 1}', '${title}', '', '${status === 'completed' ? 'done' : status}')`
+  })
+  const statements = ['DELETE FROM todo_deps', 'DELETE FROM todos']
+  if (rows.length > 0)
+    statements.push(`INSERT INTO todos (id, title, description, status) VALUES ${rows.join(', ')}`)
+  return { id, name: COPILOT_TOOL.Sql, arguments: { description: 'Replace session to-dos', query: `${statements.join('; ')};` } }
 }
 
 /**
@@ -530,6 +547,20 @@ export function codexWaitCellToolCall(id: string, cellId: string): MockModelTool
   if (!id.trim() || !cellId.trim())
     throw new Error('A native Codex cell wait requires a call ID and cell ID.')
   return { id, name: 'wait', arguments: { cell_id: cellId } }
+}
+
+/**
+ * One Codex async question call: the questions Codex asks WITHOUT waiting, on
+ * models whose catalog offers `request_user_input_async`. The call id
+ * identifies the questions, and the answers come back later as an ordinary
+ * user message in Codex's own reply format.
+ */
+export function codexAsyncQuestionToolCall(id: string, questions: { title: string, options?: string[] }[]): MockModelToolCall {
+  return {
+    id,
+    name: 'request_user_input_async',
+    arguments: { questions },
+  }
 }
 
 /**
@@ -818,16 +849,7 @@ const TOOL_VOCABULARY = {
     }),
     spawnSubagentBatch: null,
     backgroundBash: null,
-    // Copilot update_todo accepts a Markdown checklist in todos.
-    // A case-insensitive x marker means completed.
-    // Every other marker means pending.
-    updateTodos: (id, steps) => ({
-      id,
-      name: 'update_todo',
-      arguments: {
-        todos: markdownChecklist('Copilot update_todo', steps),
-      },
-    }),
+    updateTodos: copilotSqlTodosToolCall,
     createGoal: null,
     // The session goal is the autopilot objective, and the model ends its task through task_complete, whose one field
     // is a summary (Copilot CLI 1.0.87). An independent reviewer then decides the outcome: completed, continue, or
@@ -2086,6 +2108,12 @@ export function backgroundBashToolCall(provider: AgentProvider, id: string, comm
   return requireBuilder(vocabulary(provider).backgroundBash, provider, 'background shell')(id, command)
 }
 
+/** Copilot reports this asynchronous shell through a completion notice, with no shell registry row. */
+export function copilotAsyncBashToolCall(id: string, command: string): MockModelToolCall {
+  const call = bashToolCall(AgentProvider.GITHUB_COPILOT, id, command)
+  return { ...call, arguments: { ...call.arguments, description: 'Run the scripted background command', mode: 'async' } }
+}
+
 /** Spawn a subagent, in the provider's own tool. */
 export function spawnSubagentToolCall(provider: AgentProvider, id: string, request: SubagentRequest): MockModelToolCall {
   return requireBuilder(vocabulary(provider).spawnSubagent, provider, 'subagent spawn')(id, request)
@@ -2173,13 +2201,11 @@ export function droidExecuteToolCall(id: string, request: { command: string, sum
   return { id: callId, name: 'Execute', arguments: { ...request } }
 }
 
-/** Run one native Droid script with its exact source and optional observation period. */
-export function droidScriptToolCall(id: string, script: string, waitForMs?: number): MockModelToolCall {
-  if (!script.trim() || new TextEncoder().encode(script).byteLength > 512 * 1024)
+/** Run one native Droid script with its exact source, including any native directives. */
+export function droidScriptToolCall(id: string, script: string): MockModelToolCall {
+  if (typeof script !== 'string' || !script.trim() || new TextEncoder().encode(script).byteLength > 512 * 1024)
     throw new Error('The native Droid script requires nonempty source within 512 KiB.')
-  if (waitForMs !== undefined && (!Number.isFinite(waitForMs) || waitForMs < 0))
-    throw new RangeError('The native Droid script wait requires finite nonnegative milliseconds.')
-  return { id: droidCallId(id), name: 'Script', arguments: { script, ...(waitForMs === undefined ? {} : { waitForMs }) } }
+  return { id: droidCallId(id), name: 'Script', arguments: { script } }
 }
 
 /** Invoke the disposable Pi extension that requests a native multiline editor. */
@@ -2374,6 +2400,16 @@ export function goosePermissionJudgmentToolCall(id: string, readOnlyRequestIds: 
   return { id, name: 'platform__tool_by_tool_permission', arguments: { read_only_request_ids: [...readOnlyRequestIds] } }
 }
 
+/**
+ * Goose's subagent ends by calling its built-in final-output tool. A child that
+ * answers with plain text instead keeps requesting turns, because its runtime
+ * loops until this call arrives. An arguments object whose only member is a
+ * string `summary` is the readable report both sides show.
+ */
+export function gooseFinalOutputToolCall(id: string, summary: string): MockModelToolCall {
+  return { id, name: 'recipe__final_output', arguments: { summary } }
+}
+
 /** Reasonix's image reader returns structured image content from a local path. */
 export function reasonixViewImageToolCall(id: string, path: string): MockModelToolCall {
   return { id, name: 'view_image', arguments: { path } }
@@ -2404,6 +2440,11 @@ export function cursorCreatePlanToolCall(id: string, name: string, overview: str
 /** Script Cursor's native web-fetch query, which asks the client for permission. */
 export function cursorWebFetchPermissionToolCall(id: string, url: string): MockModelToolCall {
   return { id, name: CURSOR_WEB_FETCH_TOOL, arguments: { url } }
+}
+
+/** Load one Claude Code skill through its native tool. */
+export function claudeSkillToolCall(id: string, skill: string): MockModelToolCall {
+  return { id, name: 'Skill', arguments: { skill } }
 }
 
 /** Load the bundled skill that the installed ZCode CreateWorkflow tool requires. */

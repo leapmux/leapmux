@@ -1,6 +1,8 @@
 import { COPILOT_METHOD } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
+export const COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE = 'user_model_rate_limited'
+
 /**
  * One native session event, as a persisted row holds it.
  *
@@ -37,3 +39,13 @@ export function copilotEventData(parsed: unknown, type: string): Record<string, 
   const event = copilotEvent(parsed)
   return event && event.type === type ? event.data : null
 }
+
+/** The kind of a native system notification. */
+export const COPILOT_SYSTEM_NOTIFICATION_KIND = {
+  AgentCompleted: 'agent_completed',
+  AgentIdle: 'agent_idle',
+  ShellCompleted: 'shell_completed',
+  ShellDetachedCompleted: 'shell_detached_completed',
+  InstructionDiscovered: 'instruction_discovered',
+  FactoryCompleted: 'factory_completed',
+} as const

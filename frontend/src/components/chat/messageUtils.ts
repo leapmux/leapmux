@@ -36,6 +36,7 @@ import { isObject } from '~/lib/jsonPick'
 const BASE_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>([
   NOTIFICATION_TYPE.SettingsChanged,
   NOTIFICATION_TYPE.ContextCleared,
+  NOTIFICATION_TYPE.CompactionEnded,
   NOTIFICATION_TYPE.Interrupted,
   NOTIFICATION_TYPE.PlanUpdated,
   // `plan_execution` is provider-NEUTRAL: the worker writes it for every provider, in
@@ -46,20 +47,11 @@ const BASE_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>([
   // row. Without the entry, such a thread reaches `unknown` and draws the raw-frame
   // card.
   NOTIFICATION_TYPE.PlanExecution,
-  // `compacting` is LeapMux's own envelope for a compaction that STARTED, and
-  // `leapmuxNotificationEntry` draws it for every provider. The worker threads it:
-  // `consolidateNotificationThread` holds a case for the type, and two adjacent
-  // notifications of one source join one thread whatever their types are. A
-  // `compacting` therefore sits beside a `rate_limit` or a provider frame that this set
-  // refuses, and this entry is what keeps those members. Without it the wrapper test
-  // answers false, and the per-message set then answers for `compacting` alone.
-  NOTIFICATION_TYPE.Compacting,
   // `agent_error` is provider-NEUTRAL: `worker/service/agent.go` writes it for every
   // provider, and Pi and the Agent Client Protocol daemons write their own. This entry
   // is what keeps the members of a thread whose one accepted type is `agent_error`, for
   // EVERY provider. Two per-provider sets used to accept it, and each held that one
-  // token; this entry replaced both. Codex still hides its own "Codex turn failed" row:
-  // that filter reads the members AFTER the wrapper test accepts them.
+  // token; this entry replaced both.
   NOTIFICATION_TYPE.AgentError,
   ...WORKER_WRITTEN_NOTIFICATION_TYPES,
 ])
@@ -92,19 +84,4 @@ export function isNotificationThreadWrapper(
     }
   }
   return false
-}
-
-/**
- * A final (non-compacting) `system` status notification -- e.g. the trailing
- * `{type:"system",subtype:"status",status:null}` that ends a compaction. It
- * carries nothing to render: the user-facing "Context compacted (...)" line comes
- * from the separate compact_boundary message, so only the live
- * `status:"compacting"` row is visible. Every provider that surfaces this shape
- * (Claude, Codex, ACP) hides it on BOTH the standalone classifier and the
- * consolidated-thread filter, so a status hidden on its own stays hidden once Hub
- * threads it. Centralized here so "what counts as a final status" can't drift
- * between providers or between the two paths.
- */
-export function isFinalCompactingStatus(m: Record<string, unknown>): boolean {
-  return m.type === 'system' && m.subtype === 'status' && m.status !== 'compacting'
 }

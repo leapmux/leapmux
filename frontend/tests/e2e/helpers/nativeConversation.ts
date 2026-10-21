@@ -36,16 +36,9 @@ export async function sendNativeAnswer(
   return request
 }
 
-/**
- * The titles of the card that the chat draws for a provider row that it cannot show: a row that no reader claims, and
- * a row whose reading failed.
- */
-const UNRENDERED_ROW_TITLES = ['LeapMux has no display for this row', 'LeapMux could not render this row'] as const
-
 /** Require that the visible chat draws no row as an unrendered provider frame. */
 export async function expectNoUnrenderedRow(page: Page): Promise<void> {
-  for (const title of UNRENDERED_ROW_TITLES)
-    await expect(visibleOnly(page.getByText(title, { exact: true })), `the chat draws no "${title}" card`).toHaveCount(0)
+  await expect(visibleOnly(page.getByTestId('unrendered-row')), 'the chat draws no unrendered row').toHaveCount(0)
 }
 
 /**

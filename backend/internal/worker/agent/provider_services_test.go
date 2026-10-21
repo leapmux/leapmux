@@ -35,6 +35,8 @@ func TestProviderServicesKeepOneImplementationAcrossFacets(t *testing.T) {
 	composed, ok := services.(providerServices)
 	require.True(t, ok)
 	assert.Same(t, sink, composed.TranscriptServices)
+	assert.Same(t, sink, composed.SteerEchoServices)
+	assert.Same(t, sink, composed.OutputEffectServices)
 	assert.Same(t, sink, composed.TurnServices)
 	assert.Same(t, sink, composed.SpanServices)
 	assert.Same(t, sink, composed.ProgressServices)

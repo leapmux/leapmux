@@ -24,6 +24,9 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		return
 	}
 	switch line.Type {
+	case frameTypeFileHistorySnapshot, frameTypeAiTitle, frameTypeTopic, contracts.CodebuddyFrameKindControlNotification:
+		// These frames contain native history metadata or control receipts. They supply no chat row.
+		return
 	case contracts.CodebuddyFrameKindSystem:
 		a.handleSystem(line.Raw)
 	case contracts.CodebuddyFrameKindAssistant:
@@ -36,28 +39,58 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		a.persistRaw(line.Raw)
 	case frameTypeControlRequest:
 		a.handleInboundControlRequest(line.Raw)
-	case string(MessageTypeControlCancelRequest):
-		a.handleInboundControlCancel(line.Raw)
+	case frameTypeControlResponse:
+		a.handleUnclaimedControlResponse(line.Raw)
 	case contracts.CodebuddyFrameKindConversationReset:
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: line.Raw}); err != nil {
 			slog.Debug("codebuddy: persist notification", "agent_id", a.AgentID(), "error", err)
 		}
 	default:
-		// tool_progress, active_goal, control_notification, error: forward
-		// verbatim so the browser plugin can classify and draw them.
-		a.persistRaw(line.Raw)
+		// Preserve an unknown frame for inspection.
+		a.persistUnknown(line.Raw)
+	}
+}
+
+// handleUnclaimedControlResponse consumes receipts for requests that need no synchronous reply.
+// A failed receipt still supplies a user-visible error. Unknown response shapes remain inspectable.
+func (a *Agent) handleUnclaimedControlResponse(raw []byte) {
+	var envelope controlResponseEnvelope
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Response.RequestID == "" {
+		a.persistUnknown(raw)
+		return
+	}
+	switch envelope.Response.Subtype {
+	case "success":
+		return
+	case "error":
+		detail := strings.TrimSpace(envelope.Response.Error)
+		if detail == "" {
+			detail = "CodeBuddy refused a control request."
+		}
+		a.sink.PersistLeapMuxNotification(map[string]interface{}{
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: detail,
+		})
+	default:
+		a.persistUnknown(raw)
 	}
 }
 
 // handleSystem reads init and task frames, then publishes other frames verbatim.
 func (a *Agent) handleSystem(raw []byte) {
 	var envelope struct {
-		Subtype string `json:"subtype"`
+		Subtype string          `json:"subtype"`
+		Status  json.RawMessage `json:"status"`
+		Event   string          `json:"event"`
 	}
 	if a.handleTaskEvent(raw) {
 		return
 	}
-	if json.Unmarshal(raw, &envelope) == nil && envelope.Subtype == contracts.CodebuddySystemSubtypeInit {
+	if json.Unmarshal(raw, &envelope) != nil {
+		a.persistUnknown(raw)
+		return
+	}
+	if envelope.Subtype == contracts.CodebuddySystemSubtypeInit {
 		var init systemInitMessage
 		if json.Unmarshal(raw, &init) == nil {
 			mode := init.PermissionMode
@@ -88,17 +121,68 @@ func (a *Agent) handleSystem(raw []byte) {
 				a.setTurnActive(false)
 			}
 		}
-		a.observeSlashCommands(raw)
+		return
+	}
+	switch envelope.Subtype {
+	case contracts.CodebuddySystemSubtypeKeepalive:
+		return
+	case contracts.CodebuddySystemSubtypeStatus:
+		a.publishCompactionStatus(envelope.Status)
+		return
+	case contracts.CodebuddySystemSubtypeMcpStatus:
+		if envelope.Event != mcpStatusFinishEvent {
+			return
+		}
+	case contracts.CodebuddySystemSubtypeInformational:
+		// The notice supplies its own display text.
+	default:
+		a.persistUnknown(raw)
+		return
 	}
 	a.persistRaw(raw)
 }
 
+// publishCompactionStatus reads an explicit start or end. An absent status changes nothing.
+func (a *Agent) publishCompactionStatus(raw json.RawMessage) {
+	status, _ := providerkit.RawString(raw)
+	a.mu.Lock()
+	started := status == "compacting" && !a.compactionLive
+	// Manual commands can clear previous progress before their summary starts. Their result owns the end.
+	ended := providerkit.RawKindOf(raw) == providerkit.RawNull && a.compactionLive && !a.manualCompaction
+	if started {
+		a.compactionLive = true
+	} else if ended {
+		a.compactionLive = false
+	}
+	a.mu.Unlock()
+	if started {
+		providerkit.PublishCompaction(a.sink, "")
+	} else if ended {
+		providerkit.PersistCompactionEnded(a.sink, providerkit.CompactionEndCompleted, "")
+		providerkit.EndCompaction(a.sink)
+	}
+}
+
 // handleAssistant publishes the frame verbatim and arms the turn from output.
+// A compaction owns the turn it runs in: its summary is live state that draws
+// no answer row (decision 21), so its assistant frames reach no transcript.
 func (a *Agent) handleAssistant(raw []byte) {
 	a.armTurnFromOutput()
+	a.mu.Lock()
+	compacting := a.compactionLive
+	if compacting {
+		// The compaction's own result must not backfill this text as the
+		// turn's answer: the stream did carry it, and the summary draws no row.
+		a.assistantTextStreamed = true
+	}
+	a.mu.Unlock()
+	if compacting {
+		return
+	}
 	var msg assistantMessage
 	if json.Unmarshal(raw, &msg) == nil {
 		a.mu.Lock()
+		a.lastDiagnostic = msg.diagnostic()
 		if msg.SessionID != "" && a.sessionID == "" {
 			a.sessionID = msg.SessionID
 		}
@@ -145,6 +229,8 @@ func (a *Agent) handleResult(raw []byte) {
 		}
 	}
 	a.mu.Lock()
+	diagnostic := a.lastDiagnostic
+	a.lastDiagnostic = nil
 	a.assistantTextStreamed = false
 	a.pendingPlanModeTools = nil
 	a.awaitingRejectedPlanInit = false
@@ -169,14 +255,71 @@ func (a *Agent) handleResult(raw []byte) {
 		}
 	}
 	content := agent.WithToolUseCount(agent.MessageContent{Original: raw}, toolUses)
+	requestID, _ := providerkit.RawString(result.RequestID)
+	if diagnostic != nil && result.IsError && len(result.Errors) > 0 &&
+		requestID == diagnostic.requestID && result.SessionID == diagnostic.sessionID && result.Errors[0] == diagnostic.text {
+		supplement, err := json.Marshal(contracts.CodebuddyResultSupplement{
+			RequestID: diagnostic.requestID, SessionID: diagnostic.sessionID, RepeatedError: diagnostic.text,
+		})
+		if err != nil {
+			slog.Error("encode the CodeBuddy result supplement", "agent_id", a.AgentID(), "error", err)
+		} else {
+			content.Supplemental = supplement
+		}
+	}
 	if interrupted {
 		content.Completion = agent.MessageCompletionInterrupted
+	}
+	// A manual /compact ends at its result. The compacted summary never drew a
+	// row, so the boundary row is the one record the compaction leaves.
+	a.mu.Lock()
+	manualEnded := a.manualCompaction
+	a.mu.Unlock()
+	if manualEnded {
+		outcome := providerkit.CompactionEndCompleted
+		switch {
+		case interrupted:
+			outcome = providerkit.CompactionEndAborted
+		case result.IsError:
+			outcome = providerkit.CompactionEndFailed
+		}
+		providerkit.PersistCompactionEnded(a.sink, outcome, "")
 	}
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("codebuddy: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
 	a.sink.ResetSpans()
 	a.setTurnActive(false)
+}
+
+// codebuddyDiagnostic records a displayed runtime message until its request ends.
+// It supplies a repeat fact only after the native result confirms the same error.
+type codebuddyDiagnostic struct {
+	requestID, sessionID, text string
+}
+
+func (message assistantMessage) diagnostic() *codebuddyDiagnostic {
+	requestID, _ := providerkit.RawString(message.RequestID)
+	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(message.SessionID) == "" || providerkit.RawPresent(message.MessageID) ||
+		message.ParentToolUseID != nil && *message.ParentToolUseID != "" ||
+		len(message.Message.Content) != 1 {
+		return nil
+	}
+	var usage struct {
+		OutputTokens json.RawMessage `json:"output_tokens"`
+	}
+	if json.Unmarshal(message.Message.Usage, &usage) != nil {
+		return nil
+	}
+	output, ok := providerkit.RawInt64(usage.OutputTokens)
+	if !ok || output != 0 {
+		return nil
+	}
+	block := message.Message.Content[0]
+	if block.Type != "text" || strings.TrimSpace(block.Text) == "" {
+		return nil
+	}
+	return &codebuddyDiagnostic{requestID: requestID, sessionID: message.SessionID, text: block.Text}
 }
 
 // The native plan tool results state when a plan starts or waits for revision.
@@ -328,22 +471,6 @@ func (a *Agent) armTurnFromOutput() {
 	}
 }
 
-// handleInboundControlCancel retires the hub request a control_cancel_request
-// withdraws, so a cancelled can_use_tool does not leave a banner open.
-func (a *Agent) handleInboundControlCancel(raw []byte) {
-	var envelope struct {
-		RequestID string `json:"request_id"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		slog.Warn("codebuddy: malformed control_cancel_request", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	a.persistRaw(raw)
-	if a.forgetControl(envelope.RequestID) {
-		a.sink.CancelControlRequest(envelope.RequestID)
-	}
-}
-
 // handlePendingControlResponse intercepts a control_response that answers one
 // of this agent's own pending requests. Returns true when consumed.
 func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool {
@@ -373,17 +500,27 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		Steered         *bool                 `json:"steered"`
 		Reason          string                `json:"reason"`
 	}
+	validInner := true
 	if len(envelope.Response.Response) > 0 {
-		_ = json.Unmarshal(envelope.Response.Response, &inner)
+		if err := json.Unmarshal(envelope.Response.Response, &inner); err != nil {
+			validInner = false
+			result.Success = false
+			if result.Error == "" {
+				result.Error = "CodeBuddy sent an invalid control response."
+			}
+			slog.Debug("read the CodeBuddy control payload", "agent_id", a.AgentID(), "error", err)
+		}
 	}
-	result.Mode = inner.Mode
-	result.Model = inner.Model
-	if inner.AvailableModels != nil {
-		result.Models = *inner.AvailableModels
-		result.HasModelCatalog = true
+	if validInner {
+		result.Mode = inner.Mode
+		result.Model = inner.Model
+		if inner.AvailableModels != nil {
+			result.Models = *inner.AvailableModels
+			result.HasModelCatalog = true
+		}
+		result.Steered = inner.Steered
+		result.SteerReason = inner.Reason
 	}
-	result.Steered = inner.Steered
-	result.SteerReason = inner.Reason
 	select {
 	case ch <- result:
 	default:
@@ -473,6 +610,19 @@ func (a *Agent) applyPermissionMode(mode string) error {
 	a.mu.Unlock()
 	a.queuePermissionApprovals()
 	return nil
+}
+
+// persistUnknown preserves an unknown frame only for this process's current session.
+func (a *Agent) persistUnknown(raw []byte) {
+	sessionID := providerkit.StringField(raw, "session_id")
+	a.mu.Lock()
+	current := a.sessionID
+	a.mu.Unlock()
+	if sessionID != "" && sessionID != current {
+		slog.Debug("CodeBuddy ignored an unknown frame from another session", "agent_id", a.AgentID(), "session_id", sessionID)
+		return
+	}
+	a.persistRaw(raw)
 }
 
 // persistRaw forwards one verbatim NDJSON frame to the transcript.

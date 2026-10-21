@@ -17,32 +17,52 @@ export function gooseChildTaskMatcher(task: string): MockModelMatcher {
   return { user: `^(?:Subagent ID: [^\\n]*\\n+)?${escapeRegExp(task)}` }
 }
 
-/** Correlate the native Goose delegate frame with its exact child prompt. */
+/** The ack text that carries the native session id of the delegated child. */
+const DELEGATED_PREFIX = 'Delegated to subagent '
+
+/**
+ * Correlate the native Goose delegate frame with its exact child prompt, and return the native child
+ * session id that its ack states. The ack completes the delegate tool call before the child runs, and the
+ * Worker renames the registry row to that session id, so the session id is the row's stable identity.
+ */
 export function gooseChildTaskId(snapshot: NativeMessageSnapshot, spawnCallId: string, prompt: string): string {
   if (snapshot.agentSessionId.trim() === '')
     throw new Error('The native Goose child identity requires a nonempty session ID.')
   if (!spawnCallId || prompt.trim() === '')
     throw new Error('The native Goose child identity requires a call ID and prompt.')
   let found = false
+  let sessionID = ''
   for (const message of snapshot.messages) {
     if (message.agentSessionId !== snapshot.agentSessionId)
       continue
     const body = nativeMessageBody(message)
     if (!isObject(body))
       throw new Error('The native Goose parent frame must contain an object.')
-    if (body.sessionUpdate !== 'tool_call' || body.toolCallId !== spawnCallId)
+    if (body.sessionUpdate === 'tool_call' && body.toolCallId === spawnCallId) {
+      const meta = body._meta
+      const tool = isObject(meta) && isObject(meta.goose) ? meta.goose.toolCall : undefined
+      if (!isObject(tool) || tool.toolName !== GOOSE_SUBAGENT.Tool || tool.extensionName !== GOOSE_SUBAGENT.Extension)
+        throw new Error('The paired Goose call is not a native summon delegate.')
+      if (!isObject(body.rawInput) || body.rawInput.instructions !== prompt)
+        throw new Error('The paired Goose delegate has another child prompt.')
+      found = true
       continue
-    const meta = body._meta
-    const tool = isObject(meta) && isObject(meta.goose) ? meta.goose.toolCall : undefined
-    if (!isObject(tool) || tool.toolName !== GOOSE_SUBAGENT.Tool || tool.extensionName !== GOOSE_SUBAGENT.Extension)
-      throw new Error('The paired Goose call is not a native summon delegate.')
-    if (!isObject(body.rawInput) || body.rawInput.instructions !== prompt)
-      throw new Error('The paired Goose delegate has another child prompt.')
-    found = true
+    }
+    if (body.sessionUpdate === 'tool_call_update' && body.toolCallId === spawnCallId && Array.isArray(body.content)) {
+      for (const block of body.content) {
+        const text = isObject(block) && isObject(block.content) && typeof block.content.text === 'string' ? block.content.text : ''
+        if (text.startsWith(DELEGATED_PREFIX)) {
+          sessionID = text.slice(DELEGATED_PREFIX.length).trim()
+          break
+        }
+      }
+    }
   }
   if (!found)
     throw new Error('The exact Goose delegate has no native parent receipt.')
-  return spawnCallId
+  if (sessionID === '')
+    throw new Error('The exact Goose delegate ack states no subagent session id.')
+  return sessionID
 }
 
 export async function readGooseChildTaskId(context: ManagedNativeScenarioContext, parentId: string, spawnCallId: string, prompt: string): Promise<string> {

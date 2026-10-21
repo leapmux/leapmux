@@ -28,7 +28,8 @@
     "customTypes",
     "commands",
     "asyncJobStates",
-    "structs"
+    "structs",
+    "notificationEvents"
   ],
   "$defs": {
     "table": {
@@ -208,6 +209,15 @@
     },
     "structs": {
       "$ref": "#/$defs/structs"
+    },
+    "notificationEvents": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
     }
   }
 }

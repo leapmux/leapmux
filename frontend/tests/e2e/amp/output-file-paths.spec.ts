@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { ampTest } from '../amp-fixtures'
 import { ampToolUseID } from '../helpers/ampSurface'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -18,6 +19,8 @@ import { ampNativeOutputLimit } from './nativeToolOutput'
 import { ampToolResult } from './toolResult'
 
 ampTest('records the native large shell output limit and retains its exact tail after reload', async ({ native }, testInfo) => {
+  // Amp reports its first thread identity after a complete native reply.
+  await sendNativeAnswer(native, 'Start the native output probe session.', 'The output probe is ready.')
   const before = await currentNativeAgent(native)
   if (!before.workingDir)
     throw new Error('The Amp native output proof requires a native working directory.')

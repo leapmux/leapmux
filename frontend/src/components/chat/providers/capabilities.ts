@@ -17,6 +17,7 @@ import type { DialogResponder } from '../controls/DialogRequestControl'
 import type { SendPermissionOption } from '../controls/PermissionDecisionActions'
 import type { ActionsProps, ControlAnswerState, ControlResponseSender } from '../controls/types'
 import type { MessageCategory } from '../messageClassifier'
+import type { AssistantTextSegment } from '../model/assistantText'
 import type { ControlPrompt } from '../model/controlPrompt'
 import type { TurnEnd } from '../model/divider'
 import type { CompactionDetails, NotificationEntry } from '../model/notification'
@@ -151,6 +152,18 @@ export interface ProviderTranscriptCapability {
    * `messageContextResolver` performs the merge once for every reader of the row.
    */
   resolveMessage?: (parsed: ParsedMessageContent) => Record<string, unknown> | undefined
+
+  /** Identify a stored native compaction start for the history filter only. */
+  compactionStart?: (message: Record<string, unknown>) => boolean
+
+  /**
+   * Split one assembled assistant text into segments this provider marks
+   * itself. A provider whose model echoes an inline note about a steer the
+   * reader sent supplies it; the note leaves the model's prose, and the
+   * renderer draws it as a chip. Returns undefined for a text with no such
+   * mark, and the row then renders its plain text.
+   */
+  assistantTextSegments?: (text: string) => AssistantTextSegment[] | undefined
 
   /** Classify a parsed message into a rendering category. */
   classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory
@@ -358,6 +371,8 @@ export interface ProviderControlCapability {
  * what it reserves, and how its sessions are named.
  */
 export interface ProviderSessionCapability {
+  /** The provider cannot confirm the current goal status. Show its objective without a status label. */
+  goalStatusUnconfirmed?: boolean
   /**
    * Extract an explicit rate-limit merge or replacement from a provider frame.
    * Returns null when the frame carries no rate-limit update.
@@ -391,27 +406,28 @@ export interface ProviderSessionCapability {
   contextUsageFromMessage?: (parsed: ParsedMessageContent) => ContextUsageInfo | null
 
   /**
-   * Read a CONTEXT-COMPACTION boundary out of this provider's frame, or null when the
-   * frame is not one.
+   * Read a native compaction boundary, or null for another frame.
+   * This runs with contextUsageFromMessage before row extraction and rendering.
+   * The same provider parser supplies the notification and context meter.
    *
-   * A sibling of {@link contextUsageFromMessage}, and it runs on the same path: the
-   * context-usage grid refreshes the instant a boundary lands, OUTSIDE the render tree
-   * and before any row model exists. One provider-owned parse serves that reader and the
-   * notification extractor, so `messageParser` holds no provider shape and the two
-   * readers cannot disagree about what a boundary is.
+   * These providers supply the reader:
+   * - Claude Code
+   * - Codex
+   * - Pi
+   * - GitHub Copilot
+   * - Kimi Code
+   * - Oh My Pi
+   * - Cline
+   * - Qoder
+   * - ZCode
+   * - Muse
+   * - Command Code
+   * - Droid
+   * - DeepSeek Harness
+   * - Letta
    *
-   * Claude, Codex, Pi, Copilot, Kimi Code, Oh My Pi, Cline, Qoder and ZCode supply it. ZCode
-   * reads its compaction lifecycle event, which states the sizes before and after. A plugin
-   * that omits it has no boundary with a size to read:
-   * - The Agent Client Protocol family carries none on that stream. OpenCode, for example,
-   *   compacts behind an internal agent and reports a `compacting` status alone, which
-   *   states no size.
-   * - MiMo Code's compaction part states a summary and no size.
-   * - Codewhale runs a compaction as a turn of its own.
-   * - Amp's stream states no compaction at all.
-   * The grid therefore holds its pre-compaction reading for those providers until the next
-   * message that carries usage replaces it, which is a limit of the protocol rather
-   * than a hook anybody forgot.
+   * A native boundary can lack token counts. It still marks the end of compaction.
+   * Without a valid post-compaction count, the context meter retains its last usage until a later usage report updates it.
    */
   compactionBoundaryFromMessage?: (parsed: ParsedMessageContent) => CompactionDetails | null
 

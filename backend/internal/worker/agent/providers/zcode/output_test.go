@@ -8,14 +8,28 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+func TestZCodeGenerationDiscardKeepsUnselectedScopes(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.generationBuffer.Append("thought", agent.AssembledMessageKindReasoning, "thought", providerkit.JoinVerbatim)
+	a.generationBuffer.Append("answer", agent.AssembledMessageKindText, "answer", providerkit.JoinVerbatim)
+	a.DiscardOutput()
+	a.flushZCodeGenerationKind(agent.AssembledMessageKindReasoning, agent.MessageCompletionInterrupted)
+	assert.Equal(t, []string{"answer"}, a.generationBuffer.ScopeIDs())
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress("thought"))
+	assert.Empty(t, sink.Messages())
+}
+
 // --- turn lifecycle ---
 
-func TestZCodeTurnActiveDoesNotOfferUnsupportedSteering(t *testing.T) {
+func TestZCodeTurnActiveWithoutAProvenMailboxIsNotSteerable(t *testing.T) {
 	t.Parallel()
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
 	a.Mu.Lock()
@@ -23,6 +37,9 @@ func TestZCodeTurnActiveDoesNotOfferUnsupportedSteering(t *testing.T) {
 	a.Mu.Unlock()
 	state := a.PublishTurnActive()
 	assert.True(t, state.Active)
+	// A build whose drain hook has not shown itself gets no Steer control:
+	// steering it would mail envelopes nothing drains. The discovery test in
+	// steering_test.go covers the proven-mailbox half.
 	assert.False(t, state.Steerable)
 }
 
@@ -381,7 +398,7 @@ func zcodeEventPayload(t *testing.T, content []byte) string {
 	return string(event.Payload)
 }
 
-func TestHandleZCodeOutput_ReasoningPersistsAtTextBoundary(t *testing.T) {
+func TestHandleZCodeOutput_ReasoningPersistsWhenTheMessageCompletes(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -391,10 +408,99 @@ func TestHandleZCodeOutput_ReasoningPersistsAtTextBoundary(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
 		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"answer"}`))
 
-	require.Equal(t, 1, sink.MessageCount())
+	require.Zero(t, sink.MessageCount())
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"content":"answer","querySource":"main_turn","stopReason":"stop"}`))
+	require.Equal(t, 2, sink.MessageCount())
 	assert.JSONEq(t, `{
 		"type":"assembled_message","kind":"reasoning","text":"reasoning","completion":"complete"
 	}`, string(sink.Messages()[0].Content))
+}
+
+func TestZCodeRetryAttemptCase(t *testing.T) {
+	t.Parallel()
+	// Trimmed frames from .tmp/probe/zcode/logs/run8-frames.log, scenario G.
+	// Only the session and message IDs differ from the recorded stream.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name:       "a stream recovery discards the failed reasoning and text",
+		FramesPath: "testdata/retry_attempt.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			return newZCodeTestAgent(t, agent.NewProviderServices(sink)).HandleOutput
+		},
+		TextOf: func(row agenttest.Message) (agenttest.RetryAttemptText, bool) {
+			if _, text, completion, ok := agenttest.DecodeAssembledMessage(row.Content); ok {
+				return agenttest.RetryAttemptText{Text: text, Completion: completion}, true
+			}
+			var event struct {
+				Payload struct {
+					Content string `json:"content"`
+				} `json:"payload"`
+			}
+			if json.Unmarshal(row.Content, &event) != nil || event.Payload.Content == "" {
+				return agenttest.RetryAttemptText{}, false
+			}
+			return agenttest.RetryAttemptText{Text: event.Payload.Content, Completion: agent.MessageCompletionComplete}, true
+		},
+		Want: []agenttest.RetryAttemptText{
+			{Text: "FRESH-REASONING ", Completion: agent.MessageCompletionComplete},
+			{Text: "FRESH-TEXT OK", Completion: agent.MessageCompletionComplete},
+		},
+		Discarded: []string{"DISCARDED-REASONING", "DISCARDED-TEXT"},
+	})
+}
+
+func TestHandleZCodeOutput_RequestCompletedResolvesTheRetryRow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	feedZCodeRetry(t, a)
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"q1","querySource":"main_turn"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"q1","querySource":"main_turn"}`))
+	require.Len(t, sink.LeapMuxNotifications(), 1)
+	assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+}
+
+func TestHandleZCodeOutput_ASideQueryCompletionResolvesNothing(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	feedZCodeRetry(t, a)
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"q2","querySource":"compact"}`))
+	assert.Empty(t, sink.LeapMuxNotifications())
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"q1","querySource":"main_turn"}`))
+	assert.Len(t, sink.LeapMuxNotifications(), 1)
+}
+
+func TestHandleZCodeOutput_ATurnEndResetsTheRetry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	feedZCodeRetry(t, a)
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"q1","querySource":"main_turn"}`))
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+func TestZCodeRetryResolutionRequiresAPersistedNotice(t *testing.T) {
+	t.Parallel()
+	sink := &failingZCodeNotificationSink{Sink: &agenttest.Sink{}}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	feedZCodeRetry(t, a)
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"q1","querySource":"main_turn"}`))
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+func feedZCodeRetry(t *testing.T, a *Agent) {
+	t.Helper()
+	// Trimmed from run6, scenario D. The main request retries before it completes.
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"q1","querySource":"main_turn","_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":1,"maxRetries":5}}}}`))
 }
 
 func TestHandleZCodeOutput_ToolInputKeepsTextForTheCompletedResponse(t *testing.T) {
@@ -1063,25 +1169,45 @@ func TestHandleZCodeOutput_GoalVerificationFinalsPersistAndDropTheDetail(t *test
 
 // --- compaction lifecycle and microcompact (session.updated) ---
 
-// The compaction lifecycle is the single source of ZCode compaction rows. Every
-// state of it persists its own frame, and `Classify` folds start into end.
-func TestHandleZCodeOutput_CompactionLifecyclePersists(t *testing.T) {
+func TestHandleZCodeOutput_ACompactionStartIsLiveStateOnly(t *testing.T) {
 	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"operationId":"c1","status":"started","trigger":"auto"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"operationId":"c1","status":"retrying","trigger":"auto"}`))
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.Messages())
+	assert.Equal(t, []any{map[string]any{"trigger": "auto"}}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+}
 
-	for _, status := range []string{"started", "retrying", "skipped", "completed", "failed", "interrupted"} {
+func TestHandleZCodeOutput_ACompactionEndStoresOneRowAndEndsTheLiveState(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"completed", "skipped", "failed", "interrupted"} {
 		t.Run(status, func(t *testing.T) {
 			t.Parallel()
-			sink := &agenttest.ControlSink{}
+			sink := &agenttest.Sink{}
 			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-
 			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
-				`{"operationId":"c1","status":"`+status+`","trigger":"auto","phase":"standalone_turn",`+
-					`"display":"separator","preCompactTokenCount":180000,"postCompactTokenCount":12000}`))
-
-			require.Equal(t, 1, sink.NotificationCount())
-			assert.Equal(t, 0, sink.MessageCount())
+				`{"operationId":"c1","status":"started","trigger":"auto"}`))
+			a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+				`{"operationId":"c1","status":"`+status+`","trigger":"auto"}`))
+			require.Len(t, sink.PersistedNotifications(), 1)
+			assert.Contains(t, string(sink.PersistedNotifications()[0].Content), `"status":"`+status+`"`)
+			assert.Equal(t, []any{map[string]any{"trigger": "auto"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 		})
 	}
+}
+
+func TestHandleZCodeOutput_AnUnknownCompactionStatusPersists(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"operationId":"c1","status":"future-status","trigger":"auto"}`))
+	assert.Len(t, sink.PersistedNotifications(), 1)
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 }
 
 // A microcompact rewrites a fraction of the context and carries no metadata. It
@@ -1183,6 +1309,34 @@ func TestHandleZCodeOutput_ModelSelectedFallbackPersists(t *testing.T) {
 
 	require.Equal(t, 1, sink.NotificationCount(), "only the registry fallback is a row")
 	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, "p/glm-5.3", a.model)
+	assert.Equal(t, int64(200000), a.contextWindow)
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "p/glm-5.3", sink.LastSettingsRefresh().Model)
+}
+
+func TestHandleZCodeOutput_ModelFallbackRejectsInvalidSettings(t *testing.T) {
+	t.Parallel()
+	for _, selection := range []string{`null`, `{}`, `"model"`, `{"modelId":false}`} {
+		sink := &agenttest.Sink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.model, a.contextWindow = "p/current", 100000
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+			`{"modelSelection":`+selection+`,"origin":"registryFallback","contextWindow":200000}`))
+		assert.Equal(t, "p/current", a.model)
+		assert.Equal(t, int64(100000), a.contextWindow)
+		assert.Zero(t, sink.SettingsRefreshCount())
+	}
+	for _, window := range []string{`null`, `0`, `-1`, `1.5`, `9223372036854775808`} {
+		sink := &agenttest.Sink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.contextWindow = 100000
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+			`{"modelSelection":{"providerId":"p","modelId":"next"},"origin":"registryFallback","contextWindow":`+window+`}`))
+		assert.Equal(t, "p/next", a.model)
+		assert.Equal(t, int64(100000), a.contextWindow)
+		assert.Equal(t, 1, sink.SettingsRefreshCount())
+	}
 }
 
 // A hook the user must see is a client-visible failure. An internal hook runs
@@ -1646,9 +1800,8 @@ func TestHandleZCodeOutput_IgnoredEventTypesProduceNothing(t *testing.T) {
 	assert.Equal(t, 0, len(sink.BackgroundTasks()))
 }
 
-// An event type this build does not know must be dropped rather than crash or reach a
-// branch that looks deliberate.
-func TestHandleZCodeOutput_UnknownEventTypeIsIgnoredWithoutPanic(t *testing.T) {
+// An unknown event remains available in the current session's transcript.
+func TestHandleZCodeOutput_AnUnknownEventOfTheCurrentSessionPersists(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -1656,11 +1809,32 @@ func TestHandleZCodeOutput_UnknownEventTypeIsIgnoredWithoutPanic(t *testing.T) {
 
 	a.HandleOutput(zcodeEventLine(t, 7, "a.type.a.later.build.invented", `{"x":1}`))
 
-	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 1, sink.MessageCount())
 	a.Mu.Lock()
 	seq := a.lastSeq
 	a.Mu.Unlock()
 	assert.Equal(t, int64(7), seq, "an unknown event still advances the sequence, so a replay does not repeat it")
+}
+
+func TestZCodeUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	cases := []agenttest.UnknownFrameCase{
+		{
+			Name:   "current session",
+			Frame:  []byte(`{"method":"session/event","params":{"sessionId":"sess-1","seq":7,"type":"future.event","payload":{"x":1},"extra":true}}`),
+			Stored: []byte(`{"sessionId":"sess-1","seq":7,"type":"future.event","payload":{"x":1},"extra":true}`),
+		},
+		{
+			Name: "another session", OtherSession: true,
+			Frame: []byte(`{"method":"session/event","params":{"sessionId":"other","seq":7,"type":"future.event","payload":{"x":1}}}`),
+		},
+	}
+	agenttest.AssertUnknownFramePersists(t, cases, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		sink := &agenttest.Sink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.HandleOutput(tc.Frame)
+		return sink
+	})
 }
 
 func TestHandleZCodeOutput_MalformedAndUnrelatedLinesAreSurvivable(t *testing.T) {
@@ -1916,6 +2090,8 @@ func TestHandleZCodeOutput_StreamRecoveryTailDiscardedEmptiesTheBufferScopes(t *
 
 	assert.Equal(t, 0, a.generationBuffer.RetainedTextLenForTest(zcodeReasoningScope("m1")))
 	assert.Equal(t, 0, a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m1")))
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress(zcodeReasoningScope("m1")))
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress(zcodeTextScope("m1")))
 	assert.Empty(t, a.StdinForTest().(*zcodeRecordedStdin).Frames(), "the discard is consumed, never re-subscribed")
 	assert.Equal(t, 0, sink.MessageCount())
 	assert.Equal(t, 0, sink.NotificationCount())

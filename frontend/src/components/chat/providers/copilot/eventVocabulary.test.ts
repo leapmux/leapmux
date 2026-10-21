@@ -5,15 +5,9 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
 
-// Every event type the installed runtime declares must reach a row the reader can
-// read. The worker persists EVERY event the runtime does not mark ephemeral, and the
-// browser draws a raw-JSON bubble for a type it cannot identify. The runtime declares 131
-// types; LeapMux named 52, so an ordinary turn wrote several bubbles that said
-// nothing a reader could act on.
-//
-// The known world is the generated `COPILOT_EVENT` table, transcribed from
-// copilot-sdk's own session-event union. The sweep below walks it and fails for a
-// type that reaches `unknown` -- which is what a new runtime release would produce.
+// The Worker consumes internal events before storage.
+// Stored copies stay unknown unless the shared trace-prefix table hides them.
+// This sweep rejects browser-only hide rules for those events.
 
 /**
  * The payload each type needs to produce its row.
@@ -25,7 +19,15 @@ import './plugin'
 const PAYLOAD: Record<string, Record<string, unknown>> = {
   [COPILOT_EVENT.AssistantMessage]: { content: 'Done.' },
   [COPILOT_EVENT.AssistantReasoning]: { content: 'Let me consider...' },
-  [COPILOT_EVENT.ModelCallFailure]: { message: 'the upstream model refused' },
+  [COPILOT_EVENT.ModelCallFailure]: { errorMessage: 'the upstream model refused' },
+  [COPILOT_EVENT.SessionError]: { message: 'An error.' },
+  [COPILOT_EVENT.SessionWarning]: { message: 'A warning.' },
+  [COPILOT_EVENT.SessionInfo]: { message: 'Information.' },
+  [COPILOT_EVENT.SystemNotification]: { content: 'A system notice.' },
+  [COPILOT_EVENT.SessionCustomNotification]: { name: 'An extension notice.' },
+  [COPILOT_EVENT.PermissionCompleted]: { result: { kind: 'denied-by-rules' } },
+  [COPILOT_EVENT.SkillInvoked]: { skill: 'review' },
+  [COPILOT_EVENT.SkillInvokedRef]: { skill: 'review' },
 }
 
 function classify(type: string): string {
@@ -35,7 +37,7 @@ function classify(type: string): string {
     method: 'session.event',
     params: { sessionId: 's1', event: { id: 'e1', type, agentId: '', data: PAYLOAD[type] ?? {} } },
   }
-  return plugin?.transcript.classify(input(frame)).kind
+  return plugin.transcript.classify(input(frame, undefined, AgentProvider.GITHUB_COPILOT)).kind
 }
 
 /**
@@ -58,18 +60,17 @@ describe('copilot event vocabulary', () => {
     expect(Object.keys(COPILOT_EVENT_PREFIX).length).toBe(6)
   })
 
-  it.each(Object.values(COPILOT_EVENT))('names %s', (type) => {
+  it.each(Object.values(COPILOT_EVENT))('classifies %s without an obsolete hide rule', (type) => {
     const kind = classify(type)
     const expected = STRUCTURAL[type]
     if (expected) {
       expect(kind).toBe(expected)
       return
     }
-    expect(
-      kind,
-      `${type} reaches no rule, so the row draws raw JSON. Add it to `
-      + 'COPILOT_HIDDEN_TYPES, COPILOT_NOTIFICATION_TYPES or COPILOT_CONTROL_REQUEST_TYPES.',
-    ).not.toBe('unknown')
+    if (Object.values(COPILOT_EVENT_PREFIX).some(prefix => type.startsWith(prefix)))
+      expect(kind).toBe('hidden')
+    else
+      expect(kind, `${type} has an obsolete browser hide rule`).not.toBe('hidden')
   })
 
   // A family the contract covers by PREFIX must answer for a member the table does
@@ -86,11 +87,10 @@ describe('copilot event vocabulary', () => {
     expect(classify(type)).toBe('hidden')
   })
 
-  // `model.call_failure` is the one member of a hidden family that LeapMux surfaces,
-  // so the prefix rule must carve it out rather than swallow it.
-  it('keeps the model-call failure visible inside a hidden family', () => {
+  // The Worker consumes model failures before storage. The shared prefix rule remains.
+  it('uses the shared trace rule for a stored model failure', () => {
     expect(COPILOT_EVENT.ModelCallFailure.startsWith(COPILOT_EVENT_PREFIX.ModelTrace)).toBe(true)
-    expect(classify(COPILOT_EVENT.ModelCallFailure)).toBe('notification')
+    expect(classify(COPILOT_EVENT.ModelCallFailure)).toBe('hidden')
   })
 
   // A type from a release later than this one still has to render as something a

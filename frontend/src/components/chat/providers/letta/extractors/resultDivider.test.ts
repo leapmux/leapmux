@@ -24,6 +24,14 @@ describe('lettaResultDivider', () => {
     expect(lettaResultDivider(turnFinished('error'), MessageCompletion.ERROR)).toEqual({ label: 'Turn failed', isError: true })
   })
 
+  it('states the native error on the failed divider with separate detail', () => {
+    const error = JSON.stringify({ error: { error: { message: 'First line.\nSecond line.' } } })
+    expect(lettaResultDivider({ ...turnFinished('error'), error }, MessageCompletion.ERROR))
+      .toEqual({ label: 'Turn failed — First line.', detail: 'Second line.', isError: true })
+    expect(lettaResultDivider({ ...turnFinished('error'), error: '  ' }, MessageCompletion.ERROR))
+      .toEqual({ label: 'Turn failed', isError: true })
+  })
+
   it.each([
     ['a complete turn', MessageCompletion.COMPLETE],
     ['a turn with no record', undefined],
@@ -32,9 +40,9 @@ describe('lettaResultDivider', () => {
     expect(lettaResultDivider(turnFinished(), completion)).toEqual({ label: 'Turn ended' })
   })
 
-  it('reads the discriminator from kind when type is absent', () => {
+  it('does not claim an old kind discriminator that the worker never stores', () => {
     const { type: _type, ...frame } = turnFinished()
-    expect(lettaResultDivider({ ...frame, kind: 'turn_finished' }, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
+    expect(lettaResultDivider({ ...frame, kind: 'turn_finished' }, MessageCompletion.INTERRUPTED)).toBeNull()
   })
 
   it.each([

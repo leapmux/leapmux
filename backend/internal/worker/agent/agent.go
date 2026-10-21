@@ -63,7 +63,9 @@ type TurnStateAdmission interface {
 
 // MessageContent keeps provider bytes and supplemental data separate during persistence and extraction.
 type MessageContent struct {
-	Original []byte
+	// outputExecution carries the active queue admission through transparent sink decorators.
+	outputExecution *outputExecution
+	Original        []byte
 	// IdempotencyKey identifies one immutable provider record within its native session.
 	// An empty key preserves ordinary transcript writes.
 	IdempotencyKey string
@@ -113,6 +115,8 @@ type StoredMessage struct {
 
 // TranscriptServices persists provider output and turn boundaries.
 type TranscriptServices interface {
+	// PersistWorkerNotification stores a captured worker envelope with its worker-specific reduction semantics.
+	PersistWorkerNotification(content MessageContent) (bool, error)
 	// CaptureMessage freezes the native session and live owner before a delayed write.
 	// A supplied publication keeps its original owner.
 	CaptureMessage(content MessageContent, span SpanInfo) MessageContent
@@ -231,6 +235,9 @@ type ProgressServices interface {
 }
 
 // ControlRequest keeps the native payload separate from its optional transcript source.
+// A NonBlocking request is one the agent does not wait for: the turn continues and the
+// answer arrives later. The zero value is a blocking request, so every publisher that
+// does not set the flag keeps today's behavior.
 type ControlRequest struct {
 	// AgentSessionID is the provider session that the request belongs to. The
 	// worker accepts an answer only while the agent is in that session. An empty
@@ -243,6 +250,8 @@ type ControlRequest struct {
 	InstanceID string
 	Payload    []byte
 	SourceSeq  int64
+	// NonBlocking marks a request that the agent does not wait for.
+	NonBlocking bool
 }
 
 // ControlServices persists and broadcasts control requests.
@@ -257,10 +266,9 @@ type ControlServices interface {
 
 // SessionServices publishes provider session state and settings.
 type SessionServices interface {
-	// MessageSessionID is the session that this sink stamps on the rows it
-	// writes. A provider that broadcasts session state for a CHILD resolves the
-	// child's sink first, so the broadcast identifies the same session as the child's
-	// rows.
+	// MessageSessionID is the session that this sink stamps on a row that states no AgentSessionID.
+	// A provider resolves the child's sink before it broadcasts that child's session state.
+	// The broadcast then identifies the same session as the child's rows.
 	MessageSessionID() string
 	UpdateSessionID(sessionID string)
 	UpdatePermissionMode(mode string)
@@ -575,7 +583,41 @@ type BackgroundTaskServices interface {
 	ReviveBackgroundTask(rowKey string) error
 }
 
+// SteerOutcome states what the provider knows about one steer.
+type SteerOutcome uint8
+
+const (
+	// SteerOutcomePending means that the provider still waits for evidence.
+	SteerOutcomePending SteerOutcome = iota
+	// SteerOutcomeEchoed means that the model read the steer.
+	SteerOutcomeEchoed
+	// SteerOutcomeDropped means that the provider removed the steer before the model read it.
+	SteerOutcomeDropped
+	// SteerOutcomeUncertain means that the provider cannot prove delivery or removal.
+	SteerOutcomeUncertain
+)
+
+// SteerEchoServices reports delivery outcomes in the order of accepted steers.
+type SteerEchoServices interface {
+	// ReportSteersEchoed follows the output before the steer and precedes the output after it.
+	ReportSteersEchoed(count int)
+	// ReportSteersDropped selects the oldest pending steers and writes no transcript row.
+	ReportSteersDropped(count int)
+	// ReportSteersUncertain retains the oldest inputs and prevents their automatic replay.
+	ReportSteersUncertain(count int)
+}
+
+// OutputEffectServices captures effects that can wait behind pending transcript rows.
+type OutputEffectServices interface {
+	// OutputQueue returns the lifetime owner of this transcript's pending writes.
+	OutputQueue() *OutputQueue
+	// CaptureSteerReport retains the original publisher and span context. A failed effect can be retried.
+	CaptureSteerReport(count int, outcome SteerOutcome) func() error
+}
+
 type ServiceFacets interface {
+	OutputEffectServices
+	SteerEchoServices
 	TranscriptServices
 	TurnServices
 	SpanServices
@@ -597,6 +639,8 @@ type ProviderServices interface {
 }
 
 type providerServices struct {
+	OutputEffectServices
+	SteerEchoServices
 	TranscriptServices
 	TurnServices
 	SpanServices
@@ -615,6 +659,7 @@ func (providerServices) providerServices() {}
 // NewProviderServices composes one implementation into opaque provider facets.
 func NewProviderServices(services ServiceFacets) ProviderServices {
 	return providerServices{
+		OutputEffectServices: services, SteerEchoServices: services,
 		TranscriptServices:     services,
 		TurnServices:           services,
 		SpanServices:           services,
@@ -801,6 +846,30 @@ type InputSteerer interface {
 	// interface, not to an optional one, so a new provider cannot forget it and
 	// claim a capability that it does not have.
 	SupportsSteering() bool
+}
+
+// SteerPreparer persists buffered output before the queue reserves the steer's position.
+// PrepareSteer takes only provider locks and must not wait for a turn to end.
+type SteerPreparer interface {
+	PrepareSteer()
+}
+
+// SteerEchoReporter declares whether the provider writes steer rows at its echo.
+// The answer is constant and takes no lock.
+type SteerEchoReporter interface{ SteerRowAtEcho() bool }
+
+// SteerSurvivor declares whether an accepted steer survives a turn end.
+// The answer is constant and takes no lock.
+type SteerSurvivor interface{ SteerSurvivesTurnEnd() bool }
+
+// SteerPolicy states when a steer gets its row and whether it survives a turn end.
+type SteerPolicy struct{ RowAtEcho, SurvivesTurnEnd bool }
+
+// SessionInputSteerer validates a recorded question's session while it selects the native target.
+// A provider without this capability cannot steer an answer to a recorded question.
+type SessionInputSteerer interface {
+	InputSteerer
+	SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error
 }
 
 var (

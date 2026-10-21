@@ -436,7 +436,7 @@ describe('createMockModelServer', () => {
   })
 
   for (const path of ['/v1/responses', '/v1/messages']) {
-    it(`refuses a mid-stream error on ${path}, which has no such shape`, async () => {
+    it(`sends a mid-stream error on ${path}`, async () => {
       const server = await startServer()
       await registerScenario(server, 'mid-stream-elsewhere', { steps: [{ error: { status: 500, message: 'The stream broke.', midStream: true } }] })
       const content = mockScenarioPrompt('mid-stream-elsewhere', 'Report this error.')
@@ -445,8 +445,39 @@ describe('createMockModelServer', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: 'mock-model', stream: true, messages: [{ role: 'user', content }], input: [{ role: 'user', content }] }),
       })
-      expect(response.status).toBe(400)
-      expect(await response.text()).toContain('mid-stream model error on the OpenAI Chat Completions route only')
+      expect(response.status).toBe(200)
+      const events = (await response.text()).split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+      expect(events.map(event => event.type)).toEqual(path === '/v1/responses'
+        ? ['response.created', 'response.output_item.added', 'response.content_part.added', 'response.output_text.delta', 'response.failed']
+        : ['message_start', 'content_block_start', 'content_block_delta', 'error'])
+      expect(events[3]).toMatchObject(path === '/v1/responses' ? { delta: 'partial ' } : { type: 'error' })
+      if (path === '/v1/messages')
+        expect(events[2]).toMatchObject({ delta: { text: 'partial ' } })
+      expect(events.at(-1)).toMatchObject(path === '/v1/responses'
+        ? { response: { status: 'failed', error: { message: 'The stream broke.' } } }
+        : { error: { message: 'The stream broke.' } })
+    })
+  }
+
+  for (const path of ['/v1/responses', '/v1/messages', '/v1/chat/completions']) {
+    it(`ends an incomplete stream after its text delta on ${path}`, async () => {
+      const server = await startServer()
+      await registerScenario(server, 'incomplete-stream', { steps: [{ error: { status: 500, message: 'The stream ended.', midStream: 'truncate' } }] })
+      const content = mockScenarioPrompt('incomplete-stream', 'Read the partial answer.')
+      const response = await fetch(`${server.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'mock-model', stream: true, messages: [{ role: 'user', content }], input: [{ role: 'user', content }] }),
+      })
+      expect(response.status).toBe(200)
+      const raw = await response.text()
+      const events = raw.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+      expect(raw).not.toContain('[DONE]')
+      expect(events.map(event => event.type)).toEqual(path === '/v1/responses'
+        ? ['response.created', 'response.output_item.added', 'response.content_part.added', 'response.output_text.delta']
+        : path === '/v1/messages' ? ['message_start', 'content_block_start', 'content_block_delta'] : [undefined])
+      expect(JSON.stringify(events.at(-1))).toContain('partial ')
+      expect(events.some(event => 'error' in event)).toBe(false)
     })
   }
 
@@ -464,6 +495,56 @@ describe('createMockModelServer', () => {
     controller.abort()
     await response
     expect((await readScenarioStatus(server.url, 'cancel-response-receipt')).requests[0]?.response).toBeUndefined()
+  })
+
+  it.each([
+    ['/v1/messages', 'refusal', 'refusal'],
+    ['/v1/messages', 'max_tokens', 'max_tokens'],
+    ['/v1/chat/completions', 'refusal', 'content_filter'],
+    ['/v1/chat/completions', 'max_tokens', 'length'],
+    ['/v1/responses', 'max_tokens', 'max_output_tokens'],
+  ] as const)('maps stop reason %s %s to %s', async (path, stopReason, expected) => {
+    const server = await startServer()
+    for (const stream of [false, true]) {
+      const id = `stop-${stream}`
+      await registerRawScenario(server, id, { steps: [{ text: 'A partial answer', stopReason }] })
+      const content = mockScenarioPrompt(id, 'Reply now.')
+      const response = await fetch(`${server.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'mock-model', stream, messages: [{ role: 'user', content }], input: [{ role: 'user', content }] }),
+      })
+      expect(response.status).toBe(200)
+      const text = await response.text()
+      const events = stream
+        ? text.split('\n').filter(line => line.startsWith('data: ') && line !== 'data: [DONE]').map(line => JSON.parse(line.slice(6)))
+        : [JSON.parse(text)]
+      if (path === '/v1/messages') {
+        expect(events.some(event => (event.delta?.stop_reason ?? event.stop_reason) === expected)).toBe(true)
+      }
+      else if (path === '/v1/chat/completions') {
+        expect(events.some(event => event.choices?.[0]?.finish_reason === expected)).toBe(true)
+      }
+      else {
+        const last = events.at(-1)
+        expect(stream ? last.response : last).toMatchObject({ status: 'incomplete', incomplete_details: { reason: expected } })
+        if (stream)
+          expect(last.type).toBe('response.incomplete')
+      }
+    }
+  })
+
+  it('refuses a stop reason that the Responses protocol cannot state before it sends stream headers', async () => {
+    const server = await startServer()
+    await registerRawScenario(server, 'unsupported-stop', { steps: [{ text: 'Refused', stopReason: 'refusal', responseMetadata: [{ note: 'held' }] }] })
+    const response = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stream: true, input: mockScenarioPrompt('unsupported-stop', 'Reply.') }),
+    })
+    expect(response.status).toBe(400)
+    expect(response.headers.get('content-type')).toContain('application/json')
+    expect(await response.text()).toContain('The mock cannot state stop reason refusal on openai-responses')
   })
 
   it('writes the native Copilot quota snapshot header with an explicit mock entitlement', async () => {

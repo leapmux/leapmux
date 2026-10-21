@@ -239,7 +239,7 @@ func TestApprovalAnswers(t *testing.T) {
 				ResponseContent: neutralResponse(t, "approval:ap1", tc.response),
 			})
 			require.False(t, res.Withhold)
-			assert.Equal(t, tc.feedback, res.Feedback, "a reason rides as the next message, never in the decision")
+			assert.Equal(t, agent.FeedbackFollowUp(tc.feedback), res.FollowUp, "a reason rides as the next message, never in the decision")
 			frame := decodeJSON(t, res.Content)
 			assert.Equal(t, map[string]any{"frame": "approval", "approval_id": "ap1", "decision": tc.decision}, frame)
 
@@ -351,7 +351,7 @@ func TestQuestionAnswers(t *testing.T) {
 				ResponseContent: neutralResponse(t, "user_input:q1", tc.response),
 			})
 			require.False(t, res.Withhold)
-			assert.Empty(t, res.Feedback, "a question's answer reaches the runtime whole")
+			assert.Empty(t, res.FollowUp, "a question's answer reaches the runtime whole")
 			frame := decodeJSON(t, res.Content)
 			assert.Equal(t, "user_input", frame["frame"])
 			assert.Equal(t, testThreadID, frame["thread_id"])

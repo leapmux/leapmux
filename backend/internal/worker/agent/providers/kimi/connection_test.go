@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -26,6 +27,94 @@ type kimiStreamRig struct {
 	mu         sync.Mutex
 	frames     []kimiFrame
 	reconnects []kimiReconnect
+}
+
+func TestKimiGlobalReplaySubscribesFromARecentCursor(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ current, from int64 }{{300, 44}, {20, 0}, {0, 0}, {-1 << 63, 0}, {1 << 62, (1 << 62) - 256}} {
+		t.Run(strconv.FormatInt(tc.current, 10), func(t *testing.T) {
+			rig := newKimiStreamRig(t)
+			rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+				return 0, kimiAck{Accepted: sub.IDs, Cursors: map[string]kimiCursor{kimiGlobalSessionID: {Seq: tc.current, Epoch: "global-epoch"}}}
+			})
+			a := newOfflineKimiAgent(t, &agenttest.Sink{})
+			a.stream = rig.stream
+			a.replayStartupConfigWarnings(t.Context())
+			frames := rig.fake.subscribeFrames()
+			require.Len(t, frames, 2)
+			assert.Equal(t, []string{kimiGlobalSessionID}, frames[0].IDs)
+			assert.Empty(t, frames[0].Cursors)
+			assert.Equal(t, map[string]kimiCursor{kimiGlobalSessionID: {Seq: tc.from, Epoch: "global-epoch"}}, frames[1].Cursors)
+			cursor, tracked := rig.cursor(kimiGlobalSessionID)
+			assert.True(t, tracked)
+			assert.Equal(t, tc.current, cursor.Seq, "the explicit replay must not move the live cursor backward")
+		})
+	}
+}
+
+func TestKimiGlobalReplayNeedsACursor(t *testing.T) {
+	t.Parallel()
+	rig := newKimiStreamRig(t)
+	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{Accepted: sub.IDs} })
+	a := newOfflineKimiAgent(t, &agenttest.Sink{})
+	a.stream = rig.stream
+	a.replayStartupConfigWarnings(t.Context())
+	assert.Len(t, rig.fake.subscribeFrames(), 1)
+}
+
+func TestKimiGlobalReplayWaitUsesTheAgentClock(t *testing.T) {
+	t.Parallel()
+	rig := newKimiStreamRig(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+		close(entered)
+		<-release
+		return 0, kimiAck{Accepted: sub.IDs}
+	})
+	t.Cleanup(func() { close(release) })
+	a := newOfflineKimiAgent(t, &agenttest.Sink{})
+	a.stream = rig.stream
+	clock := testutil.NewQuartzMock(t)
+	a.clock = clock
+	trap := clock.Trap().AfterFunc(kimiGlobalReplayTimerTag)
+	t.Cleanup(trap.Close)
+	done := make(chan struct{})
+	go func() {
+		a.replayStartupConfigWarnings(t.Context())
+		close(done)
+	}()
+	ctx := testutil.DeadlineContext(t)
+	duration := testutil.WaitForTimer(t, ctx, trap)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the global subscription did not reach the server")
+	}
+	clock.Advance(duration).MustWait(ctx)
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("the global subscription did not stop at its deadline")
+	}
+	assert.Len(t, rig.fake.subscribeFrames(), 1)
+}
+
+func TestKimiGlobalReplayRefusalLeavesTheLiveCursor(t *testing.T) {
+	t.Parallel()
+	rig := newKimiStreamRig(t)
+	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+		if len(sub.Cursors) > 0 {
+			return 40300, kimiAck{}
+		}
+		return 0, kimiAck{Accepted: sub.IDs, Cursors: map[string]kimiCursor{kimiGlobalSessionID: {Seq: 300, Epoch: "global-epoch"}}}
+	})
+	a := newOfflineKimiAgent(t, &agenttest.Sink{})
+	a.stream = rig.stream
+	a.replayStartupConfigWarnings(t.Context())
+	assert.Len(t, rig.fake.subscribeFrames(), 2)
+	cursor, tracked := rig.cursor(kimiGlobalSessionID)
+	assert.True(t, tracked)
+	assert.Equal(t, kimiCursor{Seq: 300, Epoch: "global-epoch"}, cursor)
 }
 
 // kimiReconnect is one call of the stream's reconnect handler.

@@ -51,6 +51,9 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	for field, key := range map[string]string{
 		"ID": contracts.LettaDeltaFieldID, "RunID": contracts.LettaDeltaFieldRunID,
 		"ToolReturns": contracts.LettaDeltaFieldToolReturns,
+		"EventType":   contracts.LettaDeltaFieldEventType,
+		"EventData":   contracts.LettaDeltaFieldEventData,
+		"Message":     contracts.LettaDeltaFieldMessage,
 	} {
 		decoded, found := reflect.TypeFor[lettaDelta]().FieldByName(field)
 		assert.True(t, found, field)
@@ -59,6 +62,9 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	stopReason, found := reflect.TypeFor[lettaTurnFinished]().FieldByName("StopReason")
 	assert.True(t, found, "StopReason")
 	assert.Equal(t, contracts.LettaDeltaFieldStopReason, stopReason.Tag.Get("json"))
+	errorField, found := reflect.TypeFor[lettaTurnFinished]().FieldByName("Error")
+	assert.True(t, found, "Error")
+	assert.Equal(t, contracts.LettaDeltaFieldError, errorField.Tag.Get("json"))
 
 	// The receipt and the response read and write the same fields, so one table pins both structs.
 	for _, record := range []reflect.Type{reflect.TypeFor[lettaQuestionReceipt](), reflect.TypeFor[lettaQuestionResponse]()} {

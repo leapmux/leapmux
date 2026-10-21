@@ -523,6 +523,8 @@ export const SESSION_INFO_TABLES = [
   { json: 'runningToolRetryFields', goPrefix: 'RunningToolRetryField', ts: 'RUNNING_TOOL_RETRY_FIELD', tsType: 'RunningToolRetryField', what: 'fields of running_tool.retry' },
   { json: 'goalProgressFields', goPrefix: 'GoalProgressField', ts: 'GOAL_PROGRESS_FIELD', tsType: 'GoalProgressField', what: 'fields of the goal_progress object' },
   { json: 'turnRetryOfferFields', goPrefix: 'TurnRetryOfferField', ts: 'TURN_RETRY_OFFER_FIELD', tsType: 'TurnRetryOfferField', what: 'fields of the turn_retry_offer object' },
+  { json: 'compactionFields', goPrefix: 'CompactionField', ts: 'COMPACTION_FIELD', tsType: 'CompactionField', what: 'fields of the compaction object' },
+  { json: 'promptSuggestionFields', goPrefix: 'PromptSuggestionField', ts: 'PROMPT_SUGGESTION_FIELD', tsType: 'PromptSuggestionField', what: 'fields of the prompt_suggestion object' },
 ]
 
 export function checkSessionInfo(v) {
@@ -654,6 +656,8 @@ export function checkWorkerVocab(v, backgroundTaskEnumValues) {
   // worker would write a note under a name the browser never reads.
   mustBe(v.messageMetadataFields.ToolOutcome != null, 'worker-vocab.json', 'messageMetadataFields must hold ToolOutcome, the field the tool-outcome note is stored under')
   const backgroundTokens = Object.values(v.backgroundTaskStatusTokens)
+  const compactionOutcomes = Object.values(v.compactionEndOutcomes)
+  mustBe(new Set(compactionOutcomes).size === compactionOutcomes.length, 'worker-vocab.json', 'two compaction end outcomes share one wire token')
   mustBe(new Set(backgroundTokens).size === backgroundTokens.length, 'worker-vocab.json', 'two background-task statuses share one wire token')
   mustBe(v.backgroundTaskStatusTokens.Unspecified === '', 'worker-vocab.json', 'backgroundTaskStatusTokens.Unspecified must be the empty token')
   mustBe(Array.isArray(backgroundTaskEnumValues) && backgroundTaskEnumValues.length > 0, 'worker-vocab.json', 'BackgroundTaskStatus enum values must be present')
@@ -721,14 +725,6 @@ ${goConstBlock(Object.entries(v.notificationFields).map(([key, token]) => ({ nam
 // wrapNotifContent stamps on every notification-thread row.
 const NotificationThreadWrapperType = ${jsonString(v.notificationThreadWrapperType)}
 
-// CodexRateLimitReachedTimeWindow is the one Codex rateLimitReachedType that
-// lifts on the rolling-window timer (the others are billing/usage caps).
-const CodexRateLimitReachedTimeWindow = ${jsonString(v.codexRateLimitReachedTimeWindow)}
-
-// CodexRateLimitAccountBlockKey is the stable session-info member that carries
-// a billing or workspace block independently from the rolling windows.
-const CodexRateLimitAccountBlockKey = ${jsonString(v.codexRateLimitAccountBlockKey)}
-
 // GoalStatusToken* are the tokens the goal_updated notification payload
 // carries. They are NOT the storage format: agents.goal_status stores an
 // AgentGoalStatus ordinal, and agent.GoalStatusWire maps one onto the other.
@@ -739,6 +735,11 @@ ${goalStatusBlock}
 // BackgroundTaskStatusToken* identifies neutral background-task payload states.
 const (
 ${backgroundStatusBlock}
+)
+
+// CompactionEndOutcome* states why a compaction did not finish.
+const (
+${goConstBlock(Object.entries(v.compactionEndOutcomes).map(([key, token]) => ({ name: `CompactionEndOutcome${key}`, value: jsonString(token) })))}
 )
 
 // GoalTransition* name what a goal change DID. The applier holds the row from
@@ -833,18 +834,17 @@ ${written}
 /** Wrapper discriminator on every notification-thread row (wrapNotifContent). */
 export const NOTIFICATION_THREAD_TYPE = ${jsonString(v.notificationThreadWrapperType)} as const
 
-/** The one Codex rateLimitReachedType that lifts on the rolling-window timer. */
-export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = ${jsonString(v.codexRateLimitReachedTimeWindow)} as const
-
-/** Stable session-info member for a Codex billing or workspace block. */
-export const CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY = ${jsonString(v.codexRateLimitAccountBlockKey)} as const
-
 /** Neutral background-task status tokens in payloads. Storage uses enum ordinals. */
 export const BACKGROUND_TASK_STATUS_TOKEN = {
 ${backgroundStatusEntries}
 } as const
 
 export type BackgroundTaskStatusToken = typeof BACKGROUND_TASK_STATUS_TOKEN[keyof typeof BACKGROUND_TASK_STATUS_TOKEN]
+
+/** Why a compaction did not finish. */
+export const COMPACTION_END_OUTCOME = {
+${Object.entries(v.compactionEndOutcomes).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
+} as const
 
 /**
  * The worker sends these tokens in goal_updated payloads.
@@ -2276,6 +2276,10 @@ ${CODEX_PERMISSION_PRESET_KINDS.map(preset).join('\n')}
  * per-constant name entry: the Go constant is `<goPrefix><Table><Key>` and the TS key
  * is the bare `Key` inside a `<TS_PREFIX>_<TABLE>` object.
  *
+ * `subsetOf` selects keys from a declared parent table. Its JSON value is an array.
+ * Go emits a Members slice, and TypeScript emits a ReadonlySet of the parent values.
+ * A subset carries no separate literal vocabulary.
+ *
  * `frameKind` marks a table whose literals identify the kind of a frame: an event, a
  * method, a notification, an update, or the type of a line, an item or a request.
  * `'name'` states that each literal is a whole kind, and `'prefix'` states that each
@@ -2296,6 +2300,9 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'frameKinds', frameKind: 'name', goTable: 'FrameKind', tsTable: 'FRAME_KIND', tsType: 'CommandCodeFrameKind', doc: 'native RPC frame types' },
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'CommandCodeEvent', doc: 'native event types' },
+      { key: 'compactionOutcomes', goTable: 'CompactionOutcome', tsTable: 'COMPACTION_OUTCOME', tsType: 'CommandCodeCompactionOutcome', doc: 'outcomes of a compaction' },
+      { key: 'compactionTriggers', goTable: 'CompactionTrigger', tsTable: 'COMPACTION_TRIGGER', tsType: 'CommandCodeCompactionTrigger', readers: ['go'], readersWhy: 'Only the Worker compares the trigger. The browser displays the native value.', doc: 'triggers that compaction events state' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'events that the worker persists as notifications and the browser threads' },
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CommandCodeMethod', doc: 'native RPC notification methods' },
       { key: 'permissionModes', goTable: 'PermissionMode', tsTable: 'PERMISSION_MODE', tsType: 'CommandCodePermissionMode', doc: 'native permission modes' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CommandCodeTool', doc: 'native tool names' },
@@ -2309,6 +2316,8 @@ export const PROVIDER_PROTOCOLS = [
     preamble: 'Deepseek Harness owns its native Web event and tool vocabulary. The Worker stores complete native events without extracting display text.',
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'DeepseekHarnessEvent', doc: 'native session event types' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'session events that the worker persists as notifications' },
+      { key: 'hookDecisions', goTable: 'HookDecision', tsTable: 'HOOK_DECISION', tsType: 'DeepseekHarnessHookDecision', doc: 'hook decisions that prevent continued work' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'DeepseekHarnessTool', doc: 'native tool names' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'DeepseekHarnessMode', owner: 'LeapMux chose these', doc: 'values for the native boolean plan selector' },
       { key: 'permissionPresets', goTable: 'PermissionPreset', tsTable: 'PERMISSION_PRESET', tsType: 'DeepseekHarnessPermissionPreset', doc: 'native permission presets' },
@@ -2352,6 +2361,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'updates', frameKind: 'name', goTable: 'Update', tsTable: 'UPDATE', tsType: 'ACPUpdate', doc: 'session update identifiers' },
+      { key: 'sessionStateUpdates', subsetOf: 'updates', goTable: 'SessionStateUpdate', tsTable: 'SESSION_STATE_UPDATE', doc: 'state updates that the conversation consumes and the browser hides' },
       { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'ACPRole', doc: 'message `role` values' },
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ACPToolKindWord', readers: ['ts'], readersWhy: 'the worker stores a tool frame whole and never branches on its kind; the browser picks the renderer from it', doc: 'tool-call `kind` words, the behavioural set the protocol groups every tool into' },
       { key: 'supplementIdentity', goTable: 'SupplementIdentity', tsTable: 'SUPPLEMENT_IDENTITY', tsType: 'ACPSupplementIdentityField', goSlice: true, owner: 'LeapMux checks these', doc: 'protocol fields before a supplement can reach a row' },
@@ -2381,6 +2391,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'KimiEvent', doc: 'WebSocket event types -- the payload `type`' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'event types that the worker stores as notifications and the browser threads' },
       { key: 'origins', goTable: 'Origin', tsTable: 'ORIGIN', tsType: 'KimiOrigin', doc: '`turn.started.origin.kind` values, which say who started a turn' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'KimiTool', doc: 'tool names both sides dispatch on' },
       { key: 'displayKinds', goTable: 'Display', tsTable: 'DISPLAY', tsType: 'KimiDisplayKind', doc: '`display.kind` values of a tool call or an approval' },
@@ -2403,7 +2414,7 @@ export const PROVIDER_PROTOCOLS = [
     // goTable/tsTable name the emitted symbol per table; the key set is the contract's.
     tables: [
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request and state notification methods' },
-      { key: 'stateReasons', goTable: 'StateReason', tsTable: 'STATE_REASON', tsType: 'ZCodeStateReason', doc: 'state.updated reasons for context compaction' },
+      { key: 'stateReasons', goTable: 'StateReason', tsTable: 'STATE_REASON', tsType: 'ZCodeStateReason', readers: ['go'], readersWhy: 'only the worker reads compaction state reasons; it stores no state.updated row', doc: 'state.updated reasons for context compaction' },
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'ZCodeAction', doc: 'native input response actions' },
       { key: 'replyFields', goTable: 'ReplyField', tsTable: 'REPLY_FIELD', tsType: 'ZCodeReplyField', doc: 'native input response fields' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'ZCodeAnswerField', doc: 'native answer fields' },
@@ -2429,8 +2440,8 @@ export const PROVIDER_PROTOCOLS = [
       // nothing the wording does not.
       { key: 'storedAttachment', goTable: 'StoredAttachment', tsTable: 'STORED_ATTACHMENT', tsType: 'ZCodeStoredAttachmentField', doc: 'keys of one stored attachment at all three levels: the list on the part state, the record itself, and its nested metadata' },
       { key: 'storedAttachmentTypes', goTable: 'StoredAttachmentType', tsTable: 'STORED_ATTACHMENT_TYPE', tsType: 'ZCodeStoredAttachmentType', doc: 'the `type` an attachment must state to carry a file' },
-      { key: 'querySources', goTable: 'QuerySource', tsTable: 'QUERY_SOURCE', tsType: 'ZCodeQuerySource', doc: '`querySource` values of a model response -- the one source whose text is the turn reply' },
-      { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'ZCodeStopReason', doc: '`stopReason` values that state a side query when the payload carries no `querySource`' },
+      { key: 'querySources', goTable: 'QuerySource', tsTable: 'QUERY_SOURCE', tsType: 'ZCodeQuerySource', readers: ['go'], readersWhy: 'the worker stores only the main reply and retry; the browser reads no source', doc: '`querySource` values of a model response -- the one source whose text is the turn reply' },
+      { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'ZCodeStopReason', readers: ['go'], readersWhy: 'the worker uses tool_internal to discard side queries; the browser reads no stop reason', doc: '`stopReason` values that state a side query when the payload carries no `querySource`' },
       { key: 'compactionStatuses', goTable: 'CompactionStatus', tsTable: 'COMPACTION_STATUS', tsType: 'ZCodeCompactionStatus', doc: '`status` words of the compaction lifecycle event' },
       { key: 'goalVerificationStatuses', goTable: 'GoalVerificationStatus', tsTable: 'GOAL_VERIFICATION_STATUS', tsType: 'ZCodeGoalVerificationStatus', doc: '`status` words of a goal check lifecycle' },
       { key: 'goalActions', goTable: 'GoalAction', tsTable: 'GOAL_ACTION', tsType: 'ZCodeGoalAction', readers: ['go'], readersWhy: 'the worker clears the goal on this action; the browser renders the neutral goal rows that the worker writes', doc: '`action` words of a goal change event' },
@@ -2438,7 +2449,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'networkStatusPrefixes', goTable: 'NetworkStatusPrefix', tsTable: 'NETWORK_STATUS_PREFIX', tsType: 'ZCodeNetworkStatusPrefix', doc: 'the `type` prefix that marks a network status payload' },
       { key: 'microcompactStrategies', goTable: 'MicrocompactStrategy', tsTable: 'MICROCOMPACT_STRATEGY', tsType: 'ZCodeMicrocompactStrategy', doc: 'the `strategy` that marks a microcompaction payload' },
       { key: 'hookRunOutcomes', goTable: 'HookRunOutcome', tsTable: 'HOOK_RUN_OUTCOME', tsType: 'ZCodeHookRunOutcome', doc: 'hook-run `outcome` words that produce a row' },
-      { key: 'modelSelectionOrigins', goTable: 'ModelSelectionOrigin', tsTable: 'MODEL_SELECTION_ORIGIN', tsType: 'ZCodeModelSelectionOrigin', doc: 'the `origin` that marks a model switch the registry made' },
+      { key: 'modelSelectionOrigins', goTable: 'ModelSelectionOrigin', tsTable: 'MODEL_SELECTION_ORIGIN', tsType: 'ZCodeModelSelectionOrigin', readers: ['go'], readersWhy: 'the worker stores only a registry fallback; the browser reads no origin', doc: 'the `origin` that marks a model switch the registry made' },
     ],
   },
   {
@@ -2452,6 +2463,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'subagentRequest', goTable: 'SubagentRequest', tsTable: 'SUBAGENT_REQUEST', tsType: 'GooseSubagentRequestField', doc: 'fields of the subagent tool request, which rides inside logging metadata' },
       { key: 'todo', goTable: 'Todo', tsTable: 'TODO', tsType: 'GooseTodo', doc: 'the extension and tool that writes the native checklist' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'GooseConfigId', doc: 'config-option ids of the axes both sides address by id' },
+      { key: 'goalTexts', goTable: 'GoalText', tsTable: 'GOAL_TEXT', tsType: 'GooseGoalText', readers: ['go'], readersWhy: 'only the worker infers the goal end from these texts; the browser draws the goal card from the worker', doc: 'the sentences the goal loop prints: its notice prefix, its error prefix, and its max-turns message' },
     ],
   },
   {
@@ -2489,7 +2501,8 @@ export const PROVIDER_PROTOCOLS = [
     title: 'OpenCode, Kilo and MiMo Code',
     preamble: 'The OpenCode family states a question on the daemon\'s own event stream, which its Agent Client Protocol adapter does not forward. MiMo Code sends the same question shapes on its native event stream.',
     tables: [
-      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'question lifecycle events on the daemon event stream' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'daemon events that both sides read' },
+      { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'OpenCodeStatusType', doc: 'status.type values of session.status that both sides read' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
     ],
   },
@@ -2505,12 +2518,14 @@ export const PROVIDER_PROTOCOLS = [
       'Both sides run the same resolve -- the worker for its semantic extractors, the browser',
       'for the row it draws -- so a drift put a retained command row on screen with its output',
       'missing and nothing to say so. OpenAI owns the item field names; LeapMux owns the',
-      'supplement keys.',
+      'supplement keys, the control tool names, and the async question input keys.',
     ].join('\n// '),
     tables: [
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CodexSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope that carries a Codex call\'s joined output' },
       { key: 'item', goTable: 'Item', tsTable: 'ITEM_FIELD', tsType: 'CodexItemField', doc: 'fields of the item frame the join lands on' },
       { key: 'collabItem', goTable: 'CollabItem', tsTable: 'COLLAB_ITEM', tsType: 'CodexCollabItemField', goTagPin: 'backend/internal/worker/agent/providers/codex/supplement_tags_test.go', doc: 'fields of a collab tool call that list the subagents it created' },
+      { key: 'controlTools', frameKind: 'name', goTable: 'ControlTool', tsTable: 'CONTROL_TOOL', tsType: 'CodexControlTool', owner: 'LeapMux chose these', doc: 'tool names of the control requests that LeapMux publishes for Codex itself' },
+      { key: 'asyncQuestionInput', goTable: 'AsyncQuestionInput', tsTable: 'ASYNC_QUESTION_INPUT', tsType: 'CodexAsyncQuestionInputField', owner: 'LeapMux chose these', doc: 'keys of the input of a LeapMux-owned async question request' },
       { key: 'itemTypes', frameKind: 'name', goTable: 'ItemType', tsTable: 'ITEM', tsType: 'CodexItemType', doc: '`item.type` discriminators both sides dispatch on' },
       { key: 'rawItems', goTable: 'RawItem', tsTable: 'RAW_ITEM', tsType: 'CodexRawItem', doc: 'raw model item discriminators' },
       { key: 'rawTools', goTable: 'RawTool', tsTable: 'RAW_TOOL', tsType: 'CodexRawTool', doc: 'native raw tool names' },
@@ -2538,17 +2553,16 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'frameKinds', goTable: 'FrameKind', tsTable: 'FRAME_KIND', tsType: 'ClaudeFrameKind', doc: 'native conversation frame kinds' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ClaudeMode', doc: 'permission modes' },
-      // `status` is also a `system` subtype that both sides read, but it stays out: the
-      // shared `isFinalCompactingStatus` in frontend/src/components/chat/messageUtils.ts
-      // reads that shape for the Claude, Codex and ACP plugins.
       { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'ClaudeSystemSubtype', doc: '`subtype` values of a `system` line that both readers dispatch on' },
       // `goSlice`, because the MEMBERSHIP crosses the boundary: the worker returns
       // early for a subtype it never persists, and the browser hides the same set
       // when an older build stored a row for it. Iterating the ordered slice reads
       // every key on the Go side.
       { key: 'hiddenSystemSubtypes', goSlice: true, goTable: 'HiddenSystemSubtype', tsTable: 'HIDDEN_SYSTEM_SUBTYPE', tsType: 'ClaudeHiddenSystemSubtype', doc: '`system` subtypes the Worker never persists and the browser always hides' },
-      { key: 'informationalLevels', goTable: 'InformationalLevel', tsTable: 'INFORMATIONAL_LEVEL', tsType: 'ClaudeInformationalLevel', doc: '`level` of an `informational` line that the Worker drops and the browser hides' },
+      { key: 'informationalLevels', goTable: 'InformationalLevel', tsTable: 'INFORMATIONAL_LEVEL', tsType: 'ClaudeInformationalLevel', readers: ['go'], readersWhy: 'the worker drops an info line before it stores a row, so the browser never receives one', doc: '`level` of an `informational` line that the Worker drops' },
       { key: 'hookOutcomes', goTable: 'HookOutcome', tsTable: 'HOOK_OUTCOME', tsType: 'ClaudeHookOutcome', doc: '`outcome` of a `hook_response` line that becomes a row' },
+      { key: 'statuses', goTable: 'Status', tsTable: 'STATUS', tsType: 'ClaudeStatus', doc: 'native compaction state for live publication and the history filter' },
+      { key: 'compactResults', goTable: 'CompactResult', tsTable: 'COMPACT_RESULT', tsType: 'ClaudeCompactResult', doc: '`compact_result` of the final `status` line that ends a failed compaction' },
     ],
   },
   {
@@ -2564,7 +2578,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CopilotMethod', doc: 'JSON-RPC methods both sides dispatch on' },
-      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'CopilotEvent', doc: 'native event types' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'CopilotEvent', goSlice: true, doc: 'native event types' },
       // `goSlice`, because the MEMBERSHIP crosses the boundary. The browser hides all
       // six families; the worker filtered on two hand-listed ones and PERSISTED the
       // other four, so a session that used canvas, Fusion or a factory run wrote one
@@ -2575,6 +2589,9 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CopilotMode', doc: 'native session modes' },
       { key: 'permissionModes', goTable: 'PermissionMode', tsTable: 'PERMISSION_MODE', tsType: 'CopilotPermissionMode', doc: 'native permission modes' },
       { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'CopilotApprovalScope', doc: 'how long one approved permission lasts' },
+      { key: 'autoModeSwitchResponses', goTable: 'AutoModeSwitchResponse', tsTable: 'AUTO_MODE_SWITCH_RESPONSE', tsType: 'CopilotAutoModeSwitchResponse', doc: 'answers to the automatic model switch ask' },
+      { key: 'samplingDecisions', goTable: 'SamplingDecision', tsTable: 'SAMPLING_DECISION', tsType: 'CopilotSamplingDecision', owner: 'LeapMux chose these', doc: 'the saved decision on an MCP sampling request' },
+      { key: 'leapmuxRowTypes', goTable: 'LeapmuxRowType', tsTable: 'LEAPMUX_ROW_TYPE', tsType: 'CopilotLeapmuxRowType', owner: 'LeapMux chose these', doc: 'row types that the worker writes for Copilot' },
       { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'CopilotDecision', doc: 'the words a permission answer carries to the runtime' },
       { key: 'permissionOutcomes', goTable: 'PermissionOutcome', tsTable: 'PERMISSION_OUTCOME', tsType: 'CopilotPermissionOutcome', readers: ['ts'], readersWhy: 'the worker persists permission.completed whole; the browser words the refusal, which is the only place a self-refused permission is ever stated', doc: 'how one permission ended, which `permission.completed` states' },
       { key: 'permissionDecisionSources', goTable: 'PermissionDecisionSource', tsTable: 'PERMISSION_DECISION_SOURCE', tsType: 'CopilotPermissionDecisionSource', readers: ['ts'], readersWhy: 'the worker persists the completion whole; the browser is what must tell an approval a PERSON gave from one a judge, a policy or a replayed record produced, because all of them carry the same result', doc: 'who decided one permission, which `permission.completed` states beside the outcome' },
@@ -2611,6 +2628,8 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'PiRole', doc: 'message roles that both readers compare' },
       { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'PiStopReason', doc: 'assistant stop reasons that both readers compare' },
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'events that the worker persists as notifications and the browser threads' },
+      { key: 'entryTypes', goTable: 'EntryType', tsTable: 'ENTRY_TYPE', tsType: 'PiEntryType', doc: 'session entries that both readers display' },
       { key: 'assistantEvents', frameKind: 'name', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
       { key: 'customTypes', frameKind: 'name', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },
       { key: 'dialogMethods', frameKind: 'name', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
@@ -2628,6 +2647,7 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'McpElicitationMethod', doc: 'request methods' },
       { key: 'subtypes', goTable: 'Subtype', tsTable: 'SUBTYPE', tsType: 'McpElicitationSubtype', doc: 'control request subtypes' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'McpElicitationMode', doc: 'native elicitation modes' },
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'McpElicitationAction', doc: 'response actions' },
       { key: 'approvalKinds', goTable: 'ApprovalKind', tsTable: 'APPROVAL_KIND', tsType: 'McpElicitationApprovalKind', doc: 'approval request kinds' },
       { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'McpElicitationApprovalScope', doc: 'approval duration values' },
@@ -2701,6 +2721,8 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'QwenMethod', doc: 'extension methods both sides dispatch on' },
+      { key: 'compressionPhases', goTable: 'CompressionPhase', tsTable: 'COMPRESSION_PHASE', tsType: 'QwenCompressionPhase', doc: 'phases of _meta.contextCompression' },
+      { key: 'messageSources', goTable: 'MessageSource', tsTable: 'MESSAGE_SOURCE', tsType: 'QwenMessageSource', doc: 'background sources that use a separate transcript path' },
       { key: 'meta', goTable: 'Meta', tsTable: 'META', tsType: 'QwenMetaKey', doc: '`_meta` keys of an update or a tool call both sides read' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'QwenTool', doc: 'tool names both sides dispatch on' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'QwenMode', doc: 'approval modes, carried on LeapMux\'s permission-mode axis' },
@@ -2728,6 +2750,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'capabilityActions', goTable: 'CapabilityAction', tsTable: 'CAPABILITY_ACTION', tsType: 'ReasonixCapabilityAction', doc: 'capability actions' },
       { key: 'capabilityPrefixes', goTable: 'CapabilityPrefix', tsTable: 'CAPABILITY_PREFIX', tsType: 'ReasonixCapabilityPrefix', doc: 'capability identifier prefixes' },
       { key: 'toolRecord', goTable: 'ToolRecord', tsTable: 'TOOL_RECORD', tsType: 'ReasonixToolRecordKey', doc: 'the supplement envelope key and the stored tool record\'s own fields' },
+      { key: 'noticePrefixes', frameKind: 'prefix', goTable: 'NoticePrefix', tsTable: 'NOTICE_PREFIX', tsType: 'ReasonixNoticePrefix', doc: 'the prefixes that mark a notice chunk Reasonix emits beside the model stream' },
     ],
   },
   {
@@ -2746,6 +2769,8 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'CodewhaleEvent', doc: 'server-sent event names that the worker persists or publishes' },
       { key: 'itemKinds', frameKind: 'name', goTable: 'ItemKind', tsTable: 'ITEM_KIND', tsType: 'CodewhaleItemKind', doc: 'turn item `kind` values' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'runtime events that the worker persists as notification rows' },
+      { key: 'notificationItemKinds', subsetOf: 'itemKinds', goTable: 'NotificationItemKind', tsTable: 'NOTIFICATION_ITEM_KIND', doc: 'non-tool item kinds that the worker persists as notification rows' },
       { key: 'turnStatuses', goTable: 'TurnStatus', tsTable: 'TURN_STATUS', tsType: 'CodewhaleTurnStatus', doc: 'final `status` words of a turn record' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CodewhaleMode', doc: 'thread modes, carried on the LeapMux mode axis' },
       { key: 'postures', goTable: 'Posture', tsTable: 'POSTURE', tsType: 'CodewhalePosture', doc: 'thread permission postures, carried on the LeapMux permission-mode axis' },
@@ -2794,6 +2819,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OhMyPiEvent', doc: 'RPC frame `type` values' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'frames that the worker persists as notifications and the browser threads' },
       { key: 'assistantEvents', frameKind: 'name', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'OhMyPiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
       { key: 'messageRoles', goTable: 'Role', tsTable: 'ROLE', tsType: 'OhMyPiRole', doc: 'message `role` values' },
       { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'OhMyPiStopReason', doc: 'assistant message `stopReason` values' },
@@ -2886,6 +2912,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'effortLevels', goTable: 'EffortLevel', tsTable: 'EFFORT_LEVEL', tsType: 'CodebuddyEffortLevel', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'the --effort values CodeBuddy owns' },
       { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'CodebuddySystemSubtype', doc: '`subtype` values of a `system` line' },
       { key: 'controlAnswer', goTable: 'ControlAnswerField', tsTable: 'CONTROL_ANSWER_FIELD', tsType: 'CodebuddyControlAnswerField', doc: 'fields of the can_use_tool answer, as the worker sends and stores it' },
+      { key: 'resultSupplement', goTable: 'ResultSupplementField', tsTable: 'RESULT_SUPPLEMENT_FIELD', tsType: 'CodebuddyResultSupplementField', owner: 'LeapMux chose these', doc: 'identity and error fields of a result supplement' },
     ],
   },
   {
@@ -2903,6 +2930,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'frameKinds', frameKind: 'name', goTable: 'FrameKind', tsTable: 'FRAME_KIND', tsType: 'QoderFrameKind', doc: 'stdout line `type` values' },
       { key: 'controlRequestSubtypes', frameKind: 'name', goTable: 'ControlRequestSubtype', tsTable: 'CONTROL_REQUEST_SUBTYPE', tsType: 'QoderControlRequestSubtype', readers: ['go'], readersWhy: 'the worker dispatches the control channel; the browser never spells a subtype', doc: '`request.subtype` values of a control frame' },
       { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'QoderSystemSubtype', readers: ['go'], readersWhy: 'the worker classifies a system frame and persists it whole; the browser draws the notification', doc: '`subtype` values of a `system` line' },
+      { key: 'statuses', goTable: 'Status', tsTable: 'STATUS', tsType: 'QoderStatus', doc: 'native live statuses that the worker and history filter read' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'QoderMode', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'permission modes' },
       { key: 'effortLevels', goTable: 'EffortLevel', tsTable: 'EFFORT_LEVEL', tsType: 'QoderEffortLevel', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'the --reasoning-effort values Qoder owns' },
       { key: 'permissionOutcomes', goTable: 'PermissionOutcome', tsTable: 'PERMISSION_OUTCOME', tsType: 'QoderPermissionOutcome', readers: ['go'], readersWhy: 'the worker settles the can_use_tool answer; the browser draws the banner from the request', doc: 'decision outcomes a can_use_tool answer carries' },
@@ -2950,9 +2978,10 @@ export const PROVIDER_PROTOCOLS = [
       'and the browser draws all of them.',
     ].join('\n// '),
     tables: [
-      { key: 'commands', frameKind: 'name', goTable: 'Command', tsTable: 'COMMAND', tsType: 'LettaCommand', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', readers: ['go'], readersWhy: 'the worker dispatches a command by name; the browser draws the row the worker stores', doc: 'client->server command `kind` values' },
-      { key: 'messages', frameKind: 'name', goTable: 'Message', tsTable: 'MESSAGE', tsType: 'LettaMessage', readers: ['ts'], readersWhy: 'the worker persists a message whole; the browser picks the field to draw', doc: 'server->client message `kind` values' },
+      { key: 'commands', frameKind: 'name', goTable: 'Command', tsTable: 'COMMAND', tsType: 'LettaCommand', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', readers: ['go'], readersWhy: 'the worker dispatches a command by name; the browser draws the row the worker stores', doc: 'client-to-server command type values' },
+      { key: 'messages', frameKind: 'name', goTable: 'Message', tsTable: 'MESSAGE', tsType: 'LettaMessage', doc: 'server-to-client message type values' },
       { key: 'deltaKinds', frameKind: 'name', goTable: 'DeltaKind', tsTable: 'DELTA_KIND', tsType: 'LettaDeltaKind', doc: '`message_type` values of a `stream_delta`' },
+      { key: 'eventTypes', goTable: 'EventType', tsTable: 'EVENT_TYPE', tsType: 'LettaEventType', doc: 'event_type values of native event messages' },
       { key: 'deltaFields', goTable: 'DeltaField', tsTable: 'DELTA_FIELD', tsType: 'LettaDeltaField', doc: 'fields of a stream delta payload that both sides read' },
       { key: 'toolOutput', goTable: 'ToolOutput', tsTable: 'TOOL_OUTPUT', tsType: 'LettaToolOutput', doc: 'identity of native current-window tool output' },
       { key: 'toolStatuses', goTable: 'ToolStatus', tsTable: 'TOOL_STATUS', tsType: 'LettaToolStatus', doc: 'native status of returned tool data' },
@@ -2980,6 +3009,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'DiracMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'DiracConfig', doc: 'config option identifiers' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'DiracTool', doc: 'tool names both sides dispatch on' },
+      { key: 'notices', goTable: 'Notice', tsTable: 'NOTICE', tsType: 'DiracNotice', doc: 'the exact text of the notice chunks Dirac emits beside the model stream' },
     ],
   },
   {
@@ -3109,10 +3139,18 @@ export function checkProviderStructs(spec, p) {
   // each table key, and the ordered key slice of each `goSlice` table. A struct that
   // takes one of those names redeclares it, and the compiler then reports the
   // GENERATED file, which states no contract and no domain.
-  const constants = new Set(spec.tables.flatMap(t => Object.keys(p[t.key] ?? {}).map(key => `${spec.goPrefix}${t.goTable}${key}`)))
+  const constants = new Set()
   for (const t of spec.tables) {
+    const names = t.subsetOf !== undefined
+      ? [`${spec.goPrefix}${t.goTable}Members`]
+      : Object.keys(p[t.key] ?? {}).map(key => `${spec.goPrefix}${t.goTable}${key}`)
     if (t.goSlice)
-      constants.add(`${spec.goPrefix}${t.goTable}Keys`)
+      names.push(`${spec.goPrefix}${t.goTable}Keys`)
+    for (const name of names) {
+      if (spec.goPrefix !== undefined && t.goTable !== undefined)
+        mustBe(!constants.has(name), file, `${name} collides with another generated declaration`)
+      constants.add(name)
+    }
   }
   for (const [name, definition] of Object.entries(structs)) {
     mustBe(/^[A-Z][A-Za-z0-9]*$/.test(name), file, `structs.${name} must be a PascalCase Go type name`)
@@ -3229,6 +3267,24 @@ export function checkProviderProtocol(spec, p) {
   const file = `${spec.name}.json`
   const declared = spec.tables.map(t => t.key)
   for (const t of spec.tables) {
+    if (t.subsetOf !== undefined) {
+      for (const field of ['frameKind', 'goSlice', 'defaultsFor', 'tsType'])
+        mustBe(!Object.hasOwn(t, field), file, `subset ${t.key} cannot state ${field}`)
+      const parent = spec.tables.find(table => table.key === t.subsetOf)
+      mustBe(typeof t.subsetOf === 'string' && parent != null, file, `subset ${t.key} has an unknown parent table`)
+      mustBe(parent.subsetOf === undefined, file, `${t.key} cannot be a subset of a subset`)
+      const members = p[t.key]
+      mustBe(Array.isArray(members), file, `subset ${t.key} must be an array`)
+      mustBe(members.length > 0, file, `subset ${t.key} is empty`)
+      const seen = new Set()
+      for (const key of members) {
+        mustBe(typeof key === 'string', file, `subset ${t.key} must contain a string key`)
+        mustBe(Object.hasOwn(p[t.subsetOf] ?? {}, key), file, `${t.key}.${key} is not a key of ${t.subsetOf}`)
+        mustBe(typeof p[t.subsetOf][key] === 'string', file, `${t.key}.${key} requires a string value in ${t.subsetOf}`)
+        mustBe(!seen.has(key), file, `subset ${t.key} repeats key ${key}`)
+        seen.add(key)
+      }
+    }
     const readers = tableReaders(t)
     mustBe(readers.length > 0, file, `table ${t.key} declares no reader -- a table nothing reads is a contract for a value that does not cross the boundary, so delete it`)
     for (const side of readers)
@@ -3265,7 +3321,7 @@ export function checkProviderProtocol(spec, p) {
   // hold instead is one entry for each key of the table it supplies defaults for: a
   // default with no axis states a value nothing applies, and an axis with no default
   // sends the agent up with an empty option the other side then fills by hand.
-  const defaultsTables = new Set(spec.tables.filter(t => t.defaultsFor != null).map(t => t.key))
+  const literalExceptions = new Set(spec.tables.filter(t => t.defaultsFor != null || t.subsetOf !== undefined).map(t => t.key))
   for (const t of spec.tables) {
     if (t.defaultsFor == null)
       continue
@@ -3278,7 +3334,7 @@ export function checkProviderProtocol(spec, p) {
       mustBe(axes.includes(key), file, `${t.key}.${key} supplies a default for no key of ${t.defaultsFor} -- delete it, or add the axis it belongs to`)
   }
   for (const key of declared) {
-    if (defaultsTables.has(key))
+    if (literalExceptions.has(key))
       continue
     const seen = new Map()
     for (const [name, literal] of Object.entries(p[key])) {
@@ -3405,6 +3461,11 @@ function emitTsStartupOptionGroups(spec, p) {
 
 export function emitGoProviderProtocol(spec, p) {
   const blocks = spec.tables.flatMap((t) => {
+    if (t.subsetOf !== undefined) {
+      const parent = spec.tables.find(table => table.key === t.subsetOf)
+      const rows = p[t.key].map(key => `\t${spec.goPrefix}${parent.goTable}${key},`).join('\n')
+      return [`// ${spec.goPrefix}${t.goTable}Members lists ${t.doc}.\nvar ${spec.goPrefix}${t.goTable}Members = []string{\n${rows}\n}`]
+    }
     const decls = Object.entries(p[t.key])
       .map(([name, literal]) => ({ name: `${spec.goPrefix}${t.goTable}${name}`, value: jsonString(literal) }))
     const block = `// ${spec.goPrefix}${t.goTable}* are ${t.doc}.\nconst (\n${goConstBlock(decls)}\n)`
@@ -3436,7 +3497,14 @@ ${extra}${emitGoStartupOptionGroups(spec, p)}`
 }
 
 export function emitTsProviderProtocol(spec, p) {
-  const blocks = spec.tables.map((t) => {
+  // A subset initializer reads its parent. Emit all parents first to avoid a temporal dead zone.
+  const tables = [...spec.tables.filter(t => t.subsetOf === undefined), ...spec.tables.filter(t => t.subsetOf !== undefined)]
+  const blocks = tables.map((t) => {
+    if (t.subsetOf !== undefined) {
+      const parent = spec.tables.find(table => table.key === t.subsetOf)
+      const members = p[t.key].map(key => `${spec.tsPrefix}_${parent.tsTable}.${key}`).join(', ')
+      return `/** ${t.owner ?? spec.title} ${t.doc}. */\nexport const ${spec.tsPrefix}_${t.tsTable}: ReadonlySet<string> = new Set([${members}])`
+    }
     const rows = Object.entries(p[t.key]).map(([name, literal]) => `  ${name}: ${jsonString(literal)},`).join('\n')
     const symbol = `${spec.tsPrefix}_${t.tsTable}`
     // `owner` identifies who chose the literals when that is not the provider's
@@ -3467,7 +3535,7 @@ ${extra}${emitTsStartupOptionGroups(spec, p)}`
  */
 export function emitTsProviderFrameKinds(protocols) {
   const rows = protocols.flatMap(({ spec, p }) => spec.tables
-    .filter(t => t.frameKind != null)
+    .filter(t => t.subsetOf === undefined && t.frameKind != null)
     .flatMap(t => Object.values(p[t.key]).map(literal =>
       `  { literal: ${jsonString(literal)}, match: ${jsonString(t.frameKind)}, source: ${jsonString(`${spec.name} ${t.key}`)} },`)))
   return `${TS_HEADER('*-protocol.json')}

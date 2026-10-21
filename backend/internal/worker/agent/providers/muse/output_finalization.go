@@ -2,6 +2,7 @@ package muse
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -26,6 +27,7 @@ type pendingMessage struct {
 type turnFinalization struct {
 	turnID   string
 	messages []pendingMessage
+	retries  []agent.CapturedTranscript
 	end      agent.MessageContent
 }
 
@@ -56,9 +58,14 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].order < items[j].order })
-	pending := &turnFinalization{turnID: turnID}
+	pending := &turnFinalization{turnID: turnID, retries: state.retryNotices}
+	state.retryNotices = nil
+	state.retryItems = nil
 	for _, item := range items {
 		params := item.params
+		if museSilentItem(params.Item) {
+			continue
+		}
 		tool := params.Item.Kind == contracts.MuseItemKindToolCall || params.Item.Kind == contracts.MuseItemKindUserShell
 		finished := params.Item.Status != contracts.MuseItemStatusInProgress
 		if finished {
@@ -86,7 +93,7 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 			continue
 		}
 		message := pendingMessage{source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, item: item, revision: params.Item.Revision,
-			content: agent.MessageContent{Original: slices.Clone(item.raw), AgentSessionID: id, IdempotencyKey: nativeItemKey(params.Item.ID, params.Item.Revision)}}
+			content: museItemMessageContent(slices.Clone(item.raw), params)}
 		if params.Item.Kind == contracts.MuseItemKindUserMessage {
 			message.source = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
 		}
@@ -108,6 +115,10 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 			content: agent.MessageContent{Original: content, AgentSessionID: id, Completion: ended, IdempotencyKey: fmt.Sprintf("muse:partial:%s:%d", turnID, index)}})
 	}
 	pending.end = agent.WithToolUseCount(agent.MessageContent{Original: slices.Clone(raw), AgentSessionID: id, Completion: ended, IdempotencyKey: "muse:turn:" + turnID}, int(state.toolUses))
+	for i := range pending.messages {
+		pending.messages[i].content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+	}
+	pending.end.WriteReceipt = agent.NewTranscriptWriteReceipt()
 	state.finalizations = append(state.finalizations, pending)
 	if state.turnID == turnID {
 		state.turnID = ""
@@ -116,7 +127,14 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 	return pending
 }
 
-// retryFinalizations writes each captured turn in order and stops at the first failure.
+// museWriteIsRetained reports that the shared queue owns the failed write and will retry it.
+func museWriteIsRetained(err error) bool {
+	var retained *agent.PendingOutputError
+	return errors.As(err, &retained)
+}
+
+// retryFinalizations submits each complete turn before the caller can release its queue.
+// A retained failure stays in the shared queue. An unretained failure stops submission.
 func (a *Agent) retryFinalizations(state *sessionState) {
 	a.finalizeMu.Lock()
 	defer a.finalizeMu.Unlock()
@@ -126,11 +144,14 @@ func (a *Agent) retryFinalizations(state *sessionState) {
 	for _, turn := range pending {
 		for len(turn.messages) > 0 {
 			message := turn.messages[0]
-			if err := state.sink.PersistMessage(message.source, message.content, message.span); err != nil {
+			err := state.sink.PersistMessage(message.source, message.content, message.span)
+			if err != nil {
 				slog.Warn("persist captured Muse output", "turn", turn.turnID, "error", err)
-				return
+				if !museWriteIsRetained(err) {
+					return
+				}
 			}
-			if message.item != nil {
+			if message.item != nil && err == nil {
 				a.stateMu.Lock()
 				message.item.persistedRevision = max(message.item.persistedRevision, message.revision)
 				a.stateMu.Unlock()
@@ -142,9 +163,20 @@ func (a *Agent) retryFinalizations(state *sessionState) {
 			turn.messages[0] = pendingMessage{}
 			turn.messages = turn.messages[1:]
 		}
+		for len(turn.retries) > 0 {
+			if _, err := turn.retries[0].PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT); err != nil {
+				slog.Error("persist a captured Muse retry notice", "error", err)
+				if !museWriteIsRetained(err) {
+					return
+				}
+			}
+			turn.retries = turn.retries[1:]
+		}
 		if err := state.sink.PersistTurnEnd(turn.end, agent.SpanInfo{}); err != nil {
 			slog.Warn("persist the captured Muse turn end", "turn", turn.turnID, "error", err)
-			return
+			if !museWriteIsRetained(err) {
+				return
+			}
 		}
 		a.stateMu.Lock()
 		state.finalizations[0] = nil
@@ -167,6 +199,7 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 		a.stateMu.Unlock()
 		for id, state := range states {
 			a.retireControlPublications(state)
+			a.endSessionCompactions(state)
 			a.stateMu.Lock()
 			turnID := state.turnID
 			controls := state.controls

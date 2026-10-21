@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,13 +18,6 @@ import (
 
 // droidAttachmentLabel identifies the provider in an attachment refusal.
 const droidAttachmentLabel = "Factory Droid"
-
-// Droid emits thinking blocks separately from assistant text blocks. The
-// worker assembles both before the browser reads them.
-const (
-	droidNotificationThinkingTextDelta    = "thinking_text_delta"
-	droidNotificationThinkingTextComplete = "thinking_text_complete"
-)
 
 // isDroidRawInterrupt reports whether a raw frame is LeapMux's own interrupt
 // marker for Droid. The browser interrupts through the InterruptAgent call; the
@@ -129,7 +124,7 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 		slog.Debug("droid: bad notification payload", "agent_id", a.AgentID(), "error", err)
 		return ""
 	}
-	if head.Type == droidNotificationChildSessionAvailable {
+	if head.Type == contracts.DroidNotificationChildSessionAvailable {
 		return a.onChildSessionAvailable(params.SessionID, payload)
 	}
 	target, ok := a.outputTargetFor(params.SessionID)
@@ -142,16 +137,16 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 
 	switch head.Type {
 	case contracts.DroidNotificationWorkingStateChanged:
-		a.onWorkingStateChanged(payload, target.childSessionID)
+		a.onWorkingStateChanged(payload, target)
 	case contracts.DroidNotificationCreateMessage:
 		a.onCreateMessage(payload, target)
 	case contracts.DroidNotificationAssistantTextDelta:
 		a.onModelTextDelta(payload, agent.AssembledMessageKindText, target)
 	case contracts.DroidNotificationAssistantTextComplete:
 		a.onModelTextComplete(payload, agent.AssembledMessageKindText, target)
-	case droidNotificationThinkingTextDelta:
+	case contracts.DroidNotificationThinkingTextDelta:
 		a.onModelTextDelta(payload, agent.AssembledMessageKindReasoning, target)
-	case droidNotificationThinkingTextComplete:
+	case contracts.DroidNotificationThinkingTextComplete:
 		a.onModelTextComplete(payload, agent.AssembledMessageKindReasoning, target)
 	case contracts.DroidToolNotificationToolCall:
 		a.onToolCall(payload, target)
@@ -162,15 +157,32 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 	case contracts.DroidNotificationSettingsUpdated:
 		if target.childSessionID == "" {
 			a.onSettingsUpdated(payload)
-		} else {
-			a.persistNotification(payload, target)
 		}
-	case contracts.DroidNotificationSessionTitleUpdated:
+	case contracts.DroidNotificationSessionTitleUpdated, contracts.DroidNotificationSessionTokenUsageChanged,
+		contracts.DroidNotificationToolExecutionHeartbeat, contracts.DroidNotificationPermissionResolved:
+	// These receipts and counters supply no transcript content.
+	case contracts.DroidNotificationHookExecutionStarted, contracts.DroidNotificationStructuredOutput:
+	// LeapMux asks for no structured output. A hook reports its result separately.
+	case contracts.DroidNotificationToolExecutionPhaseChanged:
+		a.flushPendingToolCall(target, providerkit.StringField(payload, "toolUseId"))
+	case contracts.DroidNotificationMcpStatusChanged:
+		a.onMcpStatusChanged(payload, target)
+	case contracts.DroidNotificationHookExecutionCompleted:
+		a.onHookCompleted(payload, target)
+	case contracts.DroidNotificationToolProgressUpdate:
+		a.onToolProgressUpdate(payload, target)
+	case contracts.DroidNotificationLlmRetry:
 		a.persistNotification(payload, target)
-	case contracts.DroidNotificationSessionTokenUsageChanged:
-		a.persistNotification(payload, target)
+		if target.childSessionID == "" {
+			a.retryResolution.NoteRetry()
+		}
+	case contracts.DroidNotificationAssistantMessageRetracted:
+		a.onAssistantMessageRetracted(payload, target)
+	case contracts.DroidNotificationQueuedMessagesDiscarded:
+		a.onQueuedMessagesDiscarded(payload, target)
 	case contracts.DroidNotificationSessionCompacted:
 		a.persistNotification(payload, target)
+		endDroidCompaction(target)
 		if target.childSessionID == "" {
 			a.finishCompactionFromNotification()
 			a.refreshContextUsage()
@@ -197,20 +209,71 @@ func (a *Agent) persistRow(payload []byte, span agent.SpanInfo, target droidOutp
 
 // onChildSessionAvailable registers a native child under its parent session.
 func (a *Agent) onChildSessionAvailable(parentSessionID string, payload []byte) string {
-	var n struct {
-		Type           string `json:"type"`
-		ChildSessionID string `json:"childSessionId"`
+	return a.registerChildSession(parentSessionID, payload)
+}
+
+// onMcpStatusChanged stores a changed nonempty set of server failures.
+// The root key stays empty across startup, because the first MCP report precedes the native session identity.
+func (a *Agent) onMcpStatusChanged(payload []byte, target droidOutputTarget) {
+	var notification struct {
+		Servers []struct {
+			Name         string `json:"name"`
+			Status       string `json:"status"`
+			RequiresAuth bool   `json:"requiresAuth"`
+			Error        string `json:"error"`
+		} `json:"servers"`
 	}
-	if err := json.Unmarshal(payload, &n); err != nil {
-		slog.Debug("droid: bad child_session_available", "agent_id", a.AgentID(), "error", err)
-		return ""
+	if err := json.Unmarshal(payload, &notification); err != nil {
+		slog.Debug("read the Droid MCP status", "agent_id", a.AgentID(), "error", err)
+		a.persistNotification(payload, target)
+		return
 	}
-	childSessionID := a.registerChildSession(parentSessionID, payload)
-	target, ok := a.outputTargetFor(parentSessionID)
-	if ok {
+	failures := make(map[string]bool)
+	for _, server := range notification.Servers {
+		if server.Status != "failed" && !server.RequiresAuth {
+			continue
+		}
+		// A requiresAuth update can repeat the failure that status already reported.
+		raw, err := json.Marshal([2]string{server.Name, server.Error})
+		if err != nil {
+			slog.Error("encode the Droid MCP failure", "agent_id", a.AgentID(), "error", err)
+			return
+		}
+		failures[string(raw)] = true
+	}
+	if len(failures) == 0 {
+		return
+	}
+	ordered := make([]string, 0, len(failures))
+	for failure := range failures {
+		ordered = append(ordered, failure)
+	}
+	sort.Strings(ordered)
+	fingerprint := strings.Join(ordered, "\n")
+	if a.mcpFailures[target.childSessionID] == fingerprint {
+		return
+	}
+	a.persistNotification(payload, target)
+	if a.mcpFailures == nil {
+		a.mcpFailures = make(map[string]string)
+	}
+	a.mcpFailures[target.childSessionID] = fingerprint
+}
+
+func (a *Agent) onHookCompleted(payload []byte, target droidOutputTarget) {
+	var result struct {
+		Status    string `json:"hookStatus"`
+		Prevented bool   `json:"hookPreventedAction"`
+		Hidden    bool   `json:"hiddenFromUserViews"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		slog.Debug("read the Droid hook result", "agent_id", a.AgentID(), "error", err)
+		a.persistNotification(payload, target)
+		return
+	}
+	if !result.Hidden && (result.Status == "error" || result.Prevented) {
 		a.persistNotification(payload, target)
 	}
-	return childSessionID
 }
 
 // mainSessionID returns the session id of the main conversation.
@@ -226,13 +289,21 @@ type droidWorkingState struct {
 	NewState string `json:"newState"`
 }
 
-// onWorkingStateChanged moves the turn flag on the listed states only. Every
-// other frame must move nothing.
-func (a *Agent) onWorkingStateChanged(payload []byte, childSessionID string) {
+// onWorkingStateChanged publishes compaction state and changes the turn flag only for known states.
+func (a *Agent) onWorkingStateChanged(payload []byte, target droidOutputTarget) {
 	var n droidWorkingState
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
+	if n.NewState == contracts.DroidWorkingStateCompactingConversation {
+		if !target.state.compactionLive {
+			providerkit.PublishCompaction(target.sink, "")
+			target.state.compactionLive = true
+		}
+	} else if n.NewState != "" && target.state.compactionLive {
+		endDroidCompaction(target)
+	}
+	childSessionID := target.childSessionID
 	switch n.NewState {
 	case contracts.DroidWorkingStateThinking, contracts.DroidWorkingStateStreamingAssistantMessage,
 		contracts.DroidWorkingStateExecutingTool, contracts.DroidWorkingStateWaitingForToolConfirmation,
@@ -240,13 +311,13 @@ func (a *Agent) onWorkingStateChanged(payload []byte, childSessionID string) {
 		if childSessionID != "" {
 			a.armChildTurn(childSessionID)
 		} else {
-			a.armTurn()
+			a.startTurn()
 		}
 	case contracts.DroidWorkingStateIdle:
 		if childSessionID != "" {
 			a.disarmChildTurn(childSessionID)
 		} else {
-			a.disarmTurn()
+			a.endTurn()
 		}
 	}
 }
@@ -261,20 +332,71 @@ func (a *Agent) onCreateMessage(payload []byte, target droidOutputTarget) {
 		return
 	}
 	var msg struct {
-		ID   string `json:"id"`
-		Role string `json:"role"`
+		ID         string          `json:"id"`
+		Role       string          `json:"role"`
+		Visibility string          `json:"visibility"`
+		Content    json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(n.Message, &msg); err != nil {
 		return
 	}
-	target.state.ended = false
-	spanID := "droid-msg-" + msg.ID
-	if target.state.messageSpans == nil {
-		target.state.messageSpans = make(map[string]string)
+	if msg.Visibility == "llm_only" {
+		return
 	}
-	target.state.messageSpans[msg.ID] = spanID
-	// The message envelope is the transcript row; the browser draws it.
-	a.persistRow(payload, agent.SpanInfo{SpanID: spanID}, target)
+	if msg.Role == "user" {
+		if target.childSessionID == "" {
+			a.onSteerEcho(msg.ID, target)
+		}
+		// The queue stores reader input. Child registration stores the parent's prompt.
+		return
+	}
+	if msg.Role == "system" && msg.Visibility == "user_only" && target.state.turnErrorSeen {
+		target.state.turnErrorSeen = false
+		return
+	}
+	if msg.Role == "assistant" && !a.commitAssistantMessage(target, msg.ID, msg.Content) {
+		return
+	}
+	target.state.ended = false
+	spanID := ""
+	if msg.ID != "" {
+		spanID = "droid-msg-" + msg.ID
+	}
+	content := agent.MessageContent{Original: payload}
+	if msg.Role == "assistant" {
+		content.IdempotencyKey = droidMessageWriteKey(msg.ID, -1)
+	}
+	// The native envelope retains the message metadata beside its assembled blocks.
+	a.enqueueOutput(target, content, agent.SpanInfo{SpanID: spanID}, droidOutputMessage)
+}
+
+// onSteerEcho uses Droid's client-supplied message ID, so equal text cannot confirm another input.
+func (a *Agent) onSteerEcho(messageID string, target droidOutputTarget) {
+	if !a.steers.EchoKey(messageID) {
+		return
+	}
+	// A queued steer can start after the previous turn ends. Keep the queue occupied before the echo removes its item.
+	a.startTurn()
+	a.persistRemainingGeneration(target, agent.MessageCompletionComplete)
+	a.flushPendingToolCalls(target)
+	a.steers.Settle(target.sink)
+}
+
+func (a *Agent) onQueuedMessagesDiscarded(payload []byte, target droidOutputTarget) {
+	if target.childSessionID == "" {
+		requestID := providerkit.StringField(payload, "requestId")
+		dropped := false
+		if requestID != "" {
+			dropped = a.steers.DropID(requestID)
+		} else {
+			dropped = a.steers.DropAll() > 0
+		}
+		if dropped {
+			a.steers.Settle(target.sink)
+			return
+		}
+	}
+	a.persistNotification(payload, target)
 }
 
 // droidTextDelta is the payload of assistant_text_delta.
@@ -291,46 +413,194 @@ func (a *Agent) onModelTextDelta(payload []byte, kind agent.AssembledMessageKind
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
-	if n.MessageID == "" || n.TextDelta == "" {
+	if n.MessageID == "" || n.TextDelta == "" || n.BlockIndex < 0 {
 		return
 	}
+	message := droidMessageState(target.state, n.MessageID)
+	if message.finalized {
+		return
+	}
+	a.resolveModelRetry(target)
 	target.state.ended = false
-	target.state.generation.Append(modelTextScope(target.state, n.MessageID, n.BlockIndex, kind), kind, n.TextDelta, providerkit.JoinVerbatim)
+	scope := modelTextScope(n.MessageID, n.BlockIndex, kind)
+	if message.scopes == nil {
+		message.scopes = make(map[string]struct{})
+	}
+	message.scopes[scope] = struct{}{}
+	target.state.generation.Append(scope, kind, n.TextDelta, providerkit.JoinVerbatim)
 }
 
-// modelTextScope keeps a thinking block separate from the answer that follows.
-func modelTextScope(state *droidOutputState, messageID string, blockIndex int, kind agent.AssembledMessageKind) string {
-	spanID := state.messageSpans[messageID]
-	if spanID == "" {
-		spanID = "droid-msg-" + messageID
+// resolveModelRetry accepts output only from this process's main conversation.
+// A child archive cannot resolve the model request of the parent.
+func (a *Agent) resolveModelRetry(target droidOutputTarget) {
+	if target.childSessionID == "" {
+		a.retryResolution.Resolve(target.sink)
 	}
-	if kind == agent.AssembledMessageKindReasoning {
-		return spanID + ":thinking:" + strconv.Itoa(blockIndex)
-	}
-	return spanID
 }
 
-// onModelTextComplete flushes one complete text or thinking block.
+// onAssistantMessageRetracted discards the uncommitted output of the failed attempt.
+func (a *Agent) onAssistantMessageRetracted(payload []byte, target droidOutputTarget) {
+	messageID := providerkit.StringField(payload, "messageId")
+	if messageID == "" {
+		return
+	}
+	message := target.state.modelMessages[messageID]
+	if message != nil && message.finalized {
+		return
+	}
+	providerkit.DiscardGenerationScopes(&target.state.generation, target.sink, droidMessageScopes(target.state, message))
+	delete(target.state.modelMessages, messageID)
+	sessionID := target.childSessionID
+	if sessionID == "" {
+		sessionID = a.mainSessionID()
+	}
+	for id, tool := range target.state.tools {
+		if tool.pendingRow != nil {
+			target.sink.CloseSpan(tool.spanID)
+			delete(target.state.tools, id)
+			delete(a.childSpawns, droidSpawnKey(sessionID, id))
+		}
+	}
+}
+
+// modelTextScope distinguishes every text and thinking block of one native message.
+func modelTextScope(messageID string, blockIndex int, kind agent.AssembledMessageKind) string {
+	return "droid-msg-" + messageID + ":" + string(kind) + ":" + strconv.Itoa(blockIndex)
+}
+
+func droidMessageState(state *droidOutputState, messageID string) *droidModelMessage {
+	if state.modelMessages == nil {
+		state.modelMessages = make(map[string]*droidModelMessage)
+	}
+	message := state.modelMessages[messageID]
+	if message == nil {
+		message = &droidModelMessage{}
+		state.modelMessages[messageID] = message
+	}
+	return message
+}
+
+func droidMessageScopes(state *droidOutputState, message *droidModelMessage) []string {
+	if message == nil {
+		return nil
+	}
+	var scopes []string
+	for _, scope := range state.generation.ScopeIDs() {
+		if _, ok := message.scopes[scope]; ok {
+			scopes = append(scopes, scope)
+		}
+	}
+	return scopes
+}
+
+// onModelTextComplete ends live progress. Only create_message commits the assistant message.
 func (a *Agent) onModelTextComplete(payload []byte, kind agent.AssembledMessageKind, target droidOutputTarget) {
 	var n struct {
-		Type       string `json:"type"`
 		MessageID  string `json:"messageId"`
 		BlockIndex int    `json:"blockIndex"`
 	}
-	if err := json.Unmarshal(payload, &n); err != nil {
+	if json.Unmarshal(payload, &n) != nil || n.MessageID == "" || n.BlockIndex < 0 {
 		return
 	}
-	if n.MessageID == "" {
+	message := target.state.modelMessages[n.MessageID]
+	if message == nil || message.finalized {
 		return
 	}
-	scope := modelTextScope(target.state, n.MessageID, n.BlockIndex, kind)
-	_, err := target.state.generation.PersistScope(scope, agent.MessageCompletionComplete, func(raw []byte) error {
-		a.persistRow(raw, agent.SpanInfo{SpanID: scope}, target)
-		return nil
-	})
+	scope := modelTextScope(n.MessageID, n.BlockIndex, kind)
+	if _, exists := message.scopes[scope]; exists {
+		target.sink.ReportProgress(agent.CompleteModelProgress(scope))
+	}
+}
+
+// droidMessageWriteKey separates the native metadata row (-1) from its content blocks.
+func droidMessageWriteKey(messageID string, index int) string {
+	return fmt.Sprintf("droid-message:%q:%d", messageID, index)
+}
+
+type droidCommittedBlock struct {
+	index  int
+	raw    []byte
+	toolID string
+}
+
+// committedDroidBlocks validates every supported block before the agent changes any live state.
+func committedDroidBlocks(content json.RawMessage) ([]droidCommittedBlock, error) {
+	var blocks []struct {
+		Type     string          `json:"type"`
+		ID       string          `json:"id"`
+		Text     json.RawMessage `json:"text"`
+		Thinking json.RawMessage `json:"thinking"`
+	}
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return nil, err
+	}
+	if blocks == nil {
+		return nil, errors.New("the assistant message has no content array")
+	}
+	var result []droidCommittedBlock
+	for index, block := range blocks {
+		var kind agent.AssembledMessageKind
+		var value json.RawMessage
+		switch block.Type {
+		case "text":
+			kind, value = agent.AssembledMessageKindText, block.Text
+		case "thinking":
+			kind, value = agent.AssembledMessageKindReasoning, block.Thinking
+		case "tool_use":
+			if block.ID == "" {
+				return nil, errors.New("the assistant tool block has no identity")
+			}
+			result = append(result, droidCommittedBlock{index: index, toolID: block.ID})
+			continue
+		default:
+			continue
+		}
+		text, ok := providerkit.RawString(value)
+		if !ok {
+			return nil, fmt.Errorf("the assistant %s block has no string content", block.Type)
+		}
+		if text == "" {
+			continue
+		}
+		raw, err := agent.MarshalAssembledMessage(kind, text, agent.MessageCompletionComplete)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, droidCommittedBlock{index: index, raw: raw})
+	}
+	return result, nil
+}
+
+// commitAssistantMessage freezes the native final content and preserves its block order.
+// A block-complete event can precede a retry. It cannot supply this commit boundary.
+func (a *Agent) commitAssistantMessage(target droidOutputTarget, messageID string, content json.RawMessage) bool {
+	if messageID == "" {
+		return false
+	}
+	message := droidMessageState(target.state, messageID)
+	if message.finalized {
+		return false
+	}
+	blocks, err := committedDroidBlocks(content)
 	if err != nil {
-		slog.Error("droid: persist completed text failed", "agent_id", a.AgentID(), "error", err)
+		slog.Debug("read the committed Droid message", "agent_id", a.AgentID(), "error", err)
+		return false
 	}
+	a.resolveModelRetry(target)
+	// The final native content replaces drafts. Complete their progress without counting a retry discard.
+	for _, scope := range droidMessageScopes(target.state, message) {
+		target.state.generation.Discard(scope)
+		target.sink.ReportProgress(agent.CompleteModelProgress(scope))
+	}
+	message.finalized, message.scopes = true, nil
+	for _, block := range blocks {
+		if block.toolID != "" {
+			a.flushPendingToolCall(target, block.toolID)
+			continue
+		}
+		a.enqueueOutput(target, agent.MessageContent{Original: block.raw, IdempotencyKey: droidMessageWriteKey(messageID, block.index)}, agent.SpanInfo{}, droidOutputMessage)
+	}
+	return true
 }
 
 // droidToolUse is the tool_use record of a tool_call notification.
@@ -350,25 +620,81 @@ func (a *Agent) onToolCall(payload []byte, target droidOutputTarget) {
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
+	if n.ToolUse.ID == "" {
+		a.persistRow(payload, agent.SpanInfo{}, target)
+		return
+	}
+	a.resolveModelRetry(target)
 	target.state.ended = false
-	spanID := "droid-tool-" + n.ToolUse.ID
 	if target.state.tools == nil {
 		target.state.tools = make(map[string]*droidTool)
 	}
-	target.state.tools[n.ToolUse.ID] = &droidTool{
-		id:     n.ToolUse.ID,
-		name:   n.ToolUse.Name,
-		spanID: spanID,
-		input:  n.ToolUse.Input,
+	tool := target.state.tools[n.ToolUse.ID]
+	if tool == nil {
+		target.state.nextToolOrder++
+		tool = &droidTool{id: n.ToolUse.ID, spanID: "droid-tool-" + n.ToolUse.ID, order: target.state.nextToolOrder, pendingRow: slices.Clone(payload)}
+		target.state.tools[n.ToolUse.ID] = tool
+		target.sink.OpenSpan(tool.spanID, "")
+	} else if tool.pendingRow != nil {
+		tool.pendingRow = slices.Clone(payload)
 	}
+	tool.name, tool.input = n.ToolUse.Name, n.ToolUse.Input
+	target.sink.SetSpanType(tool.spanID, tool.name)
 	sessionID := target.childSessionID
 	if sessionID == "" {
 		sessionID = a.mainSessionID()
 	}
 	a.rememberTaskSpawn(sessionID, n.ToolUse)
-	target.sink.OpenSpan(spanID, "")
-	target.sink.SetSpanType(spanID, n.ToolUse.Name)
-	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, SpanType: n.ToolUse.Name}, target)
+}
+
+// flushPendingToolCall freezes the latest input at its first native boundary.
+// enqueueOutput retains a failed write, so later input updates cannot replace that snapshot.
+func (a *Agent) flushPendingToolCall(target droidOutputTarget, toolUseID string) {
+	tool := target.state.tools[toolUseID]
+	if tool == nil || tool.pendingRow == nil {
+		return
+	}
+	a.persistRow(tool.pendingRow, agent.SpanInfo{SpanID: tool.spanID, SpanType: tool.name}, target)
+	tool.pendingRow = nil
+}
+
+func (a *Agent) flushPendingToolCalls(target droidOutputTarget) {
+	var pending []*droidTool
+	for _, tool := range target.state.tools {
+		if tool.pendingRow != nil {
+			pending = append(pending, tool)
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].order < pending[j].order })
+	for _, tool := range pending {
+		a.flushPendingToolCall(target, tool.id)
+	}
+}
+
+// Droid's ExecuteCli requests the last 8192 bytes through getOutput({tailBytes: 8192}).
+const droidToolOutputTailBytes = 8192
+
+func (a *Agent) onToolProgressUpdate(payload []byte, target droidOutputTarget) {
+	var notification struct {
+		ToolUseID string `json:"toolUseId"`
+		Update    struct {
+			Text       string  `json:"text"`
+			FullOutput *string `json:"fullOutput"`
+		} `json:"update"`
+	}
+	if err := json.Unmarshal(payload, &notification); err != nil {
+		slog.Debug("read the Droid tool progress", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if notification.ToolUseID == "" {
+		return
+	}
+	tail, truncated := notification.Update.Text, false
+	if notification.Update.FullOutput != nil {
+		tail = *notification.Update.FullOutput
+		truncated = len(tail) >= droidToolOutputTailBytes
+	}
+	target.sink.ReportProgress(agent.OutputTailProgress("droid-tool-"+notification.ToolUseID, tail, truncated))
 }
 
 // droidToolResult is the payload of tool_result.
@@ -385,6 +711,7 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
+	a.flushPendingToolCall(target, n.ToolUseID)
 	tool := target.state.tools[n.ToolUseID]
 	delete(target.state.tools, n.ToolUseID)
 	if tool != nil {
@@ -402,12 +729,19 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 		spanID = tool.spanID
 	}
 	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, Closing: true}, target)
+	if n.ToolUseID != "" {
+		target.sink.ReportProgress(agent.CompleteOutputProgress(spanID))
+	}
 	target.sink.CloseSpan(spanID)
 }
 
 // onAgentTurnCompleted ends the turn. PersistTurnEnd runs before the clear, so
 // the turn's tool count reaches the activity latch first.
 func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
+	target.state.turnErrorSeen = false
+	if target.childSessionID == "" {
+		a.retryResolution.Reset()
+	}
 	var n struct {
 		Reason string `json:"reason"`
 	}
@@ -416,11 +750,12 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	}
 	completion, status := droidTurnCompletion(n.Reason)
 	a.persistRemainingGeneration(target, completion)
+	a.flushPendingToolCalls(target)
 	a.persistTurnEnd(payload, target)
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, status)
 	} else {
-		a.disarmTurn()
+		a.endTurn()
 		a.refreshContextUsage()
 	}
 }
@@ -449,6 +784,11 @@ func droidTurnCompletion(reason string) (agent.MessageCompletion, bgtask.Status)
 // persistRemainingGeneration saves blocks when Droid omits their completion events.
 // The queue retains each failed write with its original completion and publication owner.
 func (a *Agent) persistRemainingGeneration(target droidOutputTarget, completion agent.MessageCompletion) {
+	for _, message := range target.state.modelMessages {
+		if len(message.scopes) > 0 {
+			message.finalized, message.scopes = true, nil
+		}
+	}
 	err := target.state.generation.PersistAll(completion, func(raw []byte) error {
 		a.persistRow(raw, agent.SpanInfo{}, target)
 		return nil
@@ -470,7 +810,12 @@ func (a *Agent) persistTurnEnd(payload []byte, target droidOutputTarget) {
 // onError surfaces a CLI error as a notification row and ends the turn when one
 // runs.
 func (a *Agent) onError(payload []byte, target droidOutputTarget) {
+	target.state.turnErrorSeen = true
+	if target.childSessionID == "" {
+		a.retryResolution.Reset()
+	}
 	a.persistRemainingGeneration(target, agent.MessageCompletionError)
+	a.flushPendingToolCalls(target)
 	a.persistNotification(payload, target)
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, bgtask.StatusFailed)
@@ -480,7 +825,7 @@ func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 	active := a.turnActive
 	a.Mu.Unlock()
 	if active {
-		a.disarmTurn()
+		a.endTurn()
 	}
 }
 

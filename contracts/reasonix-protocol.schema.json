@@ -13,6 +13,7 @@
     "configIds",
     "methods",
     "approvalValues",
+    "noticePrefixes",
     "toolRecord"
   ],
   "$defs": {
@@ -92,6 +93,9 @@
       "$ref": "#/$defs/table"
     },
     "approvalValues": {
+      "$ref": "#/$defs/table"
+    },
+    "noticePrefixes": {
       "$ref": "#/$defs/table"
     },
     "toolRecord": {

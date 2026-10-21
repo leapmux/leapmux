@@ -17,10 +17,8 @@ const META_KINDS = new Set<MessageCategory['kind']>([
   'result_divider',
   'tool_use',
   'tool_result',
-  'agent_prompt',
   'assistant_plan',
   'control_response',
-  'compact_summary',
   'notification',
   'unsupported_provider',
 ])

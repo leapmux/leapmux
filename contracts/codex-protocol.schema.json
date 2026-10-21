@@ -10,6 +10,8 @@
     "supplement",
     "item",
     "collabItem",
+    "controlTools",
+    "asyncQuestionInput",
     "itemTypes",
     "methods",
     "options",
@@ -143,6 +145,12 @@
       "$ref": "#/$defs/table"
     },
     "collabItem": {
+      "$ref": "#/$defs/table"
+    },
+    "controlTools": {
+      "$ref": "#/$defs/table"
+    },
+    "asyncQuestionInput": {
       "$ref": "#/$defs/table"
     },
     "structs": {

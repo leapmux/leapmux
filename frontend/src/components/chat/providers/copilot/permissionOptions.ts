@@ -120,6 +120,19 @@ function copilotOffersSessionApproval(request: Record<string, unknown> | undefin
  * vocabulary the decision row lays out; the ids are what the answer carries back.
  */
 export function copilotPermissionOptions(payload: Record<string, unknown>): PermissionOption[] {
+  if (copilotEvent(payload)?.type === COPILOT_EVENT.AutoModeSwitchRequested) {
+    return [
+      { optionId: COPILOT_ALLOW_ONCE, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Switch this turn' },
+      { optionId: COPILOT_ALLOW_SESSION, kind: KIND_ALLOW_ALWAYS, name: 'Always switch' },
+      { optionId: COPILOT_REJECT, kind: KIND_REJECT_ONCE, name: 'Decline' },
+    ]
+  }
+  if (copilotEvent(payload)?.type === COPILOT_EVENT.SamplingRequested) {
+    return [
+      { optionId: COPILOT_ALLOW_ONCE, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Allow' },
+      { optionId: COPILOT_REJECT, kind: KIND_REJECT_ONCE, name: 'Deny' },
+    ]
+  }
   const request = copilotPermission(payload)
   const options: PermissionOption[] = [
     { optionId: COPILOT_ALLOW_ONCE, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Allow once' },

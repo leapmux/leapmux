@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_message_chunk","messageId":"message-1","content":{"type":"text","text":"partial "}}}}
+{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"Internal error: Service unavailable","data":{"service":"session","errorName":"APIError"}}}

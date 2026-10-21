@@ -14,6 +14,22 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+func TestUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "current session", Frame: []byte(`{"type":"probe_future_line","session_id":"T-1"}`)},
+		{Name: "implicit session", Frame: []byte(`{"type":"probe_future_line","value":7}`)},
+		{Name: "unknown system subtype", Frame: []byte(`{"type":"system","subtype":"future","session_id":"T-1"}`)},
+		{Name: "system subtype of another session", Frame: []byte(`{"type":"system","subtype":"future","session_id":"T-other"}`), OtherSession: true},
+		{Name: "another session", Frame: []byte(`{"type":"probe_future_line","session_id":"T-other"}`), OtherSession: true},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		t.Helper()
+		h := newHarness(t, withResume("T-1"))
+		h.agent.HandleOutput(tc.Frame)
+		return &h.sink.Sink
+	})
+}
+
 // The probe transcript of a shell call and a Task subagent, read end to end:
 // each assistant block takes a row of its own, the worker drops the empty
 // thinking block and the user echoes, and each turn ends at its end_turn message.
@@ -236,7 +252,7 @@ func TestAssistantLineWithNoMessageIsKeptRaw(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			h := newHarness(t)
+			h := newHarness(t, withResume("T-1"))
 			h.feed(nil, line)
 			rows := h.rows()
 			require.Len(t, rows, 1)
@@ -266,7 +282,7 @@ func TestEmptyAssistantMessageStillEndsTheTurn(t *testing.T) {
 // as a plain row, and no permission request can claim it.
 func TestToolCallWithNoIDIsKeptAsAPlainRow(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	h := newHarness(t, withResume("T-1"))
 	fp := h.send("go")
 	h.feed(fp, assistantLine(`[{"type":"tool_use","name":"shell_command","input":{"command":"ls"}}]`, "tool_use"))
 	rows := h.rows()
@@ -285,7 +301,7 @@ func TestToolCallWithNoIDIsKeptAsAPlainRow(t *testing.T) {
 // no tool name.
 func TestToolResultsThatMatchNoOpenCall(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	h := newHarness(t, withResume("T-1"))
 	fp := h.send("go")
 	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"orphan","is_error":false}]},"session_id":"T-1"}`)
 	h.feed(fp, toolResultLine("TU-never-opened", "late", false))
@@ -861,14 +877,13 @@ func TestDiscardedOutputPersistsNothing(t *testing.T) {
 }
 
 // Each provider lists the frames that move its turn flag, and a frame that this
-// build does not know moves nothing. A fresh agent has no turn armed, so an
-// assistant message is the one frame that arms one (a turn Amp started from its
-// own queue).
+// build does not know moves nothing. A fresh agent has no pending steer, so its
+// user echo is inert. TestSteerAfterEndTurnIsNotRunTwice covers a matched steer echo.
 func TestTurnFrames(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertTurnFrames(t, []agenttest.TurnFrameCase{
 		{Name: "init", Line: initLine("T-1"), Moves: false},
-		{Name: "user echo", Line: userEchoLine("hi"), Moves: false},
+		{Name: "unmatched user echo", Line: userEchoLine("hi"), Moves: false},
 		{Name: "tool result", Line: toolResultLine("TU-1", "ok", false), Moves: false},
 		{Name: "assistant text", Line: textLine("hi", ""), Moves: true},
 		{Name: "assistant end_turn", Line: textLine("hi", stopReasonEndTurn), Moves: true},

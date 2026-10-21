@@ -79,8 +79,7 @@ const METHOD_PAYLOAD: Record<string, Record<string, unknown>> = {
   [CODEX_METHOD.ModelVerification]: { verifications: ['trustedAccessForCyber'] },
   [CODEX_METHOD.AuthRecoveryStarted]: { provider: 'amazon-bedrock', message: 'AWS session has expired. Reauthenticating...' },
   [CODEX_METHOD.AuthRecoveryCompleted]: { provider: 'amazon-bedrock', message: 'Reauthenticated.' },
-  // `initialize` opts out of both. Only rows that older builds stored carry them,
-  // in these wire shapes, and the classifier hides each one.
+  // The worker opts out of both methods. The sweep requires unknown for stored copies.
   [CODEX_METHOD.TurnModerationMetadata]: { turnId: 'u1', metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } },
   [CODEX_METHOD.AccountUpdated]: { authMode: 'chatgpt', planType: 'prolite' },
 }
@@ -88,7 +87,9 @@ const METHOD_PAYLOAD: Record<string, Record<string, unknown>> = {
 const plugin = () => providerFor(AgentProvider.CODEX)!
 
 function classifyItem(type: string): string {
-  return plugin().transcript.classify(input({ item: { id: 'i1', type, ...ITEM_PAYLOAD[type] } })).kind
+  const item = { id: 'i1', type, ...ITEM_PAYLOAD[type] }
+  const frame = type === CODEX_ITEM.ContextCompaction ? { method: CODEX_METHOD.ItemCompleted, params: { item } } : { item }
+  return plugin().transcript.classify(input(frame)).kind
 }
 
 function classifyMethod(method: string): string {
@@ -98,19 +99,16 @@ function classifyMethod(method: string): string {
 /**
  * The item kinds that draw a row of their own rather than a tool row.
  *
- * `userMessage` is hidden rather than drawn: LeapMux writes the reader's own row from
- * its own record, so Codex's echo of it would be the same words twice.
+ * The worker stores no userMessage or subAgentActivity item. Stored copies stay unknown.
  */
 const STRUCTURAL_ITEM: Record<string, string> = {
   [CODEX_ITEM.AgentMessage]: 'assistant_text',
   [CODEX_ITEM.Reasoning]: 'assistant_thinking',
-  [CODEX_ITEM.UserMessage]: 'hidden',
+  [CODEX_ITEM.UserMessage]: 'unknown',
   // A proposed plan draws through the shared plan card, which every provider uses.
   [CODEX_ITEM.Plan]: 'assistant_plan',
-  // `subAgentActivity` drives the worker's background-task registry and reaches no
-  // transcript at all. Only a row an earlier build wrote carries one, and it draws
-  // nothing rather than the raw frame.
-  [CODEX_ITEM.SubAgentActivity]: 'hidden',
+  // The worker consumes subAgentActivity in its registry.
+  [CODEX_ITEM.SubAgentActivity]: 'unknown',
 }
 
 describe('codex item vocabulary', () => {
@@ -118,7 +116,7 @@ describe('codex item vocabulary', () => {
     expect(Object.keys(CODEX_ITEM).length).toBeGreaterThanOrEqual(18)
   })
 
-  it.each(Object.values(CODEX_ITEM))('names the %s item', (type) => {
+  it.each(Object.values(CODEX_ITEM))('classifies the %s item', (type) => {
     const kind = classifyItem(type)
     const expected = STRUCTURAL_ITEM[type]
     if (expected) {
@@ -202,19 +200,44 @@ describe('codex item vocabulary', () => {
   })
 })
 
+const NEVER_STORED_METHODS: Record<string, string> = {
+  [CODEX_METHOD.ThreadStarted]: 'opted out at initialize',
+  [CODEX_METHOD.TurnStarted]: 'consumed by the worker',
+  [CODEX_METHOD.ThreadStatusChanged]: 'opted out at initialize',
+  [CODEX_METHOD.ThreadNameUpdated]: 'never sent without thread/name/set',
+  [CODEX_METHOD.ThreadSettingsUpdated]: 'consumed by the worker',
+  [CODEX_METHOD.ThreadTokenUsageUpdated]: 'consumed by the worker',
+  [CODEX_METHOD.SkillsChanged]: 'opted out at initialize',
+  [CODEX_METHOD.RemoteControlStatusChanged]: 'opted out at initialize',
+  [CODEX_METHOD.HookStarted]: 'opted out at initialize',
+  [CODEX_METHOD.AutoApprovalReviewStarted]: 'consumed by the worker',
+  [CODEX_METHOD.CommandExecutionRequestApproval]: 'answered through a control request',
+  [CODEX_METHOD.FileChangeRequestApproval]: 'answered through a control request',
+  [CODEX_METHOD.PermissionsRequestApproval]: 'answered through a control request',
+  [CODEX_METHOD.ToolRequestUserInput]: 'answered through a control request',
+  [CODEX_METHOD.McpToolCallProgress]: 'consumed by the worker',
+  [CODEX_METHOD.ThreadReadStateChanged]: 'opted out at initialize',
+  [CODEX_METHOD.TurnModerationMetadata]: 'opted out at initialize',
+  [CODEX_METHOD.AccountUpdated]: 'opted out at initialize',
+  [CODEX_METHOD.AccountRateLimitsUpdated]: 'consumed by the worker',
+  [CODEX_METHOD.ThreadCompacted]: 'never sent by Codex 0.163',
+}
+
 describe('codex method vocabulary', () => {
   it('reads the whole method table the contract holds', () => {
     expect(Object.keys(CODEX_METHOD).length).toBeGreaterThanOrEqual(17)
   })
 
   it.each(Object.values(CODEX_METHOD))(
-    'names the %s method',
+    'classifies the %s method',
     (method) => {
-      expect(
-        classifyMethod(method),
-        `${method} reaches no rule, so its row draws raw JSON. Give it a notification `
-        + 'entry, or hide it.',
-      ).not.toBe('unknown')
+      const kind = classifyMethod(method)
+      if (Object.hasOwn(NEVER_STORED_METHODS, method)) {
+        expect(kind, NEVER_STORED_METHODS[method]).toBe('unknown')
+      }
+      else {
+        expect(kind, `${method} needs a reader for its current stored frame`).not.toBe('unknown')
+      }
     },
   )
 

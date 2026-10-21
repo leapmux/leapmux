@@ -146,7 +146,7 @@ func (e droidEnvelope) Marshal() ([]byte, error) {
 type initializeParams struct {
 	Cwd             string `json:"cwd"`
 	MachineID       string `json:"machineId"`
-	Model           string `json:"model,omitempty"`
+	Model           string `json:"modelId,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	AutonomyMode    string `json:"autonomyMode,omitempty"`
 }
@@ -163,7 +163,9 @@ type loadSessionParams struct {
 // is refused with `params.text: Required`. Images ride the separate `images`
 // field, which carries each supported image as base64 data.
 type addUserMessageParams struct {
-	SessionID      string            `json:"sessionId"`
+	SessionID string `json:"sessionId"`
+	// Droid's mq schema accepts messageId. enqueueRequest preserves it for the committed user message.
+	MessageID      string            `json:"messageId"`
 	Text           string            `json:"text"`
 	Images         []droidInputImage `json:"images,omitempty"`
 	QueuePlacement string            `json:"queuePlacement,omitempty"`

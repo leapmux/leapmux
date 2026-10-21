@@ -5,9 +5,11 @@ import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { isObject } from '~/lib/jsonPick'
 import { parseMessageContent } from '~/lib/messageParser'
 import { classifyMessage, toClassificationInput } from './messageClassifier'
-import { resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
+import { providerFor, resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
 import { extractChatRow } from './rowExtraction'
 
 // Message preparation supplies one route from received rendering bytes to the row model.
@@ -32,6 +34,8 @@ export interface PreparedMessage {
   resolved: ResolvedMessageContent
   /** The category, decided from {@link PreparedMessage.resolved}. */
   category: MessageCategory
+  /** The history filter can hide this stored start after a later end. Its category stays unchanged. */
+  compactionStartOnly: boolean
 }
 
 /** Reuse values that the caller already holds. */
@@ -90,7 +94,12 @@ export function prepareMessage(message: AgentChatMessage, options: PrepareMessag
     toClassificationInput(resolved, message),
     ...(options.isChildTranscript === undefined ? [] : [{ isChildTranscript: options.isChildTranscript }]),
   )
-  return { message, original, resolved, category }
+  const nativeStart = providerFor(message.agentProvider)?.transcript.compactionStart
+  const members = resolved.wrapper?.messages ?? [resolved.parentObject]
+  const compactionStartOnly = (message.source === MessageSource.AGENT || message.source === MessageSource.LEAPMUX)
+    && members.length > 0
+    && members.every(member => isObject(member) && nativeStart?.(member) === true)
+  return { message, original, resolved, category, compactionStartOnly }
 }
 
 /**

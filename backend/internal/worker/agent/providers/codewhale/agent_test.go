@@ -494,3 +494,83 @@ func TestConcurrentDispatchPersistsEveryEvent(t *testing.T) {
 	}
 	assert.Len(t, seen, feeders, "each event lands exactly once")
 }
+
+func TestCodewhaleCompactionIsLiveUntilItsItemEnds(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	rt.respondJSON(http.MethodPost, threadPath(testThreadID, threadRouteCompact), http.StatusOK, map[string]any{"turn": map[string]any{"id": testTurnID}})
+	a, sink := newTestAgent(t, rt)
+	require.NoError(t, a.CompactContext())
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+	assert.Empty(t, sink.PersistedNotifications())
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemCompleted, "compact", contracts.CodewhaleItemKindContextCompaction, "The context is compacted.", nil))
+	value, exists = sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Nil(t, value)
+	assert.Len(t, sink.PersistedNotifications(), 1)
+}
+
+func TestCodewhaleCompactionReplyKeepsTheObservedPhase(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []string{"started", "item completed", "turn completed"} {
+		t.Run(phase, func(t *testing.T) {
+			rt := newFakeRuntime(t)
+			a, sink := newTestAgent(t, rt)
+			rt.handle(http.MethodPost, threadPath(testThreadID, threadRouteCompact), func(w http.ResponseWriter, _ *http.Request) {
+				a.HandleOutput(turnStartedEvent(1, testTurnID))
+				if phase != "started" {
+					a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemCompleted, "compact", contracts.CodewhaleItemKindContextCompaction, "The context is compacted.", nil))
+				}
+				if phase == "turn completed" {
+					a.HandleOutput(turnCompletedEvent(3, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+				}
+				writeFakeJSON(w, http.StatusOK, map[string]any{"turn": map[string]any{"id": testTurnID}})
+			})
+			require.NoError(t, a.CompactContext())
+			value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, exists)
+			if phase == "started" {
+				assert.Equal(t, map[string]any{}, value)
+			} else {
+				assert.Nil(t, value, "the late reply cannot restart a completed compaction")
+			}
+		})
+	}
+}
+
+func TestCodewhaleStoppedAgentIgnoresALateTurnStart(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.SetStoppedForTest(true)
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	assert.Empty(t, a.turnID)
+	assert.Empty(t, sink.TurnActives())
+}
+
+func TestCodewhaleCompactionReplyAfterStopStartsNoLiveState(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	a, sink := newTestAgent(t, rt)
+	rt.handle(http.MethodPost, threadPath(testThreadID, threadRouteCompact), func(w http.ResponseWriter, _ *http.Request) {
+		a.SetStoppedForTest(true)
+		writeFakeJSON(w, http.StatusOK, map[string]any{"turn": map[string]any{"id": testTurnID}})
+	})
+	require.NoError(t, a.CompactContext())
+	assert.Empty(t, a.turnID)
+	assert.Empty(t, sink.TurnActives())
+	_, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.False(t, exists)
+}
+
+func TestCodewhaleExitedAgentIgnoresALateTurnStart(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.stopProcess()
+	a.finishAfterExit(agent.MessageCompletionError)
+	a.HandleOutput(turnStartedEvent(2, "late-turn"))
+	assert.Empty(t, a.turnID)
+	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+}

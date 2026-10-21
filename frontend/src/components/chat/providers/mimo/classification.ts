@@ -6,7 +6,7 @@ import { pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
-import { mimoNotificationEntry } from './extractors/notification'
+import { mimoCompactionEnded, mimoNotificationEntry } from './extractors/notification'
 import { mimoEvent, mimoToolPart, mimoToolSpanRole } from './extractors/toolCommon'
 
 /**
@@ -16,6 +16,7 @@ import { mimoEvent, mimoToolPart, mimoToolSpanRole } from './extractors/toolComm
  */
 const MIMO_NOTIFICATION_TYPES = new Set<string>([
   MIMO_EVENT.SessionStatus,
+  MIMO_EVENT.SessionRetryAttempt,
   MIMO_EVENT.MessagePartUpdated,
   MIMO_EVENT.SessionError,
 ])
@@ -51,8 +52,6 @@ export function classifyMiMoMessage(input: ClassificationInput): MessageCategory
   // with no MiMo `type`.
   const type = pickString(parent, 'type')
   if (!type && typeof parent.content === 'string') {
-    if (parent.hidden === true)
-      return { kind: 'hidden' }
     if (parent.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }
@@ -67,25 +66,27 @@ export function classifyMiMoMessage(input: ClassificationInput): MessageCategory
           return { kind: 'result_divider' }
         if (status === MIMO_STATUS_TYPE.Retry)
           return notification([parent], 'hidden')
-        // `busy` never reaches a transcript: the worker reads it for the turn flag.
-        return { kind: 'hidden' }
+        if (status === MIMO_STATUS_TYPE.Notice)
+          return notification([parent])
+        return { kind: 'unknown' }
       }
       case MIMO_EVENT.SessionError:
         return persistedAsTurnEnd(parent) ? { kind: 'result_divider' } : notification([parent], 'hidden')
+      case MIMO_EVENT.SessionRetryAttempt:
+        return notification([parent], 'hidden')
       case MIMO_EVENT.MessagePartUpdated: {
         const part = pickObject(event.properties, 'part')
         if (pickString(part, 'type') === MIMO_PART_TYPE.Compaction)
-          return notification([parent], 'hidden')
+          return part && mimoCompactionEnded(part) ? notification([parent]) : { kind: 'unknown' }
         const tool = mimoToolPart(parent)
         if (!tool)
-          return { kind: 'hidden' }
+          return { kind: 'unknown' }
         const role = mimoToolSpanRole(tool, input.completion)
         if (role === 'result')
           return { kind: 'tool_result' }
         if (role === 'request')
           return { kind: 'tool_use' }
-        // A pending frame states no input, and the worker never persists one.
-        return { kind: 'hidden' }
+        return { kind: 'unknown' }
       }
       default:
         break

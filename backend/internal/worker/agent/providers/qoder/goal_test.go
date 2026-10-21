@@ -31,7 +31,6 @@ func newGoalAgent(t *testing.T) (*Agent, *agenttest.Sink, *agenttest.Stdin) {
 		sink:           agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
 		sessionID:      "session-1",
 		permissionMode: "default",
-		pendingControl: make(map[string]chan<- qoderControlResult),
 	}
 	return a, sink, stdin
 }

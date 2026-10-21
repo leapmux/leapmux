@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyCodewhaleMessage } from './classification'
-import { codewhaleNotificationEntry } from './extractors/notification'
+import { codewhaleCompactionStart, codewhaleNotificationEntry } from './extractors/notification'
 import { codewhaleOutputFilePaths } from './extractors/outputFilePaths'
 import { codewhaleResultDivider } from './extractors/resultDivider'
 import { codewhaleExtractRow } from './extractors/row'
@@ -18,6 +18,7 @@ const codewhalePlugin: ProviderPlugin = {
     classify: classifyCodewhaleMessage,
     extractRow: codewhaleExtractRow,
     notificationEntry: codewhaleNotificationEntry,
+    compactionStart: codewhaleCompactionStart,
     extractDivider: codewhaleResultDivider,
   },
   controls: codewhaleControls,

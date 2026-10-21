@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -232,4 +233,27 @@ func TestSessionHandleLocked(t *testing.T) {
 	assert.Equal(t, "s1", a.sessionHandleLocked())
 	a.sessionID = ""
 	assert.Empty(t, a.sessionHandleLocked())
+}
+
+func TestClearContextEndsAnOpenCompactionEvenIfStateReadFails(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"auto_compaction_start","reason":"threshold"}`)
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type == CommandNewSession {
+			return &rigReply{Data: json.RawMessage(`{"cancelled":false}`)}
+		}
+		if command.Type == CommandGetState {
+			return &rigReply{Error: "state unavailable"}
+		}
+		return nil
+	})
+	_, err := r.agent.ClearContext()
+	require.ErrorContains(t, err, "state unavailable")
+	assert.False(t, r.agent.rootConversation().compactionOpen)
+	assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: nil})
+	notifications := r.sink.Notifications()
+	require.Len(t, notifications, 1)
+	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notifications[0][contracts.NotificationFieldType])
+	assert.Equal(t, contracts.CompactionEndOutcomeAborted, notifications[0][contracts.NotificationFieldOutcome])
 }

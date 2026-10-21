@@ -64,6 +64,14 @@ function makeMsg(overrides: Partial<Parameters<typeof makeMessage>[0]>) {
   return makeMessage({ createdAt: '2025-01-15T10:00:00.000Z', ...overrides })
 }
 
+describe('MessageBubble category', () => {
+  it('marks the bubble with its category', () => {
+    const message = makeMsg({ source: MessageSource.USER, content: rawContent({ content: 'Hello' }) })
+    const view = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
+    expect(view.getByTestId('message-bubble')).toHaveAttribute('data-category', 'user_content')
+  })
+})
+
 describe('standalone MCP result actions', () => {
   const output = Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n')
   it.each([

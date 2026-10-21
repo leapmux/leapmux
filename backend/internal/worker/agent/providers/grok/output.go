@@ -2,13 +2,13 @@ package grok
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -153,67 +153,116 @@ func (a *Agent) handleResponseCompleted(update json.RawMessage) {
 	a.Sink().BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})
 }
 
-// reportCompaction states a compaction of the context in the transcript. Grok
-// compacts on `/compact` and on its own at a threshold, and the reader sees
-// neither in the conversation otherwise.
-func (a *Agent) reportCompaction(updateType string, update json.RawMessage) {
-	var compaction struct {
-		TokensUsed    int64  `json:"tokens_used"`
-		ContextWindow int64  `json:"context_window"`
-		Percentage    int    `json:"percentage"`
-		TokensBefore  *int64 `json:"tokens_before"`
-		TokensAfter   int64  `json:"tokens_after"`
-		Error         string `json:"error"`
-	}
-	if err := json.Unmarshal(update, &compaction); err != nil {
-		slog.Warn("grok compaction notification unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	var text string
+// reportCompaction reads one automatic compaction frame. The start is live
+// state only: the running indicator draws it, and no row spins until an end
+// arrives. Each end closes the buffered text, ends the live state, and stores
+// its native frame as the boundary the reader sees.
+func (a *Agent) reportCompaction(updateType string, update json.RawMessage, raw []byte) {
 	switch updateType {
 	case grokUpdateAutoCompactStarted:
-		text = fmt.Sprintf("Compacting the context (%d%% of the window used)", compaction.Percentage)
-	case grokUpdateAutoCompactCompleted:
-		if compaction.TokensBefore != nil {
-			text = fmt.Sprintf("Context compacted from %d to %d tokens", *compaction.TokensBefore, compaction.TokensAfter)
-		} else {
-			text = fmt.Sprintf("Context compacted to %d tokens", compaction.TokensAfter)
+		providerkit.PublishCompaction(a.Sink(), "auto")
+	case contracts.GrokNotificationAutoCompactCompleted,
+		contracts.GrokNotificationAutoCompactFailed,
+		contracts.GrokNotificationAutoCompactCancelled:
+		a.FlushBufferedOutput(agent.MessageCompletionComplete)
+		sessionID := a.CurrentSessionID()
+		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw, AgentSessionID: sessionID}); err != nil {
+			slog.Error("grok persist compaction frame", "agent_id", a.AgentID(), "error", err)
 		}
-	case grokUpdateAutoCompactFailed:
-		text = "Context compaction failed"
-		if detail := strings.TrimSpace(compaction.Error); detail != "" {
-			text += ": " + detail
-		}
+		providerkit.EndCompaction(a.Sink())
 	default:
-		return
 	}
-	a.Sink().PersistLeapMuxNotification(map[string]any{
-		contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
-		contracts.NotificationFieldText: text,
-	})
 }
 
-// reportRetry states a model request that Grok retries. The turn looks idle
-// while Grok waits out its backoff, so the reader must see why.
+// reportRetry reads a model request that Grok retries. The turn looks idle
+// while Grok waits out its backoff, so the native frame itself becomes the
+// retry row the reader watches. The failed attempt's buffered text is
+// discarded, and the first genuine model output after the retry resolves the
+// row (observeRetryContent).
 //
 // Only a retry in progress is stated. An exhausted or failed retry ends the
 // turn with an error, which the turn's own end reports.
-func (a *Agent) reportRetry(update json.RawMessage) {
+func (a *Agent) reportRetry(update json.RawMessage, raw []byte) {
 	var retry struct {
-		Type       string `json:"type"`
-		Attempt    int    `json:"attempt"`
-		MaxRetries int    `json:"max_retries"`
-		Reason     string `json:"reason"`
+		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(update, &retry); err != nil || retry.Type != "retrying" {
 		return
 	}
-	text := fmt.Sprintf("Retrying the model request (attempt %d of %d)", retry.Attempt, retry.MaxRetries)
-	if reason := strings.TrimSpace(retry.Reason); reason != "" {
-		text += ": " + reason
+	a.DiscardBufferedOutput()
+	sessionID := a.CurrentSessionID()
+	if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw, AgentSessionID: sessionID}); err != nil {
+		slog.Error("grok persist retry frame", "agent_id", a.AgentID(), "error", err)
 	}
-	a.Sink().PersistLeapMuxNotification(map[string]any{
-		contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
-		contracts.NotificationFieldText: text,
-	})
+	a.retryResolution.NoteRetry()
+}
+
+// grokStreamStartMeta names the field of a chunk's notification metadata that
+// states the start time of the model request that produced it. Every request
+// of a turn has its own value, and a retry starts a new request.
+const grokStreamStartMeta = "streamStartMs"
+
+// observeNotificationMetadata splits the buffered text at a model request
+// boundary. Grok can flush the partial text of a failed attempt only after it
+// sent its retry_state frame, so the discard that the frame itself runs can
+// meet an empty buffer while the partial text still arrives: the first chunk
+// of the NEXT request closes that window, and its stream start differs from
+// the last chunk's. What happens to the text the previous request left
+// buffered follows the model's own view of it:
+//
+//   - A retry still pending states that the previous request FAILED and the
+//     retried request sees none of its text, so the buffer is dropped and the
+//     retry row resolves at this genuine output.
+//   - No pending retry states that the previous request COMPLETED and its
+//     text joined the history the new request reads, so the buffer becomes a
+//     row of its own before the new request's text starts one.
+//
+// Only a message chunk names a stream: an available-commands update repeats
+// the field with no request behind it, and it must not split any text.
+func (a *Agent) observeNotificationMetadata(updateType string, metadata map[string]json.RawMessage) {
+	if updateType != contracts.ACPUpdateAgentMessageChunk && updateType != contracts.ACPUpdateAgentThoughtChunk {
+		return
+	}
+	stream, present := providerkit.RawInt64(metadata[grokStreamStartMeta])
+	if !present {
+		// Grok stamps every chunk of the main session with its request's
+		// stream start; a chunk without one joins no boundary.
+		return
+	}
+	a.stateMu.Lock()
+	previous := a.chunkStreamStart
+	a.chunkStreamStart = stream
+	a.stateMu.Unlock()
+	// The first chunk of a turn names the turn's first stream: no earlier
+	// request exists whose buffered text this boundary could close.
+	if previous == 0 || previous == stream {
+		return
+	}
+	if a.retryResolution.Pending() {
+		a.DiscardBufferedOutput()
+		a.retryResolution.Resolve(a.Sink())
+		return
+	}
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+}
+
+// observeRetryContent resolves a pending retry row at the first genuine model
+// output that states no stream of its own: a tool call, which cannot be the
+// failed attempt's trailing text. A chunk resolves at its stream boundary
+// instead (see observeNotificationMetadata), because the failed attempt's
+// delayed text flush is also a chunk. It claims no update.
+func (a *Agent) observeRetryContent(sessionID string, _ agent.ProviderServices, update json.RawMessage) bool {
+	if !a.IsCurrentSession(sessionID) {
+		return false
+	}
+	var header struct {
+		SessionUpdate string `json:"sessionUpdate"`
+	}
+	if json.Unmarshal(update, &header) != nil {
+		return false
+	}
+	if header.SessionUpdate == contracts.ACPUpdateToolCall {
+		a.retryResolution.Resolve(a.Sink())
+	}
+	return false
 }

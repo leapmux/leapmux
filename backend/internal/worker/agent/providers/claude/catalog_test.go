@@ -169,7 +169,6 @@ func TestIsAutoModeUnavailableError(t *testing.T) {
 func TestClaudeCodeAgent_AvailableOptionGroupsFiltersAutoWhenUnavailable(t *testing.T) {
 	a := &Agent{
 		Process:           providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "t"}),
-		pendingControl:    make(map[string]chan<- claudeCodeControlResult),
 		autoModeAvailable: false,
 	}
 

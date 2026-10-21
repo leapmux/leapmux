@@ -405,7 +405,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       return true
     }
     catch (err) {
-      showWarnToast('Failed to retry with a faster model', err)
+      showWarnToast('Failed to retry on a faster model', err)
       return false
     }
   }

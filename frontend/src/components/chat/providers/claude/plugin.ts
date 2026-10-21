@@ -4,7 +4,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyClaudeCodeMessage } from './classification'
-import { claudeCompactionBoundary, claudeNotificationEntry } from './extractors/notification'
+import { claudeCompactionBoundary, claudeCompactionStart, claudeNotificationEntry } from './extractors/notification'
 import { claudeOutputFilePaths } from './extractors/outputFilePaths'
 import { claudeResultDivider } from './extractors/resultDivider'
 import { claudeExtractRow } from './extractors/row'
@@ -19,6 +19,7 @@ const CLAUDE_AUTOCOMPACT_BUFFER_PCT = 16.5
 
 const claudeCodePlugin: ProviderPlugin = {
   transcript: {
+    compactionStart: claudeCompactionStart,
     outputFilePaths: claudeOutputFilePaths,
     classify: classifyClaudeCodeMessage,
     spanRole: claudeSpanRole,
@@ -29,6 +30,7 @@ const claudeCodePlugin: ProviderPlugin = {
   },
   controls: claudeControls,
   session: {
+    goalStatusUnconfirmed: true,
     rateLimitsFromMessage: claudeRateLimitsFromMessage,
     contextUsageFromMessage: claudeContextUsageFromMessage,
     compactionBoundaryFromMessage: claudeCompactionBoundary,

@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -206,20 +207,39 @@ func classifyCodexTurnStartRequestError(operation string, err error) error {
 	return providerkit.ClassifyJSONRPCDeliveryError(operation, err)
 }
 
+const codexSteerClientIDPrefix = "leapmux-steer-"
+
 // sendTurnSteer serializes its write with context replacement, then waits without the lock.
-func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}) error {
-	raw, err := json.Marshal(map[string]interface{}{"threadId": threadID, "expectedTurnId": turnID, "input": input})
+// A caller that owns its row itself passes trackEcho false, and the steer joins no ledger.
+func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, trackEcho bool) (ticket providerkit.SteerTicket, err error) {
+	defer func() {
+		if err != nil {
+			a.outputMu.Lock()
+			a.forgetCodexSteer(ticket)
+			a.outputMu.Unlock()
+		}
+	}()
+	clientID := codexSteerClientIDPrefix + id.Short()
+	raw, err := json.Marshal(map[string]interface{}{"threadId": threadID, "expectedTurnId": turnID, "input": input, "clientUserMessageId": clientID})
 	if err != nil {
-		return fmt.Errorf("marshal turn/steer params: %w", err)
+		return 0, fmt.Errorf("marshal turn/steer params: %w", err)
 	}
 	a.turnDispatchMu.Lock()
 	a.Mu.Lock()
-	current := a.threadID == threadID && a.mainTurn.id == turnID
-	a.Mu.Unlock()
+	current := a.threadID == threadID && a.mainTurn.id == turnID && a.pendingSteerTurnEnd == nil
 	if !current {
+		a.Mu.Unlock()
 		a.turnDispatchMu.Unlock()
-		return agent.ErrNoActiveTurn
+		return 0, agent.ErrNoActiveTurn
 	}
+	if trackEcho {
+		ticket = a.steerLedger.Add(clientID)
+		if a.pendingSteerCalls == nil {
+			a.pendingSteerCalls = make(map[providerkit.SteerTicket]struct{})
+		}
+		a.pendingSteerCalls[ticket] = struct{}{}
+	}
+	a.Mu.Unlock()
 	reply := make(chan error, 1)
 	err = a.SendDetachedRequest("turn/steer", raw, func(_ json.RawMessage, err error) { reply <- err })
 	a.turnDispatchMu.Unlock()
@@ -227,12 +247,33 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 		err = <-reply
 	}
 	if err == nil {
-		return nil
+		return ticket, nil
 	}
 	if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
-		return agent.ErrNoActiveTurn
+		return ticket, agent.ErrNoActiveTurn
 	}
-	return providerkit.ClassifyJSONRPCDeliveryError("turn/steer", err)
+	return ticket, providerkit.ClassifyJSONRPCDeliveryError("turn/steer", err)
+}
+
+// forgetCodexSteer releases later echoes after a failed call. Call it with outputMu held.
+func (a *Agent) forgetCodexSteer(ticket providerkit.SteerTicket) {
+	a.steerLedger.Forget(ticket)
+	a.steerLedger.Settle(a.sink)
+}
+
+// finishCodexSteersAfterExit forgets requests whose delivery the process never confirmed.
+// The service marks unresolved queue inputs uncertain. Call this with outputMu held.
+func (a *Agent) finishCodexSteersAfterExit() {
+	a.Mu.Lock()
+	for ticket := range a.pendingSteerCalls {
+		a.steerLedger.Forget(ticket)
+	}
+	clear(a.pendingSteerCalls)
+	a.mainTurn.steers = 0
+	a.Mu.Unlock()
+	a.steerLedger.Settle(a.sink)
+	a.finishDeferredCodexSteerOutput()
+	a.steerLedger.Reset()
 }
 
 // interruptCancelledCodexStart stops only the acknowledged turn of this request.

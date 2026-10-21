@@ -81,7 +81,7 @@ func (s *modelControlStdin) request() map[string]any {
 func TestAvailableModelsUpdateOffersTheModelGroup(t *testing.T) {
 	t.Parallel()
 	a := newOfflineAgent(t, &agenttest.Sink{})
-	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"model-a","displayName":"Model A"},{"value":"model-b","displayName":"Model B"}],"currentModel":"model-a"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"model-a","displayName":"Model A","isEnabled":true},{"value":"model-b","displayName":"Model B","isEnabled":true}],"currentModel":"model-a"}`))
 
 	var model *leapmuxv1.AvailableOptionGroup
 	for _, group := range a.OptionGroups() {
@@ -95,12 +95,12 @@ func TestAvailableModelsUpdateOffersTheModelGroup(t *testing.T) {
 	assert.Equal(t, []string{"model-a", "model-b"}, []string{model.GetOptions()[0].GetId(), model.GetOptions()[1].GetId()})
 }
 
-func TestEmptyNativeCatalogUsesConfiguredModels(t *testing.T) {
+func TestAbsentNativeCatalogUsesConfiguredModels(t *testing.T) {
 	t.Parallel()
 	settings := `{"providers":{"mockprov":{"models":[{"model":"first","displayName":"First Model"},{"model":"second","displayName":"Second Model"}]}}}`
 	a := configuredQoderAgent(t, settings)
 	a.model = "mockprov/first"
-	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[],"currentModel":"mockprov/first"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","currentModel":"mockprov/first"}`))
 
 	var model *leapmuxv1.AvailableOptionGroup
 	for _, group := range a.OptionGroups() {
@@ -119,7 +119,7 @@ func TestNativeCatalogOverridesConfiguredModels(t *testing.T) {
 	t.Parallel()
 	a := configuredQoderAgent(t, `{"providers":{"mockprov":{"models":[{"model":"first"},{"model":"second"}]}}}`)
 	a.model = "mockprov/first"
-	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"native-one","displayName":"Native One"},{"value":"native-two","displayName":"Native Two"}],"currentModel":"native-one"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"native-one","displayName":"Native One","isEnabled":true},{"value":"native-two","displayName":"Native Two","isEnabled":true}],"currentModel":"native-one"}`))
 
 	var model *leapmuxv1.AvailableOptionGroup
 	for _, group := range a.OptionGroups() {
@@ -152,7 +152,7 @@ func TestConfiguredModelsRejectOversizedSettings(t *testing.T) {
 func TestUpdateSettingsSetsTheModelOnTheRunningSession(t *testing.T) {
 	t.Parallel()
 	a := newOfflineAgent(t, &agenttest.Sink{})
-	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"model-a","displayName":"Model A"},{"value":"model-b","displayName":"Model B"}],"currentModel":"model-a"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"model-a","displayName":"Model A","isEnabled":true},{"value":"model-b","displayName":"Model B","isEnabled":true}],"currentModel":"model-a"}`))
 	stdin := &modelControlStdin{agent: a}
 	a.SetStdinForTest(stdin)
 

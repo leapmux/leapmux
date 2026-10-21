@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // ClearContext suspends the current session and creates a replacement.
@@ -141,13 +142,17 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 	a.clearNativeCompaction()
 	a.setNativeTurnActive(false)
 	a.outputMu.Lock()
+	providerkit.EndCompaction(a.sink)
 	// Store and drop what the OUTGOING session produced before the identity moves, so
 	// every row this sweep writes carries the session that produced it.
 	a.clearNativeChildren()
+	a.steers.DropAll()
+	a.steers.Settle(a.sink)
 	a.clearNativeControls()
 	// The tool calls that the outgoing turn counted end with that turn, so the first
 	// turn of the replacement starts from zero.
 	a.turnToolUses = 0
+	a.sqlTodos = nil
 	if nextSessionID != "" {
 		a.stateMu.Lock()
 		a.sessionID = nextSessionID

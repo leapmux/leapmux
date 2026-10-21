@@ -32,5 +32,5 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		QuestionToolEnv:      kiloQuestionToolEnv,
 		DisableAutoUpdateEnv: kiloDisableAutoUpdateEnv,
 		DefaultPrimaryAgent:  PrimaryAgentCode,
-	}, func() *Agent { return &Agent{} }, func(a *Agent) *opencode.FamilyBase { return &a.FamilyBase })
+	}, newAgent, func(a *Agent) *opencode.FamilyBase { return &a.FamilyBase })
 }

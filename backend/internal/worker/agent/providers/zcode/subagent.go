@@ -57,6 +57,30 @@ type zcodeChildIndex struct {
 	spawns map[string]*zcodeSpawnRecord
 	// toolSpawns resolves a child tool call back to its owning spawn record.
 	toolSpawns map[string]string
+	// sessionSpawns preserves the child route after an individual tool call ends.
+	sessionSpawns map[string]string
+}
+
+func (i *zcodeChildIndex) rememberSession(spawnToolCallID, childSessionID string) {
+	if spawnToolCallID == "" || childSessionID == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.sessionSpawns == nil {
+		i.sessionSpawns = make(map[string]string)
+	}
+	i.sessionSpawns[childSessionID] = spawnToolCallID
+}
+
+func (i *zcodeChildIndex) sessionChild(childSessionID string) (string, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	record := i.spawns[i.sessionSpawns[childSessionID]]
+	if record == nil || record.childAgentID == "" {
+		return "", false
+	}
+	return record.childAgentID, true
 }
 
 func (i *zcodeChildIndex) spawnLocked(spawnToolCallID string) *zcodeSpawnRecord {
@@ -133,6 +157,11 @@ func (i *zcodeChildIndex) takeChild(spawnToolCallID string) (string, bool) {
 		return "", false
 	}
 	delete(i.spawns, spawnToolCallID)
+	for sessionID, owner := range i.sessionSpawns {
+		if owner == spawnToolCallID {
+			delete(i.sessionSpawns, sessionID)
+		}
+	}
 	for toolCallID := range record.toolCallIDs {
 		delete(i.toolSpawns, toolCallID)
 	}
@@ -187,6 +216,7 @@ func (i *zcodeChildIndex) clear() {
 	defer i.mu.Unlock()
 	clear(i.spawns)
 	clear(i.toolSpawns)
+	clear(i.sessionSpawns)
 }
 
 // zcodeToolSpawnsSubagent reports whether a tool call STARTS a subagent.
@@ -381,6 +411,7 @@ func (a *Agent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool) {
 	}
 	if childID, ok := a.children.child(rowKey); ok {
 		a.children.rememberChild(rowKey, payload.ToolCallID, childID)
+		a.children.rememberSession(rowKey, payload.ChildSessionID)
 		return childID, true
 	}
 
@@ -391,6 +422,7 @@ func (a *Agent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool) {
 	// The subagent's OWN tool call is aliased to the same transcript, so its closing row
 	// and any batch summary that lists it land where its opening row went.
 	a.children.rememberChild(rowKey, payload.ToolCallID, childID)
+	a.children.rememberSession(rowKey, payload.ChildSessionID)
 	a.upsertZCodeSubagent(rowKey, childID, title)
 	return childID, true
 }

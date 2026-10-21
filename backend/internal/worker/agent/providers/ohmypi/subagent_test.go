@@ -794,3 +794,88 @@ func TestSubagentStatusMapperPreservesFinishedFinality(t *testing.T) {
 		})
 	}
 }
+
+func TestSubagentEventPersistsChildNotices(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+	for _, kind := range []string{"auto_retry_start", "auto_retry_end", "notice", "extension_error", "command_output", "ttsr_triggered"} {
+		frame := `{"type":"` + kind + `","message":"child notice"}`
+		r.emit(subagentEvent("Probe", frame))
+	}
+	assert.Len(t, child.PersistedNotifications(), 6)
+	assert.Empty(t, r.sink.PersistedNotifications())
+}
+
+func TestSubagentAutoCompactionIsLiveStateOnTheChildSink(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+	r.emit(subagentEvent("Probe", `{"type":"auto_compaction_start","reason":"threshold"}`))
+	assert.Empty(t, child.PersistedNotifications())
+	require.NotEmpty(t, child.SessionInfos())
+	assert.Equal(t, map[string]any{"trigger": "threshold"}, child.SessionInfos()[0]["compaction"])
+	r.emit(subagentEvent("Probe", `{"type":"auto_compaction_end","aborted":true}`))
+	require.Len(t, child.PersistedNotifications(), 1)
+	infos := child.SessionInfos()
+	assert.Contains(t, infos[len(infos)-1], "compaction")
+	assert.Nil(t, infos[len(infos)-1]["compaction"])
+	assert.Empty(t, r.sink.PersistedNotifications())
+}
+
+func TestSubagentEventPersistsAnUnknownChildFrame(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+	frame := `{"type":"future_notice","value":7}`
+	r.emit(subagentEvent("Probe", frame))
+	rows := child.Messages()
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, frame, string(rows[0].Content))
+}
+
+func TestSubagentEventDiscardsOnlyTheChildsTtsrAttempt(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+	partial := `{"type":"message_end","message":{"role":"assistant","stopReason":"aborted","content":[{"type":"text","text":"partial"}]}}`
+	r.emit(subagentEvent("Probe", `{"type":"ttsr_triggered","rules":[]}`), subagentEvent("Probe", partial), partial)
+	assert.Empty(t, child.Messages())
+	assert.NotEmpty(t, r.sink.Messages())
+	r.emit(subagentEvent("Probe", partial))
+	require.Len(t, child.Messages(), 1)
+	assert.Equal(t, agent.MessageCompletionInterrupted, child.Messages()[0].Completion)
+}
+
+func TestSubagentEventConsumesRedundantFrames(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+	for _, kind := range []string{"message_update", "message_start", "turn_start", "turn_end", "tool_stream_update", "queue_update", "session_settled", "cache_warming_start", "cache_warming_end", "advisor_cost_changed"} {
+		r.emit(subagentEvent("Probe", `{"type":"`+kind+`"}`))
+	}
+	assert.Empty(t, child.Messages())
+	assert.Empty(t, child.PersistedNotifications())
+}
+
+func TestUnknownFramesPersistOnTheChild(t *testing.T) {
+	t.Parallel()
+	frame := `{"type":"probe_future_frame","value":1}`
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "child", Frame: []byte(subagentEvent("Probe", frame)), Stored: []byte(frame)},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		t.Helper()
+		r := newRig(t)
+		r.emit(frameTaskStart, frameStarted)
+		child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+		r.emit(string(tc.Frame))
+		assert.Empty(t, r.sink.PersistedNotifications())
+		assert.Equal(t, []string{"tool_execution_start"}, persistedTypes(r.sink.Messages()))
+		return child
+	})
+}

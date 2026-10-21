@@ -614,6 +614,7 @@ func (a *Agent) handleChildTurnStarted(run *kimiRun, payload kimiTurnStarted) {
 }
 
 func (a *Agent) handleChildTurnEnded(run *kimiRun, payload kimiTurnEnded) {
+	run.retry.Reset()
 	child, linked := a.children.get(run.agentID)
 	if !linked {
 		// Not reachable, for the reason handleChildTurnStarted states.

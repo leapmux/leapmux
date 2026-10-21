@@ -1,12 +1,23 @@
 import type { ControlQuestion } from '../../model/question'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
-import { pickString } from '~/lib/jsonPick'
+import { pickObject, pickString } from '~/lib/jsonPick'
 import { copilotPermission, copilotPermissionOptions } from './permissionOptions'
-import { copilotEvent } from './protocol'
+import { COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE, copilotEvent } from './protocol'
 
 /** The title and the detail a permission request shows. */
 export function copilotPermissionSource(payload: Record<string, unknown>) {
+  const event = copilotEvent(payload)
+  if (event?.type === COPILOT_EVENT.AutoModeSwitchRequested) {
+    return {
+      title: 'Copilot asks to switch to Auto',
+      ...(event.data.errorCode === COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE ? { reason: 'The current model reached its rate limit.' } : {}),
+    }
+  }
+  if (event?.type === COPILOT_EVENT.SamplingRequested) {
+    const server = pickString(event.data, 'serverName')
+    return { title: `The MCP server${server ? ` ${server}` : ''} asks the model to answer`, input: pickObject(event.data, 'request') ?? {} }
+  }
   const request = copilotPermission(payload)
   const kind = pickString(request, 'kind')
   const title = pickString(request, 'intention')
@@ -60,6 +71,10 @@ export function copilotExtractControl(input: ControlExtractionInput): ExtractedC
   }
   return {
     kind: 'permission',
-    permission: { ...copilotPermissionSource(payload), options: copilotPermissionOptions(payload) },
+    permission: {
+      ...copilotPermissionSource(payload),
+      options: copilotPermissionOptions(payload),
+      ...(event?.type === COPILOT_EVENT.AutoModeSwitchRequested ? { independentOptions: true } : {}),
+    },
   }
 }

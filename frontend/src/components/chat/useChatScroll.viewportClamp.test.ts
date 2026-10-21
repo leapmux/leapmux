@@ -15,6 +15,7 @@ function resizeAndAppend(options: {
   displacement?: number
   probeEcho?: boolean
   growAfterClamp?: boolean
+  growBeforeResize?: boolean
 }) {
   return createRoot(async (dispose) => {
     let now = 1000
@@ -58,8 +59,14 @@ function resizeAndAppend(options: {
       if (options.gesture === 'page')
         hook.pageScroll(-1)
       // Layout changes before the browser delivers the old position's scroll event.
-      div.setClientHeight(options.clientHeight)
-      div.setScrollHeight(options.contentHeight)
+      if (options.growBeforeResize) {
+        div.setScrollHeight(options.contentHeight)
+        div.setClientHeight(options.clientHeight)
+      }
+      else {
+        div.setClientHeight(options.clientHeight)
+        div.setScrollHeight(options.contentHeight)
+      }
       if (options.gesture === 'wheel')
         hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: -1 }))
       if (options.gesture === 'keyboard')
@@ -95,6 +102,14 @@ function resizeAndAppend(options: {
 }
 
 describe('useChatScroll viewport clamp', () => {
+  it('keeps following when content grows before the viewport expands', async () => {
+    const result = await resizeAndAppend({ clientHeight: 250, contentHeight: 5000, growBeforeResize: true })
+    expect(result.beforeEvent).toBe(800)
+    expect(result.scrollTop).toBe(4750)
+    expect(result.atBottom).toBe(true)
+    expect(result.layoutMomentumEvents).toBe(0)
+  })
+
   it.each([
     { clientHeight: 500, contentHeight: 5000 },
     { clientHeight: 100, contentHeight: 5000 },

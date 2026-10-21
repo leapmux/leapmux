@@ -2,14 +2,39 @@ package qwen
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+type qwenNotifyMethod struct {
+	read   func(*Agent, json.RawMessage)
+	reason string
+	// A known mode update can imply the current session. Other notifications require its ID.
+	sessionOptional bool
+}
+
+// This table lists each known notification and the reason that a consumed frame has no row.
+var qwenNotifyMethods = map[string]qwenNotifyMethod{
+	"qwen/notify/session/artifact-event":     {reason: "LeapMux does not display the native hook artifact catalog"},
+	"qwen/notify/session/generation/event":   {reason: "LeapMux does not start native generation requests"},
+	"qwen/notify/session/mcp-budget-event":   {reason: "LeapMux does not display native MCP budget telemetry"},
+	"qwen/notify/session/pr-binding":         {reason: "the native pull request binding does not change the transcript"},
+	"qwen/notify/session/sources-changed":    {reason: "the native source catalog does not change the transcript"},
+	"qwen/notify/session/terminal-sequence":  {reason: "the browser transcript does not execute terminal escape sequences"},
+	"qwen/notify/session/title-update":       {reason: "LeapMux uses its own tab titles"},
+	"qwen/notify/workspace/generation/event": {reason: "LeapMux does not start native workspace generation requests"},
+	"qwen/notify/session/model-update":       {reason: "the config-option update already states the model"},
+	qwenModeUpdateMethod:                     {read: (*Agent).handleModeUpdate, sessionOptional: true},
+	"qwen/notify/session/prompt-suggestion":  {read: (*Agent).handlePromptSuggestion},
+	"qwen/notify/session/recording-degraded": {read: (*Agent).handleRecordingDegraded},
+}
 
 // Qwen's own methods, beside the extension method in the contract.
 const (
@@ -46,21 +71,65 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 	case contracts.QwenMethodEndTurn:
 		a.handleEndTurn(line)
 		return true
-	case qwenModeUpdateMethod:
-		a.handleModeUpdate(line.Params)
-		return true
 	case qwenAuthenticateUpdateMethod:
 		return !line.HasID()
 	}
-	// The rest of Qwen's notifications state session metadata that LeapMux
-	// keeps on its own: the model, the title, MCP budgets, output files and pull
-	// requests. A REQUEST falls through, so the base refuses a method LeapMux
-	// does not answer.
 	if strings.HasPrefix(line.Method, qwenNotifyPrefix) && !line.HasID() {
-		slog.Debug("qwen notification not read", "agent_id", a.AgentID(), "method", line.Method)
+		sessionID := providerkit.StringField(line.Params, "sessionId")
+		method, known := qwenNotifyMethods[line.Method]
+		if (sessionID == "" && !method.sessionOptional) || (sessionID != "" && !a.IsCurrentSession(sessionID)) {
+			slog.Debug("ignore Qwen notification outside the current session", "agent_id", a.AgentID(), "method", line.Method)
+			return true
+		}
+		if known {
+			if method.read != nil {
+				method.read(a, line.Params)
+			} else {
+				slog.Debug("consume Qwen notification", "agent_id", a.AgentID(), "method", line.Method, "reason", method.reason)
+			}
+			return true
+		}
+		a.FlushBufferedOutput(agent.MessageCompletionComplete)
+		if err := a.Sink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}, agent.SpanInfo{}); err != nil {
+			slog.Error("persist unknown Qwen notification", "agent_id", a.AgentID(), "method", line.Method, "error", err)
+		}
 		return true
 	}
 	return false
+}
+
+func (a *Agent) handlePromptSuggestion(params json.RawMessage) {
+	text := providerkit.StringField(params, "suggestion")
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	a.Sink().BroadcastSessionInfo(map[string]any{
+		contracts.SessionInfoKeyPromptSuggestion: map[string]any{contracts.PromptSuggestionFieldText: text},
+	})
+}
+
+func (a *Agent) handleRecordingDegraded(params json.RawMessage) {
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	detail := ""
+	if reason := strings.TrimSpace(providerkit.StringField(params, "reason")); reason != "" {
+		detail = " (" + reason + ")"
+	}
+	a.Sink().PersistLeapMuxNotification(map[string]any{
+		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+		contracts.NotificationFieldError: fmt.Sprintf("Qwen Code stopped writing its session file%s. A resume loses the turns after this point.", detail),
+	})
+}
+
+func (a *Agent) clearPromptSuggestion() {
+	a.Sink().BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyPromptSuggestion: nil})
+}
+
+func (a *Agent) preparePrompt() {
+	a.resetRequestRetries()
+	a.stateMu.Lock()
+	a.compressPending = nil
+	a.stateMu.Unlock()
+	a.clearPromptSuggestion()
 }
 
 // qwenDrainItem is one message of a drain reply.
@@ -127,11 +196,16 @@ func (a *Agent) handleStartTurn(line *providerkit.ParsedLine) {
 	current := a.qwenTurnSession(line)
 	if !line.HasID() {
 		if current {
-			a.BeginAgentTurn()
+			if a.BeginAgentTurn() {
+				a.clearPromptSuggestion()
+			}
 		}
 		return
 	}
 	admitted := current && a.AdmitAgentTurn()
+	if admitted {
+		a.clearPromptSuggestion()
+	}
 	a.SendResponseDetached(line.ID, map[string]any{"accepted": admitted}, "qwen turn admission")
 }
 
@@ -145,6 +219,9 @@ func (a *Agent) handleEndTurn(line *providerkit.ParsedLine) {
 	if !a.qwenTurnSession(line) {
 		slog.Debug("qwen end of a turn of another session ignored", "agent_id", a.AgentID())
 		return
+	}
+	if a.AgentTurnActive() {
+		a.resetRequestRetries()
 	}
 	a.EndAgentTurn(json.RawMessage(line.Raw))
 }

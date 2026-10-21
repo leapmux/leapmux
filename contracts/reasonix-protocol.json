@@ -1,5 +1,5 @@
 {
-  "_readme": "Reasonix owns this request method, tool and capability vocabulary, and the fields of its transcript tool record. LeapMux owns the envelope key around that record. The worker routes the request and the browser draws its form from the same method identifier.",
+  "_readme": "Reasonix owns this request method, tool and capability vocabulary, and the fields of its transcript tool record. LeapMux owns the envelope key around that record. The worker routes the request and the browser draws its form from the same method identifier. `noticePrefixes` holds the two prefixes that Reasonix prepends to a message chunk it emits beside the model stream: a warning notice and a compaction note that states how many earlier messages it saved. Sources: internal/acp/dispatch.go at v1.38.7 (textBlock(\"\\n\\n[warning] \" + e.Text), textBlock(fmt.Sprintf(\"\\n\\n[compacted %d earlier messages to save context]\", e.Compaction.Messages))). Limit: the worker matches a chunk whose whole text starts with either prefix, so a model chunk that begins with the same bytes reads as a notice; Reasonix emits these chunks only through its own dispatch, and the model would have to echo the exact prefix for the two to meet.",
   "toolNames": {
     "Task": "task",
     "ReadOnlyTask": "read_only_task",
@@ -25,11 +25,15 @@
   "_unread": {
     "approvalValues": {
       "Ask": {
-        "sides": ["ts"],
+        "sides": [
+          "ts"
+        ],
         "why": "the browser spells `Yolo` alone, for the bypass preset it builds; Reasonix itself labels the three choices on the option group the worker forwards, so no browser code words this one"
       },
       "Auto": {
-        "sides": ["ts"],
+        "sides": [
+          "ts"
+        ],
         "why": "the browser spells `Yolo` alone, for the bypass preset it builds; Reasonix itself labels the three choices on the option group the worker forwards, so no browser code words this one"
       }
     }
@@ -47,5 +51,9 @@
     "NameField": "name",
     "ContentField": "content",
     "RawContentField": "raw_content"
+  },
+  "noticePrefixes": {
+    "Warning": "\n\n[warning] ",
+    "Compacted": "\n\n[compacted "
   }
 }

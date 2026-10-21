@@ -96,7 +96,7 @@ func TestKimiReadyReader(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	address, err := reader.waiter.Wait(ctx, nil, 30*time.Second)
+	address, err := reader.waiter.Wait(ctx, testutil.NewQuartzMock(t), nil, 30*time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, "http://127.0.0.1:62730", address, "the address and the token come from the same line")
 }

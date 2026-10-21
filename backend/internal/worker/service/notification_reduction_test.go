@@ -2,8 +2,6 @@ package service
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -14,7 +12,6 @@ import (
 
 type reductionTestProvider struct {
 	agent.ProviderDefaults
-	merge func(agent.NotificationClassification, json.RawMessage, json.RawMessage) (json.RawMessage, error)
 }
 
 func (provider reductionTestProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
@@ -24,25 +21,18 @@ func (provider reductionTestProvider) Classify(raw json.RawMessage) agent.Notifi
 	}
 	_ = json.Unmarshal(raw, &value)
 	if value.Group != nil {
-		return agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: *value.Group}
+		return agent.ProviderScopedNotification(*value.Group)
 	}
 	switch value.Kind {
 	case "status":
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus}
+		return agent.StatusNotification()
 	case "retry":
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry}
+		return agent.APIRetryNotification()
 	case "boundary":
-		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary}
+		return agent.CompactionBoundaryNotification()
 	default:
 		return agent.NotificationClassification{}
 	}
-}
-
-func (provider reductionTestProvider) Merge(class agent.NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	if provider.merge != nil {
-		return provider.merge(class, previous, next)
-	}
-	return next, nil
 }
 
 func reduceNotificationPrefixes(t *testing.T, inputs []json.RawMessage, provider agent.Provider) ([]json.RawMessage, agent.NotificationReductionState) {
@@ -154,63 +144,6 @@ func TestNotificationReductionRebuildsProviderIndicesAfterRemoval(t *testing.T) 
 	assert.JSONEq(t, string(inputs[5]), string(messages[2]))
 }
 
-func TestNotificationReductionPreservesCustomMergeClassification(t *testing.T) {
-	t.Parallel()
-	for _, merged := range []json.RawMessage{[]byte(`{"opaque":true}`), []byte(`{"group":"other","value":"merged"}`), []byte(`{"type":"context_cleared"}`), []byte(`17`)} {
-		t.Run(string(merged), func(t *testing.T) {
-			calls := 0
-			provider := reductionTestProvider{merge: func(class agent.NotificationClassification, previous, _ json.RawMessage) (json.RawMessage, error) {
-				calls++
-				assert.Equal(t, "original", class.Key)
-				if calls == 2 {
-					assert.Equal(t, merged, previous)
-				}
-				return merged, nil
-			}}
-			inputs := []json.RawMessage{[]byte(`{"group":"original","value":1}`), []byte(`{"group":"original","value":2}`), []byte(`{"type":"system","text":"between"}`), []byte(`{"group":"original","value":3}`)}
-			var messages []json.RawMessage
-			var state agent.NotificationReductionState
-			for _, input := range inputs {
-				var err error
-				messages, state, err = reduceNotificationThread(messages, state, input, provider)
-				require.NoError(t, err)
-			}
-			assert.Equal(t, 2, calls)
-			assert.Equal(t, consolidateNotificationThread(inputs, reductionTestProvider{merge: func(agent.NotificationClassification, json.RawMessage, json.RawMessage) (json.RawMessage, error) {
-				return merged, nil
-			}}), messages)
-			require.Len(t, messages, 2)
-			assert.Equal(t, merged, messages[1])
-			assert.Equal(t, map[string]int{"original": 2}, state.ProviderSlots)
-		})
-	}
-}
-
-func TestNotificationReductionPreservesLeftFoldMerge(t *testing.T) {
-	t.Parallel()
-	provider := reductionTestProvider{merge: func(_ agent.NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-		var a, b struct {
-			Value int `json:"value"`
-		}
-		if err := json.Unmarshal(previous, &a); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(next, &b); err != nil {
-			return nil, err
-		}
-		return []byte(fmt.Sprintf(`{"value":%d}`, a.Value-b.Value)), nil
-	}}
-	messages, state := reduceNotificationPrefixes(t, []json.RawMessage{[]byte(`{"group":"","value":10}`), []byte(`{"group":"","value":3}`), []byte(`{"group":"","value":2}`)}, provider)
-	require.Len(t, messages, 1)
-	assert.JSONEq(t, `{"value":5}`, string(messages[0]))
-	assert.Equal(t, map[string]int{"": 1}, state.ProviderSlots)
-	refused := reductionTestProvider{merge: func(agent.NotificationClassification, json.RawMessage, json.RawMessage) (json.RawMessage, error) {
-		return nil, errors.New("the provider refused the merge")
-	}}
-	result, _ := reduceNotificationPrefixes(t, []json.RawMessage{[]byte(`{"group":"a","value":1}`), []byte(`{"group":"a","value":2}`)}, refused)
-	assert.JSONEq(t, `{"group":"a","value":2}`, string(result[0]))
-}
-
 func TestNotificationReductionPreservesCompactionAndContextOrdering(t *testing.T) {
 	t.Parallel()
 	for _, inputs := range [][]json.RawMessage{
@@ -220,6 +153,71 @@ func TestNotificationReductionPreservesCompactionAndContextOrdering(t *testing.T
 	} {
 		reduceNotificationPrefixes(t, inputs, reductionTestProvider{})
 	}
+}
+
+func TestNotificationReductionKeepsTheLatestProviderScopedEntry(t *testing.T) {
+	t.Parallel()
+	inputs := []json.RawMessage{
+		[]byte(`{"group":"one","value":1}`),
+		[]byte(`{"group":"two","value":2}`),
+		[]byte(`{"group":"one","value":3}`),
+	}
+	messages, state := reduceNotificationPrefixes(t, inputs, reductionTestProvider{})
+	assert.Equal(t, inputs[1:], messages)
+	assert.Equal(t, map[string]int{"two": 1, "one": 2}, state.ProviderSlots)
+}
+
+func TestNotificationReductionProviderScopedNoticeSurvivesACompaction(t *testing.T) {
+	t.Parallel()
+	inputs := []json.RawMessage{
+		[]byte(`{"group":"notice","text":"keep"}`),
+		[]byte(`{"kind":"status","text":"running"}`),
+		[]byte(`{"kind":"boundary"}`),
+	}
+	messages, state := reduceNotificationPrefixes(t, inputs, reductionTestProvider{})
+	assert.Equal(t, []json.RawMessage{inputs[0], inputs[2]}, messages)
+	assert.Equal(t, map[string]int{"notice": 1}, state.ProviderSlots)
+}
+
+func TestNotificationReductionKeepsUnclassifiedEmptyProviderKeys(t *testing.T) {
+	t.Parallel()
+	inputs := []json.RawMessage{[]byte(`{"group":"","value":1}`), []byte(`{"group":"","value":2}`)}
+	messages, state := reduceNotificationPrefixes(t, inputs, reductionTestProvider{})
+	assert.Equal(t, inputs, messages)
+	assert.Empty(t, state.ProviderSlots)
+}
+
+func TestNotificationReductionApiRetryResolvedReplacesTheRetry(t *testing.T) {
+	t.Parallel()
+	inputs := []json.RawMessage{[]byte(`{"kind":"retry","attempt":2}`), []byte(`{"type":"api_retry_resolved"}`)}
+	messages, _ := reduceNotificationPrefixes(t, inputs, reductionTestProvider{})
+	assert.Equal(t, inputs[1:], messages)
+}
+
+func TestNotificationReductionApiRetryEnvelopeFolds(t *testing.T) {
+	t.Parallel()
+	inputs := []json.RawMessage{[]byte(`{"type":"api_retry","count":1}`), []byte(`{"type":"api_retry","count":3}`)}
+	messages, _ := reduceNotificationPrefixes(t, inputs, reductionTestProvider{})
+	assert.Equal(t, inputs[1:], messages)
+}
+
+func TestNotificationReductionClaudeNotificationsOfOneKeyFold(t *testing.T) {
+	t.Parallel()
+	plugin := testRegistry.Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	inputs := []json.RawMessage{
+		[]byte(`{"type":"system","subtype":"notification","key":"stop-hook-error","message":"first error"}`),
+		[]byte(`{"type":"system","subtype":"notification","key":"another-key","message":"keep this"}`),
+		[]byte(`{"type":"system","subtype":"notification","key":"stop-hook-error","message":"latest error"}`),
+	}
+	messages, _ := reduceNotificationPrefixes(t, inputs, plugin)
+	assert.Equal(t, inputs[1:], messages)
+}
+
+func TestNotificationReductionCompactionEndedEndsTheStatus(t *testing.T) {
+	t.Parallel()
+	inputs := []json.RawMessage{[]byte(`{"kind":"status"}`), []byte(`{"type":"compaction_ended","outcome":"failed"}`)}
+	messages, _ := reduceNotificationPrefixes(t, inputs, reductionTestProvider{})
+	assert.Equal(t, inputs[1:], messages)
 }
 
 func TestNotificationReductionKeepsEveryGoalTransition(t *testing.T) {
@@ -238,4 +236,14 @@ func TestNotificationReductionRejectsCorruptState(t *testing.T) {
 	assert.Nil(t, result)
 	assert.Equal(t, []json.RawMessage{raw(t, settingsChanged("A", "B"))}, messages)
 	assert.Equal(t, map[string]string{"model": "A"}, state.CancelledSettings)
+}
+
+func TestClineStatusNoticeSurvivesACompaction(t *testing.T) {
+	t.Parallel()
+	status := json.RawMessage(`{"event":"session.notice","payload":{"message":"The context exceeded the window.","metadata":{"kind":"context_overflow_recovery","phase":"started"}}}`)
+	ended := json.RawMessage(`{"event":"session.notice","payload":{"message":"The context is compacted.","metadata":{"kind":"auto_compaction","phase":"completed"}}}`)
+	rows, _ := reduceNotificationPrefixes(t, []json.RawMessage{status, ended}, testRegistry.Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE))
+	require.Len(t, rows, 2)
+	assert.JSONEq(t, string(status), string(rows[0]))
+	assert.JSONEq(t, string(ended), string(rows[1]))
 }

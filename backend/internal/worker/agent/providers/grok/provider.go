@@ -27,6 +27,35 @@ type grokProvider struct {
 	acp.Provider
 }
 
+// Classify identifies a native retrying frame as the API-retry notification.
+// The worker stores the frame byte for byte, so the classification reads the
+// whole line.
+func (grokProvider) Classify(content json.RawMessage) agent.NotificationClassification {
+	var line struct {
+		Method string `json:"method"`
+		Params struct {
+			Update struct {
+				SessionUpdate string `json:"sessionUpdate"`
+				Type          string `json:"type"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(content, &line) != nil || line.Method != contracts.GrokMethodSessionNotification {
+		return agent.NotificationClassification{}
+	}
+	switch line.Params.Update.SessionUpdate {
+	case contracts.GrokNotificationRetryState:
+		if line.Params.Update.Type == "retrying" {
+			return agent.APIRetryNotification()
+		}
+	case contracts.GrokNotificationAutoCompactCompleted,
+		contracts.GrokNotificationAutoCompactFailed,
+		contracts.GrokNotificationAutoCompactCancelled:
+		return agent.CompactionBoundaryNotification()
+	}
+	return agent.NotificationClassification{}
+}
+
 // ListStoredSessions reads Grok's own session store; see sessions.go.
 func (grokProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return grokStoredSessions(ctx, q)

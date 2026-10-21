@@ -13,6 +13,7 @@
     "effortLevels",
     "systemSubtypes",
     "controlAnswer",
+    "resultSupplement",
     "structs"
   ],
   "$defs": {
@@ -144,6 +145,9 @@
       "$ref": "#/$defs/table"
     },
     "controlAnswer": {
+      "$ref": "#/$defs/table"
+    },
+    "resultSupplement": {
       "$ref": "#/$defs/table"
     },
     "structs": {

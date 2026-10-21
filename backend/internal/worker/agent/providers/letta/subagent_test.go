@@ -293,7 +293,7 @@ func TestLettaChildCompletionUsesTheReportWhenTheStreamHasNoFinalMessage(t *test
 }
 
 // A task notification in the echo of the reader's own message is the reader's
-// text. It closes no child, although it names the task of a running child.
+// text. It closes no child, although it identifies the task of a running child.
 func TestLettaEchoOfTheReadersMessageClosesNoChild(t *testing.T) {
 	t.Parallel()
 	a, sink := newLettaChildTestAgent(t)

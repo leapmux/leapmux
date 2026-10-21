@@ -140,8 +140,10 @@ func TestProviderFor_ACPSharesNoopClassification(t *testing.T) {
 			"ACP provider %v must not consolidate notifications", provider)
 		assert.True(t, plugin.IsInterrupt(`{"jsonrpc":"2.0","method":"session/cancel"}`),
 			"ACP provider %v must recognize session/cancel as an interrupt", provider)
-		assert.True(t, plugin.IsInterrupt(`{"method":"cancel"}`),
-			"ACP provider %v must accept the legacy bare cancel form", provider)
+		// The legacy bare `cancel` form has no sender: no ACP agent emits it,
+		// so the classifier refuses it (E71 removed the shim).
+		assert.False(t, plugin.IsInterrupt(`{"method":"cancel"}`),
+			"ACP provider %v must refuse the legacy bare cancel form", provider)
 	}
 }
 

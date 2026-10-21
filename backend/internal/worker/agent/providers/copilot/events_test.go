@@ -463,19 +463,20 @@ func TestNativeCopilotDropsEveryRuntimeTraceFamily(t *testing.T) {
 	}
 }
 
-// The one model event LeapMux surfaces stays. A failed model call is a notification
-// the reader acts on, so the family rule cannot take it.
-func TestNativeCopilotKeepsTheModelCallFailure(t *testing.T) {
+// The retry notice carries the model failure, so the failure frame needs no separate row.
+func TestNativeCopilotKeepsTheModelCallFailureInTheRetry(t *testing.T) {
 	t.Parallel()
 	a, sink := newNativeCopilotForEvents(t)
 
-	raw := nativeCopilotEvent(t, "", contracts.CopilotEventModelCallFailure, map[string]any{
-		"message": "the model refused the request",
+	raw := copilotVerdictFrame(t, "", contracts.CopilotEventModelCallFailure, true, map[string]any{
+		"errorMessage": "the model refused the request",
 	})
 	a.HandleOutput(raw)
 
-	require.Len(t, sink.Messages(), 1)
-	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
+	require.Empty(t, sink.Messages())
+	a.HandleOutput(nativeCopilotEvent(t, "", "model.turn_retry", map[string]any{}))
+	require.Len(t, sink.LeapMuxNotifications(), 1)
+	assert.Equal(t, "the model refused the request", sink.LeapMuxNotifications()[0][contracts.NotificationFieldError])
 }
 
 func TestNativeCopilotKeepsReasoningInsideTheFinishedMessage(t *testing.T) {
@@ -838,4 +839,200 @@ func TestCopilotNativeEvents_AnUnopenedCallKeepsItsProgressSentence(t *testing.T
 		map[string]any{"toolCallId": "call-9", "progressMessage": "Searching"}))
 
 	assert.Contains(t, sink.ProgressUpdates(), agent.OutputTailProgress("call-9", "Searching", false))
+}
+
+func TestNewInboxMessageStoresNoRow(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSystemNotification, map[string]any{
+		"kind": map[string]any{"type": "new_inbox_message"}, "content": "inbox changed",
+	}))
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestRetryAttemptDiscardsTheFailedText(t *testing.T) {
+	t.Parallel()
+	// The fixture trims .tmp/verify-c29/copilot/round2/mid/frames.jsonl.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name: "native stream retry", FramesPath: "testdata/turn_retry.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			t.Helper()
+			a, _ := newNativeCopilotForEvents(t)
+			a.sink = agent.NewProviderServices(sink)
+			return a.HandleOutput
+		},
+		TextOf: func(row agenttest.Message) (agenttest.RetryAttemptText, bool) {
+			if kind, text, completion, ok := agenttest.DecodeAssembledMessage(row.Content); ok && kind == agent.AssembledMessageKindText {
+				return agenttest.RetryAttemptText{Text: text, Completion: completion}, true
+			}
+			data, ok := copilotEventOfType(row.Content, contracts.CopilotEventAssistantMessage)
+			if !ok {
+				return agenttest.RetryAttemptText{}, false
+			}
+			return agenttest.RetryAttemptText{Text: providerkit.StringField(data, "content"), Completion: agent.MessageCompletionComplete}, true
+		},
+		Want:      []agenttest.RetryAttemptText{{Text: "OK", Completion: agent.MessageCompletionComplete}},
+		Discarded: []string{"partial "},
+	})
+}
+
+func TestTurnRetryWritesAFoldedRetryAndResolvesIt(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventModelCallFailure, map[string]any{"errorMessage": `{"message":"The stream broke."}`}))
+	a.HandleOutput(nativeCopilotEvent(t, "", "model.turn_retry", map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessageDelta, map[string]any{"messageId": "m2", "deltaContent": "OK"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessage, map[string]any{"messageId": "m2", "content": "OK"}))
+	assert.Equal(t, []map[string]any{
+		{"type": "api_retry", "count": 1, "error": "The stream broke."},
+		{"type": "api_retry_resolved"},
+	}, sink.LeapMuxNotifications())
+}
+
+func TestTurnRetryDiscardsOnlyItsAgentsOpenScopes(t *testing.T) {
+	t.Parallel()
+	a, root := newNativeCopilotForEvents(t)
+	child := &agenttest.Sink{}
+	a.children = map[string]*copilotNativeChild{"child": {nativeAgentID: "child", sink: agent.NewProviderServices(child)}}
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessageDelta, map[string]any{"messageId": "root-text", "deltaContent": "root partial"}))
+	a.HandleOutput(nativeCopilotEvent(t, "child", contracts.CopilotEventAssistantMessageDelta, map[string]any{"messageId": "child-text", "deltaContent": "child text"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantStreamingDelta, map[string]any{"totalResponseSizeBytes": 42}))
+	a.HandleOutput(nativeCopilotEvent(t, "", "model.turn_retry", map[string]any{}))
+	assert.Equal(t, []string{"child-text"}, a.nativeText.ScopeIDs())
+	assert.Contains(t, root.ProgressUpdates(), agent.ResetModelScopeProgress("root-text"))
+	assert.Contains(t, root.ProgressUpdates(), agent.ResetModelScopeProgress(copilotResponseSizeScope))
+	assert.Empty(t, child.LeapMuxNotifications())
+	assert.NotContains(t, child.ProgressUpdates(), agent.ResetModelScopeProgress("child-text"))
+}
+
+func TestTurnRetryChildEndByToolIDKeepsTheRootRetry(t *testing.T) {
+	t.Parallel()
+	a, root := newNativeCopilotForEvents(t)
+	child := &agenttest.Sink{}
+	a.children = map[string]*copilotNativeChild{"child": {
+		nativeAgentID: "child", workerAgentID: "worker-child", spawnToolCallID: "spawn", owner: a.sink, sink: agent.NewProviderServices(child),
+	}}
+	a.HandleOutput(nativeCopilotEvent(t, "", "model.turn_retry", map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "child", "assistant.turn_retry", map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "spawn"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessageDelta, map[string]any{"messageId": "root", "deltaContent": "OK"}))
+	require.Len(t, root.LeapMuxNotifications(), 2)
+	assert.Equal(t, "api_retry_resolved", root.LeapMuxNotifications()[1][contracts.NotificationFieldType])
+	assert.NotContains(t, a.retries, "child")
+}
+
+func TestTurnRetryCountsResetAtEachAgentsEnd(t *testing.T) {
+	t.Parallel()
+	a, root := newNativeCopilotForEvents(t)
+	child := &agenttest.Sink{}
+	a.children = map[string]*copilotNativeChild{"child": {nativeAgentID: "child", sink: agent.NewProviderServices(child)}}
+	a.HandleOutput(nativeCopilotEvent(t, "", "model.turn_retry", map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "child", "assistant.turn_retry", map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "child", "assistant.turn_retry", map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessageDelta, map[string]any{"messageId": "next", "deltaContent": "OK"}))
+	assert.Len(t, root.LeapMuxNotifications(), 1, "an ended retry must not resolve in the next turn")
+	a.HandleOutput(nativeCopilotEvent(t, "child", contracts.CopilotEventSessionIdle, map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "child", "assistant.turn_retry", map[string]any{}))
+	notices := child.LeapMuxNotifications()
+	require.Len(t, notices, 3)
+	assert.Equal(t, 1, notices[0][contracts.NotificationFieldCount])
+	assert.Equal(t, 2, notices[1][contracts.NotificationFieldCount])
+	assert.Equal(t, 1, notices[2][contracts.NotificationFieldCount])
+}
+
+func copilotVerdictFrame(t *testing.T, nativeAgentID, eventType string, ephemeral bool, data any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"method": "session.event", "params": map[string]any{
+			"sessionId": "session-1", "event": map[string]any{"type": eventType, "agentId": nativeAgentID, "ephemeral": ephemeral, "data": data},
+		},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+func TestEventVerdicts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		event     string
+		ephemeral bool
+		stored    bool
+	}{
+		{"agent.interrupted", true, false}, {"prompt_cache_break", true, false}, {"sandbox.decision", true, false},
+		{"session.indexed_search", true, false}, {"session.memory_changed", true, false},
+		{"permission.assentDetected", false, false}, {"permission.contextualAuthorization", false, false},
+		{"permission.messageAuthorization", false, false}, {"permission.messageAuthorizationDegraded", false, false},
+		{"permission.messageAuthorizationRead", false, false}, {"session.permission_recovery", false, false},
+		{"skill.context_delivered", false, false}, {"skill.context_delivered_ref", false, false},
+		{"skill.invoked_ref", false, true}, {"audio", false, true}, {"blob", true, true}, {"image", false, true},
+		{"model.turn_failed", false, false}, {"hook.future_trace", false, false}, {"factory.future_trace", false, false},
+		{"command.execute", true, false}, {"session_limits_exhausted.requested", true, false},
+		{"session.custom_notification", true, true}, {"session.auto_tier_recommendation", true, true},
+		{"session.auto_tier_switch_failed", true, true}, {"mcp.oauth_required", true, true}, {"mcp.oauth_completed", true, true},
+		{"mcp.headers_refresh_required", true, true}, {"mcp.headers_refresh_completed", true, true},
+		{"user_input.completed", false, false}, {"exit_plan_mode.completed", false, false}, {"elicitation.completed", false, false},
+		{"sampling.completed", true, false}, {"auto_mode_switch.completed", true, false}, {"permission.completed", true, true},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			a, sink := newNativeCopilotForEvents(t)
+			raw := copilotVerdictFrame(t, "", tc.event, tc.ephemeral, map[string]any{"requestId": "request", "message": "notice"})
+			a.HandleOutput(raw)
+			if tc.stored {
+				rows := sink.Messages()
+				require.Len(t, rows, 1)
+				assert.JSONEq(t, string(raw), string(rows[0].Content))
+			} else {
+				assert.Empty(t, sink.Messages())
+			}
+		})
+	}
+}
+
+func TestSystemMessageStoresNoRowForRootOrSubagent(t *testing.T) {
+	t.Parallel()
+	a, root := newNativeCopilotForEvents(t)
+	child := &agenttest.Sink{}
+	a.children = map[string]*copilotNativeChild{"child": {nativeAgentID: "child", sink: agent.NewProviderServices(child)}}
+	for _, id := range []string{"", "child"} {
+		a.HandleOutput(copilotVerdictFrame(t, id, contracts.CopilotEventSystemMessage, false, map[string]any{"content": "system instructions"}))
+	}
+	assert.Empty(t, root.Messages())
+	assert.Empty(t, child.Messages())
+}
+
+func TestUnknownEphemeralEventPersists(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	raw := copilotVerdictFrame(t, "", "future_native_notice", true, map[string]any{"value": 7})
+	a.HandleOutput(raw)
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
+}
+
+func TestChildControlFramePersistsInTheChildTranscript(t *testing.T) {
+	t.Parallel()
+	a, root := newNativeCopilotForEvents(t)
+	child := &agenttest.Sink{}
+	a.children = map[string]*copilotNativeChild{"child": {nativeAgentID: "child", sink: agent.NewProviderServices(child)}}
+	raw := copilotVerdictFrame(t, "child", contracts.CopilotEventUserInputRequested, true, map[string]any{"requestId": "request", "question": "Choose"})
+	a.HandleOutput(raw)
+	assert.Empty(t, root.Messages())
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, string(raw), string(child.Messages()[0].Content))
+}
+
+func TestUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "durable", Frame: copilotVerdictFrame(t, "", "future_event", false, map[string]any{"value": 7})},
+		{Name: "ephemeral", Frame: copilotVerdictFrame(t, "", "future_event", true, map[string]any{"value": 7})},
+		{Name: "another session", Frame: nativeCopilotSessionEvent(t, "another-session", "", "future_event", map[string]any{"value": 7}), OtherSession: true},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		t.Helper()
+		a, sink := newNativeCopilotForEvents(t)
+		a.HandleOutput(tc.Frame)
+		return sink
+	})
 }

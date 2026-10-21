@@ -4,14 +4,28 @@ import { compactionFrame, errorFrame, mimoFrame, statusFrame, TEST_SESSION, tool
 import { mimoCompactionEnded, mimoErrorText, mimoNotificationEntry } from './notification'
 
 describe('mimoNotificationEntry', () => {
+  it('reads a notice status as a status line', () => {
+    expect(mimoNotificationEntry(statusFrame('notice', { message: 'The native usage notice.' })))
+      .toEqual([{ kind: 'status', text: 'The native usage notice.' }])
+  })
+
+  it('reads a subagent retry attempt with checked counters', () => {
+    expect(mimoNotificationEntry(mimoFrame('session.retry.attempt', { messageID: 'child-message', attempt: 1, maxAttempts: 8, reason: 'child failure', nextDelayMs: 2092 })))
+      .toEqual([{ kind: 'retry', scope: 'api', attempt: 1, maxAttempts: 8, error: 'child failure', delayMs: 2092 }])
+    expect(mimoNotificationEntry(mimoFrame('session.retry.attempt', { attempt: -1, maxAttempts: 1.5, nextDelayMs: Infinity, reason: ' ' })))
+      .toEqual([{ kind: 'retry', scope: 'api' }])
+    expect(mimoNotificationEntry(statusFrame('retry', { attempt: -1, message: ' ' })))
+      .toEqual([{ kind: 'retry', scope: 'api' }])
+  })
+
   it('reads a retry of the same turn', () => {
     expect(mimoNotificationEntry(statusFrame('retry', { attempt: 2, message: 'overloaded', next: 1 }))).toEqual([
       { kind: 'retry', scope: 'api', attempt: 2, error: 'overloaded' },
     ])
   })
 
-  it('reads the two ends of a compaction', () => {
-    expect(mimoNotificationEntry(compactionFrame(false))).toEqual([{ kind: 'compaction', phase: 'start', detail: { trigger: 'manual' } }])
+  it('reads a compaction end and leaves a stored start unclaimed', () => {
+    expect(mimoNotificationEntry(compactionFrame(false))).toEqual([])
     expect(mimoNotificationEntry(compactionFrame(true, true))).toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto' } }])
   })
 
@@ -45,11 +59,11 @@ describe('mimoNotificationEntry', () => {
 
   // MiMo writes the projection once the compaction ends. A null projection is the
   // start of one, as an absent projection is.
-  it('reads a compaction with a null projection as its start', () => {
+  it('leaves a stored null-projection start unclaimed', () => {
     const frame = compactionFrame(false)
     const part = (frame.properties as { part: Record<string, unknown> }).part
     expect(mimoNotificationEntry({ ...frame, properties: { ...frame.properties as object, part: { ...part, projection: null } } }))
-      .toEqual([{ kind: 'compaction', phase: 'start', detail: { trigger: 'manual' } }])
+      .toEqual([])
   })
 
   it('reads only a true auto flag as an automatic compaction', () => {

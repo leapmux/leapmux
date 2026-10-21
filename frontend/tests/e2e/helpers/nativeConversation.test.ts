@@ -88,7 +88,6 @@ vi.mock('@playwright/test', async (importOriginal) => {
   }
 })
 
-const UNRENDERED = ['LeapMux has no display for this row', 'LeapMux could not render this row']
 const INDICATOR = '[data-testid="thinking-indicator"]:visible'
 const DIVIDERS = '[data-testid="result-divider"]:visible'
 const LAST_DIVIDER = `last ${DIVIDERS}`
@@ -166,6 +165,7 @@ function fakeContext({
   const page = {
     locator: (selector: string) => fakes.locator(selector),
     getByText: (text: string) => fakes.locator(`text ${text}`),
+    getByTestId: (id: string) => fakes.locator(`test id ${id}`),
     reload: async () => {
       recorded.events.push('reload')
       if (recorded.textsAfterReload !== undefined)
@@ -196,7 +196,7 @@ describe('exerciseBasicChat', () => {
     const { prompt } = await exerciseBasicChat(fakeContext())
     const answer = prompt.replace(/^Reply once for BASICCHAT(\w+)\.$/, 'BASICANSWER$1')
     expect(answer).not.toBe(prompt)
-    const noUnrenderedCard = UNRENDERED.map(title => `count 0 visible text ${title}`)
+    const noUnrenderedCard = ['count 0 visible test id unrendered-row']
     expect(recorded.events).toEqual([
       `queue ${answer}`,
       `send ${prompt} [marked]`,
@@ -226,7 +226,7 @@ describe('exerciseBasicChat', () => {
   })
 
   it('stops at an unrendered card before the reload', async () => {
-    recorded.failingPrefix = 'count 0 visible text LeapMux could not render this row'
+    recorded.failingPrefix = 'count 0 visible test id unrendered-row'
     await expect(exerciseBasicChat(fakeContext())).rejects.toThrow('The fake check failed')
     expect(recorded.events).not.toContain('reload')
   })

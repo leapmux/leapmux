@@ -220,7 +220,10 @@ func TestStartRunsTheHandshake(t *testing.T) {
 		"the reader chose omp's own level, whatever level omp resolved")
 
 	require.NoError(t, a.SendInput("hello", nil))
-	waitFor(t, func() bool { return len(turnEndRows(sink.Messages())) == 1 })
+	waitFor(t, func() bool {
+		active, published := sink.LastTurnActive()
+		return len(turnEndRows(sink.Messages())) == 1 && published && !active
+	})
 	assert.Equal(t, []string{"message_end", "agent_end"}, persistedTypes(sink.Messages()), "the reply, then the turn's end")
 	active, _ := sink.LastTurnActive()
 	assert.False(t, active)

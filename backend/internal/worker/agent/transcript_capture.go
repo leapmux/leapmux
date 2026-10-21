@@ -31,6 +31,7 @@ const (
 	capturedMessage capturedOperation = iota + 1
 	capturedNotification
 	capturedTurnEnd
+	capturedWorkerNotification
 )
 
 type capturedTranscriptWrite struct {
@@ -47,13 +48,21 @@ type capturedTranscriptWrite struct {
 // CaptureTranscript freezes one record before attribution or persistence delays it.
 // Persistence delegates through the exact outer writer and preserves its overrides.
 func CaptureTranscript(writer TranscriptServices, content MessageContent, span SpanInfo) CapturedTranscript {
+	return captureTranscriptWithReceipt(writer, content, span, NewTranscriptWriteReceipt())
+}
+
+func captureTranscriptWithReceipt(writer TranscriptServices, content MessageContent, span SpanInfo, receipt *TranscriptWriteReceipt) CapturedTranscript {
 	content = content.Clone()
-	receipt := NewTranscriptWriteReceipt()
 	content.WriteReceipt = receipt
 	if writer != nil {
 		content = writer.CaptureMessage(content, span).Clone()
 	}
 	content.WriteReceipt = receipt
+	return frozenTranscript(writer, content, span)
+}
+
+// frozenTranscript owns content that already carries its capture-time publication and receipt.
+func frozenTranscript(writer TranscriptServices, content MessageContent, span SpanInfo) CapturedTranscript {
 	return CapturedTranscript{write: &capturedTranscriptWrite{writer: writer, content: content, span: span}}
 }
 
@@ -77,12 +86,27 @@ func (write CapturedTranscript) PersistNotification(source leapmuxv1.MessageSour
 	return write.persist(capturedNotification, source)
 }
 
+func (write CapturedTranscript) PersistWorkerNotification() (bool, error) {
+	return write.persist(capturedWorkerNotification, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)
+}
+
 func (write CapturedTranscript) PersistTurnEnd() error {
 	_, err := write.persist(capturedTurnEnd, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
 	return err
 }
 
+// PersistQueuedMessage writes the current queue entry through its original outer writer.
+// Transparent decorators keep this admission when they forward to an ordered inner sink.
+func (write CapturedTranscript) PersistQueuedMessage(ticket *OutputTicket, source leapmuxv1.MessageSource) error {
+	_, err := write.persistWithExecution(capturedMessage, source, &outputExecution{ticket: ticket, operation: capturedMessage, source: source})
+	return err
+}
+
 func (write CapturedTranscript) persist(operation capturedOperation, source leapmuxv1.MessageSource) (bool, error) {
+	return write.persistWithExecution(operation, source, nil)
+}
+
+func (write CapturedTranscript) persistWithExecution(operation capturedOperation, source leapmuxv1.MessageSource, execution *outputExecution) (bool, error) {
 	if write.write == nil || write.write.writer == nil {
 		return false, errors.New("the captured transcript write has no writer")
 	}
@@ -106,6 +130,9 @@ func (write CapturedTranscript) persist(operation capturedOperation, source leap
 	state.mu.Unlock()
 
 	content := state.content.Clone()
+	if execution != nil {
+		content.outputExecution = execution
+	}
 	var broadcast bool
 	var err error
 	completed := false
@@ -122,6 +149,8 @@ func (write CapturedTranscript) persist(operation capturedOperation, source leap
 		err = state.writer.PersistMessage(source, content, state.span)
 	case capturedNotification:
 		broadcast, err = state.writer.PersistNotification(source, content)
+	case capturedWorkerNotification:
+		broadcast, err = state.writer.PersistWorkerNotification(content)
 	case capturedTurnEnd:
 		err = state.writer.PersistTurnEnd(content, state.span)
 	default:

@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // qwenProvider is the wire-format plugin for Qwen Code. It is an ACP provider,
@@ -20,6 +21,19 @@ import (
 // with the answers beside the selected option.
 type qwenProvider struct {
 	acp.Provider
+}
+
+// Classify identifies the native completed compaction as a notification boundary.
+func (qwenProvider) Classify(content json.RawMessage) agent.NotificationClassification {
+	var update struct {
+		SessionUpdate string                     `json:"sessionUpdate"`
+		Meta          map[string]json.RawMessage `json:"_meta"`
+	}
+	if json.Unmarshal(content, &update) == nil && update.SessionUpdate == contracts.ACPUpdateAgentMessageChunk &&
+		providerkit.StringField(update.Meta[contracts.QwenMetaContextCompression], "phase") == contracts.QwenCompressionPhaseDone {
+		return agent.CompactionBoundaryNotification()
+	}
+	return agent.NotificationClassification{}
 }
 
 // ValidateAttachment refuses generic binary input that Qwen turns into a

@@ -48,6 +48,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				SubagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
 				// Reasonix sends goal state outside standard ACP session updates.
 				ExtraMethod: a.handleExtraMethod,
+				// A notice chunk splits from the model's own stream by its
+				// prefix.
+				SessionMetadataHandler: a.observeReasonixNotice,
 			}
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {

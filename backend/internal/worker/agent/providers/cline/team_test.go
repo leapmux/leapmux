@@ -1,6 +1,7 @@
 package cline
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -227,4 +228,57 @@ func TestTheStopClosesTheTeammateRuns(t *testing.T) {
 		item, _ := r.sink.BackgroundTask(teamRowPrefix + key)
 		assert.Equal(t, bgtask.StatusStopped, item.Status, key)
 	}
+}
+
+func TestClineTeammateNoticeLandsInItsRunTranscript(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feed(t, contracts.ClineEventTeamProgress, teamProgressPayload(r.sessionID(), contracts.ClineTeamRunEventRunStarted, "run_notice", "researcher"))
+	before := r.sink.NotificationCount()
+	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "Retry the teammate model.", "agent": map[string]any{"kind": "teammate", "teamAgentId": "researcher"}})
+	child := r.childSink(t, teamRowPrefix+"run_notice")
+	assert.Equal(t, before, r.sink.NotificationCount())
+	require.Len(t, child.PersistedNotifications(), 1)
+	assert.Contains(t, string(child.LastNotification().Content), "Retry the teammate model.")
+	assert.False(t, r.turnActive())
+}
+
+func TestClineTeammateNoticeRequiresOneActiveRun(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{0, 2} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			r := newRig(t)
+			for i := 0; i < count; i++ {
+				r.feed(t, contracts.ClineEventTeamProgress, teamProgressPayload(r.sessionID(), contracts.ClineTeamRunEventRunStarted, "run-"+strconv.Itoa(i), "researcher"))
+			}
+			before := r.sink.NotificationCount()
+			r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "An unowned notice.", "agent": map[string]any{"kind": "teammate", "teamAgentId": "researcher"}})
+			assert.Equal(t, before, r.sink.NotificationCount())
+			for i := 0; i < count; i++ {
+				assert.Zero(t, r.childSink(t, teamRowPrefix+"run-"+strconv.Itoa(i)).NotificationCount())
+			}
+		})
+	}
+}
+
+func TestClineTeammateCompactionKeepsItsRunState(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feed(t, contracts.ClineEventTeamProgress, teamProgressPayload(r.sessionID(), contracts.ClineTeamRunEventRunStarted, "run_compact", "researcher"))
+	notice := compactionNotice(contracts.ClineNoticePhaseStarted)
+	notice["agent"] = map[string]any{"kind": agentKindTeammate, "teamAgentId": "researcher"}
+	r.feed(t, contracts.ClineEventSessionNotice, notice)
+	child := r.childSink(t, teamRowPrefix+"run_compact")
+	value, exists := child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+	r.agent.dispatchMu.Lock()
+	r.agent.closeTeamRuns(bgtask.StatusStopped)
+	r.agent.dispatchMu.Unlock()
+	value, exists = child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Nil(t, value)
+	notices := child.LeapMuxNotifications()
+	require.Len(t, notices, 1)
+	assert.Equal(t, contracts.CompactionEndOutcomeAborted, notices[0][contracts.NotificationFieldOutcome])
 }

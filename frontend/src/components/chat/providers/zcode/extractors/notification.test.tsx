@@ -18,11 +18,11 @@ describe('describeZCodeNotification', () => {
   describe('permission.resolved', () => {
     // Only a decision the app-server made BY ITSELF reaches a row -- one the user
     // answered is recorded as its own answer row instead.
-    it('states an automatic allow', () => {
+    it('does not read an automatic allow that the worker consumes', () => {
       expect(describeZCodeNotification(event(ZCODE_EVENT.PermissionResolved, {
         decision: ZCODE_DECISION.Allow,
         toolName: ZCODE_TOOL.Read,
-      }))).toBe('Allowed Read automatically')
+      }))).toBeNull()
     })
 
     it('states a denial and appends the reason the app-server gave', () => {
@@ -33,12 +33,12 @@ describe('describeZCodeNotification', () => {
       }))).toBe('Denied Bash — plan mode forbids writes')
     })
 
-    it('appends the reason for an allow too, since an auto-allow states why', () => {
+    it('does not read the reason of a consumed automatic allow', () => {
       expect(describeZCodeNotification(event(ZCODE_EVENT.PermissionResolved, {
         decision: ZCODE_DECISION.Allow,
         toolName: ZCODE_TOOL.Bash,
         reason: 'yolo mode',
-      }))).toBe('Allowed Bash automatically — yolo mode')
+      }))).toBeNull()
     })
 
     // An escalation and an input rewrite are in the app-server's enumeration. Reading

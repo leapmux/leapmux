@@ -163,7 +163,7 @@ func (a *Agent) clearChildState() {
 }
 
 // retryChildArchives gives a completed turn one more immediate archive read.
-func (a *Agent) retryChildArchives(_ error, _ bool) {
+func (a *Agent) retryChildArchives(_ error, _ bool) acp.PromptEnding {
 	a.childMu.Lock()
 	var pending []*fastagentChildState
 	for _, state := range a.childState {
@@ -179,6 +179,7 @@ func (a *Agent) retryChildArchives(_ error, _ bool) {
 			a.startFastagentArchiveRetry(state)
 		}
 	}
+	return acp.PromptEnding{}
 }
 
 // replayFastagentChild advances only after the child route accepts an update.

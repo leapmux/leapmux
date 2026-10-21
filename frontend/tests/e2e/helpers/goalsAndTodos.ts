@@ -184,6 +184,8 @@ export async function pauseResumeClearGoal(
 
 /** What one provider's queued goal route looks like on the wire. */
 export interface TextGoalQueueCase {
+  /** The provider cannot confirm the status after the goal command. */
+  statusUnconfirmed?: true
   /** The objective to type into the goal editor. */
   objective: string
   /** The exact command text a Clear must enqueue, such as `/goal off`. */
@@ -220,6 +222,8 @@ export async function exerciseTextGoalQueue(context: Pick<NativeScenarioContext,
 
   await pauseButton.click()
   await expectGoalObjective(page, test.objective)
+  if (test.statusUnconfirmed)
+    await expect(page.locator('[data-testid="goal-status-dot"]:visible')).toHaveCount(0)
   if (test.modeAfterSet)
     await expect(modeTrigger).toContainText(test.modeAfterSet)
 

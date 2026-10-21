@@ -188,7 +188,9 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion, message string)
 		a.turn = turnState{}
 	}
 	a.modeRebuild = nil
+	lead := a.out.lead
 	a.Mu.Unlock()
+	a.finishTranscriptCompaction(lead, completion)
 	if active {
 		reason := runReasonError
 		if completion == agent.MessageCompletionInterrupted {

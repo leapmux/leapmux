@@ -48,8 +48,10 @@ describe('claudeCompactionBoundary', () => {
 describe('codexCompactionBoundary', () => {
   const codex = (content: unknown) => parse(content, AgentProvider.CODEX)
 
-  it('recognizes a completed contextCompaction item at the top level', () => {
-    expect(codexCompactionBoundary(codex({ item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1' }))).not.toBeNull()
+  it('refuses a bare top-level contextCompaction item', () => {
+    // B26 removed the top-level item shape: the worker stores the raw
+    // item/completed notification only, so a bare item recognizes nothing.
+    expect(codexCompactionBoundary(codex({ item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1' }))).toBeNull()
   })
 
   it('recognizes a completed contextCompaction item inside an item/completed notification', () => {

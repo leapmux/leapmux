@@ -22,7 +22,7 @@ const MODEL_GROUPS = [
   }),
 ]
 
-const BANNER_TEXT = 'Giving this request a little extra thought. If you would rather not wait, retry with a faster model. It may be less capable on complex requests.'
+const BANNER_TEXT = 'If you would rather not wait, retry on a faster model. A faster model can be less capable on complex tasks.'
 
 /** A retry handler that accepts every retry, as a worker that accepts the offer does. */
 const accept = () => Promise.resolve(true)
@@ -46,6 +46,11 @@ afterEach(() => {
 })
 
 describe('TurnRetryOfferBanner', () => {
+  it('states no provider reason in the banner', () => {
+    render(() => <TurnRetryOfferBanner offer={OFFER} onRetry={accept} />)
+    expect(screen.getByTestId('turn-retry-offer-banner')).not.toHaveTextContent('Giving this request a little extra thought')
+  })
+
   it('renders the offer sentence and the model label', () => {
     render(() => (
       <TurnRetryOfferBanner offer={OFFER} provider={AgentProvider.CODEX} optionGroups={MODEL_GROUPS} onRetry={accept} />
@@ -158,7 +163,7 @@ describe('TurnRetryOfferBanner', () => {
 
     expect(within(dialog).getByText('Stop this attempt and retry?')).toBeInTheDocument()
     expect(within(dialog).getByText(
-      'This stops the current attempt and removes it from the native conversation history. LeapMux keeps the stopped attempt in this transcript. File changes and other actions that the agent already took stay. LeapMux sends your message again on GPT-6 Luna, which can be less capable on complex tasks.',
+      'This stops the current attempt and removes it from the native conversation history. LeapMux keeps the stopped attempt in this transcript. File changes and other actions that the agent already took stay. LeapMux sends your message again on GPT-6 Luna, a faster model that can be less capable on complex tasks.',
     )).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Keep waiting' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Stop and retry' })).toBeInTheDocument()

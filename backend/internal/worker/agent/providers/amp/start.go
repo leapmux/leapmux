@@ -46,7 +46,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err != nil {
 		return nil, fmt.Errorf("prepare the Amp permission bridge: %w", err)
 	}
-	bridge, err := newPermissionBridge(dir.Path())
+	clock := quartz.NewReal()
+	bridge, err := newPermissionBridge(dir.Path(), clock)
 	if err != nil {
 		removeAgentDir(opts.AgentID, dir)
 		return nil, err
@@ -80,7 +81,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		getenv:        os.Getenv,
 		home:          home,
 		shellEnv:      shellEnvOf(opts),
-	}, bridge, dir, quartz.NewReal())
+	}, bridge, dir, clock)
 
 	if opts.ResumeSessionID != "" {
 		a.sink.UpdateSessionID(opts.ResumeSessionID)

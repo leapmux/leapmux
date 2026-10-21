@@ -48,6 +48,24 @@ func TestZCodeManualCompactionUsesNativeSessionRequest(t *testing.T) {
 	require.Len(t, sink.PersistedNotifications(), 1, "the compaction lifecycle is the row")
 }
 
+func TestZCodeManualCompactionEndsTheLiveStateAtTheFinalStateReason(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{contracts.ZCodeStateReasonSessionCompacted, contracts.ZCodeStateReasonSessionCompactFailed, contracts.ZCodeStateReasonSessionCompactCancelled} {
+		for _, manual := range []bool{false, true} {
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			if manual {
+				a.compactionSessionID = "sess-1"
+			}
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+				`{"operationId":"c1","status":"started","trigger":"auto"}`))
+			a.HandleOutput(zcodeStateLine(t, ScopeSession, reason, `{"status":"idle"}`))
+			assert.Equal(t, []any{map[string]any{"trigger": "auto"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			assert.Empty(t, a.compactionSessionID)
+		}
+	}
+}
+
 func TestZCodeManualCompactionRejectsInvalidReceipt(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
@@ -93,11 +111,14 @@ func TestZCodeManualCompactionInterruptEndsASilentSummary(t *testing.T) {
 	a.compactionSessionID = "sess-1"
 	a.Mu.Unlock()
 	a.PublishTurnActive()
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"operationId":"c1","status":"started","trigger":"manual"}`))
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Equal(t, 1, timer.armed)
 	timer.fire()
+	assert.Equal(t, []any{map[string]any{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()

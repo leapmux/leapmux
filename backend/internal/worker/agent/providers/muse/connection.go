@@ -13,6 +13,13 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
+// The host filters these live events. View-page replay still needs the worker's drop rules.
+var museOptedOutMethods = []string{
+	methodSessionStatusChanged, methodSessionStarted, methodSessionClosed, methodSkillChanged,
+	methodAccountChanged, methodAccountLoginCompleted, methodMcpOAuthLoginCompleted,
+	methodSessionBranchChanged, methodSessionNameChanged, methodSessionPermissionProfileChanged, methodTurnForegroundCompleted,
+}
+
 // prepareConnection owns the launch setup for a session host or a query host.
 func prepareConnection(ctx context.Context, opts agent.Options, registration agent.Registration, env []string) (*connection, error) {
 	args, err := launchArgs(opts)
@@ -70,7 +77,14 @@ func (c *connection) initialize(opts agent.Options, handle providerkit.LineHandl
 			closed()
 		}
 	}()
-	raw, err := c.request(methodInitialize, map[string]any{"clientInfo": map[string]string{"name": "leapmux", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true, "requestedCapabilities": []string{"rawLog", "sessionMcp"}}}, opts.EffectiveStartupTimeout(), nil)
+	raw, err := c.request(methodInitialize, map[string]any{
+		"clientInfo": map[string]string{"name": "leapmux", "version": "1"},
+		"capabilities": map[string]any{
+			"experimentalApi":           true,
+			"requestedCapabilities":     []string{"rawLog", "sessionMcp"},
+			"optOutNotificationMethods": museOptedOutMethods,
+		},
+	}, opts.EffectiveStartupTimeout(), nil)
 	if err == nil {
 		err = json.Unmarshal(raw, &c.handshake)
 		if err == nil && (c.handshake.Schema.Version != 1 || c.handshake.Schema.Fingerprint == "" || c.handshake.ServerInfo.Name != "muse") {

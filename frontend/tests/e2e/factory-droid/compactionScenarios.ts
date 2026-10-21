@@ -1,4 +1,4 @@
-import type { NativeCompactionOptions } from '../helpers/manualCompaction'
+import type { NativeCompactionHold, NativeCompactionOptions } from '../helpers/manualCompaction'
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
@@ -21,8 +21,8 @@ async function expectNoRawCompactionFrames(context: NativeScenarioContext): Prom
 }
 
 /** Run the native compaction, then require its notice and no raw compaction frame, before and after a reload. */
-export async function exerciseCompletedManualCompaction(context: NativeScenarioContext): Promise<void> {
-  await exerciseNativeCompaction(context, DROID_COMPACTION)
+export async function exerciseCompletedManualCompaction(context: NativeScenarioContext, hold: NativeCompactionHold = {}): Promise<void> {
+  await exerciseNativeCompaction(context, { ...DROID_COMPACTION, ...hold })
   await expectCompactionNotice(context.page)
   await expectNoRawCompactionFrames(context)
   await context.page.reload()

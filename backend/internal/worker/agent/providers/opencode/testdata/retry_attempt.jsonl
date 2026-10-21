@@ -1,0 +1,10 @@
+{"type":"session.status","properties":{"sessionID":"test-session","status":{"type":"busy"}}}
+{"type":"message.part.updated","properties":{"sessionID":"test-session","part":{"id":"failed","type":"text","text":"","messageID":"message-1"}}}
+{"type":"message.part.delta","properties":{"sessionID":"test-session","messageID":"message-1","partID":"failed","field":"text","delta":"partial "}}
+{"type":"session.status","properties":{"sessionID":"test-session","status":{"type":"retry","attempt":1,"message":"Provider is overloaded"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_message_chunk","messageId":"message-1","content":{"type":"text","text":"partial "}}}}
+{"type":"session.status","properties":{"sessionID":"test-session","status":{"type":"busy"}}}
+{"type":"message.part.updated","properties":{"sessionID":"test-session","part":{"id":"kept","type":"text","text":"","messageID":"message-1"}}}
+{"type":"message.part.delta","properties":{"sessionID":"test-session","messageID":"message-1","partID":"kept","field":"text","delta":"ANSWER-AFTER-RETRY"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_message_chunk","messageId":"message-1","content":{"type":"text","text":"ANSWER-AFTER-RETRY"}}}}
+{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}

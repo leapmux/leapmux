@@ -35,7 +35,6 @@ describe('isPlainNotificationType', () => {
       NOTIFICATION_TYPE.Interrupted,
       NOTIFICATION_TYPE.AgentError,
       NOTIFICATION_TYPE.PlanUpdated,
-      NOTIFICATION_TYPE.Compacting,
       NOTIFICATION_TYPE.PlanExecution,
     ].sort())
   })

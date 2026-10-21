@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyCommandCodeMessage } from './classification'
-import { commandCodeCompactionBoundary, commandCodeNotificationEntry } from './extractors/notification'
+import { commandCodeCompactionBoundary, commandCodeCompactionStart, commandCodeNotificationEntry } from './extractors/notification'
 import { commandCodeOutputFilePaths } from './extractors/outputFilePaths'
 import { commandCodeResultDivider } from './extractors/resultDivider'
 import { commandCodeExtractRow } from './extractors/row'
@@ -19,6 +19,7 @@ const commandCodePlugin: ProviderPlugin = {
     extractRow: commandCodeExtractRow,
     extractDivider: commandCodeResultDivider,
     notificationEntry: commandCodeNotificationEntry,
+    compactionStart: commandCodeCompactionStart,
   },
   controls: { permissionPresets: commandCodePermissionPresets },
   session: { compactionBoundaryFromMessage: commandCodeCompactionBoundary },

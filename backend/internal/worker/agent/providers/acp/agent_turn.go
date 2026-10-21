@@ -10,6 +10,12 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+// PrepareSteer stores buffered output before the queue reserves the steer's position.
+// A native refusal can leave this harmless segment boundary in the transcript.
+func (b *Base) PrepareSteer() {
+	b.FlushBufferedOutputOffReader(agent.MessageCompletionComplete)
+}
+
 // This file holds the turns that LeapMux did not start. An agent can start a
 // turn by itself, with no session/prompt: a background subagent that finished
 // wakes its parent, a goal runs its next round, and a steer that reached an
@@ -58,17 +64,17 @@ func (b *Base) BeginAgentTurn() bool {
 	case b.promptActive:
 		b.agentTurnQueued = true
 		b.Mu.Unlock()
-		assistantText, thoughtText := b.markPromptBoundaryLocked()
+		turn := b.markPromptBoundaryLocked()
 		b.turnMu.Unlock()
-		b.endPromptOutput(assistantText, thoughtText)
+		b.endPromptOutput(turn)
 		return true
 	}
 	b.promptActive = true
 	b.agentTurnActive = true
 	b.Mu.Unlock()
-	assistantText, thoughtText := b.takeUnownedOutputLocked()
+	turn := b.takeUnownedOutputLocked()
 	b.turnMu.Unlock()
-	b.persistUnownedText(assistantText, thoughtText)
+	b.persistUnownedText(turn)
 	b.notePromptActive()
 	return true
 }
@@ -97,19 +103,19 @@ func (b *Base) AdmitAgentTurn() bool {
 	b.promptActive = true
 	b.agentTurnActive = true
 	b.Mu.Unlock()
-	assistantText, thoughtText := b.takeUnownedOutputLocked()
+	turn := b.takeUnownedOutputLocked()
 	b.turnMu.Unlock()
-	b.persistUnownedText(assistantText, thoughtText)
+	b.persistUnownedText(turn)
 	b.notePromptActive()
 	return true
 }
 
 // endPromptOutput stores the text of the running prompt that the boundary took,
 // because an agent turn now waits behind the prompt. See BeginAgentTurn.
-func (b *Base) endPromptOutput(assistantText, thoughtText string) {
+func (b *Base) endPromptOutput(turn acpTurnSnapshot) {
 	main := b.main()
-	main.persistFinishedText(agent.AssembledMessageKindReasoning, thoughtText, agent.MessageCompletionComplete)
-	main.persistFinishedText(agent.AssembledMessageKindText, assistantText, agent.MessageCompletionComplete)
+	main.persistFinishedText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, agent.MessageCompletionComplete)
+	main.persistFinishedText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, agent.MessageCompletionComplete)
 }
 
 // persistUnownedText stores the text that takeUnownedOutputLocked took when a
@@ -123,14 +129,8 @@ func (b *Base) endPromptOutput(assistantText, thoughtText string) {
 // output of each client of a session. A kept replay is a visible copy. A
 // provider can consume it at its hook, as Gemini does, or avoid it with a
 // resume that sends no replay.
-func (b *Base) persistUnownedText(assistantText, thoughtText string) {
-	main := b.main()
-	if thoughtText != "" {
-		main.persistFinishedText(agent.AssembledMessageKindReasoning, thoughtText, agent.MessageCompletionComplete)
-	}
-	if assistantText != "" {
-		main.persistFinishedText(agent.AssembledMessageKindText, assistantText, agent.MessageCompletionComplete)
-	}
+func (b *Base) persistUnownedText(turn acpTurnSnapshot) {
+	b.main().persistBufferedText(turn, agent.MessageCompletionComplete)
 }
 
 // AgentTurnActive reports whether the running turn is one that the agent
@@ -226,11 +226,12 @@ func (b *Base) EndAgentTurnWithoutRow() {
 func (b *Base) storeWorkOutput(turn acpTurnSnapshot) {
 	main := b.main()
 	textCompletion, incomplete := b.turnOutputCompletions()
-	main.persistFinishedText(agent.AssembledMessageKindReasoning, turn.thoughtText, textCompletion)
-	main.persistFinishedText(agent.AssembledMessageKindText, turn.assistantText, textCompletion)
+	main.persistFinishedText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, textCompletion)
+	main.persistFinishedText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, textCompletion)
 	main.persistIncompleteTools(turn.incompleteTools, incomplete)
 	b.clearCompletedTerminals()
 	b.sink.ReportProgress(agent.ResetProgress())
+	b.enqueueTurnOutputCleanup(false)
 }
 
 // takeQueuedAgentTurn hands the busy state of the turn that just ended to the
@@ -318,9 +319,12 @@ func (b *Base) continueWithPrompt(sessionID, content string, attachments []*leap
 	b.Mu.Unlock()
 	// The turn that ended drained its output, so what the buffer holds now came
 	// after that turn and before this prompt.
-	assistantText, thoughtText := b.takeUnownedOutputLocked()
+	turn := b.takeUnownedOutputLocked()
 	b.turnMu.Unlock()
-	b.persistUnownedText(assistantText, thoughtText)
+	b.persistUnownedText(turn)
+	if b.hooks.PromptPrepared != nil {
+		b.hooks.PromptPrepared()
+	}
 	return b.SendPromptDetached(content, attachments, func(response json.RawMessage, err error) {
 		b.finishPromptRequest(sessionID, response, err)
 	})

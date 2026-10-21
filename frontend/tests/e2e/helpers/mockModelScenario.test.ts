@@ -109,6 +109,27 @@ describe('mockScenarioPrompt', () => {
 })
 
 describe('HOUSEKEEPING_RULES', () => {
+  it('answers the Codex memory consolidation request', async () => {
+    const server = await startServer()
+    await registerAmbientScenario(server.url)
+    const response = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: false,
+        input: [{ role: 'user', content: 'Memory Writing Agent: Phase 2 (Consolidation)\nConsolidate the session memories.' }],
+      }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      output: [{ content: [{ text: 'No memories to consolidate.' }] }],
+    })
+    expect(await readScenarioStatus(server.url, AMBIENT_SCENARIO_ID)).toMatchObject({
+      nextStep: 0,
+      ruleMatches: { 'codex-memory-consolidation': 1 },
+    })
+  })
+
   it('answers a plain title prompt without consuming a step', async () => {
     const server = await startServer()
     await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {

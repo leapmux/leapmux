@@ -34,6 +34,17 @@ type Agent struct {
 	turns    turnState
 	children childState
 	controls controlIndex
+	// retryResolution folds the native retry rows of one turn and resolves
+	// them at the first genuine model output after the retry.
+	retryResolution providerkit.RetryResolution
+	// chunkStreamStart names the model request that produced the last message
+	// chunk, through the streamStartMs of its notification metadata. A retry
+	// starts a new request, so the first chunk of a new stream makes the
+	// buffered text of the previous stream the failed attempt's, even when Grok
+	// flushed that text only after its retry_state frame (see
+	// observeNotificationMetadata). Zero states that no chunk of this turn
+	// named a stream.
+	chunkStreamStart int64
 }
 
 // This assertion makes a missing Agent method a compile error.
@@ -43,6 +54,7 @@ var _ agent.Agent = (*Agent)(nil)
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerPreparer = (*Agent)(nil)
 
 // Agent compacts through Grok's own `/compact` turn.
 var _ agent.ContextCompactor = (*Agent)(nil)

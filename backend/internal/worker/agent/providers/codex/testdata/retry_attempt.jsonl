@@ -1,0 +1,7 @@
+{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"agentMessage","id":"msg_4","text":""}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","itemId":"msg_4","delta":"partial-4 "}}
+{"method":"error","params":{"threadId":"main-thread","willRetry":true,"error":{"message":"Reconnecting... 1/3"}}}
+{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"agentMessage","id":"msg_5","text":""}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","itemId":"msg_5","delta":"OK"}}
+{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"agentMessage","id":"msg_5","text":"OK"}}}
+{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}

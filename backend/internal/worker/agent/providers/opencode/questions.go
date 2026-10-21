@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -20,12 +24,61 @@ import (
 	gopsnet "github.com/shirou/gopsutil/v4/net"
 )
 
+type openCodeStoredPart struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// readStoredMessage reads the daemon's current parts, including empty parts of failed attempts.
+func (q *openCodeQuestions) readStoredMessage(ctx context.Context, clock quartz.Clock, sessionID, messageID string) ([]openCodeStoredPart, error) {
+	base := q.base()
+	if base == "" {
+		return nil, fmt.Errorf("the OpenCode daemon address is unavailable")
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	timer := clock.AfterFunc(5*time.Second, func() { cancel(context.DeadlineExceeded) }, StoredMessageReadTimerTag)
+	defer timer.Stop()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/session/"+url.PathEscape(sessionID)+"/message/"+url.PathEscape(messageID), nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := q.client.Do(request)
+	if err != nil {
+		return nil, errors.Join(err, context.Cause(ctx))
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("the OpenCode message route answered %s", response.Status)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, openCodeQuestionMaxEvent+1))
+	if err != nil {
+		return nil, errors.Join(err, context.Cause(ctx))
+	}
+	if len(raw) > openCodeQuestionMaxEvent {
+		return nil, fmt.Errorf("the OpenCode stored message exceeds %d bytes", openCodeQuestionMaxEvent)
+	}
+	var message struct {
+		Info struct {
+			ID        string `json:"id"`
+			SessionID string `json:"sessionID"`
+		} `json:"info"`
+		Parts *[]openCodeStoredPart `json:"parts"`
+	}
+	if err := json.Unmarshal(raw, &message); err != nil {
+		return nil, err
+	}
+	if message.Info.ID != messageID || message.Info.SessionID != sessionID || message.Parts == nil {
+		return nil, fmt.Errorf("the OpenCode stored message has an invalid identity or parts field")
+	}
+	return *message.Parts, nil
+}
+
 // The OpenCode family asks the reader a question through its `question` tool, and
 // that tool blocks until something answers it. The daemon states the question on its
 // own event stream and takes the answer over HTTP. Its Agent Client Protocol adapter
-// carries neither half: the adapter's event bridge handles four event types
-// (session.status, permission.asked, message.part.updated, message.part.delta) and a
-// question is not one of them, and the protocol's client-method table holds no
+// does not forward question events, and the protocol's client-method table holds no
 // question method to answer through. What reaches an ACP client is the tool call
 // alone, as a notification with no request id, so a reader who answered it would have
 // nowhere to send the answer and the turn would block until it was interrupted.
@@ -35,9 +88,14 @@ import (
 // two routes the adapter does not. The daemon chooses that server's port and states
 // it nowhere, so discover below reads it back from the process.
 //
-// This is the one provider in LeapMux that speaks two transports. The stdio stream
-// carries the session, and this carries the questions.
+// The stdio stream carries the conversation. This stream supplies questions and native session events.
 const (
+	// StoredMessageReadTimerTag identifies the deadline for one stored-message read.
+	StoredMessageReadTimerTag = "opencode-stored-message-read"
+	// QuestionsDiscoveryTag identifies the discovery deadline and its poll timers.
+	QuestionsDiscoveryTag = "opencode-questions-discovery"
+	// QuestionsReconnectTag identifies the wait before the next daemon connection.
+	QuestionsReconnectTag = "opencode-questions-reconnect"
 	// openCodeQuestionToolEnv turns ON the daemon's own question tool. Kilo has
 	// its own spelling of the same flag; see kiloQuestionToolEnv.
 	//
@@ -134,32 +192,35 @@ func ACPArgs() []string {
 // gopsutil reads the sockets differently on each platform: `lsof` on macOS, /proc on
 // Linux, and the IP helper API on Windows. All three answer for a process this worker
 // owns, which is the only process asked about here.
-func (q *openCodeQuestions) discover(ctx context.Context, pid int32) (string, error) {
-	deadline := time.Now().Add(openCodeDiscoveryTimeout)
+func (q *openCodeQuestions) discover(ctx context.Context, clock quartz.Clock, pid int32) (string, error) {
+	return discoverDaemonServer(ctx, clock, pid, q.searchOnce)
+}
+
+// discoverDaemonServer keeps the clock policy separate from socket and process reads.
+func discoverDaemonServer(ctx context.Context, clock quartz.Clock, pid int32, search func(context.Context, int32) (string, bool)) (string, error) {
+	searchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	deadline := clock.AfterFunc(openCodeDiscoveryTimeout, cancel, QuestionsDiscoveryTag, "deadline")
+	defer deadline.Stop()
 	wait := openCodeDiscoveryFirstPoll
 	for {
-		// The deadline caps ONE search as well as the loop. A search probes every
-		// loopback port of every candidate process, and each probe waits up to
-		// openCodeDiscoveryProbeTimeout, so a host with many listening sockets made a
-		// single search run for minutes -- the check below runs only after that search
-		// returns, so the loop overshot the timeout by the whole excess.
-		iterCtx, cancel := context.WithDeadline(ctx, deadline)
-		base, found := q.searchOnce(iterCtx, pid)
-		cancel()
+		// The injected deadline also cancels an active socket probe.
+		base, found := search(searchCtx, pid)
 		if found {
 			return base, nil
 		}
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		if time.Now().After(deadline) {
+		if searchCtx.Err() != nil {
 			return "", fmt.Errorf("no OpenCode question server below process %d within %s", pid, openCodeDiscoveryTimeout)
 		}
+		timer := clock.NewTimer(wait, QuestionsDiscoveryTag, "poll")
 		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(wait):
+		case <-searchCtx.Done():
+		case <-timer.C:
 		}
+		timer.Stop()
 		if wait *= 2; wait > openCodeDiscoveryMaxPoll {
 			wait = openCodeDiscoveryMaxPoll
 		}
@@ -278,6 +339,7 @@ type openCodeQuestions struct {
 	client  *http.Client
 	sink    agent.ControlServices
 	agentID string
+	observe func(json.RawMessage)
 
 	// mu guards baseURL and pending. pending maps the LeapMux request id to the
 	// daemon's own question id: the reader answers with the first, and the daemon
@@ -311,13 +373,13 @@ func (q *openCodeQuestions) base() string {
 // ends. Discovery that fails leaves the questions unavailable and the session whole:
 // everything else travels on the ACP stream, so the reader loses the one surface the
 // stream never carried anyway.
-func (q *openCodeQuestions) Begin(ctx context.Context, agentID string, pid int) {
+func (q *openCodeQuestions) Begin(ctx context.Context, clock quartz.Clock, agentID string, pid int) {
 	if q.sink == nil {
 		return
 	}
 	q.agentID = agentID
 	go func() {
-		baseURL, err := q.discover(ctx, int32(pid))
+		baseURL, err := q.discover(ctx, clock, int32(pid))
 		if err != nil {
 			slog.Warn("No OpenCode question server; questions stay unanswerable",
 				"agent_id", agentID, "pid", pid, "error", err)
@@ -326,13 +388,13 @@ func (q *openCodeQuestions) Begin(ctx context.Context, agentID string, pid int) 
 		q.mu.Lock()
 		q.baseURL = baseURL
 		q.mu.Unlock()
-		q.run(ctx)
+		q.run(ctx, clock)
 	}()
 }
 
 // beginAt reads a server whose address is already known. Discovery is what finds that
 // address in production; a test states it directly.
-func (q *openCodeQuestions) beginAt(ctx context.Context, agentID, baseURL string) {
+func (q *openCodeQuestions) beginAt(ctx context.Context, clock quartz.Clock, agentID, baseURL string) {
 	if q.sink == nil {
 		return
 	}
@@ -340,22 +402,26 @@ func (q *openCodeQuestions) beginAt(ctx context.Context, agentID, baseURL string
 	q.mu.Lock()
 	q.baseURL = baseURL
 	q.mu.Unlock()
-	go q.run(ctx)
+	go q.run(ctx, clock)
 }
 
-func (q *openCodeQuestions) run(ctx context.Context) {
+func (q *openCodeQuestions) run(ctx context.Context, clock quartz.Clock) {
+	defer q.cancelAll()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		if err := q.consume(ctx); err != nil && ctx.Err() == nil {
 			slog.Debug("OpenCode question stream ended", "agent_id", q.agentID, "error", err)
 		}
+		timer := clock.NewTimer(openCodeQuestionRetryDelay, QuestionsReconnectTag)
 		select {
 		case <-ctx.Done():
-			// The daemon dies with the process, so a question it still holds needs no
-			// rejection. The reader's card outlives both, and only this retires it.
-			q.cancelAll()
+			timer.Stop()
 			return
-		case <-time.After(openCodeQuestionRetryDelay):
+		case <-timer.C:
 		}
+		timer.Stop()
 	}
 }
 
@@ -410,6 +476,10 @@ func (q *openCodeQuestions) handleEvent(ctx context.Context, data []byte) {
 		// Answered somewhere else -- another client of the same daemon, or LeapMux
 		// itself. Either way the card is stale now.
 		q.withdraw(event.Properties)
+	default:
+		if q.observe != nil {
+			q.observe(data)
+		}
 	}
 }
 
@@ -681,6 +751,6 @@ func (q *openCodeQuestions) post(ctx context.Context, questionID, action string,
 // from. A test that answers a question through the agent's own SendRawInput
 // needs the bridge that Start would have begun.
 func (b *FamilyBase) BeginQuestionsForTest(ctx context.Context, sink agent.ControlServices, agentID, baseURL string) {
-	b.Questions.Configure(sink)
-	b.Questions.beginAt(ctx, agentID, baseURL)
+	b.configureQuestions(sink)
+	b.Questions.beginAt(ctx, b.Clock(), agentID, baseURL)
 }

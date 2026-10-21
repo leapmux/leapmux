@@ -165,6 +165,7 @@ func TestNativeCopilotControlResponseDelivery(t *testing.T) {
 	cases := []struct {
 		kind, method, field, answer string
 	}{
+		{"auto_mode_switch", "ui.handlePendingAutoModeSwitch", "response", `"no"`},
 		{"permission", "permissions.handlePendingPermissionRequest", "result", `{"kind":"approve-once"}`},
 		{"user_input", "ui.handlePendingUserInput", "response", `{"answer":"","wasFreeform":false}`},
 		{"exit_plan_mode", "ui.handlePendingExitPlanMode", "response", `{"approved":false,"autoApproveEdits":false,"selectedAction":"exit_only","feedback":""}`},
@@ -277,4 +278,116 @@ func TestNativeCopilotProjectApprovalNeedsALocation(t *testing.T) {
 	err := a.SendRawInput(fmt.Appendf(nil,
 		`{"response":{"request_id":%q,"response":{"kind":"approve-for-location","approval":{"kind":"read"}}}}`, identifier), agent.StopContext{})
 	require.ErrorContains(t, err, "no permission location")
+}
+
+func TestAutoModeSwitchAnswerCallsTheMethod(t *testing.T) {
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	a, sink := startCopilotForControls(t, "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS="+requestsPath)
+	a.HandleOutput(fmt.Appendf(nil, `{"method":"session.event","params":{"sessionId":%q,"event":{"type":"auto_mode_switch.requested","data":{"requestId":"switch-1"}}}}`, a.currentNativeSessionID()))
+	request := sink.LastPublishedControl()
+	resolution, claimed := copilotResolveControlAnswer(agent.ControlResponseContext{
+		RequestID: request.RequestID, RequestPayload: request.Payload,
+		ResponseContent: copilotAnswer(request.RequestID, map[string]any{"behavior": "deny"}),
+	})
+	require.True(t, claimed)
+	require.False(t, resolution.Withhold)
+	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
+	raw, err := os.ReadFile(requestsPath)
+	require.NoError(t, err)
+	var calls []json.RawMessage
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte{'\n'}) {
+		var request struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		require.NoError(t, json.Unmarshal(line, &request))
+		if request.Method == "session.ui.handlePendingAutoModeSwitch" {
+			calls = append(calls, request.Params)
+		}
+	}
+	require.Len(t, calls, 1)
+	require.JSONEq(t, fmt.Sprintf(`{"sessionId":%q,"requestId":"switch-1","response":"no"}`, a.currentNativeSessionID()), string(calls[0]))
+}
+
+func TestSamplingAllowRunsTheInferenceThenResolves(t *testing.T) {
+	testSamplingDecision(t, "allow", "success")
+}
+
+func TestSamplingDenyRejectsWithoutAResponse(t *testing.T) {
+	testSamplingDecision(t, "deny", "success")
+}
+
+func TestSamplingFailedInferenceRejects(t *testing.T) {
+	for _, action := range []string{"failure", "cancelled"} {
+		t.Run(action, func(t *testing.T) { testSamplingDecision(t, "allow", action) })
+	}
+}
+
+func testSamplingDecision(t *testing.T, decision, action string) {
+	t.Helper()
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	a, sink := startCopilotForControls(t, "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS="+requestsPath, "LEAPMUX_TEST_COPILOT_SAMPLING_ACTION="+action)
+	// Trimmed from .tmp/verify-c29/copilot/round2/mcp/frames.jsonl.
+	data := `{"requestId":"sample-1","serverName":"sampler","mcpRequestId":"sampling-1","request":{"messages":[{"role":"user","content":{"type":"text","text":"Reply with SAMPLED."}}],"maxTokens":20}}`
+	a.HandleOutput(fmt.Appendf(nil, `{"method":"session.event","params":{"sessionId":%q,"event":{"type":"sampling.requested","data":%s,"ephemeral":true}}}`, a.currentNativeSessionID(), data))
+	require.Equal(t, 2, sink.PublishedControlCount())
+	request := sink.LastPublishedControl()
+	resolution, claimed := copilotResolveControlAnswer(agent.ControlResponseContext{
+		RequestID: request.RequestID, RequestPayload: request.Payload,
+		ResponseContent: copilotAnswer(request.RequestID, map[string]any{"behavior": decision}),
+	})
+	require.True(t, claimed)
+	require.False(t, resolution.Withhold)
+	uncertain := decision == "allow" && action != "success" && action != "failure" && action != "cancelled"
+	responseErr := a.SendRawInput(resolution.Content, agent.StopContext{})
+	if uncertain {
+		require.ErrorIs(t, responseErr, agent.ErrDeliveryUncertain)
+		require.ErrorContains(t, a.SendRawInput(resolution.Content, agent.StopContext{}), "no longer pending")
+	} else {
+		require.NoError(t, responseErr)
+	}
+	raw, err := os.ReadFile(requestsPath)
+	require.NoError(t, err)
+	var methods []string
+	var result map[string]json.RawMessage
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte{'\n'}) {
+		var call struct {
+			Method string                     `json:"method"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		require.NoError(t, json.Unmarshal(line, &call))
+		switch call.Method {
+		case "session.mcp.executeSampling":
+			methods = append(methods, call.Method)
+			require.JSONEq(t, `"leapmux-sampling-sample-1"`, string(call.Params["requestId"]))
+			require.JSONEq(t, `"sampling-1"`, string(call.Params["mcpRequestId"]))
+			require.JSONEq(t, `"sampler"`, string(call.Params["serverName"]))
+			require.JSONEq(t, `{"messages":[{"role":"user","content":{"type":"text","text":"Reply with SAMPLED."}}],"maxTokens":20}`, string(call.Params["request"]))
+		case "session.ui.handlePendingSampling":
+			methods = append(methods, call.Method)
+			result = call.Params
+		}
+	}
+	if uncertain {
+		require.Equal(t, []string{"session.mcp.executeSampling"}, methods)
+		require.Nil(t, result)
+		return
+	}
+	if decision == "allow" {
+		require.Equal(t, []string{"session.mcp.executeSampling", "session.ui.handlePendingSampling"}, methods)
+	} else {
+		require.Equal(t, []string{"session.ui.handlePendingSampling"}, methods)
+	}
+	require.JSONEq(t, `"sample-1"`, string(result["requestId"]))
+	if decision == "allow" && action == "success" {
+		require.JSONEq(t, `{"role":"assistant","content":{"type":"text","text":"SAMPLED"},"model":"mock-model"}`, string(result["response"]))
+	} else {
+		require.NotContains(t, result, "response")
+	}
+}
+
+func TestSamplingMalformedResultDoesNotRepeatTheInference(t *testing.T) {
+	for _, action := range []string{"unknown", "missing-result", "malformed"} {
+		t.Run(action, func(t *testing.T) { testSamplingDecision(t, "allow", action) })
+	}
 }

@@ -1,7 +1,8 @@
-import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
+import type { CompactionDetails, CompactionOutcome, HookOutcome, NotificationEntry, RetryFacts } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { MUSE_COMPACTION_OUTCOME, MUSE_INPUT_OUTCOME, MUSE_ITEM_KIND, MUSE_METHOD, MUSE_TODO_STATUS } from '~/generated/contracts/muse-protocol'
-import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
+import { MUSE_COMPACTION_OUTCOME, MUSE_INPUT_OUTCOME, MUSE_ITEM_KIND, MUSE_ITEM_STATUS, MUSE_METHOD, MUSE_TODO_STATUS } from '~/generated/contracts/muse-protocol'
+import { assignDefined, isObject, pickNumber, pickString } from '~/lib/jsonPick'
+import { retryEntry } from '../../../model/notification'
 import { museItem, museParams } from '../protocol'
 
 const NATIVE_TODO_STATUSES: ReadonlySet<string> = new Set(Object.values(MUSE_TODO_STATUS))
@@ -15,10 +16,10 @@ const QUESTION_OUTCOME_TEXT: ReadonlyMap<string, string> = new Map([
   [MUSE_INPUT_OUTCOME.Aborted, 'Muse question aborted.'],
 ])
 
-const COMPACTION_OUTCOME_TEXT: ReadonlyMap<string, string> = new Map([
-  [MUSE_COMPACTION_OUTCOME.Noop, 'Muse compaction did not change the context.'],
-  [MUSE_COMPACTION_OUTCOME.Failed, 'Muse compaction failed.'],
-  [MUSE_COMPACTION_OUTCOME.Cancelled, 'Muse compaction cancelled.'],
+const COMPACTION_OUTCOMES: ReadonlyMap<string, CompactionOutcome> = new Map([
+  [MUSE_COMPACTION_OUTCOME.Noop, 'skipped'],
+  [MUSE_COMPACTION_OUTCOME.Failed, 'failed'],
+  [MUSE_COMPACTION_OUTCOME.Cancelled, 'aborted'],
 ])
 
 export function museCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
@@ -33,6 +34,14 @@ export function museCompactionBoundary(parsed: ParsedMessageContent): Compaction
   return { trigger: pickString(item, 'trigger'), ...(before !== undefined ? { pre: before } : {}), ...(after !== undefined ? { post: after } : {}) }
 }
 export function museNotificationEntry(payload: Record<string, unknown>): NotificationEntry[] {
+  if (payload.method === MUSE_METHOD.SessionModelRouteUnserved) {
+    const params = museParams(payload)
+    const provider = pickString(params, 'installedProviderId').trim()
+    const model = pickString(params, 'modelId').trim()
+    if (!provider || !model)
+      return []
+    return [{ kind: 'text', text: `The Muse login installed provider ${provider}, which cannot serve this session's model ${model}. Choose another model.` }]
+  }
   if (payload.method === MUSE_METHOD.UserInputSettled) {
     const params = museParams(payload)
     const outcome = pickString(params, 'outcome')
@@ -51,25 +60,51 @@ export function museNotificationEntry(payload: Record<string, unknown>): Notific
     })
   }
   const item = museItem(payload)
+  if (item?.kind === MUSE_ITEM_KIND.HookRun) {
+    let outcome: HookOutcome
+    switch (item.status) {
+      case MUSE_ITEM_STATUS.Failed:
+      case MUSE_ITEM_STATUS.Cancelled:
+        outcome = 'failed'
+        break
+      case MUSE_ITEM_STATUS.TimedOut:
+        outcome = 'timed-out'
+        break
+      case MUSE_ITEM_STATUS.Rejected:
+        outcome = 'blocked'
+        break
+      default:
+        return []
+    }
+    const entry: Extract<NotificationEntry, { kind: 'hook' }> = { kind: 'hook', outcome }
+    assignDefined(entry, 'event', pickString(item, 'event').trim() || undefined)
+    assignDefined(entry, 'name', pickString(item, 'label').trim() || undefined)
+    assignDefined(entry, 'detail', pickString(item, 'reason').trim() || (item.status === MUSE_ITEM_STATUS.Cancelled ? 'cancelled' : undefined))
+    return [entry]
+  }
   if (item?.kind === MUSE_ITEM_KIND.Compaction) {
     if (item.outcome === MUSE_COMPACTION_OUTCOME.Compacted)
       return [{ kind: 'compaction', phase: 'end', detail: { trigger: pickString(item, 'trigger') } }]
-    // A readable reason states the outcome better than a canned sentence; a
-    // whitespace-only reason states nothing, and neither does an unreadable
-    // outcome, so the notification waits for a frame that says something.
     const reason = pickString(item, 'reason')
+    const outcome = pickString(item, 'outcome')
+    const knownOutcome = COMPACTION_OUTCOMES.get(outcome)
+    if (knownOutcome) {
+      const entry: Extract<NotificationEntry, { kind: 'compaction' }> = { kind: 'compaction', phase: 'end', outcome: knownOutcome }
+      assignDefined(entry, 'error', reason.trim() ? reason : undefined)
+      return [entry]
+    }
+    // A future outcome keeps its reason or native word without an invented result.
     if (reason.trim())
       return [{ kind: 'text', text: reason }]
-    const outcome = pickString(item, 'outcome')
-    if (!outcome.trim())
-      return []
-    return [{ kind: 'text', text: COMPACTION_OUTCOME_TEXT.get(outcome) ?? `Muse compaction: ${outcome}` }]
+    return outcome.trim() ? [{ kind: 'text', text: `Muse compaction: ${outcome}` }] : []
   }
   if (payload.method === MUSE_METHOD.TurnRetryScheduled) {
     const params = museParams(payload)
-    const attempt = pickNumber(params, 'attempt', undefined)
-    const delayMs = pickNumber(params, 'delayMs', undefined)
-    return [{ kind: 'retry', scope: 'api', error: pickString(params, 'message'), ...(attempt !== undefined ? { attempt } : {}), ...(delayMs !== undefined ? { delayMs } : {}) }]
+    const facts: RetryFacts = { error: pickString(params, 'reason') }
+    assignDefined(facts, 'attempt', pickNumber(params, 'nextAttempt', undefined))
+    assignDefined(facts, 'maxAttempts', pickNumber(params, 'maxAttempts', undefined))
+    assignDefined(facts, 'delayMs', pickNumber(params, 'retryDelayMs', undefined))
+    return [retryEntry('api', facts)]
   }
   return []
 }

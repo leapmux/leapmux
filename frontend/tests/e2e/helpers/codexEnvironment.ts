@@ -35,9 +35,8 @@ function codexConfig(options: CodexEnvironmentOptions, mcpFormServer: McpProbeSe
 model = "${options.defaultModelID}"
 check_for_update_on_startup = false
 
-# Codex consolidates its own memories in a background turn, against a model of
-# its own choice and with no user prompt. That turn would reach the mock
-# endpoint outside any test's script.
+# These switches stop memory phase 1. Codex still runs phase 2 without a scenario marker.
+# The codex-memory-consolidation housekeeping rule answers that request.
 [memories]
 generate_memories = false
 use_memories = false
@@ -60,6 +59,7 @@ wire_api = "responses"
 requires_openai_auth = false
 supports_websockets = false
 request_max_retries = 0
-stream_max_retries = 0
+# A stream failure gets one retry. An HTTP request failure gets none.
+stream_max_retries = 1
 `
 }

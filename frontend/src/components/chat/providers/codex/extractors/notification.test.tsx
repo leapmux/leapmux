@@ -10,28 +10,46 @@ const { renderThreadText } = await import('~/test-support/messageRenderProbes')
 
 const renderText = (messages: unknown[]): string => renderThreadText(messages, AgentProvider.CODEX)
 
+describe('codexNotificationEntry stored boundaries and hooks', () => {
+  it('reads no entry for a stored compaction start', () => {
+    expect(codexNotificationEntry({ method: CODEX_METHOD.ItemStarted, params: { item: { type: 'contextCompaction' } } })).toEqual([])
+  })
+
+  it('reads a hook failure through the neutral hook model', () => {
+    expect(codexNotificationEntry({ method: CODEX_METHOD.HookCompleted, params: { run: {
+      status: 'failed',
+      eventName: 'Stop',
+      entries: [{ text: 'diagnostic' }],
+    } } })).toEqual([{ kind: 'hook', outcome: 'failed', event: 'Stop', detail: 'diagnostic' }])
+  })
+
+  it('words a completed hook run as a status', () => {
+    expect(codexNotificationEntry({ method: CODEX_METHOD.HookCompleted, params: { run: { status: 'completed' } } }))
+      .toEqual([{ kind: 'status', text: 'Hook completed' }])
+  })
+})
+
 describe('codex compaction status', () => {
-  it('renders an in-progress status as the compaction start', () => {
-    expect(renderText([{ type: 'system', subtype: 'status', status: 'compacting' }]))
-      .toBe('Compacting context...')
+  it('reads no entry for a stored synthesized compaction start', () => {
+    expect(codexNotificationEntry({ type: 'system', subtype: 'status', status: 'compacting' })).toEqual([])
   })
 })
 
 describe('codex single MCP startup status', () => {
   // A standalone Codex notification renders through the same
   // renderNotificationThread path as a consolidated one (a one-element thread).
-  it('does not render starting status', () => {
+  it('reads a stored starting status without a success filter', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
-    }])).toBe('')
+    }])).toBe('MCP server status update (starting): codex_apps')
   })
 
-  it('does not render ready status', () => {
+  it('reads a stored ready status without a success filter', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'ready', error: null },
-    }])).toBe('')
+    }])).toBe('MCP server status update (ready): codex_apps')
   })
 
   it('renders failed status with error', () => {
@@ -41,11 +59,11 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server failed to start: codex_apps (boom)')
   })
 
-  it('does not render cancelled status', () => {
+  it('reads a stored cancelled status without a success filter', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'cancelled', error: null },
-    }])).toBe('')
+    }])).toBe('MCP server status update (cancelled): codex_apps')
   })
 
   it('supports nested upstream-style status payloads', () => {
@@ -64,11 +82,11 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server status update (warming): codex_apps (still booting)')
   })
 
-  it('does not render a name-less ready status', () => {
+  it('reads a stored ready status without a server name', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { status: 'ready', error: null },
-    }])).toBe('')
+    }])).toBe('MCP server status update (ready)')
   })
 
   it('renders a name-less failed startup with its error suffix and no placeholder', () => {
@@ -129,11 +147,11 @@ describe('codex rate-limit transcript rows', () => {
 })
 
 describe('codex MCP OAuth notifications', () => {
-  it('does not render a successful login', () => {
+  it('renders a completion with an unknown outcome', () => {
     expect(renderText([{
       method: 'mcpServer/oauthLogin/completed',
-      params: { name: 'docs', success: true },
-    }])).toBe('')
+      params: { name: 'docs' },
+    }])).toBe('MCP OAuth login status unknown for docs')
   })
 
   it('renders a failed login', () => {
@@ -157,7 +175,7 @@ describe('codex hook notifications', () => {
           entries: [{ kind: 'error', text: 'permission denied' }],
         },
       },
-    }])).toContain('Hook failed: permission denied')
+    }])).toContain('Hook preToolUse failed: permission denied')
   })
 })
 
@@ -265,11 +283,11 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'codex_apps', status: 'ready', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'other', status: 'failed', error: 'boom' } },
     ])
-    expect(text).not.toContain('codex_apps')
+    expect(text).toContain('MCP server status update (ready): codex_apps')
     expect(text).toContain('MCP server failed to start: other (boom)')
   })
 
-  it('groups only failed servers', () => {
+  it('groups each stored server status separately', () => {
     const text = renderText([
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_a', status: 'starting', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_b', status: 'starting', error: null } },
@@ -278,12 +296,12 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_e', status: 'failed', error: 'boom' } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_f', status: 'failed', error: 'bad gateway' } },
     ])
-    expect(text).not.toContain('server_a')
-    expect(text).not.toContain('server_c')
+    expect(text).toContain('MCP server status update (starting): server_a, server_b')
+    expect(text).toContain('MCP server status update (ready): server_c, server_d')
     expect(text).toContain('MCP server failed to start: server_e (boom), server_f (bad gateway)')
   })
 
-  it('keeps visible notifications when non-failed startup states disappear', () => {
+  it('keeps another notification beside stored startup states', () => {
     const text = renderText([
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_a', status: 'starting', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_b', status: 'starting', error: null } },
@@ -291,7 +309,9 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_c', status: 'ready', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_d', status: 'ready', error: null } },
     ])
-    expect(text).toBe('Context cleared')
+    expect(text).toContain('Context cleared')
+    expect(text).toContain('MCP server status update (starting): server_a, server_b')
+    expect(text).toContain('MCP server status update (ready): server_c, server_d')
   })
 })
 

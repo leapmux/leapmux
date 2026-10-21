@@ -8,8 +8,6 @@ export function quotableTextForRow(row: ChatRow | null | undefined): string | nu
     case 'plan-execution':
     case 'user':
       return row.text.trim() || null
-    case 'compact-summary':
-      return row.summary.trim() || null
     default:
       return null
   }

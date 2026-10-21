@@ -1,4 +1,6 @@
+import type { LiveCompaction } from './chatCompaction'
 import type { ChatRailData } from './chatMessageMarks'
+import type { PromptSuggestion } from './chatPromptSuggestion'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { TurnRetryOffer } from './chatTurnRetryOffer'
 import type { SavedViewportScroll } from './chatTypes'
@@ -14,6 +16,7 @@ import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/a
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
+import { createLiveCompactionStore } from './chatCompaction'
 import { createContentVersionStore } from './chatContentVersions'
 import { createGoalStore } from './chatGoalStore'
 import { createHistoryPaginator, linkWatchSignal } from './chatHistoryPaginator'
@@ -22,6 +25,7 @@ import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
 import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, preferNewerSupplement } from './chatMessageOrder'
 import { createPerAgentStore } from './chatPerAgentStore'
+import { createPromptSuggestionStore } from './chatPromptSuggestion'
 import { createSpanIndex } from './chatSpanIndex'
 import { createTodoStore } from './chatTodoStore'
 import { createToolProgressStore } from './chatToolProgress'
@@ -149,6 +153,8 @@ export function createChatStore() {
   // The live turn-retry offer is per-turn state. It never persists to browser
   // storage, so it lives in its own slice beside the tool progress.
   const turnRetryOffer = createTurnRetryOfferStore()
+  const liveCompaction = createLiveCompactionStore()
+  const promptSuggestion = createPromptSuggestionStore()
   const todos = createTodoStore()
   const backgroundTasks = createBackgroundTaskStore()
   const goal = createGoalStore()
@@ -339,6 +345,8 @@ export function createChatStore() {
     // The offer identifies a turn that the closed agent can no longer run. A
     // revive of this agent ID must not show the offer again.
     turnRetryOffer.clear(agentId)
+    liveCompaction.clear(agentId)
+    promptSuggestion.clear(agentId)
     viewportScroll.remove(agentId)
   }
 
@@ -768,6 +776,30 @@ export function createChatStore() {
     /** Record the live turn-retry offer that the worker made for the agent. */
     setTurnRetryOffer(agentId: string, offer: TurnRetryOffer) {
       turnRetryOffer.set(agentId, offer)
+    },
+
+    setLiveCompaction(agentId: string, value: LiveCompaction) {
+      liveCompaction.set(agentId, value)
+    },
+
+    getLiveCompaction(agentId: string): LiveCompaction | undefined {
+      return liveCompaction.get(agentId)
+    },
+
+    clearLiveCompaction(agentId: string) {
+      liveCompaction.clear(agentId)
+    },
+
+    setPromptSuggestion(agentId: string, value: PromptSuggestion) {
+      promptSuggestion.set(agentId, value)
+    },
+
+    getPromptSuggestion(agentId: string): PromptSuggestion | undefined {
+      return promptSuggestion.get(agentId)
+    },
+
+    clearPromptSuggestion(agentId: string) {
+      promptSuggestion.clear(agentId)
     },
 
     /**

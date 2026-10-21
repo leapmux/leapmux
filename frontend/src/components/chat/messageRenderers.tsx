@@ -259,6 +259,7 @@ export function UnrecognizedMessage(props: {
     <ToolUseLayout
       icon={Braces}
       toolName="Unrecognized row"
+      testId="unrendered-row"
       title={title()}
       expanded={expanded()}
       onToggleExpand={() => setExpanded(v => !v)}

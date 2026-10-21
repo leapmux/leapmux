@@ -532,6 +532,50 @@ func TestZCodeOpenSession_ReportsACreateThatProducesNoSession(t *testing.T) {
 	})
 }
 
+func TestZCodeClearContext_StopsThenClosesTheRetiredSession(t *testing.T) {
+	t.Parallel()
+	for _, subscribeFails := range []bool{false, true} {
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+		result := make(chan error, 1)
+		go func() { _, err := a.ClearContext(); result <- err }()
+		create := waitZCodeRequest(t, stdin, MethodSessionCreate)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, create), json.RawMessage(`{"session":{"sessionId":"new"},"settings":{"mode":{"current":"build"}}}`)))
+		subscribe := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
+		if subscribeFails {
+			a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, subscribe), ErrInternal, "subscribe failed"))
+		} else {
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, subscribe), json.RawMessage(`{}`)))
+		}
+		if subscribeFails {
+			assert.Error(t, <-result)
+		} else {
+			require.NoError(t, <-result)
+		}
+		stop := waitZCodeRequest(t, stdin, MethodSessionStop)
+		assert.JSONEq(t, `{"sessionId":"sess-1"}`, string(stop.Params))
+		assert.Len(t, stdin.Requests(t), 3, "close must wait for the stop reply")
+		a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, stop), ErrSessionNotActive, "session is gone"))
+		closeRequest := waitZCodeRequest(t, stdin, "session/close")
+		assert.JSONEq(t, `{"sessionId":"sess-1"}`, string(closeRequest.Params))
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, closeRequest), json.RawMessage(`{}`)))
+	}
+}
+
+func TestZCodeClearContext_EndsALiveCompaction(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"operationId":"c1","status":"started","trigger":"auto"}`))
+	answerZCodeRequest(t, a, stdin, MethodSessionCreate, `{"session":{"sessionId":"new"},"settings":{"mode":{"current":"build"}}}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{}`)
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	assert.Equal(t, []any{map[string]any{"trigger": "auto"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+}
+
 func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.T) {
 	t.Parallel()
 

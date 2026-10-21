@@ -294,6 +294,38 @@ describe('the Kiro surface of the mock', () => {
     ])
   })
 
+  it.each([{ inputTokens: 0, outputTokens: 0 }, { inputTokens: 60000, outputTokens: 123 }, { outputTokens: 3 }])('reports the step usage: %j', async (usage) => {
+    const server = await startServer()
+    await registerMockModelScenario(server.url, 'kiro-usage', { steps: [{ text: 'Answer', usage }] })
+    const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-usage', 'Reply.'))))
+    const input = usage.inputTokens ?? 1
+    expect(answer.at(-1)).toEqual(['metadataEvent', {
+      tokenUsage: { uncachedInputTokens: input, outputTokens: usage.outputTokens, totalTokens: input + usage.outputTokens },
+      stopReason: 'END_TURN',
+    }])
+  })
+
+  it('refuses the unsupported stop reason max_tokens before it sends an event stream', async () => {
+    const server = await startServer()
+    await registerMockModelScenario(server.url, 'kiro-stop', { steps: [{ text: 'Answer', stopReason: 'max_tokens' }] })
+    const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-stop', 'Reply.')))
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('The mock cannot state stop reason max_tokens on aws-event-stream')
+  })
+
+  // A scripted refusal ends the stream the way Kiro's service states a content
+  // filter: the CONTENT_FILTERED stop reason beside its stopDetails.refusal.
+  it('states a scripted refusal as a content filter', async () => {
+    const server = await startServer()
+    await registerMockModelScenario(server.url, 'kiro-refusal', { steps: [{ text: 'Refused.', stopReason: 'refusal' }] })
+    const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-refusal', 'Reply.'))))
+    expect(answer.at(-1)).toEqual(['metadataEvent', {
+      tokenUsage: { uncachedInputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      stopReason: 'CONTENT_FILTERED',
+      stopDetails: { refusal: { category: 'CYBER', explanation: 'Probe refusal explanation.', recommendedModel: 'kiro-probe-alt' } },
+    }])
+  })
+
   // Kiro reads the text of a turn before its tool calls, as the model wrote them.
   it('streams the text of a step before its tool calls', async () => {
     const server = await startServer()

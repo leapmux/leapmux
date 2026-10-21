@@ -6,7 +6,7 @@ import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { retainedRowIsFinal } from '../registry'
-import { clineIsNotice, clineNotificationEntry } from './extractors/notification'
+import { clineCompactionStart, clineIsNotice, clineNotificationEntry } from './extractors/notification'
 import { clineEndsRun } from './extractors/resultDivider'
 import { clineToolFinish, clineToolStart } from './extractors/toolCommon'
 import { clineEnvelope } from './protocol'
@@ -20,9 +20,11 @@ export function classifyClineMessage(input: ClassificationInput): MessageCategor
   if (wrapper) {
     if (wrapper.messages.length === 0)
       return { kind: 'hidden' }
-    // A thread of Cline notices collapses to hidden when none of them words anything.
+    // Current notices stay visible even when no entry reader claims their payload.
+    if (wrapper.messages.every(clineCompactionStart))
+      return { kind: 'unknown' }
     if (wrapper.messages.some(clineIsNotice))
-      return notification(wrapper.messages, 'hidden')
+      return notification(wrapper.messages)
     if (isNotificationThreadWrapper(wrapper))
       return notification(wrapper.messages)
   }
@@ -35,8 +37,6 @@ export function classifyClineMessage(input: ClassificationInput): MessageCategor
     // A row the service layer wrote: the LeapMux-neutral `{content}` user row, or one
     // of LeapMux's own notices.
     if (typeof parent.content === 'string') {
-      if (parent.hidden === true)
-        return { kind: 'hidden' }
       if (parent.planExecution === true)
         return { kind: 'plan_execution' }
       return { kind: 'user_content' }
@@ -45,6 +45,9 @@ export function classifyClineMessage(input: ClassificationInput): MessageCategor
       return notification([parent])
     return { kind: 'unknown' }
   }
+
+  if (clineCompactionStart(parent))
+    return { kind: 'unknown' }
 
   switch (envelope.event) {
     case CLINE_EVENT.AssistantFinished:
@@ -62,7 +65,7 @@ export function classifyClineMessage(input: ClassificationInput): MessageCategor
       return clineToolFinish(parent) ? { kind: 'tool_result' } : { kind: 'unknown' }
     case CLINE_EVENT.SessionNotice:
     case CLINE_EVENT.TeamProgress:
-      return notification([parent], 'hidden')
+      return notification([parent])
     default:
       break
   }

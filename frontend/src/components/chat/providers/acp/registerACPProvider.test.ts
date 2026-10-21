@@ -1,10 +1,33 @@
+import type { NotificationEntry } from '../../model/notification'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { providerFor, registerProvider } from '../registry'
+import { input } from '../testUtils'
 import { createACPProvider, registerACPProvider } from './registerACPProvider'
 
 describe('createACPProvider', () => {
+  it('connects native notifications to classification and the context meter', () => {
+    const nativeNotifications = {
+      isMember: (message: Record<string, unknown>) => message.compacted === true,
+      entries: (message: Record<string, unknown>): NotificationEntry[] => message.compacted === true ? [{ kind: 'compaction', phase: 'end' }] : [],
+      compactionBoundary: (message: Record<string, unknown>) => message.compacted === true ? { post: 0 } : null,
+    }
+    const options = { defaultPermissionMode: 'default' as const, nativeNotifications }
+    const plugin = createACPProvider(options)
+    const frame = { compacted: true }
+    expect(plugin.transcript.notificationEntry).toBe(nativeNotifications.entries)
+    expect(plugin.transcript.classify(input(frame))).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end' }] })
+    expect(plugin.session?.compactionBoundaryFromMessage?.(input(frame))).toEqual({ post: 0 })
+    expect(plugin.session?.compactionBoundaryFromMessage?.(input({ compacted: false }))).toBeNull()
+    expect(plugin.session?.compactionBoundaryFromMessage?.(input())).toBeNull()
+  })
+
+  it('omits native notification hooks when the provider supplies none', () => {
+    const plugin = createACPProvider({ defaultPermissionMode: 'default' })
+    expect(plugin.transcript.notificationEntry).toBeUndefined()
+    expect(plugin.session?.compactionBoundaryFromMessage).toBeUndefined()
+  })
   it('forwards the provider path capability without wrapping or parsing it', () => {
     const outputFilePaths = vi.fn(() => ['/native/reported.log'])
     const options = { defaultPermissionMode: 'default' as const, outputFilePaths }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -25,9 +26,8 @@ func absentMuseHost(err error) bool {
 	if errors.As(err, &execErr) {
 		return true
 	}
-	// The launch wraps the host in a shell, so an unresolvable command reaches
-	// process start as the shell's own exit 127 ("command not found") rather
-	// than an exec error.
+	// The launcher starts the host through a shell.
+	// An unresolved command therefore returns the shell's exit 127 ("command not found") rather than an exec error.
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
 		return true
@@ -50,17 +50,15 @@ func storedSessions(ctx context.Context, q agent.StoredSessionQuery, locator *la
 	}
 	opts := agent.Options{WorkingDir: q.WorkingDir, HomeDir: q.Home(), Shell: q.Shell, LoginShell: q.LoginShell}
 	if opts.Shell == "" {
-		// A stored-session query names no shell -- the browser asks for the
-		// session list before any agent runs -- so the query host runs under
-		// the same default shell providerkit.RunCLI falls back to.
+		// The browser queries sessions before an agent runs, so the query specifies no shell.
+		// Use the same default shell as providerkit.RunCLI.
 		opts.Shell = terminal.ResolveDefaultShell()
 	}
 	c, err := openConnection(ctx, opts, registration, q.Environ(), nil)
 	if err != nil {
 		if absentMuseHost(err) {
-			// The Muse command not being available is the store's EMPTY
-			// state, the same answer every file-backed provider gives for a
-			// directory that does not exist -- not a read failure.
+			// An unavailable Muse command means an empty store.
+			// This matches the result for a missing session directory in providers that read files.
 			return nil, nil
 		}
 		return nil, err
@@ -119,12 +117,12 @@ func storedSessions(ctx context.Context, q agent.StoredSessionQuery, locator *la
 			if stamp.Before(created) {
 				return nil, fmt.Errorf("the Muse stored session %q updates before its creation timestamp", session.ID)
 			}
-			if len(session.LastActivityAt) != 0 {
-				var activity *string
-				if json.Unmarshal(session.LastActivityAt, &activity) != nil || activity == nil {
+			if providerkit.RawKindOf(session.LastActivityAt) != providerkit.RawAbsent {
+				activity, valid := providerkit.RawString(session.LastActivityAt)
+				if !valid {
 					return nil, fmt.Errorf("the Muse stored session %q has an invalid activity timestamp", session.ID)
 				}
-				stamp, err = time.Parse(time.RFC3339Nano, *activity)
+				stamp, err = time.Parse(time.RFC3339Nano, activity)
 				if err != nil {
 					return nil, fmt.Errorf("the Muse stored session %q has an invalid activity timestamp: %w", session.ID, err)
 				}

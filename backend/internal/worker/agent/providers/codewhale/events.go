@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -153,10 +155,8 @@ func (a *Agent) HandleOutput(content []byte) {
 
 // dispatchEvent routes one event to its handler.
 //
-// The switch lists every event the worker knows, including the ones it
-// ignores, each with its reason. A new event therefore reaches the default
-// branch and is logged instead of being absorbed by a branch that looks
-// deliberate.
+// The switch states a verdict for each known event.
+// The default preserves an unknown event only for the current thread.
 func (a *Agent) dispatchEvent(env codewhaleEnvelope) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
@@ -177,6 +177,20 @@ func (a *Agent) dispatchEvent(env codewhaleEnvelope) {
 	}
 	a.Mu.Unlock()
 
+	a.dispatchAdmittedFrame(env)
+}
+
+// dispatchAdmittedFrame preserves native order after sequence and thread checks.
+// Steer receipts can resolve a held turn end. Other frames wait for that end.
+// The caller holds dispatchMu.
+func (a *Agent) dispatchAdmittedFrame(env codewhaleEnvelope) {
+	if a.IsDiscardingOutput() {
+		return
+	}
+	if a.pendingTurnEnd != nil && env.Event != eventTurnSteered && env.Event != contracts.CodewhaleEventTurnSteerDropped {
+		a.deferredEvents = append(a.deferredEvents, env)
+		return
+	}
 	switch env.Event {
 	case eventTurnStarted:
 		a.handleTurnStarted(env)
@@ -201,10 +215,6 @@ func (a *Agent) dispatchEvent(env codewhaleEnvelope) {
 		a.handleApprovalRequired(env)
 	case eventApprovalDecided:
 		a.handleApprovalDecided(env)
-	case contracts.CodewhaleEventApprovalTimeout:
-		// The runtime denied the call because nobody answered in time. The
-		// decision that follows retires the card; this row states why.
-		a.persistNotification(env)
 	case contracts.CodewhaleEventUserInputRequired:
 		a.handleUserInputRequired(env)
 	case eventUserInputAnswered:
@@ -219,9 +229,6 @@ func (a *Agent) dispatchEvent(env codewhaleEnvelope) {
 	case eventGoalCleared:
 		a.handleGoalCleared(env)
 
-	case contracts.CodewhaleEventSandboxDenied, contracts.CodewhaleEventStoreFailure:
-		a.persistNotification(env)
-
 	case eventThreadStarted, eventThreadForked:
 		// The create and resume replies already stated the thread.
 	case eventTurnLifecycle:
@@ -229,14 +236,38 @@ func (a *Agent) dispatchEvent(env codewhaleEnvelope) {
 	case eventTurnInterruptRequested:
 		// The interrupted turn end that follows states the outcome.
 	case eventModelToolsSnapshot:
-		// A request-surface diagnostic of the runtime, with no conversation.
+		a.handleModelRequestSnapshot(env)
+	case eventTurnArtifacts:
+	// Item rows describe the changes. LeapMux reads no native artifact store.
+	case eventTurnWorkspaceSnapshot:
+	// The runtime uses this snapshot for its own diff view.
+	case eventApprovalGrantAdded, eventApprovalGrantRevoked:
+	// The approval card already describes the user's choice.
 
 	default:
+		if codewhaleNotificationEvents[env.Event] {
+			a.persistNotification(env)
+			return
+		}
 		for _, prefix := range ignoredEventPrefixes {
 			if strings.HasPrefix(env.Event, prefix) {
 				return
 			}
 		}
-		slog.Debug("codewhale unknown event", "agent_id", a.AgentID(), "event", env.Event)
+		a.persistUnknownFrame(env)
+	}
+}
+
+// persistUnknownFrame preserves an unrecognized frame of the current thread.
+func (a *Agent) persistUnknownFrame(env codewhaleEnvelope) {
+	if a.IsDiscardingOutput() {
+		return
+	}
+	if env.ThreadID == "" || env.ThreadID != a.currentThreadID() {
+		slog.Debug("codewhale ignored an unknown frame outside the current thread", "agent_id", a.AgentID(), "event", env.Event)
+		return
+	}
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: env.raw, AgentSessionID: env.ThreadID}, agent.SpanInfo{}); !agent.OutputRetained(err) {
+		slog.Error("codewhale persist an unknown frame", "agent_id", a.AgentID(), "error", err)
 	}
 }

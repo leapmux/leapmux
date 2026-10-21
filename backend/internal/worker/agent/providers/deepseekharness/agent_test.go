@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -18,6 +23,194 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestInterruptCanCancelCompactionBeforeTheCommandReplies(t *testing.T) {
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	started, release, cancelled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCommand := func() { releaseOnce.Do(func() { close(release) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID string `json:"rpcId"`
+		}
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+			return
+		}
+		value := map[string]any{"accepted": true}
+		switch r.URL.Path {
+		case "/api/commands/execute":
+			close(started)
+			<-release
+			value = map[string]any{"result": map[string]any{"kind": "success"}}
+		case "/api/session/cancel":
+			close(cancelled)
+			releaseCommand()
+		default:
+			t.Errorf("unexpected native request: %s", r.URL.Path)
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": request.ID, "result": map[string]any{"ok": true, "value": value}}))
+	}))
+	defer server.Close()
+	defer releaseCommand()
+	endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+	require.NoError(t, err)
+	defer endpoint.Close()
+	a.rpc = remoteRPC{endpoint: endpoint}
+	commandDone, stopDone := make(chan error, 1), make(chan error, 1)
+	go func() { commandDone <- a.CompactContext() }()
+	<-started
+	go func() { stopDone <- a.Interrupt(agent.StopContext{}) }()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-cancelled:
+	case <-ctx.Done():
+		t.Error("the stop waited for the compaction command that it must cancel")
+		releaseCommand()
+	}
+	require.NoError(t, <-commandDone)
+	require.NoError(t, <-stopDone)
+}
+
+func TestInterruptRemovesAndRequeuesAPendingSteer(t *testing.T) {
+	for _, delivered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delivered=%t", delivered), func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.active = true
+			var mu sync.Mutex
+			var methods []string
+			var requestID string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					ID      string `json:"rpcId"`
+					Payload struct {
+						Args struct {
+							Request struct {
+								RequestID string `json:"requestId"`
+								ItemID    string `json:"itemId"`
+								SessionID string `json:"sessionId"`
+								Action    struct {
+									Kind string `json:"kind"`
+								} `json:"action"`
+							} `json:"request"`
+						} `json:"args"`
+					} `json:"payload"`
+				}
+				if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+					return
+				}
+				mu.Lock()
+				methods = append(methods, r.URL.Path)
+				mu.Unlock()
+				input := request.Payload.Args.Request
+				if r.URL.Path == "/api/session/prompt" {
+					requestID = input.RequestID
+					// .tmp/probe/deepseekharness/logs/frames.jsonl, frames 72-79.
+					data, err := json.Marshal(map[string]any{"type": "agent/inbox/spliced", "seq": 1, "time": 1000, "data": map[string]any{"inserted": []any{map[string]any{"id": "native-item", "source": map[string]string{"rpcId": requestID}}}}})
+					assert.NoError(t, err)
+					assert.NoError(t, a.handleSessionEvent(a.streams["root"], data))
+					if delivered {
+						data, err = json.Marshal(map[string]any{"type": "user/message", "seq": 2, "time": 1000, "data": map[string]any{"source": map[string]string{"rpcId": requestID}}})
+						assert.NoError(t, err)
+						assert.NoError(t, a.handleSessionEvent(a.streams["root"], data))
+					}
+				}
+				if r.URL.Path == "/api/session/updateQueue" {
+					assert.Equal(t, "native-item", input.ItemID)
+					assert.Equal(t, "native-root", input.SessionID)
+					assert.Equal(t, "remove", input.Action.Kind)
+				}
+				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": request.ID, "result": map[string]any{"ok": true, "value": map[string]any{"accepted": true}}}))
+			}))
+			t.Cleanup(server.Close)
+			endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+			require.NoError(t, err)
+			t.Cleanup(endpoint.Close)
+			a.rpc = remoteRPC{endpoint: endpoint}
+			attachment := &leapmuxv1.Attachment{Filename: "input.png", MimeType: "image/png", Data: []byte{1, 2, 3}}
+			require.NoError(t, a.SteerInput("steer", []*leapmuxv1.Attachment{attachment}))
+			attachment.Data[0] = 9
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
+			mu.Lock()
+			defer mu.Unlock()
+			if delivered {
+				assert.Equal(t, []string{"/api/session/prompt", "/api/session/cancel"}, methods)
+				assert.Empty(t, sink.RequeuedInputs())
+			} else {
+				assert.Equal(t, []string{"/api/session/prompt", "/api/session/cancel", "/api/session/updateQueue"}, methods)
+				require.Len(t, sink.RequeuedInputs(), 1)
+				assert.Equal(t, "steer", sink.RequeuedInputs()[0].Content)
+				assert.Equal(t, "dsh-steer:"+requestID, sink.RequeuedInputs()[0].DropID)
+				require.Len(t, sink.RequeuedInputs()[0].Attachments, 1)
+				assert.Equal(t, []byte{1, 2, 3}, sink.RequeuedInputs()[0].Attachments[0].Data)
+			}
+		})
+	}
+}
+
+func TestRemovePendingSteerKeepsUnconfirmedRemovals(t *testing.T) {
+	for _, code := range []string{"", "session/queue-item-not-found", "session/unavailable", "refused"} {
+		t.Run(code, func(t *testing.T) {
+			base := &agenttest.Sink{}
+			a := newOfflineAgent(t, base)
+			steer := &pendingSteer{requestID: "request", itemID: "item", content: "steer"}
+			a.pendingSteers = []*pendingSteer{steer}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					ID string `json:"rpcId"`
+				}
+				if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+					return
+				}
+				result := map[string]any{"ok": true, "value": map[string]any{"accepted": code != "refused"}}
+				if code != "" && code != "refused" {
+					result = map[string]any{"ok": false, "error": map[string]any{"code": code, "message": "native refusal"}}
+				}
+				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": request.ID, "result": result}))
+			}))
+			t.Cleanup(server.Close)
+			endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+			require.NoError(t, err)
+			t.Cleanup(endpoint.Close)
+			a.rpc = remoteRPC{endpoint: endpoint}
+			err = a.removePendingSteer("native-root", steer)
+			switch code {
+			case "":
+				require.NoError(t, err)
+				assert.Empty(t, a.pendingSteers)
+				require.Len(t, base.RequeuedInputs(), 1)
+			case "session/queue-item-not-found":
+				require.NoError(t, err)
+				assert.Empty(t, a.pendingSteers)
+				assert.Empty(t, base.RequeuedInputs())
+			default:
+				require.Error(t, err)
+				assert.Len(t, a.pendingSteers, 1)
+				assert.Empty(t, base.RequeuedInputs())
+			}
+		})
+	}
+}
+
+func TestRemovedSteerCanRetryAQueueFailureWithoutRemovingItAgain(t *testing.T) {
+	cause := errors.New("queue write failed")
+	base := &agenttest.Sink{RequeueErr: cause}
+	a := newOfflineAgent(t, base)
+	steer := &pendingSteer{requestID: "request", itemID: "item", content: "steer", removed: true}
+	a.pendingSteers = []*pendingSteer{steer}
+	require.ErrorIs(t, a.removePendingSteer("native-root", steer), cause)
+	assert.Len(t, a.pendingSteers, 1)
+	base.RequeueErr = nil
+	require.NoError(t, a.removePendingSteer("native-root", steer))
+	assert.Empty(t, a.pendingSteers)
+	assert.Len(t, base.RequeuedInputs(), 1)
+}
+
+func TestSteerSurvivesTheNativeTurnEnd(t *testing.T) {
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	assert.True(t, a.SteerSurvivesTurnEnd())
+}
 
 // newOfflineAgent drives the native event path without a model request.
 func newOfflineAgent(t *testing.T, sink *agenttest.Sink) *Agent {
@@ -138,6 +331,7 @@ func TestRemoteStreamFailureEndsOwnedWorkAndRefusesFurtherNativeInput(t *testing
 	a.controls["native-control"] = &nativeControl{agentID: "native-root", sink: a.sink, published: true}
 	cause := errors.New("the native Remote connection failed")
 	a.reportStreamFailure(cause)
+	assert.Equal(t, []map[string]interface{}{{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: cause.Error()}}, base.LeapMuxNotifications())
 	require.Error(t, a.SendInput("This prompt must not reach the disconnected native process.", nil))
 	assert.Equal(t, int32(0), inputCalls.Load())
 	assert.False(t, a.active)

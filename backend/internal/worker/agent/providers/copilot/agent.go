@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,12 @@ type Agent struct {
 	*copilotConnection
 	sink agent.ProviderServices
 	opts agent.Options
+
+	// samplingOnce prevents a concurrent stop from creating a replacement sampling context.
+	samplingOnce   sync.Once
+	samplingCtx    context.Context
+	samplingCancel context.CancelFunc
+	steers         providerkit.SteerLedger
 
 	sessionMu sync.RWMutex
 	stateMu   sync.Mutex
@@ -57,6 +64,10 @@ type Agent struct {
 	// the order the runtime opened them, so a turn end writes its rows the way the
 	// agent produced them.
 	nativeTextSegments []copilotStreamedText
+	// retries holds the retry state of each native agent. outputMu guards it.
+	retries map[string]*copilotRetry
+	// sqlTodos is the last accepted SQL snapshot. outputMu guards it.
+	sqlTodos json.RawMessage
 	// reasoningSeen prevents an embedded summary and a separate reasoning event
 	// from storing the same thought twice. outputMu guards both fields.
 	reasoningSeen  map[string]struct{}
@@ -85,6 +96,8 @@ type Agent struct {
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+var _ agent.SteerSurvivor = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
 
 // The keys of the background operations that offReader keeps apart.
@@ -235,6 +248,8 @@ func (a *Agent) CompactContext() error {
 		return fmt.Errorf("encode Copilot compaction request: %w", err)
 	}
 	err = a.SendDetachedRequest("session.history.compact", params, func(raw json.RawMessage, requestErr error) {
+		a.sessionMu.RLock()
+		defer a.sessionMu.RUnlock()
 		defer a.finishNativeCompaction(revision)
 		if a.IsStopped() || a.currentNativeSessionID() != sessionID {
 			return
@@ -255,6 +270,7 @@ func (a *Agent) CompactContext() error {
 		}
 	})
 	if err != nil {
+		providerkit.EndCompaction(a.sink)
 		a.finishNativeCompaction(revision)
 		return providerkit.ClassifyJSONRPCDeliveryError("session.history.compact", err)
 	}
@@ -262,6 +278,7 @@ func (a *Agent) CompactContext() error {
 }
 
 func (a *Agent) reportNativeCompactionError(err error) {
+	providerkit.EndCompaction(a.sink)
 	a.sink.PersistLeapMuxNotification(map[string]any{
 		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
 		contracts.NotificationFieldError: fmt.Sprintf("Copilot could not compact the context: %v", err),
@@ -328,6 +345,12 @@ func (a *Agent) SupportsSteering() bool {
 	return a.compactingRevision == 0
 }
 
+// SteerRowAtEcho writes the queue row when Copilot echoes the prompt.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd keeps a late steer in Copilot's native queue.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
+
 // SteerInput injects a user message into the RUNNING turn with Copilot's
 // SendMode "immediate".
 //
@@ -366,6 +389,14 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		}
 		values["attachments"] = blobs
 	}
+	ticket := a.steers.Add(content)
+	accepted := false
+	defer func() {
+		if !accepted {
+			a.steers.Forget(ticket)
+			a.steers.Settle(a.sink)
+		}
+	}()
 	raw, err := a.requestNativeSession("send", values)
 	if err != nil {
 		return providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
@@ -376,6 +407,8 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
 		return fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
 	}
+	a.steers.SetID(ticket, response.MessageID)
+	accepted = true
 	return nil
 }
 
@@ -391,12 +424,37 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if a.IsStopped() {
 		return fmt.Errorf("agent is stopped")
 	}
+	for _, pending := range a.steers.PendingEntries() {
+		if pending.ID == "" {
+			continue
+		}
+		raw, err := a.requestNativeSession("queue.withdrawMessage", map[string]any{
+			"messageId": pending.ID, "expectedPrompt": pending.Key,
+		})
+		if err != nil {
+			slog.Warn("withdraw a Copilot steer before the stop", "agent_id", a.AgentID(), "error", err)
+			continue
+		}
+		var response struct {
+			Removed *bool `json:"removed"`
+		}
+		if json.Unmarshal(raw, &response) != nil || response.Removed == nil {
+			slog.Warn("Copilot returned no steer withdrawal result", "agent_id", a.AgentID())
+			continue
+		}
+		if *response.Removed {
+			a.steers.Drop(pending.Ticket)
+		}
+	}
+	a.steers.Settle(a.sink)
 	_, err := a.requestNativeSession("abort", nil)
 	return err
 }
 
 func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
+	a.samplingContext()
+	a.samplingCancel()
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
 	a.outputMu.Lock()
@@ -439,4 +497,13 @@ func (a *Agent) Wait() error {
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInputForSession(&sessionID, content, attachments)
+}
+
+// samplingContext supplies one cancellation scope for sampling on this process.
+// Stop cancels it before it takes sessionMu. Native shutdown keeps the process context.
+func (a *Agent) samplingContext() context.Context {
+	a.samplingOnce.Do(func() {
+		a.samplingCtx, a.samplingCancel = context.WithCancel(a.Context())
+	})
+	return a.samplingCtx
 }

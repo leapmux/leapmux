@@ -27,6 +27,7 @@ func TestMuseClearContextRefusesABusyNativeSessionBeforeWriting(t *testing.T) {
 	assert.Equal(t, "session", a.sessionID)
 	assert.Zero(t, sink.ResetSpanCount())
 	assert.Empty(t, sink.SessionIDs())
+	assert.Zero(t, sink.GoalClears())
 }
 
 func TestMuseClearContextPreservesTheOldSessionWhenNativeStartFails(t *testing.T) {
@@ -44,6 +45,7 @@ func TestMuseClearContextPreservesTheOldSessionWhenNativeStartFails(t *testing.T
 	assert.False(t, old.retired)
 	assert.Zero(t, sink.ResetSpanCount())
 	assert.Empty(t, sink.SessionIDs())
+	assert.Zero(t, sink.GoalClears())
 }
 
 func TestMuseClearContextRetiresTheOldSessionAndBothNativeSubscriptions(t *testing.T) {
@@ -136,4 +138,42 @@ func TestMuseCompactionRequiresIdleStateAndPreservesNativeNoop(t *testing.T) {
 	a.sessions["session"].turnID = ""
 	require.NoError(t, a.CompactContext())
 	assert.Equal(t, 1, calls)
+}
+
+func TestMuseClearContextClearsTheGoal(t *testing.T) {
+	for _, replacement := range []string{"replacement", "session"} {
+		t.Run(replacement, func(t *testing.T) {
+			a, sink := goalTestAgent(t)
+			sink.UpsertGoal(agent.GoalUpdate{Objective: "Finish the old session", Status: agent.GoalStatusActive})
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+				if method == methodSessionStart {
+					return agenttest.RPCReply{Result: json.RawMessage(`{"session":{"sessionId":"` + replacement + `","modelId":null,"activeTurnId":null}}`)}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			}})
+			id, err := a.ClearContext()
+			require.NoError(t, err)
+			assert.Equal(t, replacement, id)
+			if replacement == "session" {
+				assert.Zero(t, sink.GoalClears())
+			} else {
+				assert.Equal(t, 1, sink.GoalClears())
+			}
+		})
+	}
+}
+
+func TestMuseClearContextEndsTheOldLiveCompaction(t *testing.T) {
+	a, sink := testAgent(t)
+	feed(t, a, contracts.MuseMethodItemStarted, itemParams{SessionID: "session", Item: nativeItem{ID: "compact", Kind: "compaction", Revision: 1, Status: "inProgress"}})
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+		if method == methodSessionStart {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"session":{"sessionId":"replacement","modelId":null,"activeTurnId":null}}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	}})
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{contracts.SessionInfoKeyCompaction: nil}, sink.LastSessionInfo())
+	assert.Empty(t, a.sessions["session"].compactionLive)
 }

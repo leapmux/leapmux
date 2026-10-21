@@ -1,0 +1,8 @@
+{"method":"session/event","params":{"sessionId":"sess-1","seq":5,"type":"model.streaming","payload":{"assistantMessageId":"failed","kind":"reasoning_delta","delta":"DISCARDED-REASONING-1 "}}}
+{"method":"session/event","params":{"sessionId":"sess-1","seq":6,"type":"model.streaming","payload":{"assistantMessageId":"failed","kind":"reasoning_delta","delta":"DISCARDED-REASONING-2 "}}}
+{"method":"session/event","params":{"sessionId":"sess-1","seq":7,"type":"model.streaming","payload":{"assistantMessageId":"failed","kind":"text_delta","delta":"DISCARDED-TEXT-1 "}}}
+{"method":"session/event","params":{"sessionId":"sess-1","seq":8,"type":"model.streaming","payload":{"assistantMessageId":"failed","kind":"text_delta","delta":"DISCARDED-TEXT-2 "}}}
+{"method":"session/event","params":{"sessionId":"sess-1","seq":12,"type":"streamRecovery.updated","payload":{"assistantMessageId":"failed","discardedReasoningBytes":44,"discardedTextBytes":34,"discardedToolCallIds":[]}}}
+{"method":"session/event","params":{"sessionId":"sess-1","seq":16,"type":"model.streaming","payload":{"assistantMessageId":"fresh","kind":"reasoning_delta","delta":"FRESH-REASONING "}}}
+{"method":"session/event","params":{"sessionId":"sess-1","seq":17,"type":"model.streaming","payload":{"assistantMessageId":"fresh","kind":"text_delta","delta":"FRESH-TEXT OK"}}}
+{"method":"session/event","params":{"sessionId":"sess-1","seq":19,"type":"session.updated","payload":{"content":"FRESH-TEXT OK","querySource":"main_turn","stopReason":"stop"}}}

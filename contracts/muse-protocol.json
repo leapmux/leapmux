@@ -1,5 +1,5 @@
 {
-  "_readme": "Muse Code owns the Muse Session Protocol (MSP) vocabulary below. The Worker and browser read these shared native values. Commands that only Go uses stay in the Muse package. Tool names that only the browser uses stay in the Muse plugin.",
+  "_readme": "Muse Code owns the Muse Session Protocol (MSP) vocabulary below. The Worker and browser read these shared native values. Commands and item kinds that only Go uses stay in the Muse package. Tool names that only the browser uses stay in the Muse plugin.",
   "methods": {
     "ItemStarted": "item/started",
     "ItemUpdated": "item/updated",
@@ -18,7 +18,8 @@
     "TokenUsage": "session/tokenUsage",
     "UsageChanged": "usage/changed",
     "LogRecord": "log/record",
-    "TodoListChanged": "session/todoListChanged"
+    "TodoListChanged": "session/todoListChanged",
+    "SessionModelRouteUnserved": "session/modelRouteUnserved"
   },
   "itemKinds": {
     "UserMessage": "userMessage",
@@ -26,9 +27,7 @@
     "Reasoning": "reasoning",
     "ToolCall": "toolCall",
     "UserShell": "userShell",
-    "Subagent": "subagent",
     "Workflow": "workflow",
-    "ReminderChild": "reminderChild",
     "Compaction": "compaction",
     "HookRun": "hookRun"
   },

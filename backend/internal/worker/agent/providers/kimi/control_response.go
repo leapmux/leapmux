@@ -130,7 +130,7 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 			// A refusal dismisses the question. Its text cannot ride the dismissal,
 			// so it reaches the model as the user's next message.
 			native = contracts.KimiQuestionReply{Dismiss: true}
-			result.Feedback = message
+			result.FollowUp = agent.FeedbackFollowUp(message)
 			break
 		}
 		if !kimiAnswersFit(request, fields.Answers) {

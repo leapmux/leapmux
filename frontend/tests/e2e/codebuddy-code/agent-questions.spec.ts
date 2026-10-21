@@ -15,9 +15,9 @@ codebuddyTest.describe('control answers for CodeBuddy Code', () => {
         { label: 'Blue', description: 'Use blue.' },
         { label: 'Green', description: 'Use green.' },
       ],
-    }])] })
+    }])] }, { text: 'The native question tool is unavailable.' })
     await sendMessage(page, modelScript.prompt('Ask me to choose a color.'))
-    await modelScript.waitForSteps(start + 1)
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     const first = await modelScript.requestAt(start)
     expect(first.protocol).toBe('openai-chat-completions')

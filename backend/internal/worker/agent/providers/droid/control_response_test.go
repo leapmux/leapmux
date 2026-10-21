@@ -167,7 +167,8 @@ func TestResolveControlResponseSendsTheDenyReasonAsFeedback(t *testing.T) {
 			_, result := replyResult(t, resolution)
 			assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(result),
 				"the reply is Droid's own cancel; Droid discards a comment beside it")
-			assert.Equal(t, "Use a dry run first.", resolution.Feedback)
+			assert.Equal(t, "Use a dry run first.", resolution.FollowUp.Text)
+			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, resolution.FollowUp.Kind)
 			assert.Equal(t, tc.planModeControl, resolution.PlanModeControl)
 		})
 	}
@@ -183,7 +184,8 @@ func TestResolveControlResponseSendsAQuestionRefusalReasonAsFeedback(t *testing.
 	id, result := replyResult(t, resolution)
 	assert.Equal(t, "rpc-43", id)
 	assert.JSONEq(t, `{"cancelled":true,"answers":[]}`, string(result), "Droid's own cancel carries no answer")
-	assert.Equal(t, "Ask about the shape instead.", resolution.Feedback)
+	assert.Equal(t, "Ask about the shape instead.", resolution.FollowUp.Text)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, resolution.FollowUp.Kind)
 }
 
 // The browser fills the reason of a bare rejection with a placeholder. That is
@@ -195,13 +197,13 @@ func TestResolveControlResponseSendsNoFeedbackForABareRejection(t *testing.T) {
 			decision(t, "droid-perm-1", map[string]any{"behavior": "deny", "message": message}))
 		_, result := replyResult(t, permission)
 		assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(result))
-		assert.Emptyf(t, permission.Feedback, "a permission rejection with the message %q has no reason", message)
+		assert.Emptyf(t, permission.FollowUp, "a permission rejection with the message %q has no reason", message)
 
 		question := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...),
 			decision(t, "droid-ask-1", map[string]any{"behavior": "deny", "message": message}))
 		_, result = replyResult(t, question)
 		assert.JSONEq(t, `{"cancelled":true,"answers":[]}`, string(result))
-		assert.Emptyf(t, question.Feedback, "a question refusal with the message %q has no reason", message)
+		assert.Emptyf(t, question.FollowUp, "a question refusal with the message %q has no reason", message)
 	}
 }
 
@@ -213,7 +215,7 @@ func TestResolveControlResponseSendsNoFeedbackForAnApproval(t *testing.T) {
 		decision(t, "droid-perm-1", map[string]any{"behavior": "allow", "message": "Go ahead."}))
 	_, result := replyResult(t, resolution)
 	assert.JSONEq(t, `{"selectedOption":"proceed_once"}`, string(result))
-	assert.Empty(t, resolution.Feedback)
+	assert.Empty(t, resolution.FollowUp)
 }
 
 // Droid identifies each answer by the `index` of its question. The reply lists
@@ -234,7 +236,7 @@ func TestResolveControlResponseAnswersEachQuestionByItsNativeIndex(t *testing.T)
 		{"index":1,"question":"Which color?","answer":"Blue"},
 		{"index":2,"question":"Which sizes?","answer":"Small, Large"}
 	]}`, string(result))
-	assert.Empty(t, resolution.Feedback)
+	assert.Empty(t, resolution.FollowUp)
 }
 
 // The numbers are Droid's own: the reply copies them, and never renumbers the

@@ -1,5 +1,5 @@
 {
-  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs `kimi web` and drives its kap-server through REST and one WebSocket. Each event payload repeats its frame type. The Worker stores the payload unchanged. The browser dispatches on those same event types. The events table includes every declared server event, including the server-added event.* family. The origins table identifies who starts a turn. The tools and displayKinds tables identify tools and control displays. The decision and answer tables hold native reply values. The goalModes table holds approval labels. The modes table combines the three native permission modes with LeapMux plan mode. Moonshot AI owns these values except the two reply marks. LeapMux chooses dismiss for the dedicated dismiss route. LeapMux chooses permission_mode for the mode after plan approval. The todoStatuses and turnEndReasons tables hold native task and completion values. The browser owns native output headers and per-line footers in its provider protocol module. The opening event supplies the tool name because native result events contain no name. Per-line footers contain no declared length. The browser shows the reported output_path beside the original preview. It checks native session and agent identity. It checks native turn and call identity also. LeapMux reads no output file.",
+  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs `kimi web` and drives its kap-server through REST and one WebSocket. Each event payload repeats its frame type. The Worker stores native event payloads. It removes repeated entries from global config warnings and preserves their other native fields. The browser dispatches on those same event types. The events table includes every declared server event, including the server-added event.* family. The origins table identifies who starts a turn. The tools and displayKinds tables identify tools and control displays. The decision and answer tables hold native reply values. The goalModes table holds approval labels. The modes table combines the three native permission modes with LeapMux plan mode. Moonshot AI owns these values except the two reply marks. LeapMux chooses dismiss for the dedicated dismiss route. LeapMux chooses permission_mode for the mode after plan approval. The todoStatuses and turnEndReasons tables hold native task and completion values. The browser owns native output headers and per-line footers in its provider protocol module. The opening event supplies the tool name because native result events contain no name. Per-line footers contain no declared length. The browser shows the reported output_path beside the original preview. It checks native session and agent identity. It checks native turn and call identity also. LeapMux reads no output file. The Worker also stores each entry of GET /sessions/{id}/warnings in the shape of the warning event (type, agentId, sessionId, code, message). The server publishes profile warnings before a subscription can receive them. notificationEvents lists the event types that the Worker stores as notification rows. The browser treats the same set as one notification thread. The Worker stores other unknown session events as message rows. Compaction starts and blocked compactions use the live compaction key.",
   "events": {
     "AgentCreated": "agent.created",
     "AgentDisposed": "agent.disposed",
@@ -262,5 +262,16 @@
         "why": "the worker writes the permission mode an approved plan switches to and applies it before it posts the decision; the browser reads the mode from the plan approval settings that the service stores beside the answer"
       }
     }
-  }
+  },
+  "notificationEvents": [
+    "TurnStarted",
+    "TurnStepRetrying",
+    "CompactionCompleted",
+    "CompactionCancelled",
+    "Warning",
+    "Error",
+    "TaskNotified",
+    "HookResult",
+    "ConfigWarning"
+  ]
 }

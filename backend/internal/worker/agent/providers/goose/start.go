@@ -32,11 +32,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				EffortConfigID: contracts.GooseConfigThinkingEffort,
 				// Subagent tool-request observations: Goose surfaces tool REQUESTS
 				// (never results) over ACP via _meta.toolNotification, so the hook
-				// runs on tool_call_update. The spawn tool_call's final update
-				// closes the registry row. The spawn tool_call itself carries
-				// _meta.goose.toolCall {toolName:"delegate", extensionName:"summon"}.
+				// runs on tool_call_update. The spawn tool_call's final update is
+				// the delegate ACK: it renames the row to the native session id
+				// and keeps it running (observeGooseSubagentUpdate). The spawn
+				// tool_call itself carries _meta.goose.toolCall
+				// {toolName:"delegate", extensionName:"summon"}.
 				SubagentFromToolCall:       gooseSubagentFromToolCall,
-				SubagentFromToolCallUpdate: gooseSubagentFromToolCallUpdate,
+				SubagentFromToolCallUpdate: a.observeGooseSubagentUpdate,
 				ToolOutput:                 a.gooseToolOutput,
 				ToolNotification:           a.observeGooseToolNotification,
 				// Goose sends its live status and its usage totals ONLY to a client
@@ -50,6 +52,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ExtraMethod:            a.handleGooseExtraMethod,
 				ToolOutputComplete:     a.clearGooseToolOutput,
 				SessionMetadataHandler: a.captureSteerRunID,
+				SessionUpdateHandler:   a.observeGooseSessionUpdate,
+				PromptEnded:            a.finishGoosePrompt,
 				AdvertisedSteerMethod: func(response []byte) string {
 					return acp.ParseAdvertisedMethod(response, gooseSteerNamespace, gooseSteerMethod)
 				},

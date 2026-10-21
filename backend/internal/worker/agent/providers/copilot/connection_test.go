@@ -362,7 +362,25 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 					continue
 				}
 				value = map[string]any{"handle": "interest-" + string(request.ID)}
-			case "session.permissions.handlePendingPermissionRequest", "session.ui.handlePendingUserInput", "session.ui.handlePendingExitPlanMode", "session.ui.handlePendingElicitation":
+			case "session.mcp.executeSampling":
+				action := os.Getenv("LEAPMUX_TEST_COPILOT_SAMPLING_ACTION")
+				if action == "" {
+					action = "success"
+				}
+				value = map[string]any{"action": action}
+				if action == "missing-result" {
+					value = map[string]any{"action": "success"}
+				}
+				if action == "malformed" {
+					value = map[string]any{"action": 7}
+				}
+				if action == "success" {
+					value = map[string]any{"action": action, "result": map[string]any{
+						"role": "assistant", "content": map[string]any{"type": "text", "text": "SAMPLED"}, "model": "mock-model",
+					}}
+				}
+
+			case "session.permissions.handlePendingPermissionRequest", "session.ui.handlePendingUserInput", "session.ui.handlePendingExitPlanMode", "session.ui.handlePendingElicitation", "session.ui.handlePendingAutoModeSwitch", "session.ui.handlePendingSampling":
 				lastControlValue = append(json.RawMessage(nil), params.Result...)
 				switch os.Getenv("LEAPMUX_TEST_COPILOT_CONTROL_OUTCOME") {
 				case "timeout":
@@ -382,6 +400,8 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 						"session.ui.handlePendingUserInput":                  "user_input.completed",
 						"session.ui.handlePendingExitPlanMode":               "exit_plan_mode.completed",
 						"session.ui.handlePendingElicitation":                "elicitation.completed",
+						"session.ui.handlePendingAutoModeSwitch":             "auto_mode_switch.completed",
+						"session.ui.handlePendingSampling":                   "sampling.completed",
 					}[request.Method]
 					event, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": sessionID, "event": map[string]any{"type": kind, "data": map[string]any{"requestId": params.RequestID}}}})
 					require.NoError(t, err)

@@ -43,9 +43,7 @@ const (
 
 type codexGoalNotification struct {
 	ThreadID string `json:"threadId"`
-	// A POINTER, because null and absent must be told apart. Codex sends
-	// turnId: null for the snapshot it pushes on thread/resume, and a snapshot
-	// updates state without writing a transcript row.
+	// The native turn is optional. The resume handshake determines snapshot status.
 	TurnID *string        `json:"turnId"`
 	Goal   *codexGoalBody `json:"goal"`
 }
@@ -82,6 +80,20 @@ func codexGoalStatus(wire string) agent.GoalStatus {
 	}
 }
 
+// codexGoalStatusDetail keeps only information that the neutral status does not state.
+func codexGoalStatusDetail(wire string) string {
+	switch wire {
+	case codexGoalStatusActive, codexGoalStatusPaused, codexGoalStatusComplete, codexGoalStatusBlocked:
+		return ""
+	case codexGoalStatusUsageLimited:
+		return "usage limited"
+	case codexGoalStatusBudgetLimited:
+		return "budget limited"
+	default:
+		return wire
+	}
+}
+
 // handleGoalUpdated reports one Codex goal frame to the sink.
 func (a *Agent) handleGoalUpdated(params json.RawMessage) {
 	var notif codexGoalNotification
@@ -104,7 +116,7 @@ func (a *Agent) handleGoalUpdated(params json.RawMessage) {
 	a.sink.UpsertGoal(agent.GoalUpdate{
 		Objective:    body.Objective,
 		Status:       codexGoalStatus(body.Status),
-		StatusDetail: body.Status,
+		StatusDetail: codexGoalStatusDetail(body.Status),
 		CreatedAt:    codexGoalTime(body.CreatedAt),
 		// Codex reports no iteration count, so Iterations stays nil and the
 		// panel omits that row rather than showing a zero.

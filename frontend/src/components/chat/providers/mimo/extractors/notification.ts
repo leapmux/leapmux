@@ -1,6 +1,7 @@
-import type { NotificationEntry } from '../../../model/notification'
+import type { NotificationEntry, RetryFacts } from '../../../model/notification'
 import { MIMO_EVENT, MIMO_PART_TYPE, MIMO_STATUS_TYPE } from '~/generated/contracts/mimo-protocol'
-import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { assignDefined, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { retryEntry } from '../../../model/notification'
 import { MIMO_PART_FIELD } from '../protocol'
 import { mimoEvent } from './toolCommon'
 
@@ -17,45 +18,48 @@ export function mimoCompactionEnded(part: Record<string, unknown>): boolean {
   return projection !== undefined && projection !== null
 }
 
-/**
- * Read one MiMo notification row into the shared notification model.
- *
- * Three of MiMo's own events reach a transcript as notifications:
- *
- *   - `session.status` with a `retry` status: the model call failed, and MiMo waits
- *     before it tries again in the same turn. The thread folds the attempts into the
- *     latest.
- *   - A compaction part, once when the compaction starts and once when it ends with the
- *     summary.
- *   - `session.error` outside a turn: a prompt the server refused before it started a
- *     turn. A failure INSIDE a turn is the turn's divider instead.
- *
- * Returns an empty list for any other row, which the classifier then hides.
- */
+/** Identify an older stored start for the shared compaction safety net. */
+export function mimoCompactionStart(msg: Record<string, unknown>): boolean {
+  const event = mimoEvent(msg)
+  const part = event && pickObject(event.properties, 'part')
+  return event?.type === MIMO_EVENT.MessagePartUpdated
+    && !!part && pickString(part, 'type') === MIMO_PART_TYPE.Compaction && !mimoCompactionEnded(part)
+}
+
+/** Read native retries, compaction ends, and errors into the neutral notification model. */
 export function mimoNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const event = mimoEvent(msg)
   if (!event)
     return []
   switch (event.type) {
+    case MIMO_EVENT.SessionRetryAttempt: {
+      const facts: RetryFacts = { error: pickString(event.properties, 'reason') }
+      assignDefined(facts, 'attempt', pickNumber(event.properties, 'attempt', undefined))
+      assignDefined(facts, 'maxAttempts', pickNumber(event.properties, 'maxAttempts', undefined))
+      assignDefined(facts, 'delayMs', pickNumber(event.properties, 'nextDelayMs', undefined))
+      return [retryEntry('api', facts)]
+    }
     case MIMO_EVENT.SessionStatus: {
       const status = pickObject(event.properties, 'status')
+      if (pickString(status, 'type') === MIMO_STATUS_TYPE.Notice) {
+        const text = pickString(status, 'message').trim()
+        return text ? [{ kind: 'status', text }] : []
+      }
       if (pickString(status, 'type') !== MIMO_STATUS_TYPE.Retry)
         return []
       const attempt = pickNumber(status, 'attempt', undefined)
       const error = pickString(status, 'message') || undefined
-      return [{
-        kind: 'retry',
-        scope: 'api',
+      return [retryEntry('api', {
         ...(attempt !== undefined ? { attempt } : {}),
         ...(error !== undefined ? { error } : {}),
-      }]
+      })]
     }
     case MIMO_EVENT.MessagePartUpdated: {
       const part = pickObject(event.properties, 'part')
-      if (!part || pickString(part, 'type') !== MIMO_PART_TYPE.Compaction)
+      if (!part || pickString(part, 'type') !== MIMO_PART_TYPE.Compaction || !mimoCompactionEnded(part))
         return []
       const trigger = part[MIMO_PART_FIELD.Auto] === true ? 'auto' : 'manual'
-      return [{ kind: 'compaction', phase: mimoCompactionEnded(part) ? 'end' : 'start', detail: { trigger } }]
+      return [{ kind: 'compaction', phase: 'end', detail: { trigger } }]
     }
     case MIMO_EVENT.SessionError: {
       const { name, message } = mimoErrorText(event.properties)

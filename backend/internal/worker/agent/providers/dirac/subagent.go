@@ -2,9 +2,7 @@ package dirac
 
 import (
 	"encoding/json"
-	"fmt"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -101,7 +99,6 @@ func (a *Agent) observeChildCard(rowKey, title string, rawInput, rawOutput json.
 		}
 		a.childState[nativeID] = state
 	}
-	newEvents := diracNewTrajectoryEvents(state.trajectory, output.Trajectory)
 	final := acp.StatusIsFinal(status)
 	if output.Trajectory != nil && !final {
 		state.trajectory = slices.Clone(output.Trajectory)
@@ -126,21 +123,11 @@ func (a *Agent) observeChildCard(rowKey, title string, rawInput, rawOutput json.
 		RowKey: registryKey, ChildAgentKey: registryKey, Title: title,
 		Status: bgtask.StatusRunning, Prompt: prompt, Spawns: !known,
 	}
-	if len(newEvents) > 0 {
-		var text strings.Builder
-		for _, event := range newEvents {
-			if event.Text == "" || (event.Type != "message" && event.Type != "tool") {
-				continue
-			}
-			fmt.Fprintf(&text, "%s: %s\n", event.Type, event.Text)
-		}
-		if text.Len() > 0 {
-			obs.ChildTranscriptPayload, _ = json.Marshal(map[string]any{
-				"sessionUpdate": "agent_message_chunk",
-				"content":       map[string]string{"type": "text", "text": text.String()},
-			})
-		}
-	}
+	// A live card states no child text. A card can skip whole events of the
+	// child's timeline -- Dirac streams an answer to the archive only -- so a
+	// live-fed report could land above archive-only text that precedes it. The
+	// archive replay that closes the row reads the whole timeline in order,
+	// and it is the one writer of the child's text rows.
 	return obs
 }
 
@@ -149,19 +136,6 @@ func diracChildRowKey(sessionID, nativeID string) string {
 		return bgtask.NormalizeRowKey(nativeID)
 	}
 	return bgtask.NormalizeRowKey(sessionID + ":" + nativeID)
-}
-
-// diracNewTrajectoryEvents returns entries a cumulative card first reports now.
-func diracNewTrajectoryEvents(previous, current []diracTrajectoryEvent) []diracTrajectoryEvent {
-	if current == nil {
-		return nil
-	}
-	for overlap := min(len(previous), len(current)); overlap >= 0; overlap-- {
-		if slices.Equal(previous[len(previous)-overlap:], current[:overlap]) {
-			return current[overlap:]
-		}
-	}
-	return current
 }
 
 // diracSubagentFromToolCall maps Dirac's aggregate `use_subagents` card to a

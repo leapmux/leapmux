@@ -7,24 +7,41 @@ function parsed(parentObject: Record<string, unknown>): ParsedMessageContent {
 }
 
 describe('ohMyPiNotificationEntry', () => {
-  it('reads the compaction pair', () => {
+  it('draws the rule names when a stream rule stops the reply', () => {
+    expect(ohMyPiNotificationEntry({ type: 'ttsr_triggered', rules: [{ name: 'first' }, { name: 'second' }] }))
+      .toEqual([{ kind: 'text', text: 'A rule stopped the reply: first, second. omp retries it.' }])
+    expect(ohMyPiNotificationEntry({ type: 'ttsr_triggered', rules: [null, {}, { name: '  ' }] }))
+      .toEqual([{ kind: 'text', text: 'A rule stopped the reply. omp retries it.' }])
+  })
+
+  it('prefixes a warning notice with its source', () => {
+    expect(ohMyPiNotificationEntry({ type: 'notice', level: 'warning', source: 'priority', message: 'Busy.' }))
+      .toEqual([{ kind: 'text', text: '[priority] Warning: Busy.' }])
+  })
+
+  it('validates retry counters through the shared constructor', () => {
+    expect(ohMyPiNotificationEntry({ type: 'auto_retry_start', attempt: -1, maxAttempts: 1.5, delayMs: -3, errorMessage: '  ' }))
+      .toEqual([{ kind: 'retry', scope: 'api' }])
+  })
+
+  it('reads each compaction outcome', () => {
     // omp 18.2.11's own frames (probe s5), shortened. The end frame states no
     // reason: only the start frame does.
-    expect(ohMyPiNotificationEntry({ type: 'auto_compaction_start', reason: 'threshold', action: 'snapcompact' })).toEqual([{ kind: 'compaction', phase: 'start' }])
+    expect(ohMyPiNotificationEntry({ type: 'auto_compaction_start', reason: 'threshold', action: 'snapcompact' })).toEqual([])
     expect(ohMyPiNotificationEntry({ type: 'auto_compaction_end', action: 'snapcompact', result: { summary: 's', tokensBefore: 60030 }, aborted: false, willRetry: false })).toEqual([
       { kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 60030 } },
     ])
-    expect(ohMyPiNotificationEntry({ type: 'auto_compaction_end', action: 'context-full', aborted: true, willRetry: false })).toEqual([{ kind: 'compaction', phase: 'end', error: 'aborted' }])
-    expect(ohMyPiNotificationEntry({ type: 'auto_compaction_end', action: 'context-full', aborted: false, willRetry: false, skipped: true })).toEqual([{ kind: 'status', text: 'Compaction skipped' }])
+    expect(ohMyPiNotificationEntry({ type: 'auto_compaction_end', action: 'context-full', aborted: true, willRetry: false })).toEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted' }])
+    expect(ohMyPiNotificationEntry({ type: 'auto_compaction_end', action: 'context-full', aborted: false, willRetry: false, skipped: true })).toEqual([{ kind: 'compaction', phase: 'end', outcome: 'skipped' }])
   })
 
-  it('reads a compaction that failed as a failure, not as a boundary', () => {
+  it('reads a compaction failure as an end', () => {
     // omp 18.2.11's failed end (`session-maintenance.ts`): no result, and its own sentence.
     expect(ohMyPiNotificationEntry({ type: 'auto_compaction_end', action: 'snapcompact', aborted: false, willRetry: false, errorMessage: 'Auto-compaction failed: 500 upstream error' })).toEqual([
-      { kind: 'text', text: 'Auto-compaction failed: 500 upstream error' },
+      { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'Auto-compaction failed: 500 upstream error' },
     ])
     expect(ohMyPiNotificationEntry({ type: 'auto_compaction_end', action: 'snapcompact', aborted: false, willRetry: false })).toEqual([
-      { kind: 'compaction', phase: 'end', error: 'omp stated no result' },
+      { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'omp stated no result' },
     ])
   })
 
@@ -33,9 +50,9 @@ describe('ohMyPiNotificationEntry', () => {
       { kind: 'compaction', phase: 'end', detail: { trigger: 'manual', pre: 1200 } },
     ])
     expect(ohMyPiNotificationEntry({ type: 'response', command: 'compact', success: false, error: 'Nothing to compact (session too small)' })).toEqual([
-      { kind: 'status', text: 'Compaction skipped: Nothing to compact (session too small)' },
+      { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'Nothing to compact (session too small)' },
     ])
-    expect(ohMyPiNotificationEntry({ type: 'response', command: 'compact', success: false })).toEqual([{ kind: 'status', text: 'Compaction skipped' }])
+    expect(ohMyPiNotificationEntry({ type: 'response', command: 'compact', success: false })).toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed' }])
     expect(ohMyPiNotificationEntry({ type: 'response', command: 'prompt', success: true })).toEqual([])
   })
 

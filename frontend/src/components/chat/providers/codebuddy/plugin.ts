@@ -7,10 +7,12 @@ import { codebuddyOutputFilePaths } from './extractors/outputFilePaths'
 import { codebuddyResultDivider } from './extractors/resultDivider'
 import { codebuddyExtractRow } from './extractors/row'
 import { codebuddyControls } from './pluginControls'
+import { resolveCodebuddyMessage } from './resolveMessage'
 import { codebuddyRelatedMessages, codebuddySpanRole } from './spanRole'
 
 const codebuddyPlugin: ProviderPlugin = {
   transcript: {
+    resolveMessage: resolveCodebuddyMessage,
     outputFilePaths: codebuddyOutputFilePaths,
     spanRole: codebuddySpanRole,
     relatedMessages: codebuddyRelatedMessages,

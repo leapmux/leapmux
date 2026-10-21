@@ -526,3 +526,25 @@ func TestAStopDropsTheQueuedStateRefresh(t *testing.T) {
 	})
 	assert.Len(t, r.commandsOfType(CommandGetState), 1)
 }
+
+func TestFallbackModelIsNotPersisted(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"retry_fallback_applied","from":"mock/mock-model","to":"mock/fallback","role":"default"}`)
+	r.agent.applyRefreshedState(json.RawMessage(`{"model":{"provider":"mock","id":"fallback"},"thinkingLevel":"low"}`))
+	require.Positive(t, r.sink.SettingsRefreshCount())
+	assert.Equal(t, "mock/mock-model", r.sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "mock/mock-model", groupByID(r.agent.OptionGroups(), agent.OptionIDModel).GetCurrentValue())
+	require.Len(t, r.sink.PersistedNotifications(), 1)
+}
+
+func TestRestoredPrimaryClearsTheFallback(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"retry_fallback_applied","from":"mock/mock-model","to":"mock/fallback","role":"default"}`)
+	r.agent.applyRefreshedState(json.RawMessage(`{"model":{"provider":"mock","id":"fallback"}}`))
+	r.agent.applyRefreshedState(json.RawMessage(`{"model":{"provider":"mock","id":"mock-model"}}`))
+	// A later explicit selection of the former fallback must become the primary.
+	r.agent.applyRefreshedState(json.RawMessage(`{"model":{"provider":"mock","id":"fallback"}}`))
+	assert.Equal(t, "mock/fallback", r.sink.LastSettingsRefresh().Model)
+}

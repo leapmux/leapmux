@@ -81,6 +81,10 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		PermissionAllowsBypass: func(*providerkit.ParsedLine) bool { return true },
 		ModeChannel:            acp.ModeChannelPermissionMode,
 		EffortConfigID:         contracts.KiroConfigEffortLevel,
+		// Kiro itself states a custom agent the session lost at the resume
+		// (_kiro/customAgent/not_found), and its own notice is the row, so the
+		// startup's shared fallback writes no second row beside it.
+		AgentStatesModeFallback: true,
 		// Kiro reports the effort axis of the session's model only after a
 		// model write, so the start writes the model that the session runs.
 		ModelWriteRevealsOptions: true,
@@ -100,7 +104,8 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		// carry the mark of that turn.
 		SessionMetadataHandler: a.handleSessionMetadata,
 		// A prompt holds the display error of its failure until its end, whose
-		// JSON-RPC error can state the same text.
+		// JSON-RPC error can state the same text, and a failed prompt writes
+		// its held native turn end as the divider.
 		PromptEnded: a.handlePromptEnded,
 		// Two answers of the model can arrive in one turn with no update
 		// between them: the plan mode's last answer, and the first answer of
@@ -129,7 +134,12 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 // process, and the workflow runs belong to a session, which retireSession
 // ends.
 func (a *Agent) clearProviderState() {
+	// A steer of the outgoing session can no longer reach a model: Kiro
+	// cleared its queue with the session.
+	a.steers.DropAll()
+	a.steers.Settle(a.Sink())
 	a.stateMu.Lock()
+	a.earlySteerEchoes = nil
 	a.turns = turnState{}
 	a.children = childState{}
 	a.controls = controlIndex{}

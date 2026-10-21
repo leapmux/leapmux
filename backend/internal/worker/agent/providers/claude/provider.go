@@ -10,6 +10,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Claude Code's tool names that reach LeapMux as control requests.
@@ -100,26 +101,30 @@ func (claudeProvider) Classify(raw json.RawMessage) agent.NotificationClassifica
 		// Consolidate by keeping only the latest rate-limit snapshot in
 		// the thread; older entries collapse so the UI shows one current
 		// status, not a wall of repeated tier updates.
-		return agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: "claude:rate_limit_event"}
+		return agent.ProviderScopedNotification("claude:rate_limit_event")
 	case "system":
 		// fall through to the subtype switch below
 	default:
 		return agent.NotificationClassification{}
 	}
 	switch env.Subtype {
-	case "status":
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "claude:system:status"}
+	case contracts.ClaudeSystemSubtypeNotification:
+		if key := providerkit.StringField(raw, "key"); key != "" {
+			return agent.ProviderScopedNotification("claude:notification:" + key)
+		}
+		return agent.NotificationClassification{}
+	case contracts.ClaudeSystemSubtypeStatus:
+		if providerkit.StringField(raw, "compact_result") == contracts.ClaudeCompactResultFailed {
+			return agent.CompactionBoundaryNotification()
+		}
+		return agent.NotificationClassification{}
 	case contracts.ClaudeSystemSubtypeApiRetry:
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "claude:system:" + contracts.ClaudeSystemSubtypeApiRetry}
+		return agent.APIRetryNotification()
 	case contracts.ClaudeSystemSubtypeCompactBoundary, contracts.ClaudeSystemSubtypeMicrocompactBoundary:
-		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "claude:system:" + env.Subtype}
+		return agent.CompactionBoundaryNotification()
 	default:
 		return agent.NotificationClassification{}
 	}
-}
-
-func (claudeProvider) Merge(class agent.NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
 }
 
 func (claudeProvider) IsInterrupt(content string) bool {

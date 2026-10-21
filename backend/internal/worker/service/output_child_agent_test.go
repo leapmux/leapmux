@@ -341,7 +341,7 @@ func TestEnsureChildAgent_SpawnSpanFallbackAfterRegistryLoss(t *testing.T) {
 	// Simulate a worker restart between the agent-row insert and the registry
 	// upsert: a fresh OutputHandler with no cache. The child row is in the DB
 	// but the in-memory registry cache is gone.
-	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil, svc.Clock)
 	sink2 := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// The spawn-span fallback reattaches the same child row.
@@ -377,7 +377,7 @@ func TestChildSpawnSpan_AnswersFromTheChildRow(t *testing.T) {
 
 	// A fresh handler models a worker restart: no cache exists, and the row still
 	// answers, because the span lives in the agents table and not in memory.
-	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil, svc.Clock)
 	sink2 := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	span, err = sink2.ChildSpawnSpan(childID)
 	require.NoError(t, err)

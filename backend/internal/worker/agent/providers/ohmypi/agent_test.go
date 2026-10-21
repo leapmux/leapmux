@@ -390,9 +390,8 @@ func TestCompactContext(t *testing.T) {
 		require.NoError(t, r.agent.CompactContext())
 		active, _ := r.sink.LastTurnActive()
 		assert.True(t, active, "the input queue holds the next message while omp compacts")
-		notifications := r.sink.Notifications()
-		require.NotEmpty(t, notifications)
-		assert.Equal(t, contracts.NotificationTypeCompacting, notifications[len(notifications)-1][contracts.NotificationFieldType])
+		assert.Empty(t, r.sink.Notifications(), "a compaction start is live state only")
+		assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: map[string]interface{}{contracts.CompactionFieldTrigger: "manual"}})
 
 		close(release)
 		waitFor(t, func() bool {
@@ -402,10 +401,10 @@ func TestCompactContext(t *testing.T) {
 		frame := r.sink.LastNotification().Content
 		assert.Contains(t, string(frame), `"command":"compact"`)
 		assert.Contains(t, string(frame), `"tokensBefore":60030`)
-		assert.Equal(t, agent.NotificationKindCompactionBoundary, ompProvider{}.Classify(frame).Kind)
+		assert.Equal(t, agent.NotificationKindCompactionBoundary, ompProvider{}.Classify(frame).Kind())
 	})
 
-	t.Run("persists a refusal as a status", func(t *testing.T) {
+	t.Run("persists a refusal as a boundary", func(t *testing.T) {
 		r := newRig(t)
 		r.respond(func(command recordedCommand) *rigReply {
 			if command.Type == contracts.OhMyPiCommandCompact {
@@ -417,7 +416,7 @@ func TestCompactContext(t *testing.T) {
 		waitFor(t, func() bool { return r.sink.NotificationCount() == 1 })
 		frame := r.sink.LastNotification().Content
 		assert.Contains(t, string(frame), "Nothing to compact")
-		assert.Equal(t, agent.NotificationKindStatus, ompProvider{}.Classify(frame).Kind)
+		assert.Equal(t, agent.NotificationKindCompactionBoundary, ompProvider{}.Classify(frame).Kind())
 		waitFor(t, func() bool {
 			active, _ := r.sink.LastTurnActive()
 			return !active
@@ -456,10 +455,11 @@ func TestCompactContext(t *testing.T) {
 			return !active
 		})
 		notifications := r.sink.Notifications()
-		require.Len(t, notifications, 2)
-		assert.Equal(t, contracts.NotificationTypeCompacting, notifications[0][contracts.NotificationFieldType])
-		assert.Equal(t, contracts.NotificationTypeAgentError, notifications[1][contracts.NotificationFieldType],
-			"the reader learns why no compaction follows the notice")
+		require.Len(t, notifications, 1)
+		assert.Equal(t, contracts.NotificationTypeCompactionEnded, notifications[0][contracts.NotificationFieldType])
+		assert.Equal(t, contracts.CompactionEndOutcomeFailed, notifications[0][contracts.NotificationFieldOutcome])
+		assert.NotEmpty(t, notifications[0][contracts.NotificationFieldError])
+		assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: nil})
 		assert.Zero(t, r.sink.NotificationCount(), "no omp frame answered the command")
 	})
 }

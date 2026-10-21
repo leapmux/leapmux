@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/stretchr/testify/assert"
@@ -127,4 +128,22 @@ func TestMuseTodoSnapshotRejectsTheWrongMethodAndNestedListShape(t *testing.T) {
 		assert.False(t, ok)
 		assert.Empty(t, event.Snapshot)
 	}
+}
+
+func TestMuseClassifyEveryFinishedCompactionIsABoundary(t *testing.T) {
+	for _, method := range []string{"item/started", "item/updated", "item/completed"} {
+		for _, outcome := range []string{"compacted", "noop", "failed", "cancelled"} {
+			raw, err := json.Marshal(map[string]any{"method": method, "params": map[string]any{"item": map[string]any{"kind": "compaction", "status": "completed", "outcome": outcome}}})
+			require.NoError(t, err)
+			assert.Equal(t, agent.CompactionBoundaryNotification(), (museProvider{}).Classify(raw), method+"/"+outcome)
+		}
+	}
+	for _, raw := range []string{
+		`{"method":"item/started","params":{"item":{"kind":"compaction","status":"inProgress"}}}`,
+		`{"method":"item/completed","params":{"item":{"kind":"compaction"}}}`,
+		`{"method":"other","params":{"item":{"kind":"compaction","status":"completed"}}}`,
+	} {
+		assert.False(t, (museProvider{}).Classify([]byte(raw)).Consolidatable(), raw)
+	}
+	assert.Equal(t, agent.APIRetryNotification(), (museProvider{}).Classify([]byte(`{"method":"turn/retryScheduled"}`)))
 }

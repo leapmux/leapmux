@@ -398,6 +398,20 @@ function questionRequest(): ControlRequest {
 // so the SAME payload draws a different control when the surface says so. These
 // two cases are what prove the component reads the prop rather than the payload.
 describe('ControlRequestBanner takes the surface from its caller', () => {
+  it('offers no invented decision for an empty independent option list', () => {
+    render(() => (
+      <banner.ControlRequestActions
+        request={{ agentId: 'agent', requestId: 'choice', payload: {} }}
+        controlSurface={{ kind: 'permission', permission: { options: [], independentOptions: true } }}
+        answerState={createControlAnswerState()}
+        hasEditorContent={false}
+        onRespond={vi.fn()}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+  })
+
   it('draws the question form when the surface says question', () => {
     const request = questionRequest()
     render(() => (

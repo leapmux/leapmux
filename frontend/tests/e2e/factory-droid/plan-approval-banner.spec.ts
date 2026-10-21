@@ -40,7 +40,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
     await expect(savedControlAnswer(page)).toHaveText('Approve')
     await expectSettingsOptionChosen(page, 'permissionMode-default')
     // Droid leaves Spec mode by itself after the approval, so the latest event states the mode, whatever sent it.
-    await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: 'off' }, 'latest')
+    await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: 'off' })
   })
 
   // Reject answers ExitSpecMode with the option `cancel` ("No, keep iterating on
@@ -72,7 +72,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
       await waitForAgentIdle(page)
       await expectSettingsOptionChosen(page, 'permissionMode-spec')
       await expectTurnEndedAfter(modelScript, start + 1)
-      await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'spec' }, 'latest')
+      await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'spec' })
 
       const { decision } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
       expect(decision.request).toMatchObject({ confirmationType: DROID_CONFIRMATION_TYPE.ExitSpecMode, toolUse: { name: DROID_TOOL.ExitSpecMode } })

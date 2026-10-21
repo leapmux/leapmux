@@ -222,15 +222,16 @@ func TestAMessageEndThatAStopCutStatesTheStop(t *testing.T) {
 	}
 }
 
-// The marker states truncated TEXT, so a message whose text no stop cut keeps none.
-func TestAMessageEndThatNoStopCutStatesNoStop(t *testing.T) {
+// The completion marker distinguishes failures from stops and complete messages.
+func TestMessageEndCompletionMatchesTheVisibleText(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
 		message string
 		noted   bool
+		want    agent.MessageCompletion
 	}{
-		"a failure that nobody asked for":     {message: `{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"Half"}]}`},
+		"a failure that nobody asked for":     {message: `{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"Half"}]}`, want: agent.MessageCompletionError},
 		"a message that finished at the stop": {message: `{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Whole."}]}`, noted: true},
 		"a cut message with a tool call only": {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"toolCall","id":"call-1","name":"bash"}]}`, noted: true},
 		"a cut message with blank text":       {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"text","text":" "}]}`, noted: true},
@@ -248,7 +249,7 @@ func TestAMessageEndThatNoStopCutStatesNoStop(t *testing.T) {
 
 			messages := r.sink.Messages()
 			require.Len(t, messages, 1)
-			assert.Equal(t, agent.MessageCompletion(""), messages[0].Completion)
+			assert.Equal(t, tc.want, messages[0].Completion)
 		})
 	}
 }
@@ -800,4 +801,158 @@ func TestAnAgentEndThatOmpContinuesAfterTheSteerWasTakenEndsTheTurn(t *testing.T
 	active, _ := r.sink.LastTurnActive()
 	assert.False(t, active)
 	assert.Len(t, turnEndRows(r.sink.Messages()), 1)
+}
+
+func TestMessageUpdateReportsProgressOnTheConversationSinkUnderTheSegmentScope(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	childSink := &agenttest.Sink{}
+	child := newConversation(agent.NewProviderServices(childSink), "")
+	r.agent.handleMessageUpdate(child, []byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":2,"delta":"Partial conversation text"}}`))
+	assert.Equal(t, []agent.ProgressUpdate{agent.ModelTextProgress("omp:content:2", "Partial conversation text")}, childSink.ProgressUpdates())
+	assert.Empty(t, r.sink.ProgressUpdates())
+	r.agent.flushGeneration(child, agent.MessageCompletionInterrupted)
+	require.Len(t, childSink.Messages(), 1)
+	assert.Equal(t, assembledTextRow("Partial conversation text", agent.MessageCompletionInterrupted), assembledRow(t, childSink.Messages()[0]))
+	assert.Contains(t, childSink.ProgressUpdates(), agent.CompleteModelProgress("omp:content:2"))
+	assert.Empty(t, r.sink.Messages())
+}
+
+func TestFlushGenerationCompletesProgressAfterAFailedWrite(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	c := newConversation(agent.NewProviderServices(sink), "")
+	r.agent.handleMessageUpdate(c, []byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Retain this text"}}`))
+	r.agent.flushGeneration(c, agent.MessageCompletionInterrupted)
+	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteModelProgress("omp:content:0"))
+	assert.True(t, c.generation.HasPendingWrites())
+	sink.PersistErr = nil
+	r.agent.flushGeneration(c, agent.MessageCompletionComplete)
+	require.Len(t, sink.Messages(), 2, "the recording sink includes the failed attempt")
+	assert.Equal(t, assembledTextRow("Retain this text", agent.MessageCompletionInterrupted), assembledRow(t, sink.Messages()[1]))
+}
+
+func TestAutoCompactionStartIsLiveStateOnTheConversationSink(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"auto_compaction_start","reason":"threshold","action":"snapcompact"}`)
+	assert.Empty(t, r.sink.Messages())
+	assert.Empty(t, r.sink.PersistedNotifications())
+	assert.Empty(t, r.sink.Notifications())
+	assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: map[string]interface{}{contracts.CompactionFieldTrigger: "threshold"}})
+}
+
+func TestAutoCompactionEndStoresTheEndAndEndsLiveState(t *testing.T) {
+	t.Parallel()
+	for _, frame := range []string{
+		`{"type":"auto_compaction_end","result":{"summary":"done"}}`,
+		`{"type":"auto_compaction_end","aborted":true}`,
+		`{"type":"auto_compaction_end","errorMessage":"The summary failed"}`,
+	} {
+		t.Run(frame, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.emit(`{"type":"auto_compaction_start"}`, frame)
+			require.Len(t, r.sink.PersistedNotifications(), 1)
+			assert.JSONEq(t, frame, string(r.sink.PersistedNotifications()[0].Content))
+			assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: nil})
+			r.agent.finishOutput(agent.MessageCompletionInterrupted)
+			assert.Empty(t, r.sink.Notifications(), "a native end prevents a second synthetic end")
+		})
+	}
+}
+
+func TestFinishOutputEndsAnOpenCompaction(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"auto_compaction_start","reason":"threshold"}`)
+	r.agent.finishOutput(agent.MessageCompletionInterrupted)
+	r.agent.finishOutput(agent.MessageCompletionInterrupted)
+	notifications := r.sink.Notifications()
+	require.Len(t, notifications, 1)
+	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notifications[0][contracts.NotificationFieldType])
+	assert.Equal(t, contracts.CompactionEndOutcomeAborted, notifications[0][contracts.NotificationFieldOutcome])
+	assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: nil})
+}
+
+func TestFinishOutputEndsAnOpenChildCompaction(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	r.agent.Mu.Lock()
+	child := r.agent.subagents["Probe"].conv
+	r.agent.Mu.Unlock()
+	r.agent.beginCompaction(child, "auto")
+	r.agent.finishOutput(agent.MessageCompletionInterrupted)
+	notifications := r.sink.Child(child.childID).LeapMuxNotifications()
+	require.Len(t, notifications, 1)
+	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notifications[0][contracts.NotificationFieldType])
+	assert.Equal(t, contracts.CompactionEndOutcomeAborted, notifications[0][contracts.NotificationFieldOutcome])
+	assert.False(t, child.compactionOpen)
+}
+
+func TestTtsrDiscardsTheAbortedPartialAndKeepsOneTurn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	// The text and lifecycle frames come from .tmp/verify-c29/ohmypi/run1.
+	// The reasoning block also checks that the discard covers the whole message.
+	r.emit(`{"type":"agent_start"}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"I like BANANA "}}`,
+		`{"type":"ttsr_triggered","rules":[{"name":"no-banana"}]}`,
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"discarded thought"},{"type":"text","text":"I like BANANA "}],"stopReason":"aborted"}}`)
+	assert.Empty(t, r.sink.Messages())
+	require.Len(t, r.sink.PersistedNotifications(), 1)
+	assert.Empty(t, r.agent.rootConversation().generation.ScopeIDs())
+	assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetModelScopeProgress("omp:content:0"))
+	r.emit(`{"type":"agent_start"}`,
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"stopReason":"stop"}}`,
+		`{"type":"agent_end","isTerminal":true,"messages":[]}`)
+	rows := r.sink.Messages()
+	require.Len(t, rows, 2)
+	assert.Contains(t, string(rows[0].Content), `"OK"`)
+	assert.Contains(t, string(rows[1].Content), `"agent_end"`)
+}
+
+func TestFailedMessageEndWithTextIsMarkedError(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		text    string
+		stopped bool
+		want    agent.MessageCompletion
+	}{
+		{name: "failed text", text: "partial", want: agent.MessageCompletionError},
+		{name: "delivered stop", text: "partial", stopped: true, want: agent.MessageCompletionInterrupted},
+		{name: "empty text"},
+		{name: "blank text", text: "  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.agent.Mu.Lock()
+			r.agent.turn.interruptRequested = tc.stopped
+			r.agent.Mu.Unlock()
+			r.emit(mustJSON(t, map[string]any{"type": "message_end", "message": map[string]any{
+				"role": "assistant", "stopReason": "error", "content": []any{map[string]any{"type": "text", "text": tc.text}},
+			}}))
+			rows := r.sink.Messages()
+			require.Len(t, rows, 1)
+			assert.Equal(t, tc.want, rows[0].Completion)
+		})
+	}
+}
+
+func TestTtsrFlagEndsWithItsRun(t *testing.T) {
+	t.Parallel()
+	for _, boundary := range []string{`{"type":"agent_start"}`, `{"type":"agent_end","isTerminal":true}`} {
+		t.Run(boundary, func(t *testing.T) {
+			r := newRig(t)
+			r.emit(`{"type":"ttsr_triggered","rules":[]}`, boundary)
+			before := len(r.sink.Messages())
+			r.emit(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"later partial"}],"stopReason":"aborted"}}`)
+			rows := r.sink.Messages()
+			require.Len(t, rows, before+1)
+			assert.Equal(t, agent.MessageCompletionInterrupted, rows[before].Completion)
+		})
+	}
 }

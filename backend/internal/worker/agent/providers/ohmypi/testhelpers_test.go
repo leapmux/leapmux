@@ -87,7 +87,7 @@ func newRig(t *testing.T) *rig {
 			APITimeout:   2 * time.Second,
 			Clock:        clock,
 		}),
-		sink:          agent.NewProviderServices(sink),
+		sink:          agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
 		ready:         make(chan readyFrame, 1),
 		model:         "mock/mock-model",
 		thinkingLevel: "high",

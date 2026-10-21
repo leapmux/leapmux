@@ -49,6 +49,14 @@ function streamRows(text: string): Record<string, unknown>[] {
 }
 
 describe('Google model API', () => {
+  it.each(['refusal', 'max_tokens'] as const)('refuses the unsupported stop reason %s before it sends a stream', async (stopReason) => {
+    const server = await scenario('google-stop', { steps: [{ text: 'Answer', stopReason }] })
+    const response = await generate(server, 'google-stop')
+    expect(response.status).toBe(400)
+    expect(response.headers.get('content-type')).toContain('application/json')
+    expect(await response.text()).toContain(`The mock cannot state stop reason ${stopReason} on google-generative-language`)
+  })
+
   it('matches native instructions and the user prompt without tool results and records the unchanged request', async () => {
     const id = 'google-native-request'
     const server = await scenario(id, { rules: [{

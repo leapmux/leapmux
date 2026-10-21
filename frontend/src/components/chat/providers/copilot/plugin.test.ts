@@ -21,16 +21,13 @@ describe('copilot provider', () => {
     expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, binary: false })
   })
 
-  // The runtime calls its own `task_complete` TOOL and then announces the same thing in
-  // a session event. The tool call and its result are both rows already -- the second
-  // reads `Task completed:` and the summary -- so the announcement would say it a third
-  // time. It reached the reader as a raw JSON-RPC frame instead, captured live in
-  // `reports/tools1.json`.
-  it('hides the task-complete announcement that repeats the tool result', () => {
+  // The tool result already states the completion, so the Worker drops this announcement.
+  // A stored copy has no browser-only hide rule.
+  it('leaves a stored task-complete announcement unknown', () => {
     expect(plugin?.transcript.classify(input(frame(COPILOT_EVENT.SessionTaskComplete, {
       summary: 'Listed the exact callable tool names as requested.',
       success: true,
-    })))).toEqual({ kind: 'hidden' })
+    })))).toEqual({ kind: 'unknown' })
   })
 
   // A row LeapMux itself wrote carries a `type` and no Copilot event, so the event
@@ -42,7 +39,6 @@ describe('copilot provider', () => {
       { type: 'context_cleared' },
       { type: 'agent_error', error: 'failed' },
       { type: 'plan_updated', plan_title: 'Plan' },
-      { type: 'compacting' },
     ]
     for (const notification of notifications)
       expect(plugin?.transcript.classify(input(notification)).kind).toBe('notification')
@@ -80,7 +76,7 @@ describe('copilot provider', () => {
 
   // An empty message says nothing, and a lifecycle event repeats what the session
   // response already returned.
-  it('hides the events that carry no surface', () => {
+  it('leaves stored consumed events unknown', () => {
     const classify = (row: Record<string, unknown>) => plugin?.transcript.classify!(input(row, null, AgentProvider.GITHUB_COPILOT)).kind
     for (const type of [
       COPILOT_EVENT.SessionStart,
@@ -89,22 +85,17 @@ describe('copilot provider', () => {
       COPILOT_EVENT.AssistantTurnEnd,
       COPILOT_EVENT.AssistantMessageDelta,
       COPILOT_EVENT.SubagentStarted,
-      // A subagent states its model and effort when it is configured. A model change
-      // reaches the settings panel and not the chat, and this is the subagent's, so
-      // it is hidden for the same reason as `session.model_change`. Without an entry
-      // it fell through to a raw JSON-RPC bubble in the CHILD transcript (RL-039).
+      // The Worker consumes the subagent settings before storage.
       COPILOT_EVENT.SubagentConfigured,
       COPILOT_EVENT.UserMessage,
       COPILOT_EVENT.SessionModeChanged,
-      COPILOT_EVENT.PermissionCompleted,
     ])
-      expect(classify(frame(type)), type).toBe('hidden')
+      expect(classify(frame(type)), type).toBe('unknown')
     expect(classify(frame(COPILOT_EVENT.AssistantMessage, { content: '   ' }))).toBe('hidden')
+    expect(classify(frame(COPILOT_EVENT.PermissionCompleted))).toBe('hidden')
   })
 
-  // A build before the worker learned to drop these stored ten of them for one
-  // ordinary turn, and each rendered as a raw-JSON bubble. The reader of an old
-  // transcript still sees them, so the classifier hides the whole family.
+  // Both sides read the same contract table for these trace families.
   it('hides the runtime trace a stored transcript may still hold', () => {
     const classify = (row: Record<string, unknown>) => plugin?.transcript.classify!(input(row, null, AgentProvider.GITHUB_COPILOT)).kind
     for (const type of [
@@ -122,17 +113,17 @@ describe('copilot provider', () => {
       expect(classify(frame(type, { kind: type })), type).toBe('hidden')
   })
 
-  // The family rule cannot take the one model event LeapMux surfaces.
-  it('keeps the failed model call as a notification', () => {
+  // The Worker consumes model failures. The shared trace rule also covers stored copies.
+  it('hides a stored model failure through the shared trace rule', () => {
     const classify = (row: Record<string, unknown>) => plugin?.transcript.classify!(input(row, null, AgentProvider.GITHUB_COPILOT)).kind
-    expect(classify(frame(COPILOT_EVENT.ModelCallFailure, { message: 'the model refused the request' }))).toBe('notification')
+    expect(classify(frame(COPILOT_EVENT.ModelCallFailure, { errorMessage: 'the model refused the request' }))).toBe('hidden')
   })
 
   it('classifies a LeapMux user row rather than stringifying it', () => {
     const classify = (row: Record<string, unknown>) => plugin?.transcript.classify!(input(row, null, AgentProvider.GITHUB_COPILOT)).kind
     expect(classify({ content: 'Typed message' })).toBe('user_content')
     expect(classify({ content: 'Implement the plan.', planExecution: true })).toBe('plan_execution')
-    expect(classify({ content: 'Internal', hidden: true })).toBe('hidden')
+    expect(classify({ content: 'Internal', hidden: true })).toBe('user_content')
   })
 
   it('labels the turn end and states an interruption', () => {

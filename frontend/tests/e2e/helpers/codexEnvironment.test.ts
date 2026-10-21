@@ -28,11 +28,18 @@ describe('createCodexEnvironment', () => {
     expect(readFileSync(formServer, 'utf8')).toContain('elicitation/create')
   })
 
-  it('turns off the background memory turn and the update notice', () => {
+  it('writes the memory switches and disables the update notice', () => {
     const env = createCodexEnvironment(options())
     const config = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
     expect(config).toContain('[memories]\ngenerate_memories = false\nuse_memories = false')
     expect(config).toMatch(/^check_for_update_on_startup = false$/m)
+  })
+
+  it('allows one stream retry', () => {
+    const env = createCodexEnvironment(options())
+    const config = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
+    expect(config).toMatch(/^stream_max_retries = 1$/m)
+    expect(config).toMatch(/^request_max_retries = 0$/m)
   })
 
   // The Default model entry omits the model from the thread, so Codex runs the model of its configuration.

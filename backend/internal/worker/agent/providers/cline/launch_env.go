@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // The user's Cline settings.
@@ -180,7 +181,7 @@ func decodeProviderSettings(data []byte) (storedProviderSettings, error) {
 	}
 	stored := storedProviderSettings{models: make(map[string]string)}
 	if raw, present := envelope["lastUsedProvider"]; present {
-		provider, ok := jsonString(raw)
+		provider, ok := providerkit.RawString(raw)
 		if !ok || provider == "" {
 			return storedProviderSettings{}, errors.New("`lastUsedProvider` is not a non-empty string")
 		}
@@ -218,11 +219,11 @@ func decodeProviderEntry(raw json.RawMessage) (string, error) {
 	if !ok {
 		return "", errors.New("it is not an object")
 	}
-	if updatedAt, ok := jsonString(entry["updatedAt"]); !ok || !isClineDateTime(updatedAt) {
+	if updatedAt, ok := providerkit.RawString(entry["updatedAt"]); !ok || !isClineDateTime(updatedAt) {
 		return "", errors.New("`updatedAt` is not a UTC date and time")
 	}
 	if rawSource, present := entry["tokenSource"]; present {
-		if source, ok := jsonString(rawSource); !ok || !clineTokenSources[source] {
+		if source, ok := providerkit.RawString(rawSource); !ok || !clineTokenSources[source] {
 			return "", errors.New("`tokenSource` is not manual, oauth or migration")
 		}
 	}
@@ -230,7 +231,7 @@ func decodeProviderEntry(raw json.RawMessage) (string, error) {
 	if !ok {
 		return "", errors.New("`settings` is not an object")
 	}
-	if provider, ok := jsonString(settings["provider"]); !ok || !clineProviderID.MatchString(provider) {
+	if provider, ok := providerkit.RawString(settings["provider"]); !ok || !clineProviderID.MatchString(provider) {
 		return "", errors.New("`settings.provider` is not a provider id")
 	}
 	fields := map[string]string{}
@@ -239,7 +240,7 @@ func decodeProviderEntry(raw json.RawMessage) (string, error) {
 		if !present {
 			continue
 		}
-		text, ok := jsonString(value)
+		text, ok := providerkit.RawString(value)
 		if !ok {
 			return "", fmt.Errorf("`settings.%s` is not a string", name)
 		}
@@ -261,16 +262,6 @@ func jsonObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 		return nil, false
 	}
 	return object, true
-}
-
-// jsonString decodes raw as a JSON string. It reports false for anything else,
-// null included.
-func jsonString(raw json.RawMessage) (string, bool) {
-	var text *string
-	if len(raw) == 0 || json.Unmarshal(raw, &text) != nil || text == nil {
-		return "", false
-	}
-	return *text, true
 }
 
 // isClineDateTime reports whether value has the form of clineDateTime and states

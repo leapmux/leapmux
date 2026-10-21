@@ -3,7 +3,7 @@ import type { ClaudeRowContext, ClaudeToolRow } from './toolCommon'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
-import { pickObject, pickString } from '~/lib/jsonPick'
+import { pickObject } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
 import { canonicalClaudeToolName, claudeToolRowHidden } from '../toolKinds'
@@ -40,16 +40,10 @@ export function claudeExtractRow(input: RowExtractionInput): ChatRow | null {
       const plan = claudePlanFromEnvelope(payload)
       return plan ? { kind: 'assistant-plan', text: plan } : null
     }
-    case 'agent_prompt':
-      return claudeAgentPromptRow(payload)
-    case 'user_text':
-      return claudeUserTextRow(payload)
     case 'user_content':
       return leapmuxUserRow(payload)
     case 'plan_execution':
       return leapmuxPlanExecutionRow(payload)
-    case 'compact_summary':
-      return claudeCompactSummaryRow(payload)
     case 'unknown':
       return claudeUnknownRow(payload)
     default:
@@ -97,32 +91,6 @@ function claudeUserTextRow(payload: Record<string, unknown> | undefined): ChatRo
     ? raw.slice(open + LOCAL_COMMAND_OPEN.length, close).trim()
     : raw
   return text ? { kind: 'user', text, attachments: [] } : { kind: 'hidden' }
-}
-
-/** The instruction a parent sent to one of its subagents. */
-function claudeAgentPromptRow(payload: Record<string, unknown> | undefined): ChatRow | null {
-  if (!payload || payload.type !== 'user' || typeof payload.parent_tool_use_id !== 'string')
-    return null
-  const content = pickObject(payload, 'message')?.content
-  if (!Array.isArray(content))
-    return null
-  const prompt = joinContentParagraphs(content, { text: 'text' })
-  return prompt ? { kind: 'agent-prompt', prompt: { prompt } } : null
-}
-
-/**
- * The summary the command line interface wrote when it rewrote its own context.
- *
- * The boundary row beside it states the token transition; this states WHAT
- * survived, which nothing else in the transcript does. It used to draw an empty
- * bubble.
- */
-function claudeCompactSummaryRow(payload: Record<string, unknown> | undefined): ChatRow {
-  const content = getMessageContentArray(payload)
-  const summary = content ? joinContentParagraphs(content, { text: 'text' }) : pickString(payload, 'content')
-  if (!summary)
-    return { kind: 'hidden' }
-  return { kind: 'compact-summary', summary }
 }
 
 /**

@@ -3,11 +3,29 @@ package goose
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+)
+
+// Goose's subagent lifecycle words, from crates/goose's subagent_handler and
+// state_machine/ops_subagent. The delegate ack text and these notices are the
+// only lifecycle carriers on the ACP wire: the adapter drops the tool-result
+// metadata that states subagent_session_id and foreground_subagent.
+const (
+	gooseDelegatedPrefix       = "Delegated to subagent "
+	gooseRunningSubagentPrefix = "Running subagent "
+	gooseSubagentPrefix        = "Subagent "
+	// Each suffix follows the session id, whose cut consumes the space before it.
+	gooseSubagentFailedWith = "failed: "
+	// The export route that states a finished child's own conversation, and
+	// the built-in tool whose arguments are that child's final output.
+	gooseSessionExportMethod = "_goose/unstable/session/export"
+	gooseFinalOutputTool     = "recipe__final_output"
 )
 
 // gooseSubagentFromToolCall detects Goose's spawn tool_call by the structured
@@ -38,11 +56,14 @@ func gooseSubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation
 		title = "Goose subagent"
 	}
 	return &acp.SubagentObservation{
-		RowKey:        tc.ToolCallID,
-		Title:         title,
-		Status:        bgtask.StatusRunning,
-		ChildAgentKey: tc.ToolCallID,
-		Spawns:        true,
+		RowKey: tc.ToolCallID,
+		Title:  title,
+		Status: bgtask.StatusRunning,
+		// Reserve the child by the spawn span alone: the delegate ack adopts
+		// the native session id as the child's provider key later, and a key
+		// adopted here would refuse that adoption as an identity clash.
+		ChildSpawnSpanID: tc.ToolCallID,
+		Spawns:           true,
 		// Goose's delegate tool puts its task text in `instructions`, not `prompt`
 		// (crates/goose/src/agents/platform_extensions/summon.rs).
 		Prompt: gooseDelegateInstructions(tc.RawInput),
@@ -98,28 +119,30 @@ func gooseSubagentRequestedTool(data json.RawMessage) string {
 // _meta payload: toolNotification.type is "message"; the discriminator is
 // params.data.type == "subagent_tool_request". Each request carries the
 // subagent_id and the tool_call name, so we upsert a running row with activity
-// "tool: <name>" and persist the raw request to the child transcript. The
-// spawn tool_call's final update closes the registry row.
+// "tool: <name>" and persist the raw request to the child transcript.
 //
-// The registry row, the EnsureChildAgent linkage, and the closing update all
-// key off the SPAWN toolCallId: the final spawn update carries only
-// toolCallId, so the row must live under that key, and ChildAgentKey must
-// match it or EnsureChildAgent would open a second row keyed by subagent_id
-// that the close never reaches.
+// The registry row, the EnsureChildAgent linkage, and the lifecycle updates all
+// key off ONE identity: the spawn toolCallId until the delegate ack states the
+// native session id, and that session id afterwards.
 func gooseSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.SubagentObservation {
-	// Final update on the spawn tool_call itself -> close the registry row.
-	// Goose's final spawn update carries no _meta, but the row was created
-	// (by the tool_call or a tool-request) under this toolCallId, so closing on
-	// the final update is correct. CloseRow is idempotent: a plain tool with
-	// no registry row is a no-op (the upsert path finds no row to close).
+	// The final update on the spawn tool_call itself is the delegate ACK: Goose
+	// returns "Delegated to subagent <session id>" before the child runs, so
+	// this update must keep the row running and adopt the session id the ack
+	// text states. ACP drops the tool-result metadata that carries
+	// subagent_session_id and foreground_subagent, so the text is the only
+	// source. The child's own lifecycle notices and delivery messages close the
+	// row later (gooseSubagentNotice and gooseSubagentDelivery).
 	if acp.StatusIsFinal(tcu.Status) {
-		report := ""
-		var input struct {
-			Async bool `json:"async"`
+		if sessionID, ok := gooseDelegatedSessionID(acp.ToolCallText(tcu.Content)); ok {
+			return &acp.SubagentObservation{
+				RowKey:        sessionID,
+				RenameFrom:    tcu.ToolCallID,
+				Status:        bgtask.StatusRunning,
+				ChildAgentKey: sessionID,
+			}
 		}
-		if json.Unmarshal(tcu.RawInput, &input) == nil && !input.Async {
-			report = acp.ToolCallText(tcu.Content)
-		}
+		// A final spawn update that delegates no child ended the spawn itself.
+		report := acp.ToolCallText(tcu.Content)
 		return &acp.SubagentObservation{
 			RowKey:   tcu.ToolCallID,
 			Status:   acp.FinalStatus(tcu.Status),
@@ -153,14 +176,10 @@ func gooseSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Subage
 	if err := json.Unmarshal(params.Data, &data); err != nil || data.Type != gooseSubagentToolRequestType {
 		return nil
 	}
-	// Key the registry row, the child-agent linkage, AND the closing update off
-	// the SPAWN toolCallId. The final spawn update knows only toolCallId, so
-	// the row must live under that key; ChildAgentKey must match it too, or
-	// EnsureChildAgent would upsert a SECOND row keyed by subagent_id that the
-	// close never reaches (orphaned Running row). One Goose spawn = one child =
-	// one transcript, so toolCallId is the correct stable child identity here;
-	// the per-request subagent_id is not used as a registry key.
-	childKey := tcu.ToolCallID
+	// Key the registry row, the child-agent linkage, AND the lifecycle updates
+	// off the SPAWN toolCallId until the delegate ack renames it. One Goose
+	// spawn = one child = one transcript; the per-request subagent_id is not
+	// used as a registry key.
 	activity := "tool request"
 	if name := gooseSubagentRequestedTool(params.Data); name != "" {
 		activity = "tool: " + name
@@ -174,13 +193,209 @@ func gooseSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Subage
 	// no branch to match and the row renders as a raw-JSON dump).
 	payload := gooseSubagentToolRequestPayload(tcu, meta.ToolNotification.Params)
 	return &acp.SubagentObservation{
-		RowKey:                 tcu.ToolCallID,
-		Title:                  "Goose subagent",
+		RowKey: tcu.ToolCallID,
+		Title:  "Goose subagent",
+		// A request reaches the child that the spawn span reserved. No
+		// provider key here: the delegate ack adopts the native session id as
+		// that key, and an earlier different key would refuse the adoption.
+		ChildSpawnSpanID:       tcu.ToolCallID,
 		Activity:               activity,
 		Status:                 bgtask.StatusRunning,
-		ChildAgentKey:          childKey,
 		ChildTranscriptPayload: payload,
 	}
+}
+
+// observeGooseSubagentUpdate adapts the shared detector to this agent's child
+// renames. The delegate ack renames a row from the spawn toolCallId to the
+// native session id the ack text states; a tool request that arrives after
+// that ack still names the spawn id, so it must reach the renamed row instead
+// of opening a second one.
+func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.SubagentObservation {
+	obs := gooseSubagentFromToolCallUpdate(tcu)
+	if obs == nil {
+		return nil
+	}
+	if obs.RenameFrom != "" {
+		a.Mu.Lock()
+		if a.gooseChildRenames == nil {
+			a.gooseChildRenames = make(map[string]string)
+		}
+		a.gooseChildRenames[obs.RenameFrom] = obs.RowKey
+		a.Mu.Unlock()
+		return obs
+	}
+	a.Mu.Lock()
+	renamed := a.gooseChildRenames[tcu.ToolCallID]
+	a.Mu.Unlock()
+	if renamed == "" || renamed == obs.RowKey {
+		return obs
+	}
+	obs.RowKey = renamed
+	obs.ChildAgentKey = renamed
+	return obs
+}
+
+// gooseDelegatedSessionID reads the delegate ack text: "Delegated to subagent
+// <session id>". A session id holds no spaces.
+func gooseDelegatedSessionID(text string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(text), gooseDelegatedPrefix)
+	if !ok {
+		return "", false
+	}
+	sessionID, _, more := strings.Cut(rest, " ")
+	if sessionID == "" || more {
+		return "", false
+	}
+	return sessionID, true
+}
+
+// gooseSubagentSessionID reads the session id that one lifecycle sentence names,
+// and returns the sentence's remainder after it.
+func gooseSubagentSessionID(text, prefix string) (string, string, bool) {
+	rest, ok := strings.CutPrefix(text, prefix)
+	if !ok {
+		return "", "", false
+	}
+	sessionID, remainder, _ := strings.Cut(rest, " ")
+	if sessionID == "" || strings.ContainsAny(sessionID, ":\n") {
+		return "", "", false
+	}
+	return sessionID, remainder, true
+}
+
+// gooseSubagentNotice reads one inline subagent lifecycle notice that Goose
+// emits to the parent (`ops_subagent.rs`): "Running subagent <id> (<task>)"
+// while the child runs, "Subagent <id> completed\n\n<summary>" or
+// "Subagent <id> completed" at its end, and "Subagent <id> failed: <reason>"
+// at a failure. A cancelled child sends no notice at all.
+//
+// The completed notice carries its summary only while other subagents still
+// run, so a single child's report comes from the delivery message instead
+// (gooseSubagentDelivery).
+func gooseSubagentNotice(text string) *acp.SubagentObservation {
+	if sessionID, _, ok := gooseSubagentSessionID(text, gooseRunningSubagentPrefix); ok {
+		// No child linkage here: the delegate ack already linked the child, and
+		// a second ensure with the session id as its own spawn span would read
+		// as an identity clash and refuse every later update of the row.
+		return &acp.SubagentObservation{
+			RowKey: sessionID,
+			Status: bgtask.StatusRunning,
+		}
+	}
+	sessionID, rest, ok := gooseSubagentSessionID(text, gooseSubagentPrefix)
+	if !ok {
+		return nil
+	}
+	if summary, done := strings.CutPrefix(rest, "completed"); done {
+		summary = strings.TrimPrefix(summary, "\n\n")
+		return &acp.SubagentObservation{
+			RowKey:   sessionID,
+			Status:   bgtask.StatusSucceeded,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+			ReportID: sessionID,
+			Report:   agent.SubagentReport{Text: strings.TrimSpace(summary)},
+		}
+	}
+	if reason, failed := strings.CutPrefix(rest, gooseSubagentFailedWith); failed {
+		return &acp.SubagentObservation{
+			RowKey:   sessionID,
+			Status:   bgtask.StatusFailed,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+			ReportID: sessionID,
+			Report:   agent.SubagentReport{Text: reason},
+		}
+	}
+	return nil
+}
+
+// fetchGooseSubagentReport reads a finished child's final output through the
+// session export. A single child's completed notice states no summary, because
+// Goose attaches the summary only while other subagents still run, and the
+// hidden delivery message that carries the output to the parent model never
+// reaches the ACP stream. The export is the one route that states the child's
+// own conversation.
+func (a *Agent) fetchGooseSubagentReport(sessionID string) {
+	params, err := json.Marshal(map[string]string{"sessionId": sessionID, "format": "json"})
+	if err != nil {
+		return
+	}
+	if err := a.SendDetachedRequest(gooseSessionExportMethod, params, func(result json.RawMessage, err error) {
+		if err != nil {
+			slog.Debug("goose subagent export failed", "agent_id", a.AgentID(), "session_id", sessionID, "error", err)
+			return
+		}
+		report, ok := gooseExportedSubagentReport(result)
+		if !ok {
+			return
+		}
+		a.ApplySubagentObservation(&acp.SubagentObservation{
+			RowKey:   sessionID,
+			Mode:     acp.ModeCloseOnly,
+			ReportID: sessionID,
+			Report:   agent.SubagentReport{Text: report},
+		})
+	}); err != nil {
+		slog.Debug("goose subagent export request failed", "agent_id", a.AgentID(), "session_id", sessionID, "error", err)
+	}
+}
+
+// gooseExportedSubagentReport reads the child's last successful final-output
+// call from one session export reply, with Goose's own summary rule.
+func gooseExportedSubagentReport(result json.RawMessage) (string, bool) {
+	var reply struct {
+		Data string `json:"data"`
+	}
+	if json.Unmarshal(result, &reply) != nil || reply.Data == "" {
+		return "", false
+	}
+	var export struct {
+		Conversation []struct {
+			Content []struct {
+				Type     string `json:"type"`
+				ToolCall *struct {
+					Status string `json:"status"`
+					Value  struct {
+						Name      string          `json:"name"`
+						Arguments json.RawMessage `json:"arguments"`
+					} `json:"value"`
+				} `json:"toolCall"`
+			} `json:"content"`
+		} `json:"conversation"`
+	}
+	if json.Unmarshal([]byte(reply.Data), &export) != nil {
+		return "", false
+	}
+	for i := len(export.Conversation) - 1; i >= 0; i-- {
+		blocks := export.Conversation[i].Content
+		for j := len(blocks) - 1; j >= 0; j-- {
+			call := blocks[j].ToolCall
+			if blocks[j].Type != "toolRequest" || call == nil || call.Value.Name != gooseFinalOutputTool {
+				continue
+			}
+			if call.Status != "" && call.Status != "success" {
+				continue
+			}
+			return gooseReadableSubagentOutput(string(call.Value.Arguments)), true
+		}
+	}
+	return "", false
+}
+
+// gooseReadableSubagentOutput applies Goose's own readable_output rule: the
+// child's final output is the JSON arguments of its recipe__final_output call,
+// and an object whose only member is a string "summary" reads as that summary.
+func gooseReadableSubagentOutput(output string) string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output), &fields); err != nil || len(fields) != 1 {
+		return output
+	}
+	summary, ok := providerkit.RawString(fields["summary"])
+	if !ok {
+		return output
+	}
+	return summary
 }
 
 // gooseSubagentToolRequestPayload builds the child-transcript payload for a

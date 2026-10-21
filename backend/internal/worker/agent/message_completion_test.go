@@ -24,6 +24,28 @@ func TestMarshalAssembledMessageKeepsCompletionState(t *testing.T) {
 	assert.Equal(t, "interrupted", value["completion"])
 }
 
+func TestMarshalAssembledMessageRejectsUnknownVocabulary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind       AssembledMessageKind
+		completion MessageCompletion
+	}{
+		{"unknown", MessageCompletionComplete},
+		{"", MessageCompletionComplete},
+		{AssembledMessageKindText, "unknown"},
+	} {
+		raw, err := MarshalAssembledMessage(tc.kind, "retained text", tc.completion)
+		assert.Error(t, err)
+		assert.Nil(t, raw)
+	}
+	for _, kind := range []AssembledMessageKind{AssembledMessageKindText, AssembledMessageKindReasoning, AssembledMessageKindPlan} {
+		for _, completion := range []MessageCompletion{"", MessageCompletionComplete, MessageCompletionInterrupted, MessageCompletionError, MessageCompletionFinished} {
+			_, err := MarshalAssembledMessage(kind, "", completion)
+			assert.NoError(t, err, "the empty completion keeps its unspecified meaning")
+		}
+	}
+}
+
 func TestMessageCompletionPreservesProviderFields(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{

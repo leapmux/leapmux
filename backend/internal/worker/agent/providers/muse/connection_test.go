@@ -297,3 +297,30 @@ func TestMuseConnectionPreservesHandshakeAndOwnedCleanupFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestMuseInitializeOptsOutOfTheCommandPlaneNoise(t *testing.T) {
+	opts, registration, env, path := museRoleLaunch(t, museRoleHostSpec{})
+	c, err := openConnection(museRoleContext(t), opts, registration, env, nil)
+	require.NoError(t, err)
+	require.NoError(t, c.close())
+	records := museRoleRecords(t, path)
+	require.Len(t, records, 4)
+	var initialize struct {
+		Capabilities struct {
+			Methods []string `json:"optOutNotificationMethods"`
+		} `json:"capabilities"`
+	}
+	require.NoError(t, json.Unmarshal(records[1].Params, &initialize))
+	assert.Equal(t, []string{
+		"session/statusChanged", "session/started", "session/closed", "skill/changed",
+		"account/changed", "account/loginCompleted", "mcpServer/oauthLoginCompleted",
+		"session/branchChanged", "session/nameChanged", "session/permissionProfileChanged", "turn/foregroundCompleted",
+	}, initialize.Capabilities.Methods)
+	for _, method := range initialize.Capabilities.Methods {
+		a, sink := testAgent(t)
+		feed(t, a, method, map[string]any{"sessionId": "session"})
+		assert.Empty(t, sink.Messages(), method)
+		assert.Empty(t, sink.PersistedNotifications(), method)
+		assert.Empty(t, sink.TurnLifecycle(), method)
+	}
+}

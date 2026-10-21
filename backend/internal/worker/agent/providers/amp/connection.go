@@ -272,6 +272,7 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 
 	// Computed here from the stderr read above, and not inside the callback,
 	// because endTurn runs the callback under the agent's lock.
+	recoverSteers := a.prepareSteerRecovery()
 	message := exitMessage(proc, threadID, stderr)
 	ended, turnFailed := false, false
 	a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
@@ -290,6 +291,12 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
 			contracts.NotificationFieldError: message,
 		})
+	}
+	if recoverSteers && threadID != "" {
+		a.reconcileStoppedSteers(threadID)
+		if a.hasUncertainSteer(threadID) {
+			resume = false
+		}
 	}
 	if resume && threadID != "" {
 		// On its own goroutine: it takes sendMu, and a message that waits for

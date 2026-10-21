@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,18 +11,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func piGoalSyncRig(t *testing.T) (*piTestRig, *agenttest.Sink, string) {
 	t.Helper()
+	return piGoalSyncRigWithClock(t, nil)
+}
+
+func piGoalSyncRigWithClock(t *testing.T, clock quartz.Clock) (*piTestRig, *agenttest.Sink, string) {
+	t.Helper()
 	sink := &agenttest.Sink{}
-	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig := newPiTestRigWithClock(t, agent.NewProviderServices(sink), clock)
 	directory := t.TempDir()
 	path := filepath.Join(directory, "session.jsonl")
 	require.NoError(t, os.WriteFile(path, []byte(`{"type":"session","id":"session","version":3}`+"\n"+`{"type":"custom","id":"focus","parentId":null,"customType":"pi-goal-focus","data":{"version":1,"focusedGoalId":"goal"}}`+"\n"), 0o600))
@@ -121,13 +130,16 @@ func TestPiGoalCommandRefreshesConfirmedState(t *testing.T) {
 // A later goal file must reach the sidebar while that reply stays open.
 func TestPiGoalRefreshFindsGoalBeforeDetachedCommandReply(t *testing.T) {
 	t.Parallel()
-	rig, sink, goalPath := piGoalSyncRig(t)
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	trap := clock.Trap().NewTimer(piGoalSourceTimerTag)
+	t.Cleanup(trap.Close)
+	rig, sink, goalPath := piGoalSyncRigWithClock(t, clock)
 	a := rig.agent
 	writePiSessionWithoutFocus(t, rig)
 	require.NoError(t, os.Remove(goalPath))
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-direct": true}
-	a.goal.retryDelay = time.Millisecond
 	a.goal.retryLimit = 5
 	a.Mu.Unlock()
 	focusReady := make(chan struct{})
@@ -155,6 +167,8 @@ func TestPiGoalRefreshFindsGoalBeforeDetachedCommandReply(t *testing.T) {
 	require.Eventually(t, func() bool { return reads.Load() > 0 }, 2*time.Second, time.Millisecond)
 	require.NoError(t, os.WriteFile(goalPath, []byte(`{"version":3,"id":"goal","objective":"Objective","status":"active"}`), 0o600))
 	reveal()
+	require.Equal(t, piGoalRetryDelay, testutil.WaitForTimer(t, ctx, trap))
+	clock.Advance(piGoalRetryDelay).MustWait(ctx)
 	require.Eventually(t, func() bool {
 		goal, ok := sink.LastGoal()
 		return ok && goal.Objective == "Objective" && goal.Status == agent.GoalStatusActive
@@ -170,7 +184,6 @@ func TestPiGoalRefreshFindsCustomOnlyGoalBeforeDetachedCommandReply(t *testing.T
 	require.NoError(t, os.WriteFile(goalPath, []byte(`{"version":3,"id":"goal","objective":"Fresh objective","status":"active"}`), 0o600))
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-direct": true}
-	a.goal.retryDelay = time.Millisecond
 	a.goal.retryLimit = 1
 	a.Mu.Unlock()
 	release := holdPiGoalPromptReply(t, rig)
@@ -203,12 +216,15 @@ func TestPiGoalRefreshFindsCustomOnlyGoalBeforeDetachedCommandReply(t *testing.T
 
 func TestPiGoalRefreshStopsWhenPendingGoalNeverAppears(t *testing.T) {
 	t.Parallel()
-	rig, sink, _ := piGoalSyncRig(t)
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	trap := clock.Trap().NewTimer(piGoalSourceTimerTag)
+	t.Cleanup(trap.Close)
+	rig, sink, _ := piGoalSyncRigWithClock(t, clock)
 	a := rig.agent
 	writePiSessionWithoutFocus(t, rig)
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-direct": true}
-	a.goal.retryDelay = time.Nanosecond
 	a.goal.retryLimit = 2
 	a.Mu.Unlock()
 	release := holdPiGoalPromptReply(t, rig)
@@ -226,13 +242,17 @@ func TestPiGoalRefreshStopsWhenPendingGoalNeverAppears(t *testing.T) {
 	})
 	_, err := a.PerformGoalAction(agent.GoalActionSet, "Objective")
 	require.NoError(t, err)
+	for range 2 {
+		require.Equal(t, piGoalRetryDelay, testutil.WaitForTimer(t, ctx, trap))
+		clock.Advance(piGoalRetryDelay).MustWait(ctx)
+	}
 	require.Eventually(t, func() bool {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
 		return reads.Load() == 3 && !a.goal.running
 	}, 2*time.Second, time.Millisecond)
 	assert.Empty(t, sink.Goals(), "a missing focused goal must not create a sidebar entry")
-	assert.Equal(t, int32(3), reads.Load(), "the first read plus two bounded retries")
+	assert.Equal(t, int32(3), reads.Load(), "the first read plus the two allowed retries")
 	release()
 }
 
@@ -243,7 +263,6 @@ func TestPiGoalClearDoesNotRetryAnEmptySnapshotWhileReplyIsPending(t *testing.T)
 	writePiSessionWithoutFocus(t, rig)
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-clear": true}
-	a.goal.retryDelay = time.Nanosecond
 	a.goal.retryLimit = 2
 	a.Mu.Unlock()
 	release := holdPiGoalPromptReply(t, rig)
@@ -279,7 +298,6 @@ func TestPiGoalRefreshIgnoresAnotherSessionPendingActivation(t *testing.T) {
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-direct": true}
 	a.goal.pendingActivations = map[string]int{"old-session": 1}
-	a.goal.retryDelay = time.Nanosecond
 	a.goal.retryLimit = 2
 	a.Mu.Unlock()
 	var reads atomic.Int32
@@ -551,7 +569,11 @@ func TestPiGoalRefreshRepublishesASnapshotAfterAFailedRead(t *testing.T) {
 // Retry so the panel can observe the later file.
 func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
 	t.Parallel()
-	rig, sink, _ := piGoalSyncRig(t)
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	trap := clock.Trap().NewTimer(piGoalSourceTimerTag)
+	t.Cleanup(trap.Close)
+	rig, sink, _ := piGoalSyncRigWithClock(t, clock)
 	a := rig.agent
 	path := a.sessionFile
 	contents, err := os.ReadFile(path)
@@ -559,7 +581,6 @@ func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
 	require.NoError(t, os.Remove(path))
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-pause": true}
-	a.goal.retryDelay = time.Millisecond
 	a.Mu.Unlock()
 
 	var restored atomic.Bool
@@ -581,6 +602,10 @@ func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
 	})
 
 	a.schedulePiGoalRefresh(true)
+	for range 1 {
+		require.Equal(t, piGoalRetryDelay, testutil.WaitForTimer(t, ctx, trap))
+		clock.Advance(piGoalRetryDelay).MustWait(ctx)
+	}
 	require.Eventually(t, func() bool { _, ok := sink.LastGoal(); return ok }, 2*time.Second, time.Millisecond,
 		"the refresh must read again once Pi writes the transcript, without a second hint")
 	require.True(t, restored.Load(), "the test must restore the transcript the retry reads")
@@ -593,12 +618,16 @@ func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
 // Stop at the retry limit.
 func TestPiGoalRefreshStopsWaitingForATranscriptThatNeverLands(t *testing.T) {
 	t.Parallel()
-	rig, sink, _ := piGoalSyncRig(t)
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	trap := clock.Trap().NewTimer(piGoalSourceTimerTag)
+	t.Cleanup(trap.Close)
+	rig, sink, _ := piGoalSyncRigWithClock(t, clock)
 	a := rig.agent
 	require.NoError(t, os.Remove(a.sessionFile))
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-pause": true}
-	a.goal.retryDelay, a.goal.retryLimit = time.Nanosecond, 2
+	a.goal.retryLimit = 2
 	a.Mu.Unlock()
 	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
 		if request.Type != CommandGetState {
@@ -608,6 +637,10 @@ func TestPiGoalRefreshStopsWaitingForATranscriptThatNeverLands(t *testing.T) {
 	})
 
 	a.schedulePiGoalRefresh(true)
+	for range 2 {
+		require.Equal(t, piGoalRetryDelay, testutil.WaitForTimer(t, ctx, trap))
+		clock.Advance(piGoalRetryDelay).MustWait(ctx)
+	}
 	require.Eventually(t, func() bool {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -621,7 +654,11 @@ func TestPiGoalRefreshStopsWaitingForATranscriptThatNeverLands(t *testing.T) {
 // It must prevent another read during shutdown.
 func TestPiGoalRefreshEndsTheWaitWhenTheAgentStops(t *testing.T) {
 	t.Parallel()
-	rig, sink, _ := piGoalSyncRig(t)
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	trap := clock.Trap().NewTimer(piGoalSourceTimerTag)
+	t.Cleanup(trap.Close)
+	rig, sink, _ := piGoalSyncRigWithClock(t, clock)
 	a := rig.agent
 	require.NoError(t, os.Remove(a.sessionFile))
 	a.Mu.Lock()
@@ -640,6 +677,7 @@ func TestPiGoalRefreshEndsTheWaitWhenTheAgentStops(t *testing.T) {
 
 	a.schedulePiGoalRefresh(true)
 	<-read
+	require.Equal(t, time.Minute, testutil.WaitForTimer(t, ctx, trap))
 	a.CancelForTest()
 	require.Eventually(t, func() bool {
 		a.Mu.Lock()
@@ -706,4 +744,38 @@ func TestPiGoalControlRecoversFromAFailedCatalogRead(t *testing.T) {
 	ready.Store(true)
 	assert.True(t, rig.agent.refreshPiCommands(time.Second))
 	assert.Equal(t, []agent.GoalAction{agent.GoalActionPause}, rig.agent.SupportedGoalActions())
+}
+
+func TestPiGoalSourceRetryWaitsOnTheInjectedClock(t *testing.T) {
+	t.Parallel()
+	for _, cancelWait := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel=%t", cancelWait), func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			a := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: ctx, Clock: clock})}
+			trap := clock.Trap().NewTimer(piGoalSourceTimerTag)
+			t.Cleanup(trap.Close)
+			done := make(chan struct{})
+			go func() {
+				a.waitForPiGoalSource(time.Hour)
+				close(done)
+			}()
+			t.Cleanup(func() { cancel(); <-done })
+			waitCtx := testutil.DeadlineContext(t)
+			require.Equal(t, time.Hour, testutil.WaitForTimer(t, waitCtx, trap))
+			clock.Advance(time.Hour - time.Second).MustWait(waitCtx)
+			select {
+			case <-done:
+				t.Fatal("the retry wait ended before its deadline")
+			default:
+			}
+			if cancelWait {
+				cancel()
+			} else {
+				clock.Advance(time.Second).MustWait(waitCtx)
+			}
+			awaitPiWrite(t, done)
+		})
+	}
 }

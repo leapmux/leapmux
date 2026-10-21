@@ -425,21 +425,83 @@ func TestClaudeLaunchEnv_CarriesTheTurnSignalOptIn(t *testing.T) {
 	})
 }
 
-func TestClaudeTurnActive_ResultStillEndsATurnTheCLIOpened(t *testing.T) {
+func TestClaudeTurnActive_ResultKeepsTheTurnUntilTheCLIReportsIdle(t *testing.T) {
 	t.Parallel()
 
-	// Retiring the output heuristic must not retire the falling edge. `result`
-	// ends every Claude turn and arrives BEFORE the idle that reports it, so the
-	// Worker's input queue opens on the result -- one frame earlier than the
-	// CLI's own report, and on the frame every build sends.
+	// A native result can precede a queued steer. Only idle releases the turn.
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 
-	assert.Equal(t, []bool{true, false}, sink.TurnActives())
-	assert.NoError(t, a.SendInput("next", nil), "the queue dispatches on the result")
+	assert.Equal(t, []bool{true}, sink.TurnActives())
+	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.False(t, sink.TurnActives()[len(sink.TurnActives())-1])
+	assert.NoError(t, a.SendInput("next", nil))
+}
+
+func TestClaudeTurnActive_ASteerThatWaitedAtTheResultRunsInTheSameTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	// The steer_end probe has two results before the one idle frame.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
+	require.NoError(t, a.SteerInput("steer", nil))
+	for range 2 {
+		a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`))
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+		assert.ErrorIs(t, a.SendInput("queued clear", nil), agent.ErrAgentBusy)
+	}
+	for _, active := range sink.TurnActives() {
+		assert.True(t, active)
+	}
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.NoError(t, a.SendInput("next", nil))
+}
+
+func TestClaudeTurnActive_ATurnTheCLIStartsAfterABackgroundTaskStaysActive(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	// Trimmed from r2_subagent_skill. The background completion starts more work before idle.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer"}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","summary":"done"}`))
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"background result"}]}}`))
+	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.NoError(t, a.SendInput("next", nil))
+}
+
+func TestClaudeTurnActive_TheIdleDropsAStopNoteThatNoResultSpent(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	a.noteInterruptRequested()
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.False(t, a.interruptRequested)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	a.HandleOutput([]byte(`{"type":"result","is_error":true,"terminal_reason":"aborted_streaming"}`))
+	assert.NotEqual(t, agent.MessageCompletionInterrupted, sink.Messages()[1].Completion)
+}
+
+func TestTurnEndPrecedesTheIdleClear_Claude(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans"}, sink.TurnLifecycle())
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestClaudeTurnActive_AForwardedChildStateDecidesNothing(t *testing.T) {
@@ -507,12 +569,13 @@ func TestClaudeTurnActive_AStaleSessionIdleDoesNotOpenTheNextTurn(t *testing.T) 
 	assert.ErrorIs(t, a.SendInput("third", nil), agent.ErrAgentBusy,
 		"the second turn is still in flight")
 
-	// The result for the second message ends it, and a later idle is current
-	// again. The refused send above republished the unchanged flag, which is
-	// what reconciles a queue that dispatched into the turn.
+	// The first idle established that this CLI reports session state.
+	// The second result now keeps the turn active until the later idle.
+	// The refused send above republished the unchanged flag.
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	assert.Equal(t, []bool{true, false, true, true}, sink.TurnActives())
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
-	assert.Equal(t, []bool{true, false, true, true, false, false}, sink.TurnActives())
+	assert.Equal(t, []bool{true, false, true, true, false}, sink.TurnActives())
 }
 
 func TestClaudeTurnActive_TheHeuristicRetiresOnceTheCLIStatesItsOwnTurn(t *testing.T) {

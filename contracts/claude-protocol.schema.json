@@ -12,8 +12,10 @@
     "hiddenSystemSubtypes",
     "informationalLevels",
     "hookOutcomes",
+    "compactResults",
     "defaultMode",
-    "frameKinds"
+    "frameKinds",
+    "statuses"
   ],
   "$defs": {
     "table": {
@@ -143,12 +145,18 @@
     "hookOutcomes": {
       "$ref": "#/$defs/table"
     },
+    "compactResults": {
+      "$ref": "#/$defs/table"
+    },
     "defaultMode": {
       "description": "The key in `modes` a fresh Claude Code session falls back to. A key, not a literal, so it cannot name a mode the table does not carry -- the generator checks the membership.",
       "type": "string",
       "pattern": "^[A-Z][A-Za-z0-9]*$"
     },
     "frameKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "statuses": {
       "$ref": "#/$defs/table"
     }
   }

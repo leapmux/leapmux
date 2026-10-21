@@ -23,7 +23,7 @@ export function clineExtractRow(input: RowExtractionInput): ChatRow | null {
       return clineTextRow(payload)
     case 'assistant_thinking': {
       const text = pickString(clinePayload(payload, CLINE_EVENT.ReasoningFinished), CLINE_FIELD.Reasoning)
-      return text.trim() ? { kind: 'assistant-thinking', text } : { kind: 'hidden' }
+      return text.trim() ? { kind: 'assistant-thinking', text } : null
     }
     case 'tool_use':
     case 'tool_result':

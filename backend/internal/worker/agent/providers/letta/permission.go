@@ -147,8 +147,7 @@ func validatePermissionAnswer(data []byte) (string, error) {
 		return "", errors.New("the Letta permission answer has no valid request ID")
 	}
 	if len(reply.Error) > 0 {
-		var message *string
-		if json.Unmarshal(reply.Error, &message) != nil || message == nil {
+		if _, ok := providerkit.RawString(reply.Error); !ok {
 			return "", errors.New("the Letta permission error is not text")
 		}
 		return reply.RequestID, nil
@@ -163,15 +162,14 @@ func validatePermissionAnswer(data []byte) (string, error) {
 		return "", errors.New("the Letta permission answer states neither allow nor deny")
 	}
 	if len(decision.Message) > 0 || decision.Behavior == "deny" {
-		var message *string
-		if json.Unmarshal(decision.Message, &message) != nil || message == nil {
+		if _, ok := providerkit.RawString(decision.Message); !ok {
 			return "", errors.New("the Letta permission answer has no valid message")
 		}
 	}
 	if decision.Behavior == "allow" {
 		input := bytes.TrimSpace(decision.UpdatedInput)
-		if len(input) > 0 && !bytes.Equal(input, []byte("null")) && input[0] != '{' && input[0] != '[' {
-			return "", errors.New("the Letta updated input is not an object")
+		if providerkit.RawPresent(input) && input[0] != '{' && input[0] != '[' {
+			return "", errors.New("the Letta updated input is not an object or an array")
 		}
 		if len(decision.Suggestions) > 0 {
 			var suggestions []*string
@@ -245,7 +243,7 @@ func (a *Agent) sendPermissionPayload(scope runtimeScope, raw []byte) error {
 	}()
 	err := a.sendCommand(command)
 	if err == nil {
-		err = delivery.waiter.wait(a.Context(), a.ProcessDone(), lettaSendWait)
+		err = delivery.waiter.wait(a.Context(), a.Clock(), a.ProcessDone(), lettaSendWait)
 	}
 	if errors.Is(err, errPermissionNotPending) {
 		return err

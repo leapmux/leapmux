@@ -46,6 +46,43 @@ func TestACPPromptIgnoresAResponseFromThePreviousSession(t *testing.T) {
 	require.ErrorIs(t, a.SendInput("Later input", nil), agent.ErrAgentBusy)
 }
 
+func TestPromptPreparedRunsAfterAdmissionBeforeRequestPreparation(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	b, _ := newACPTurnBase(t, agenttest.NopStdin(&output))
+	var events []string
+	b.hooks.PromptPrepared = func() {
+		assert.True(t, b.PromptActive())
+		require.True(t, b.Mu.TryLock(), "the hook must not hold the state mutex")
+		b.Mu.Unlock()
+		require.True(t, b.turnMu.TryLock(), "the hook must not hold the turn mutex")
+		b.turnMu.Unlock()
+		events = append(events, "shared")
+	}
+	require.NoError(t, b.SendPreparedPrompt("prompt", nil, func(sessionID string) error {
+		assert.Equal(t, "session-1", sessionID)
+		events = append(events, "request")
+		return nil
+	}))
+	assert.Equal(t, []string{"shared", "request"}, events)
+	require.ErrorIs(t, b.SendInput("busy", nil), agent.ErrAgentBusy)
+	require.Error(t, b.SendInputForSession("other-session", "stale", nil))
+	assert.Equal(t, []string{"shared", "request"}, events)
+}
+
+func TestPromptPreparedRunsForAContinuation(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	b, _ := newACPTurnBase(t, agenttest.NopStdin(&output))
+	b.promptActive = true
+	var prepared int
+	b.hooks.PromptPrepared = func() { prepared++ }
+	require.NoError(t, b.continueWithPrompt("session-1", "continue", nil))
+	assert.Equal(t, 1, prepared)
+	require.Error(t, b.continueWithPrompt("other-session", "stale", nil))
+	assert.Equal(t, 1, prepared)
+}
+
 func TestACPPromptPreservesTheCompleteNativeResultWrapper(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
@@ -66,8 +103,9 @@ type promptEnd struct {
 // recordPromptEnds sets Hooks.PromptEnded to record each call.
 func recordPromptEnds(b *Base) *[]promptEnd {
 	var ends []promptEnd
-	b.hooks.PromptEnded = func(err error, stopped bool) {
+	b.hooks.PromptEnded = func(err error, stopped bool) PromptEnding {
 		ends = append(ends, promptEnd{err: err, stopped: stopped})
+		return PromptEnding{}
 	}
 	return &ends
 }
@@ -99,9 +137,10 @@ func TestACPPromptEndedReadsEachEndBeforeTheBaseWritesIt(t *testing.T) {
 			b, sink := newACPTurnBase(t, agenttest.NopStdin(&output))
 			var ends []promptEnd
 			written := -1
-			b.hooks.PromptEnded = func(err error, stopped bool) {
+			b.hooks.PromptEnded = func(err error, stopped bool) PromptEnding {
 				written = len(sink.Messages()) + sink.NotificationCount()
 				ends = append(ends, promptEnd{err: err, stopped: stopped})
+				return PromptEnding{}
 			}
 			b.promptActive = true
 			if tc.interrupted {

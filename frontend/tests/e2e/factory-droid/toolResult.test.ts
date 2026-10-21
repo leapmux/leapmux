@@ -32,6 +32,12 @@ function scriptRequest(content: unknown, input: unknown = { script: '40 + 2' }, 
 }
 
 describe('readDroidToolResult', () => {
+  it('reads the native completion footer when the script writes no log', () => {
+    // e2e-akA04C, Droid 0.243.0.
+    const text = 'NATIVECODE42\n[Script completed · 0.0 s elapsed · 0 calls · no log]'
+    expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })
+  })
+
   it('reads the current native completion footer without a JSON snapshot', () => {
     const text = 'Computed42\n[Script completed · 0.0 s elapsed · 0 calls · 0 B in sandbox · 11 B emitted]'
     expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })

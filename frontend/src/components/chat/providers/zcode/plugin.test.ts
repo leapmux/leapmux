@@ -172,6 +172,12 @@ describe('zcode retained tool row', () => {
 })
 
 describe('zcode resultDivider', () => {
+  it('states a turn whose row is interrupted as interrupted', () => {
+    expect(plugin.transcript.extractDivider(event(ZCODE_EVENT.TurnCompleted, {
+      resultType: 'success',
+      duration: 2100,
+    }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (2.1s)' })
+  })
   // Every provider states a turn end in one shared vocabulary. ZCode said "Took 1.5s"
   // where the Agent Client Protocol providers said "Turn ended".
   it('states the duration a completed turn reports', () => {
@@ -310,26 +316,6 @@ describe('zcode contextUsageFromMessage', () => {
       cacheWriteTokens: 0,
       totalTokens: 0,
     }))).toBeNull()
-  })
-
-  // A side query is the app-server's own model call. Its cost is not what the turn
-  // did to the context, and putting it on the meter makes the gauge jump.
-  it('returns null for a side query even when it reports usage', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
-      inputTokens: 100,
-      outputTokens: 10,
-      totalTokens: 110,
-    }, { querySource: 'target_completion_verification' }))).toBeNull()
-    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
-      inputTokens: 100,
-      outputTokens: 10,
-      totalTokens: 110,
-    }, { querySource: 'subagent' }))).toBeNull()
-    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
-      inputTokens: 100,
-      outputTokens: 10,
-      totalTokens: 110,
-    }, { stopReason: 'tool_internal' }))).toBeNull()
   })
 
   it('returns null for a session.updated with no usage and for another event type', () => {

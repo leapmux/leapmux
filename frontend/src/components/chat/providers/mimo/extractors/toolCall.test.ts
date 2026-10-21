@@ -594,9 +594,9 @@ describe('mimoToolCall', () => {
     expect(call.result).toEqual({ content: [] })
   })
 
-  it('draws no row for a pending frame', () => {
+  it('leaves a pending frame unclaimed', () => {
     const row = providerRow(AgentProvider.MIMO_CODE, toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Pending }))
-    expect(row).toEqual({ kind: 'hidden' })
+    expect(row).toBeNull()
   })
 
   // The icon tooltip states the tool's own name, whatever kind the call takes.

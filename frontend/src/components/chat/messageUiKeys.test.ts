@@ -62,9 +62,8 @@ function providerKeyPrefixes(): string[] {
 }
 
 describe('expandedUiKeyFor', () => {
-  it('maps plan_execution and agent_prompt by kind', () => {
+  it('maps plan_execution by kind', () => {
     expect(expandedUiKeyFor('plan_execution')).toBe(MESSAGE_UI_KEY.PLAN_EXECUTION)
-    expect(expandedUiKeyFor('agent_prompt')).toBe(MESSAGE_UI_KEY.AGENT_PROMPT)
   })
 
   // Every provider's thinking row draws through the shared bubble, so one key serves

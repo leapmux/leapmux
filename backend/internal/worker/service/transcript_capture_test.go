@@ -61,6 +61,70 @@ func capturedTailSessionInfo(event *leapmuxv1.AgentEvent) (map[string]json.RawMe
 	return envelope.Info, nil
 }
 
+func TestCapturedSessionInfoDoesNotHoldTheCacheWhileWaitingForActivity(t *testing.T) {
+	t.Parallel()
+	svc, services := setupRootSink(t, "progress-lock-order")
+	services.UpdateSessionID("native-session")
+	sink := requireRootOutputSink(t, svc.Output, "progress-lock-order")
+	services.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyRunningTool: map[string]interface{}{
+			contracts.RunningToolFieldAgentSessionId:  "native-session",
+			contracts.RunningToolFieldSpanId:          "call-1",
+			contracts.RunningToolFieldPermissionCheck: true,
+		},
+	})
+	content := services.CaptureMessage(agent.MessageContent{Original: []byte(`{"type":"result","subtype":"success"}`)}, agent.SpanInfo{})
+	owner := content.Publication.Owner().(*transcriptOwner)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var pause sync.Once
+	owner.beforeSessionInfoAdmission = func() {
+		pause.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	ctx := testutil.DeadlineContext(t)
+	owner.activity.mu.Lock()
+	published := make(chan bool, 1)
+	go func() {
+		published <- owner.PublishSessionInfo(map[string]interface{}{contracts.SessionInfoKeyThinkingTokens: 37})
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		owner.activity.mu.Unlock()
+		close(release)
+		t.Fatal("The progress publication did not reach its admission boundary.")
+	}
+	cacheAvailable := sink.sessionInfoMu.TryLock()
+	if cacheAvailable {
+		sink.sessionInfoMu.Unlock()
+	}
+	owner.activity.mu.Unlock()
+	// The old order already holds the cache. Do not create its permanent two-lock cycle in the test.
+	if cacheAvailable {
+		ended := make(chan error, 1)
+		go func() { ended <- services.PersistTurnEnd(content, agent.SpanInfo{}) }()
+		select {
+		case err := <-ended:
+			assert.NoError(t, err)
+		case <-ctx.Done():
+			t.Error("Turn completion waited for the paused progress publication.")
+		}
+	}
+	close(release)
+	select {
+	case accepted := <-published:
+		assert.True(t, accepted)
+	case <-ctx.Done():
+		t.Fatal("The released progress publication did not finish.")
+	}
+	assert.True(t, cacheAvailable, "progress must not hold the session-info cache before it acquires activity admission")
+	if cacheAvailable {
+		assert.Empty(t, sink.permissionCheckSnapshots(), "turn completion clears permission checks while progress waits")
+	}
+}
+
 func TestCapturedAdmissionRejectsIncompleteOwnersBeforeEffects(t *testing.T) {
 	t.Parallel()
 	for _, missing := range []string{"owner", "sink", "activity", "scope", "session", "thread"} {

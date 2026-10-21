@@ -534,9 +534,11 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
     ]
   }
   if (provider === AgentProvider.LETTA) {
+    // The worker stores each native delta flat, with its message_type at the
+    // top level; a wrapped stream_delta envelope is the wire, not a row.
     return [
-      frame('request', provider, 'parity-edit', 'Edit', { kind: 'stream_delta', payload: { message_type: 'client_tool_start', tool_call_id: 'parity-edit', tool_name: 'Edit', tool_input: { path, old_string: before, new_string: after } } }),
-      frame('result', provider, 'parity-edit', 'Edit', { kind: 'stream_delta', payload: { message_type: 'tool_return_message', tool_call_id: 'parity-edit', tool_name: 'Edit', tool_return: 'Saved' } }),
+      frame('request', provider, 'parity-edit', 'Edit', { message_type: 'client_tool_start', tool_call_id: 'parity-edit', tool_name: 'Edit', tool_input: { path, old_string: before, new_string: after } }),
+      frame('result', provider, 'parity-edit', 'Edit', { message_type: 'tool_return_message', tool_call_id: 'parity-edit', tool_name: 'Edit', tool_return: 'Saved' }),
     ]
   }
   if (provider === AgentProvider.DROID) {

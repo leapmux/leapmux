@@ -1,6 +1,7 @@
 package kimi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,21 +15,15 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Kimi Code's conversation output.
+// Kimi Code events identify their native agent: main or a subagent such as agent-1.
+// The same handlers serve both. Each run keeps its own output state and writes to its own transcript.
+// subagent.go links native subagents to their child transcripts.
 //
-// Every event carries the id of the agent it belongs to: `main`, or a subagent's
-// `agent-N`. The main agent's rows go to this agent's own transcript and each
-// subagent's go to its child transcript (subagent.go). Both run through the
-// same handlers, keyed by the event's agent, so a subagent's tool card and turn
-// read exactly like the main agent's.
+// Native tool starts and results open and close spans. turn.ended supplies the turn divider.
+// The notification contract identifies stored notices. Compaction starts use live session state, and only their ends become rows.
 //
-// The persisted rows are the server's own event payloads, verbatim:
-// `tool.call.started` opens a tool span and `tool.result` closes it,
-// `turn.ended` is the turn-end divider, and the notices (compaction, a retry, a
-// warning, a turn the agent started by itself) are notification rows. The only
-// rows the worker builds are the assembled text and thinking: the server
-// streams those as `assistant.delta` and `thinking.delta` and never repeats
-// them in a durable event.
+// The Worker assembles text and thoughts from deltas because Kimi sends no completed text event.
+// Profile warnings read through REST use the native warning-event shape.
 
 // kimiLiveOutputLimit caps the running command output the worker holds for the
 // live tail. The sink caps the tail again before it broadcasts; this cap keeps
@@ -43,6 +38,9 @@ type kimiRun struct {
 	// generation holds the text and thinking the agent streamed since the last
 	// boundary.
 	generation providerkit.GenerationBuffer
+	retry      providerkit.RetryResolution
+	// dispatchMu protects the live compaction flag.
+	compactionLive bool
 	// tools holds every tool call the agent opened and nothing closed yet,
 	// keyed by the server's tool call id.
 	tools map[string]*kimiTool
@@ -236,7 +234,7 @@ func (a *Agent) handleTurnStarted(event kimiEvent) {
 	if kimiOriginIsNotable(payload.Origin.Kind) {
 		// The agent started this turn by itself, and nothing in the transcript
 		// says why the agent speaks. The row states it.
-		a.persistNotification(a.sink, event)
+		a.persistEvent(a.sink, event)
 	}
 }
 
@@ -323,6 +321,7 @@ func (a *Agent) handleTurnEnded(event kimiEvent) {
 		a.handleChildTurnEnded(run, payload)
 		return
 	}
+	run.retry.Reset()
 	completion := kimiTurnCompletion(payload.Reason)
 	a.flushRun(run, a.sink, completion)
 	a.closeOpenTools(run, a.sink, completion)
@@ -401,11 +400,14 @@ func (a *Agent) handleTextDelta(event kimiEvent, thinking bool) {
 	}
 	run := a.run(event.AgentID)
 	sink := a.runSink(run)
+	if sink != nil && !a.IsDiscardingOutput() {
+		run.retry.Resolve(sink)
+	}
 	scope, kind := kimiTextScope(run.agentID), agent.AssembledMessageKindText
 	if thinking {
 		scope, kind = kimiThinkingScope(run.agentID), agent.AssembledMessageKindReasoning
 	} else if sink != nil {
-		// The answer follows the thinking, so the thinking is complete.
+		// Publish the thought before the answer. A later retry cannot retract this completed thought.
 		a.flushScope(run, sink, kimiThinkingScope(run.agentID), agent.MessageCompletionComplete)
 	}
 	run.generation.Append(scope, kind, payload.Delta, providerkit.JoinVerbatim)
@@ -420,35 +422,18 @@ func (a *Agent) flushRun(run *kimiRun, sink agent.ProviderServices, completion a
 	if sink == nil {
 		return
 	}
-	if a.IsDiscardingOutput() {
-		run.generation.Reset()
-		return
-	}
-	persist := func(raw []byte) error {
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-	}
-	if err := run.generation.PersistAll(completion, persist); err != nil {
+	if err := providerkit.FlushGeneration(&run.generation, sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("kimi persist generation", "agent_id", a.AgentID(), "kimi_agent", run.agentID, "error", err)
 	}
-	sink.ReportProgress(agent.CompleteModelProgress(kimiTextScope(run.agentID)))
-	sink.ReportProgress(agent.CompleteModelProgress(kimiThinkingScope(run.agentID)))
 }
 
 // flushScope persists one segment of a run.
 func (a *Agent) flushScope(run *kimiRun, sink agent.ProviderServices, scope string, completion agent.MessageCompletion) {
-	if a.IsDiscardingOutput() {
-		run.generation.Discard(scope)
+	if sink == nil {
 		return
 	}
-	ok, err := run.generation.PersistScope(scope, completion, func(raw []byte) error {
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-	})
-	if err != nil {
+	if err := providerkit.PersistGenerationScopes(&run.generation, sink, []string{scope}, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("kimi persist generation", "agent_id", a.AgentID(), "kimi_agent", run.agentID, "error", err)
-		return
-	}
-	if ok {
-		sink.ReportProgress(agent.CompleteModelProgress(scope))
 	}
 }
 
@@ -461,6 +446,22 @@ func (a *Agent) handleStepCompleted(event kimiEvent) {
 	}
 	if event.AgentID == kimiMainAgentID {
 		a.recordStepUsage(event)
+	}
+}
+
+// handleStepRetrying keeps text that Kimi sends back to the model and discards its unsigned thought.
+func (a *Agent) handleStepRetrying(event kimiEvent) {
+	run := a.run(event.AgentID)
+	sink := a.runSink(run)
+	if sink == nil {
+		return
+	}
+	providerkit.DiscardGenerationScopes(&run.generation, sink, []string{kimiThinkingScope(run.agentID)})
+	a.flushScope(run, sink, kimiTextScope(run.agentID), agent.MessageCompletionInterrupted)
+	if !a.IsDiscardingOutput() {
+		if a.persistEvent(sink, event) {
+			run.retry.NoteRetry()
+		}
 	}
 }
 
@@ -486,6 +487,9 @@ type kimiToolCall struct {
 func (a *Agent) handleToolCallDelta(event kimiEvent) {
 	run := a.run(event.AgentID)
 	if sink := a.runSink(run); sink != nil {
+		if !a.IsDiscardingOutput() {
+			run.retry.Resolve(sink)
+		}
 		a.flushRun(run, sink, agent.MessageCompletionComplete)
 	}
 }
@@ -499,6 +503,9 @@ func (a *Agent) handleToolCallStarted(event kimiEvent) {
 	sink := a.runSink(run)
 	if sink == nil {
 		return
+	}
+	if !a.IsDiscardingOutput() {
+		run.retry.Resolve(sink)
 	}
 	a.flushRun(run, sink, agent.MessageCompletionComplete)
 
@@ -687,16 +694,30 @@ func kimiWithRetainedOutput(frame []byte, output string, truncated bool) []byte 
 
 // --- notices ---
 
+var kimiNotificationEvents = func() map[string]bool {
+	members := make(map[string]bool, len(contracts.KimiNotificationEventMembers))
+	for _, kind := range contracts.KimiNotificationEventMembers {
+		members[kind] = true
+	}
+	return members
+}()
+
+const kimiCompactionBlockedTrigger = "waiting for the running turn to end"
+
 // handleCompactionStarted keeps manual compaction active until a native result.
 func (a *Agent) handleCompactionStarted(event kimiEvent) {
-	a.persistEventNotification(event)
-	if event.AgentID != kimiMainAgentID {
-		return
-	}
 	var payload struct {
 		Trigger string `json:"trigger"`
 	}
-	if !event.decode(&payload) || payload.Trigger != "manual" {
+	if !event.decode(&payload) {
+		return
+	}
+	run := a.run(event.AgentID)
+	if sink := a.runSink(run); sink != nil {
+		run.compactionLive = true
+		providerkit.PublishCompaction(sink, payload.Trigger)
+	}
+	if event.AgentID != kimiMainAgentID || payload.Trigger != "manual" {
 		return
 	}
 	a.Mu.Lock()
@@ -705,9 +726,23 @@ func (a *Agent) handleCompactionStarted(event kimiEvent) {
 	a.PublishTurnActive()
 }
 
+// handleCompactionBlocked shows the wait without ending a pending manual compaction.
+func (a *Agent) handleCompactionBlocked(event kimiEvent) {
+	run := a.run(event.AgentID)
+	if sink := a.runSink(run); sink != nil {
+		run.compactionLive = true
+		providerkit.PublishCompaction(sink, kimiCompactionBlockedTrigger)
+	}
+}
+
 // handleCompactionFinished releases the queue after a manual result.
 func (a *Agent) handleCompactionFinished(event kimiEvent) {
-	a.persistEventNotification(event)
+	run := a.run(event.AgentID)
+	if sink := a.runSink(run); sink != nil {
+		providerkit.EndCompaction(sink)
+		run.compactionLive = false
+		a.persistEvent(sink, event)
+	}
 	if event.AgentID != kimiMainAgentID {
 		return
 	}
@@ -720,18 +755,92 @@ func (a *Agent) handleCompactionFinished(event kimiEvent) {
 	}
 }
 
-// persistEventNotification records a notice event -- a compaction, a retry, a
-// warning, a task notification -- in the transcript of the agent it belongs to.
-func (a *Agent) persistEventNotification(event kimiEvent) {
-	a.persistNotification(a.runSink(a.run(event.AgentID)), event)
+// persistRunEvent stores an event in the transcript of its native agent.
+func (a *Agent) persistRunEvent(event kimiEvent) {
+	a.persistEvent(a.runSink(a.run(event.AgentID)), event)
 }
 
-func (a *Agent) persistNotification(sink agent.ProviderServices, event kimiEvent) {
+// persistEvent returns whether the output queue accepted or already retained the event.
+// Known notifications use one contract table. Unknown events remain separate message rows.
+func (a *Agent) persistEvent(sink agent.ProviderServices, event kimiEvent) bool {
 	if sink == nil || a.IsDiscardingOutput() {
+		return false
+	}
+	warningKey := ""
+	// Profile warnings belong to the main agent. A child's warning must not suppress the main agent's profile notice.
+	if event.Type == contracts.KimiEventWarning && event.AgentID == kimiMainAgentID {
+		var warning kimiSessionWarning
+		if json.Unmarshal(event.Raw, &warning) == nil && strings.TrimSpace(warning.Message) != "" {
+			a.Mu.Lock()
+			sessionID := a.sessionID
+			a.Mu.Unlock()
+			warningKey = fmt.Sprintf("%d:%s%d:%s%s", len(sessionID), sessionID, len(warning.Code), warning.Code, warning.Message)
+			if _, stored := a.storedSessionWarnings[warningKey]; stored {
+				return true
+			}
+		}
+	}
+	content := agent.MessageContent{Original: event.Raw}
+	var err error
+	if kimiNotificationEvents[event.Type] {
+		_, err = sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
+	} else {
+		err = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	}
+	if err != nil {
+		slog.Error("persist a Kimi event", "agent_id", a.AgentID(), "type", event.Type, "error", err)
+	}
+	if warningKey != "" && agent.OutputRetained(err) {
+		if a.storedSessionWarnings == nil {
+			a.storedSessionWarnings = make(map[string]struct{})
+		}
+		a.storedSessionWarnings[warningKey] = struct{}{}
+	}
+	return agent.OutputRetained(err)
+}
+
+// kimiSessionWarning is one warning from the session profile or its live warning event.
+type kimiSessionWarning struct {
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+	Severity string `json:"severity"`
+}
+
+// persistSessionWarnings restores warnings that the profile emitted before the subscription started.
+func (a *Agent) persistSessionWarnings(ctx context.Context, sessionID string) {
+	if err := kimiCheckID("session", sessionID); err != nil {
+		slog.Debug("read Kimi session warnings", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.Raw}); err != nil {
-		slog.Error("kimi persist notification", "agent_id", a.AgentID(), "type", event.Type, "error", err)
+	var response struct {
+		Warnings []json.RawMessage `json:"warnings"`
+	}
+	if err := a.api.get(ctx, kimiSessionPath(sessionID, "/warnings"), &response); err != nil {
+		slog.Debug("read Kimi session warnings", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	a.Mu.Lock()
+	current := a.sessionID
+	a.Mu.Unlock()
+	if current != sessionID {
+		return
+	}
+	for _, raw := range response.Warnings {
+		var warning kimiSessionWarning
+		if json.Unmarshal(raw, &warning) != nil || strings.TrimSpace(warning.Message) == "" {
+			continue
+		}
+		content, err := json.Marshal(map[string]any{
+			"type": contracts.KimiEventWarning, "agentId": kimiMainAgentID, "sessionId": sessionID,
+			"code": warning.Code, "message": warning.Message,
+		})
+		if err != nil {
+			slog.Error("encode a Kimi session warning", "agent_id", a.AgentID(), "error", err)
+			continue
+		}
+		a.persistEvent(a.sink, kimiEvent{Type: contracts.KimiEventWarning, AgentID: kimiMainAgentID, Raw: content})
 	}
 }
 
@@ -755,5 +864,5 @@ func (a *Agent) handleError(event kimiEvent) {
 			return
 		}
 	}
-	a.persistEventNotification(event)
+	a.persistRunEvent(event)
 }

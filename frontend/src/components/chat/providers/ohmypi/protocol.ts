@@ -67,3 +67,9 @@ export const OH_MY_PI_TRUNCATION_FIELD = {
   ArtifactID: 'artifactId',
   TotalBytes: 'totalBytes',
 } as const
+
+/** The severity of a native notice. */
+export const OH_MY_PI_NOTICE_LEVEL = {
+  Warning: 'warning',
+  Error: 'error',
+} as const

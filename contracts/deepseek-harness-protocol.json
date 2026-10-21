@@ -1,5 +1,5 @@
 {
-  "_readme": "DeepSeek Harness owns these Web Remote event and tool values. The Worker preserves native Session events. The browser reads those same events. LeapMux owns the plan selector values because the native plan state is a boolean. LeapMux image receipts preserve native image identity and order without storing complete text or subprocess output. The Worker adds the native context window to the supplement of each assistant block, because the native usage states no window.",
+  "_readme": "DeepSeek Harness owns these Web Remote event and tool values. The Worker preserves native Session events. The browser reads those same events. LeapMux owns the plan selector values because the native plan state is a boolean. LeapMux image receipts preserve native image identity and order without storing complete text or subprocess output. The Worker adds the native context window to the supplement of each assistant block, because the native usage states no window. notificationEvents lists the Session events that the Worker persists as notifications. A compaction start is live session state, not a row. hookDecisions lists the native decisions that prevent continued work. Both sides read these decisions to identify a hook failure.",
   "events": {
     "AssistantMessage": "assistant/message",
     "UserMessage": "user/message",
@@ -17,7 +17,12 @@
     "PlanMode": "plan/mode",
     "SubagentCatalog": "subagent/catalog",
     "WorkflowAgentStart": "tool-workflow/agent-start",
-    "WorkflowAgentEnd": "tool-workflow/agent-end"
+    "WorkflowAgentEnd": "tool-workflow/agent-end",
+    "LlmRetry": "llm/retry",
+    "LlmRetryStarted": "llm/retry-started",
+    "CompactionStart": "compaction/start",
+    "HookResult": "hook/result",
+    "DeliverablesPresented": "deliverables/presented"
   },
   "tools": {
     "Bash": "bash",
@@ -78,6 +83,74 @@
         ],
         "why": "The Worker reads stored native child modes. The browser reads the derived AgentInfo capability fields instead."
       }
+    },
+    "events": {
+      "LlmRetryStarted": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes retry-started and stores no row for the browser."
+      },
+      "TurnStart": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "AssistantAttempt": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "RequestContext": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "WorkflowStart": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "WorkflowEnd": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "WorkflowAgentStart": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "WorkflowAgentEnd": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "GoalChange": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "PlanMode": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "SubagentCatalog": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      }
     }
   },
   "imageReceiptFields": {
@@ -104,5 +177,16 @@
   "imageValueFields": {
     "Attachment": "attachment",
     "Data": "data"
+  },
+  "notificationEvents": [
+    "CompactionEnd",
+    "LlmRetry",
+    "HookResult",
+    "DeliverablesPresented"
+  ],
+  "hookDecisions": {
+    "Block": "block",
+    "Deny": "deny",
+    "Stop": "stop"
   }
 }

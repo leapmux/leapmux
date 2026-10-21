@@ -84,11 +84,26 @@ func TestSteeringWritesASteerLineIntoTheRunningTurn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	fp := h.send("sleep")
+	h.feed(fp, initLine("T-1"))
 	require.NoError(t, h.agent.SteerInput("also say steered", nil))
 	lines := fp.lines()
 	require.Len(t, lines, 2)
 	assert.Equal(t, true, lines[1]["steer"])
 	assert.True(t, h.agent.SupportsSteering())
+}
+
+func TestSteerabilityStartsWhenTheThreadIdentityArrives(t *testing.T) {
+	h := newHarness(t)
+	fp := h.send("first turn")
+	state := h.agent.PublishTurnActive()
+	assert.True(t, state.Active)
+	assert.False(t, state.Steerable, "the first unfinished message supplies no thread identity for the native history read")
+	require.ErrorIs(t, h.agent.SteerInput("wait in the queue", nil), agent.ErrSteeringUnsupported)
+	assert.Len(t, fp.lines(), 1)
+	h.feed(fp, initLine("T-1"))
+	kinds := h.sink.TurnKinds()
+	require.NotEmpty(t, kinds)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, kinds[len(kinds)-1], "the native init must publish the available steer action")
 }
 
 func TestSteeringNeedsARunningTurn(t *testing.T) {
@@ -737,4 +752,69 @@ func TestDescribeExitStatesTheStderr(t *testing.T) {
 	fp := newFakeProc("agent-1", false)
 	_, _ = fp.StderrWriterForTest().Write([]byte("Error: API request for getUserInfo failed: 401\n"))
 	assert.True(t, strings.HasSuffix(describeExit(fp.ampProcess, fp.Stderr()), "Error: API request for getUserInfo failed: 401"))
+}
+
+func TestSteerEchoAtTheUserLine(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("first")
+	h.feed(fp, initLine("T-1"))
+	require.NoError(t, h.agent.SteerInput("second", nil))
+	assert.Empty(t, h.sink.SteerEchoReports())
+	// The native echo shape comes from .tmp/verify-c29/amp/run1.
+	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"unrelated"}]}}`)
+	assert.Empty(t, h.sink.SteerEchoReports())
+	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"second"}]}}`)
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
+}
+
+func TestSteerAfterEndTurnIsNotRunTwice(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("first")
+	h.feed(fp, initLine("T-1"))
+	fp.stdin.mu.Lock()
+	fp.stdin.beforeWrite = func() { h.feed(fp, textLine("first answer", stopReasonEndTurn)) }
+	fp.stdin.mu.Unlock()
+	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.False(t, h.turnActive())
+	survivor, ok := any(h.agent).(agent.SteerSurvivor)
+	require.True(t, ok)
+	assert.True(t, survivor.SteerSurvivesTurnEnd())
+	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"second"}]}}`)
+	assert.True(t, h.turnActive(), "the echoed steer must hold the queue until its answer ends")
+	lifecycle := h.sink.TurnLifecycle()
+	for i, event := range lifecycle {
+		if event == "steer-echoed:1" {
+			require.Positive(t, i)
+			assert.Equal(t, "turn_active:true", lifecycle[i-1], "publish the active turn before the echo can release the queue")
+		}
+	}
+	h.feed(fp, textLine("second answer", stopReasonEndTurn))
+	assert.Len(t, fp.lines(), 2)
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
+}
+
+func TestSteerEchoWithAnImageOnlyMessage(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("first")
+	h.feed(fp, initLine("T-1"))
+	require.NoError(t, h.agent.SteerInput("", []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}))
+	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image"}}]}}`)
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
+}
+
+func TestSteerIgnoresAMalformedEmptyEcho(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("first")
+	h.feed(fp, initLine("T-1"))
+	require.NoError(t, h.agent.SteerInput("", nil))
+	for _, content := range []string{`[]`, `[{"type":"text"}]`, `[{"type":"text","text":null}]`, `[{"type":"text","text":7}]`} {
+		h.feed(fp, `{"type":"user","message":{"role":"user","content":`+content+`}}`)
+	}
+	assert.Empty(t, h.sink.SteerEchoReports())
+	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":""}]}}`)
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
 }

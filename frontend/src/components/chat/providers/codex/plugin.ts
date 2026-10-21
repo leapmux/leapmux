@@ -4,17 +4,17 @@ import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyCodexMessage } from './classification'
-import { codexCompactionBoundary, codexNotificationEntry } from './extractors/notification'
+import { codexCompactionBoundary, codexCompactionStart, codexNotificationEntry } from './extractors/notification'
 import { codexResultDivider } from './extractors/resultDivider'
 import { codexExtractRow } from './extractors/row'
 import { codexControls } from './pluginControls'
-import { codexRateLimitsFromMessage } from './rateLimits'
 import { resolveCodexMessage } from './resolveMessage'
 import { codexContextUsageFromNotification } from './sessionMetadata'
 import { codexRelatedMessages, codexSpanRole } from './spanRole'
 
 const codexPlugin: ProviderPlugin = {
   transcript: {
+    compactionStart: codexCompactionStart,
     resolveMessage: resolveCodexMessage,
     spanRole: codexSpanRole,
     relatedMessages: codexRelatedMessages,
@@ -25,7 +25,6 @@ const codexPlugin: ProviderPlugin = {
   },
   controls: codexControls,
   session: {
-    rateLimitsFromMessage: codexRateLimitsFromMessage,
     contextUsageFromMessage: codexContextUsageFromNotification,
     compactionBoundaryFromMessage: codexCompactionBoundary,
   },

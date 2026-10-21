@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/google/uuid"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -73,6 +74,10 @@ type Agent struct {
 	childAgents        map[string]string
 	childAnnouncements map[string]droidChildAnnouncementID
 	outputStates       map[string]*droidOutputState
+	mcpFailures        map[string]string
+	retryResolution    providerkit.RetryResolution
+	steers             providerkit.SteerLedger
+	outputQueue        agent.OutputQueue
 	tailMu             sync.Mutex
 	childTails         map[string]*droidChildTail
 	tailClosing        bool
@@ -98,9 +103,11 @@ type droidLaunch struct {
 }
 
 var (
-	_ agent.Agent            = (*Agent)(nil)
-	_ agent.InputSteerer     = (*Agent)(nil)
-	_ agent.ContextCompactor = (*Agent)(nil)
+	_ agent.Agent             = (*Agent)(nil)
+	_ agent.InputSteerer      = (*Agent)(nil)
+	_ agent.ContextCompactor  = (*Agent)(nil)
+	_ agent.SteerEchoReporter = (*Agent)(nil)
+	_ agent.SteerSurvivor     = (*Agent)(nil)
 )
 
 // errAgentStopped reports that the agent's process already ended.
@@ -129,20 +136,33 @@ type droidModel struct {
 
 // droidTool is one open tool call.
 type droidTool struct {
-	id     string
-	name   string
-	spanID string
-	input  json.RawMessage
+	// pendingRow becomes nil after the output queue takes the immutable snapshot.
+	pendingRow []byte
+	order      uint64
+	id         string
+	name       string
+	spanID     string
+	input      json.RawMessage
+}
+
+// droidModelMessage tracks uncommitted scopes and an accepted final boundary.
+// A finalized message cannot reopen when a late delta or commit arrives.
+type droidModelMessage struct {
+	scopes    map[string]struct{}
+	finalized bool
 }
 
 // droidOutputState holds one native session's transcript assembly.
 type droidOutputState struct {
-	messageSpans map[string]string
-	tools        map[string]*droidTool
-	turnToolUse  int
-	generation   providerkit.GenerationBuffer
-	pending      []droidPendingOutput
-	ended        bool
+	nextToolOrder  uint64
+	modelMessages  map[string]*droidModelMessage
+	tools          map[string]*droidTool
+	turnToolUse    int
+	turnErrorSeen  bool
+	compactionLive bool
+	generation     providerkit.GenerationBuffer
+	outputQueue    *agent.OutputQueue
+	ended          bool
 }
 
 // droidPendingControl is one published control request awaiting an answer.
@@ -164,27 +184,41 @@ type droidPendingControl struct {
 
 // SendInput delivers a user message to the session.
 //
-// It returns once the CLI accepted the message -- the reply arrives when the
-// message is queued -- and never waits for the turn. A running turn refuses the
-// input with ErrAgentBusy, so the LeapMux input queue holds it.
+// Droid replies when it enqueues the message. This method waits for that reply, not the turn end.
+// A running turn refuses ordinary input with ErrAgentBusy, so the LeapMux queue retains it.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, false)
+	return a.sendInput(nil, content, attachments, droidInputOrdinary)
 }
 
 // SendInputForSession delivers a user message when the session it states is
 // still the current one.
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments, false)
+	return a.sendInput(&sessionID, content, attachments, droidInputOrdinary)
 }
 
 // SupportsSteering reports true: Droid accepts end_of_turn during a running
 // turn and puts that user message into the active agent loop.
 func (a *Agent) SupportsSteering() bool { return true }
 
+// SteerRowAtEcho keeps the queue item until Droid commits its user message.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd retains accepted input until Droid echoes or explicitly discards it.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
+
 // SteerInput adds a message to the running turn.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, true)
+	return a.sendInput(nil, content, attachments, droidInputSteer)
 }
+
+type droidInputMode uint8
+
+const (
+	droidInputOrdinary droidInputMode = iota
+	droidInputSteer
+	// A child queue writes at acceptance. Child sinks do not report steer echoes.
+	droidInputChildSteer
+)
 
 // sendInput writes one droid.add_user_message request.
 //
@@ -192,7 +226,8 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // next turn out of LeapMux's sight, so the agent refuses a new message while a
 // turn runs: the LeapMux input queue owns queueing. A steering message uses
 // the same native placement while the turn is active.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, mode droidInputMode) error {
+	steer := mode != droidInputOrdinary
 	message, err := buildUserMessage(content, attachments)
 	if err != nil {
 		return err
@@ -228,16 +263,42 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 
 	params := addUserMessageParams{
 		SessionID:      sessionID,
+		MessageID:      uuid.NewString(),
 		Text:           message.Text,
 		Images:         message.Images,
 		QueuePlacement: droidQueueEndOfTurn,
 	}
 	if !steer {
-		a.armTurn()
+		a.startTurn()
 	}
-	if err := a.request(droidMethodAddUserMessage, params); err != nil {
+	id := a.nextRequestID()
+	var ticket providerkit.SteerTicket
+	if mode == droidInputSteer {
+		a.dispatchMu.Lock()
+		ticket = a.steers.Add(params.MessageID)
+		a.steers.SetID(ticket, id)
+		a.dispatchMu.Unlock()
+	}
+	if err := a.requestInput(id, params); err != nil {
+		if ticket != 0 {
+			a.dispatchMu.Lock()
+			pending := false
+			for _, entry := range a.steers.Pending() {
+				pending = pending || entry == ticket
+			}
+			if pending {
+				a.steers.Forget(ticket)
+				target, _ := a.outputTargetFor(sessionID)
+				a.steers.Settle(target.sink)
+			}
+			a.dispatchMu.Unlock()
+			if !pending {
+				// An echo or a discard already resolved this input, even if its report still waits for storage.
+				return nil
+			}
+		}
 		if !steer {
-			a.disarmTurn()
+			a.endTurn()
 		}
 		return err
 	}
@@ -276,9 +337,9 @@ func buildUserMessage(content string, attachments []*leapmuxv1.Attachment) (droi
 	return droidUserMessage{Text: strings.Join(parts, "\n\n"), Images: images}, nil
 }
 
-// armTurn marks a turn active and publishes the flag. A repeat of the current
+// startTurn marks a turn active and publishes the flag. A repeat of the current
 // state publishes nothing, so a frame that is not a turn signal moves nothing.
-func (a *Agent) armTurn() {
+func (a *Agent) startTurn() {
 	a.Mu.Lock()
 	if a.turnActive {
 		a.Mu.Unlock()
@@ -286,13 +347,14 @@ func (a *Agent) armTurn() {
 	}
 	a.turnActive = true
 	seq := a.NextTurnSeq()
+	steerable := a.compaction == nil
 	a.Mu.Unlock()
-	a.sink.SetTurnState(agent.TurnState{Active: true}, seq)
+	a.orderedSink().SetTurnState(agent.TurnState{Active: true, Steerable: steerable}, seq)
 }
 
-// disarmTurn marks no turn active and publishes the flag. A repeat of the
+// endTurn marks no turn active and publishes the flag. A repeat of the
 // current state publishes nothing.
-func (a *Agent) disarmTurn() {
+func (a *Agent) endTurn() {
 	a.Mu.Lock()
 	if !a.turnActive {
 		a.Mu.Unlock()
@@ -304,7 +366,7 @@ func (a *Agent) disarmTurn() {
 	retired := a.takeControlsLocked(true)
 	a.Mu.Unlock()
 	a.cancelControls(retired)
-	a.sink.SetTurnState(agent.TurnState{Active: compacting}, seq)
+	a.orderedSink().SetTurnState(agent.TurnState{Active: compacting}, seq)
 }
 
 // PublishTurnActive republishes the turn flag through the sink.
@@ -312,7 +374,7 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	state := agent.TurnState{Active: a.turnActive || a.compaction != nil, Steerable: a.turnActive && a.compaction == nil}
 	a.Mu.Unlock()
-	a.sink.SetTurnState(state, a.nextTurnSeq())
+	a.orderedSink().SetTurnState(state, a.nextTurnSeq())
 	return state
 }
 
@@ -335,9 +397,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	return nil
 }
 
-// ClearContext starts a fresh session on the running process. Droid has no
-// in-process context clear that LeapMux can address, so this reports
-// unsupported and the worker restarts.
+// ClearContext requests a worker restart because Droid exposes no in-process context clear.
 func (a *Agent) ClearContext() (string, error) {
 	return "", agent.ErrContextClearUnsupported
 }

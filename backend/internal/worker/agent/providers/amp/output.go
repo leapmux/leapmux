@@ -98,12 +98,11 @@ func toolResultText(content json.RawMessage) string {
 	return strings.Join(texts, "\n")
 }
 
-// resultLine is the `result` line that ends a turn. Amp prints one for each
-// PROCESS, when stdin closes or an error or a signal ends the process. For a
-// turn that ends inside a process -- every turn but the last -- the worker
-// writes the same shape itself, with the turn's own count and text, which is
-// what Amp prints for a process that ran that one turn. The turn's duration is
-// the worker's own measurement and travels as metadata.
+// resultLine is the result frame that ends an Amp process.
+// Amp emits it when stdin closes or an error or signal stops the process.
+// For an earlier turn within that process, the Worker writes the same shape with that turn's count and text.
+// This matches Amp's result for a process that ran only that turn.
+// The Worker measures the duration and stores it in metadata.
 type resultLine struct {
 	Type      string `json:"type"`
 	Subtype   string `json:"subtype"`
@@ -160,6 +159,7 @@ func (a *Agent) handleSystemLine(proc *ampProcess, raw []byte) {
 	a.mu.Lock()
 	previous := a.threadID
 	a.threadID = line.SessionID
+	steerBecameAvailable := previous == "" && a.turn.active
 	a.mu.Unlock()
 	if previous == line.SessionID {
 		return
@@ -169,6 +169,9 @@ func (a *Agent) handleSystemLine(proc *ampProcess, raw []byte) {
 	}
 	a.sink.UpdateSessionID(line.SessionID)
 	a.sink.BroadcastStatusActive(line.SessionID)
+	if steerBecameAvailable {
+		a.PublishTurnActive()
+	}
 }
 
 // handleAssistantLine persists one assistant message and ends the turn when the
@@ -231,6 +234,7 @@ func (a *Agent) handleAssistantLine(raw []byte) {
 		a.turn.assistantMessages++
 	}
 	a.mu.Unlock()
+	a.noteLiveAssistant(line.Message)
 	if line.Message.StopReason != nil && *line.Message.StopReason == stopReasonEndTurn {
 		a.finishTurn(agent.MessageCompletionComplete, nil)
 	}
@@ -246,7 +250,7 @@ func assistantBlockKept(block ampBlock) bool {
 		return strings.TrimSpace(block.Text) != ""
 	case contracts.AmpBlockTypeThinking:
 		return strings.TrimSpace(block.Thinking) != ""
-	case contracts.AmpBlockTypeRedactedThinking:
+	case blockTypeRedactedThinking:
 		return false
 	default:
 		// A tool call, or a block this build does not know, which reaches the
@@ -255,7 +259,7 @@ func assistantBlockKept(block ampBlock) bool {
 	}
 }
 
-// ensureTurn arms a turn for an assistant message that arrived with none armed.
+// ensureTurn starts a turn for model output or a matched steer echo while idle.
 // Amp starts one by itself when a steering message reached its queue after the
 // turn it was meant for ended: the server then runs the message as a turn of
 // its own.
@@ -281,21 +285,54 @@ func (a *Agent) noteAssistantText(text string) {
 	a.mu.Unlock()
 }
 
-// handleUserLine persists the tool results of one user line.
-//
-// A user line with text is Amp's echo of a message LeapMux sent -- the turn's
-// prompt, or a steering message at the moment Amp inserts it -- and LeapMux
-// already persisted that message, so the worker drops the echo.
+// handleUserLine closes tool results and reports a prompt that Amp read.
+// The queue writes a steer's row at this echo. Ordinary prompt echoes write no row.
 func (a *Agent) handleUserLine(raw []byte) {
 	rows, err := splitBlocks(raw)
 	if err != nil {
 		slog.Warn("amp user line split failed", "agent_id", a.agentID, "error", err)
 		return
 	}
+	var texts []string
+	hasPrompt, valid := false, true
 	for _, row := range rows {
-		if row.block.Type == contracts.AmpBlockTypeToolResult {
+		switch row.block.Type {
+		case contracts.AmpBlockTypeToolResult:
 			a.closeToolCall(row.block, row.line)
+		case contracts.AmpBlockTypeText:
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(row.rawBlock, &fields) != nil {
+				valid = false
+				continue
+			}
+			text, ok := providerkit.RawString(fields["text"])
+			if !ok {
+				valid = false
+				continue
+			}
+			texts = append(texts, text)
+			hasPrompt = true
+		case blockTypeImage:
+			// An image-only steer has an empty text key but still needs its echo.
+			hasPrompt = true
+		default:
+			valid = false
 		}
+	}
+	if !valid || !hasPrompt {
+		return
+	}
+	key := ampEchoKey(texts)
+	for _, pending := range a.steers.PendingEntries() {
+		if pending.Key == key {
+			// Publish the new turn before any concurrent ledger drain can report this echo.
+			a.ensureTurn()
+			a.noteSteerEcho(pending.Ticket)
+			break
+		}
+	}
+	if a.steers.EchoKey(key) {
+		a.steers.Settle(a.sink)
 	}
 }
 
@@ -331,6 +368,7 @@ func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 	if err := json.Unmarshal(raw, &line); err != nil {
 		slog.Warn("amp result line decode failed", "agent_id", a.agentID, "error", err)
 	}
+	a.prepareSteerRecovery()
 	ended := false
 	a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
 		ended = true
@@ -602,6 +640,14 @@ func encodeResultLine(line resultLine) []byte {
 // persistRaw persists a line this build cannot read, so the reader can still
 // inspect it.
 func (a *Agent) persistRaw(raw []byte) {
+	sessionID := providerkit.StringField(raw, "session_id")
+	a.mu.Lock()
+	current := a.threadID
+	a.mu.Unlock()
+	if sessionID != "" && sessionID != current {
+		slog.Debug("ignore an Amp frame from another session", "agent_id", a.agentID, "session_id", sessionID)
+		return
+	}
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
 		slog.Error("amp persist an unknown line", "agent_id", a.agentID, "error", err)
 	}
@@ -609,8 +655,9 @@ func (a *Agent) persistRaw(raw []byte) {
 
 // blockRow is one content block, and the line cut down to it.
 type blockRow struct {
-	block ampBlock
-	line  []byte
+	rawBlock json.RawMessage
+	block    ampBlock
+	line     []byte
 }
 
 // splitBlocks returns one row for each content block of an assistant or user
@@ -647,7 +694,7 @@ func splitBlocks(raw []byte) ([]blockRow, error) {
 		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, blockRow{block: block, line: line})
+		rows = append(rows, blockRow{rawBlock: rawBlock, block: block, line: line})
 	}
 	return rows, nil
 }

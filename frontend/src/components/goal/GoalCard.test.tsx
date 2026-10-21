@@ -14,6 +14,39 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
 const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
 
 describe('GoalCard', () => {
+  it('shows the objective and no status for an unconfirmed status', () => {
+    const { getByTestId, queryByTestId } = render(() => (
+      <GoalCard goal={{ current: goal({ statusDetail: 'cannot confirm' }), progress: { tokensUsed: 0 }, actions: ['set', 'clear'], statusUnconfirmed: true }} />
+    ))
+    expect(getByTestId('goal-objective').textContent).toBe('every test passes')
+    expect(queryByTestId('goal-status-dot')).toBeNull()
+    expect(queryByTestId('goal-status-detail')).toBeNull()
+    expect(getByTestId('goal-progress').textContent).toContain('0')
+  })
+
+  it('announces an unconfirmed goal without a status word', () => {
+    const { container } = render(() => (
+      <GoalCard goal={{ current: goal({ objective: '**Run** the tests', statusDetail: 'cannot confirm' }), progress: {}, actions: ['set', 'clear'], statusUnconfirmed: true }} announce />
+    ))
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Session goal: Run the tests')
+  })
+
+  it.each(['done', 'Achieved'])('hides a detail equal to the status token or label %s', (statusDetail) => {
+    const { queryByTestId, container } = render(() => (
+      <GoalCard goal={{ current: goal({ status: 'done', statusDetail }), progress: {}, actions: ALL }} announce />
+    ))
+    expect(queryByTestId('goal-status-detail')).toBeNull()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Session goal achieved: every test passes')
+  })
+
+  it.each(['Active', 'active', ' ACTIVE '])('hides the repeated status detail %s in the card and announcement', (statusDetail) => {
+    const { queryByTestId, container } = render(() => (
+      <GoalCard goal={{ current: goal({ statusDetail }), progress: {}, actions: ALL }} announce />
+    ))
+    expect(queryByTestId('goal-status-detail')).toBeNull()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Session goal active: every test passes')
+  })
+
   it('shows the objective and its status', () => {
     const { getByTestId } = render(() => (
       <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />

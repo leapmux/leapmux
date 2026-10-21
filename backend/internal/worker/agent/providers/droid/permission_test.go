@@ -162,10 +162,10 @@ func TestDroidPublicationRechecksModeAndTurnLifetime(t *testing.T) {
 			a, _ := newDroidControlTestAgent(t)
 			writer := &agenttest.Stdin{}
 			a.SetStdinForTest(writer)
-			a.armTurn()
+			a.startTurn()
 			sink := &droidPublicationSink{publish: func() {
 				if retire {
-					a.disarmTurn()
+					a.endTurn()
 				} else {
 					a.onSettingsUpdated([]byte(`{"type":"settings_updated","settings":{"interactionMode":"auto","autonomyLevel":"high"}}`))
 				}

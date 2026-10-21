@@ -6,7 +6,25 @@ import {
   AgentInputState,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
+import { isLockedInputState, queueHeadIndex, resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
+
+describe('queueHeadIndex', () => {
+  it('skips awaiting-echo rows', () => {
+    expect(queueHeadIndex([])).toBe(-1)
+    const pending = item('pending', { state: AgentInputState.AWAITING_ECHO })
+    expect(queueHeadIndex([pending])).toBe(-1)
+    expect(queueHeadIndex([pending, item('head')])).toBe(1)
+  })
+})
+
+describe('isLockedInputState', () => {
+  it('locks dispatching and awaiting-echo inputs only', () => {
+    expect(isLockedInputState(AgentInputState.DISPATCHING)).toBe(true)
+    expect(isLockedInputState(AgentInputState.AWAITING_ECHO)).toBe(true)
+    for (const state of [AgentInputState.QUEUED, AgentInputState.FAILED, AgentInputState.DELIVERY_UNCERTAIN])
+      expect(isLockedInputState(state)).toBe(false)
+  })
+})
 
 function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) {
   return create(QueuedAgentInputSchema, {
@@ -78,6 +96,12 @@ describe('resolveQueueDrop', () => {
 // buttons, and the `disabled` prop of each button all read it, so a case that
 // passes here holds for every path.
 describe('resolveQueueMove', () => {
+  it('refuses to move an awaiting-echo row or onto one', () => {
+    const items = [item('sent', { state: AgentInputState.AWAITING_ECHO }), item('queued')]
+    expect(resolveQueueMove(items, 0, 1)).toBeUndefined()
+    expect(resolveQueueMove(items, 1, 0)).toBeUndefined()
+  })
+
   const three = [item('one'), item('two'), item('three')]
 
   it('points an upward move at the item one slot above', () => {

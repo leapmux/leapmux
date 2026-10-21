@@ -3,6 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { diracOutputFilePaths } from './extractors/outputFilePaths'
 import { diracToolCallAdapter } from './extractors/toolCall'
+import { diracNativeNotifications } from './notification'
 
 registerACPProvider({
   outputFilePaths: diracOutputFilePaths,
@@ -12,4 +13,5 @@ registerACPProvider({
   planValue: DIRAC_MODE.Plan,
   effortGroupKey: DIRAC_CONFIG.ReasoningEffort,
   attachments: { text: true, image: true, pdf: false, binary: false },
+  nativeNotifications: diracNativeNotifications,
 })

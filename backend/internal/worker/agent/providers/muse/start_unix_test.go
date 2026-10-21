@@ -184,7 +184,7 @@ func TestMuseNativeHostHelper(t *testing.T) {
 			}
 			reply(request.ID, map[string]any{"sessions": []any{session}, "nextCursor": nil})
 		case methodTurnStart:
-			reply(request.ID, map[string]any{"commandId": request.Params["commandId"], "status": "accepted", "turnId": "native-turn"})
+			reply(request.ID, map[string]any{"commandId": request.Params["commandId"], "status": "accepted", "turnId": "native-turn", "disposition": "started"})
 			write(map[string]any{"jsonrpc": "2.0", "method": "item/started", "params": map[string]any{"sessionId": "native-session", "viewCursor": "one", "item": map[string]any{"itemId": "native-text", "kind": "agentMessage", "turnId": "native-turn", "revision": 1, "status": "inProgress"}}})
 			write(map[string]any{"jsonrpc": "2.0", "method": "item/delta", "params": map[string]any{"sessionId": "native-session", "viewCursor": "two", "itemId": "native-text", "delta": "native partial"}})
 			os.Exit(0)

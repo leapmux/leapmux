@@ -362,3 +362,153 @@ func TestGrokDialogWithNoToolCallIsPublishedAndNotIndexed(t *testing.T) {
 	assert.Empty(t, a.controls.byToolCall)
 	a.stateMu.Unlock()
 }
+
+// Auto mode holds a tool call in Grok's own classifier before it raises the
+// real permission request. The pending_interaction notice is what tells the
+// reader the call still runs: frames 30, 34 and 36 of grok/auto2/frames.jsonl.
+func TestGrokPendingInteractionSetsThePermissionCheck(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "permission",
+	}))
+
+	running, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok, "the pending check reaches the running tool")
+	fields, ok := running.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "call_2", fields[contracts.RunningToolFieldSpanId])
+	assert.Equal(t, true, fields[contracts.RunningToolFieldPermissionCheck], "the badge states a check in progress")
+
+	// The real permission request replaces the badge with the card.
+	a.HandleOutput(frame(t, map[string]any{
+		"id": 9, "method": "session/request_permission",
+		"params": map[string]any{"sessionId": grokTestSession, "toolCall": map[string]any{"toolCallId": "call_2"}},
+	}))
+	running, ok = sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok)
+	fields, ok = running.(map[string]interface{})
+	require.True(t, ok)
+	assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck], "the request clears the check")
+}
+
+// A kind other than permission states no check, and an unknown session or a
+// call without an identity publishes nothing.
+func TestGrokPendingInteractionRejectsOtherShapes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		sessionID string
+		update    map[string]any
+	}{
+		{"a kind other than permission", grokTestSession, map[string]any{"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "question"}},
+		{"a call without an identity", grokTestSession, map[string]any{"sessionUpdate": "pending_interaction", "kind": "permission"}},
+		{"a session this agent does not serve", "session-other", map[string]any{"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "permission"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+			a.HandleOutput(notification(t, tc.sessionID, tc.update))
+			_, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+			assert.False(t, ok, "no check was published")
+		})
+	}
+}
+
+// Grok resolves an interaction on its own when it drops the request: frame 36.
+// The resolution also ends the badge.
+func TestGrokInteractionResolvedClearsTheCheck(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "permission",
+	}))
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "interaction_resolved", "tool_call_id": "call_2",
+	}))
+	running, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok)
+	fields, ok := running.(map[string]interface{})
+	require.True(t, ok)
+	assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck])
+}
+
+// A final tool update ends the call, so its badge ends too.
+func TestGrokFinalToolUpdateClearsTheCheck(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "permission",
+	}))
+	a.HooksForTest().ToolOutputComplete("call_2")
+	running, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok)
+	fields, ok := running.(map[string]interface{})
+	require.True(t, ok)
+	assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck])
+}
+
+// The turn end clears every badge, a stop included: no check outlives the turn
+// that raised it.
+func TestGrokTurnEndClearsTheChecks(t *testing.T) {
+	t.Parallel()
+	for _, stopped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stopped=%v", stopped), func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+			a.HandleOutput(notification(t, grokTestSession, map[string]any{
+				"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "permission",
+			}))
+			a.HooksForTest().PromptEnded(nil, stopped)
+			running, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+			require.True(t, ok)
+			fields, ok := running.(map[string]interface{})
+			require.True(t, ok)
+			assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck])
+		})
+	}
+}
+
+// Grok completes an external URL elicitation with its own notification: the
+// reader opened the URL, finished the flow outside, and the card must close
+// with an accept. The elicit request and the completion name the same server
+// and elicitation.
+func TestGrokElicitCompleteAcceptsTheURLElicitation(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+
+	request := frame(t, map[string]any{
+		"id": 11, "method": contracts.GrokMethodMcpElicit,
+		"params": map[string]any{
+			"sessionId": grokTestSession, "serverName": "drive", "elicitationId": "flow-7", "mode": "url",
+		},
+	})
+	a.HandleOutput(request)
+	require.Equal(t, 1, sink.PublishedControlCount(), "the URL elicitation published its card")
+
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "_x.ai/mcp/elicit_complete",
+		"params": map[string]any{"sessionId": grokTestSession, "serverName": "drive", "elicitationId": "flow-7"},
+	}))
+	require.Len(t, sink.CanceledControls(), 1, "the completion withdrew the card")
+}
+
+// A completion that names another server completes nothing.
+func TestGrokElicitCompleteOfAnotherServerChangesNothing(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	a.HandleOutput(frame(t, map[string]any{
+		"id": 12, "method": contracts.GrokMethodMcpElicit,
+		"params": map[string]any{
+			"sessionId": grokTestSession, "serverName": "drive", "elicitationId": "flow-7", "mode": "url",
+		},
+	}))
+	require.Equal(t, 1, sink.PublishedControlCount())
+
+	a.HandleOutput(frame(t, map[string]any{
+		"method": "_x.ai/mcp/elicit_complete",
+		"params": map[string]any{"sessionId": grokTestSession, "serverName": "other", "elicitationId": "flow-7"},
+	}))
+	assert.Empty(t, sink.CanceledControls(), "a foreign completion changes nothing")
+}

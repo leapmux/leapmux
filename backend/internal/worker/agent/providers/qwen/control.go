@@ -110,7 +110,7 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 		result.PlanModeControl = agent.PlanModeControlExit
 	case agent.ControlBehaviorDeny:
 		option = contracts.QwenPermissionOptionCancel
-		result.Feedback = message
+		result.FollowUp = agent.FeedbackFollowUp(message)
 	default:
 		result.Refuse(agent.RefusalNoDecision)
 		return result

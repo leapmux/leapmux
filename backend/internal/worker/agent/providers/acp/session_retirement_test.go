@@ -8,11 +8,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
+
+func TestACPClearContextEndsLiveCompaction(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newRetiringTestAgent(t)
+	providerkit.PublishCompaction(a.sink, "auto")
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	value, found := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, found)
+	assert.Nil(t, value, "a replay must not restore the previous context's compaction")
+}
 
 func TestACPChildIdentityRefusalPreservesIncompleteParentCompletion(t *testing.T) {
 	t.Parallel()

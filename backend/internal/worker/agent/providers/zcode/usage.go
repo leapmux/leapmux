@@ -42,7 +42,6 @@ type zcodeRuntimeState struct {
 	EventSeq      int64              `json:"eventSeq"`
 	ActiveTurnID  string             `json:"activeTurnId"`
 	ContextUsage  *zcodeContextUsage `json:"contextUsage"`
-	APIRetry      *zcodeAPIRetry     `json:"apiRetry"`
 	StateRevision int64              `json:"stateRevision"`
 }
 
@@ -64,16 +63,6 @@ type zcodeContextUsage struct {
 type zcodeCost struct {
 	Amount   float64 `json:"amount"`
 	Currency string  `json:"currency"`
-}
-
-// zcodeAPIRetry is the in-flight provider retry the app-server reports while it
-// backs off. Surfaced as session info so the user sees WHY a turn is idle.
-type zcodeAPIRetry struct {
-	Attempt      int    `json:"attempt"`
-	MaxRetries   int    `json:"maxRetries"`
-	RetryDelayMs int64  `json:"retryDelayMs"`
-	ErrorStatus  *int   `json:"errorStatus"`
-	Error        string `json:"error"`
 }
 
 // zcodeUsageCurrencyUSD is the only currency LeapMux's `total_cost_usd` field can
@@ -151,23 +140,6 @@ func (a *Agent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
 		a.Mu.Unlock()
 		info[contracts.SessionInfoKeyTotalCostUsd] = c.Amount
 	}
-	// No browser code reads this key, so it stays out of
-	// contracts/session-info.json and a backing-off ZCode turn currently reads as
-	// idle. Surfacing it means an agent-level retry indicator (it is
-	// session-scoped, so it does not fit the span-keyed running_tool key):
-	// https://github.com/leapmux/leapmux/issues/434
-	if r := runtime.APIRetry; r != nil {
-		info["zcode_api_retry"] = map[string]any{
-			"attempt":        r.Attempt,
-			"max_retries":    r.MaxRetries,
-			"retry_delay_ms": r.RetryDelayMs,
-			"error":          r.Error,
-		}
-	} else {
-		// An absent apiRetry means the retry finished. Reporting nil clears the
-		// indicator, which a missing key would leave stuck on the last attempt.
-		info["zcode_api_retry"] = nil
-	}
 	if runtime.EventSeq > 0 {
 		a.Mu.Lock()
 		if runtime.EventSeq > a.lastSeq {
@@ -243,11 +215,12 @@ func (a *Agent) refreshZCodeUsageFromSession() {
 		slog.Warn("zcode session/read unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	if !a.isCurrentZCodeSession(sessionID) {
+		return
+	}
 	a.applyZCodeRuntimeState(state.Runtime)
 	if state.Settings != nil {
-		a.Mu.Lock()
-		a.applySettingsSnapshotLocked(state.Settings)
-		a.Mu.Unlock()
+		a.applyZCodeSettingsSnapshot(state.Settings)
 	}
 }
 

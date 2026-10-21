@@ -44,8 +44,8 @@ export const diracTest = createProviderTest({
     }
   },
 
-  askingDiracWorkspace: async ({ page, leapmuxServer, approvalDisabledDiracHome }, use, testInfo) => {
+  askingDiracWorkspace: async ({ page, leapmuxServer, approvalDisabledDiracHome, transcriptGuard }, use, testInfo) => {
     void approvalDisabledDiracHome
-    await askingDiracWorkspace({ page, leapmuxServer }, use, testInfo)
+    await askingDiracWorkspace({ page, leapmuxServer, transcriptGuard }, use, testInfo)
   },
 })

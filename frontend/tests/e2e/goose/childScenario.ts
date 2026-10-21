@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
 import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
-import { goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { gooseFinalOutputToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage, subagentReportBubble, tabById } from '../helpers/ui'
@@ -20,6 +20,9 @@ export const GOOSE_CHILD: NativeChildProfile = {
   rowTitleHoldsDescription: false,
   prepare: bypassToolRequests,
   resolveTaskId: (context, parentId, child) => readGooseChildTaskId(context, parentId, child.spawn.id, child.prompt),
+  // The child ends through its built-in final-output tool. A plain-text answer
+  // leaves its runtime requesting another turn, which no script serves.
+  finalStep: child => ({ toolCalls: [gooseFinalOutputToolCall(`final-${child.spawn.id}`, child.report)] }),
 }
 
 /**
@@ -30,24 +33,18 @@ export async function exerciseGooseDelegateTranscript(context: ManagedNativeScen
   const { page, modelScript } = context
   const parentId = await selectedAgentTabId(page)
   await expectNoRegistryRows(page, context.leapmuxServer)
+  // The Bypass preset sets the Auto mode: the delegate and the child's
+  // built-in final-output tool both run without an approval. In the default
+  // Smart Approve mode the child waits for a permission card that no reader
+  // answers, and the parent's turn never continues.
+  await bypassToolRequests(context)
   // The child's prompt carries the marker, so the turns it runs on its own reach this script.
+  // The child ends by calling its built-in final-output tool: a plain-text
+  // answer leaves its runtime requesting another turn, which no script serves.
   await modelScript.rule({
     name: 'the child reports the shell result',
     when: gooseChildTaskMatcher('Run `echo goose-done`'),
-    respond: { text: 'The command printed goose-done.' },
-  })
-  // Goose runs a permission-safety classifier turn of its own, with its own
-  // system prompt, before it lets a tool run. It reads the answer from a
-  // `platform__tool_by_tool_permission` tool call and takes any other answer
-  // as "not read-only". That holds the tool for an approval that never comes,
-  // so the delegate never spawns and no child turn reaches the script. The
-  // test states the call ID of the spawn, so the judge can clear it.
-  await modelScript.rule({
-    name: 'the permission judge clears the delegate',
-    when: { system: 'permission-safety classifier' },
-    respond: {
-      toolCalls: [goosePermissionJudgmentToolCall('judge-goose', ['spawn-goose'])],
-    },
+    respond: { toolCalls: [gooseFinalOutputToolCall('child-final-goose', 'The command printed goose-done.')] },
   })
   const start = await modelScript.queue(
     {

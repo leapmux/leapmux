@@ -65,6 +65,8 @@ export interface GoalProgress {
  * That omission could remove counters or controls from a visible goal.
  */
 export interface GoalSurface {
+  /** Keep the objective visible without an unconfirmed status or detail. */
+  statusUnconfirmed?: true
   /** The stored goal, or undefined when the agent has none. */
   current?: SessionGoal
   /** The volatile counters. Empty rather than absent, so the card reads fields. */
@@ -187,6 +189,15 @@ export function goalActionToProto(action: GoalAction): AgentGoalAction {
     case 'resume':
       return AgentGoalAction.RESUME
   }
+}
+
+/** Hide a detail that repeats the neutral label or the status token. */
+export function visibleGoalStatusDetail(goal: { status: GoalStatus, statusDetail?: string }): string | undefined {
+  const detail = goal.statusDetail?.trim()
+  if (!detail)
+    return undefined
+  const folded = detail.toLowerCase()
+  return folded === goal.status || folded === goalStatusLabel(goal.status).toLowerCase() ? undefined : detail
 }
 
 /** The label for a status, as the card and the chip show it. */

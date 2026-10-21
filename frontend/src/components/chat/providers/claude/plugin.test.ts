@@ -15,6 +15,10 @@ import './plugin'
 describe('claude permission presets', () => {
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 
+  it('states that the goal status is unconfirmed', () => {
+    expect(plugin.session?.goalStatusUnconfirmed).toBe(true)
+  })
+
   it('maps smart and bypass permissions to Claude modes', () => {
     expect(plugin?.controls?.permissionPresets).toEqual({
       smart: { sets: { permissionMode: 'auto' } },
@@ -49,9 +53,9 @@ describe('claude extractQuotableText', () => {
     expect(providerQuotableText(AgentProvider.CLAUDE_CODE, parent, { category: { kind: 'assistant_text' } })).toBeNull()
   })
 
-  it('reads message.content string for user_text', () => {
+  it('reads a stored user string through the unknown-row fallback', () => {
     const parent = { type: 'user', message: { content: '  hello  ' } }
-    expect(providerQuotableText(AgentProvider.CLAUDE_CODE, parent, { category: { kind: 'user_text' } })).toBe('hello')
+    expect(providerQuotableText(AgentProvider.CLAUDE_CODE, parent, { category: { kind: 'unknown' } })).toBe('hello')
   })
 
   it('reads parent.content string for user_content / plan_execution', () => {
@@ -111,10 +115,8 @@ describe('claude preview text (scroll-rail mark preview)', () => {
     expect(preview(parent, { kind: 'tool_result' })).toBe('first')
   })
 
-  it('reads the Claude {message:{content}} transcript envelope (a Claude-specific shape, not the shared default)', () => {
-    // A transcript user row nests its text under message.content as a string; this Anthropic
-    // shape is read here, by the provider that owns it, not by a neutral fallback.
-    expect(preview({ message: { content: 'typed text' } }, { kind: 'user_text' })).toBe('typed text')
+  it('reads a stored native user string through the unknown-row fallback', () => {
+    expect(preview({ type: 'user', message: { content: 'typed text' } }, { kind: 'unknown' })).toBe('typed text')
   })
 
   it('states the label a turn-end divider carries', () => {
@@ -312,7 +314,7 @@ describe('claude relatedMessages', () => {
  * `task_started`/`task_progress` row carries the spawn span as its parent,
  * which is the shape that its hide rule reads.
  */
-const CLAUDE_FRAME_CORPUS: { name: string, frame: Record<string, unknown>, parentSpanId?: string }[] = [
+const CLAUDE_FRAME_CORPUS: { name: string, frame: Record<string, unknown>, parentSpanId?: string, unsupported?: boolean }[] = [
   // The system notices: each one draws its own words, hides, or feeds the Worker's state.
   { name: 'init', frame: { type: 'system', subtype: 'init', slash_commands: ['goal'], session_id: 's-1' } },
   { name: 'commands_changed', frame: { type: 'system', subtype: 'commands_changed', commands: [{ name: 'review', description: 'Review the diff', argumentHint: '' }], uuid: 'u-1', session_id: 's-1' } },
@@ -348,7 +350,7 @@ const CLAUDE_FRAME_CORPUS: { name: string, frame: Record<string, unknown>, paren
   { name: 'post_turn_summary', frame: { type: 'system', subtype: 'post_turn_summary', uuid: 'u-1', session_id: 's-1' } },
 
   // The conversation, compaction, retry and background-task frames.
-  { name: 'status compacting', frame: { type: 'system', subtype: 'status', status: 'compacting', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'status compacting', unsupported: true, frame: { type: 'system', subtype: 'status', status: 'compacting', uuid: 'u-1', session_id: 's-1' } },
   { name: 'compact_boundary', frame: { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', tokensBefore: 180000, tokensAfter: 12000 }, uuid: 'u-1', session_id: 's-1' } },
   { name: 'microcompact_boundary', frame: { type: 'system', subtype: 'microcompact_boundary', uuid: 'u-1', session_id: 's-1' } },
   { name: 'api_retry', frame: { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 5, retry_delay_ms: 4000, error_status: 529, error: 'overloaded', uuid: 'u-1', session_id: 's-1' } },
@@ -359,7 +361,6 @@ const CLAUDE_FRAME_CORPUS: { name: string, frame: Record<string, unknown>, paren
   { name: 'task_notification', frame: { type: 'system', subtype: 'task_notification', task_id: 't-1', tool_use_id: 'tu-spawn', status: 'completed', summary: 's', uuid: 'u-1', session_id: 's-1' } },
   { name: 'task_updated', frame: { type: 'system', subtype: 'task_updated', task_id: 't-1', patch: { status: 'completed' }, uuid: 'u-1', session_id: 's-1' } },
   { name: 'background_tasks_changed', frame: { type: 'system', subtype: 'background_tasks_changed', tasks: [], uuid: 'u-1', session_id: 's-1' } },
-  { name: 'conversation_reset', frame: { type: 'conversation_reset', new_conversation_id: 'conv-2' } },
   { name: 'rate_limit_event', frame: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resets_at: 1792000060 }, uuid: 'u-1', session_id: 's-1' } },
   { name: 'assistant', frame: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] }, uuid: 'u-1', session_id: 's-1' } },
   { name: 'user', frame: { type: 'user', message: { role: 'user', content: 'hi' }, uuid: 'u-1', session_id: 's-1' } },
@@ -367,11 +368,11 @@ const CLAUDE_FRAME_CORPUS: { name: string, frame: Record<string, unknown>, paren
 ]
 
 describe('claude 2.1.300 frame corpus', () => {
-  it.each(CLAUDE_FRAME_CORPUS)('extracts a row for $name', ({ frame, parentSpanId }) => {
+  it.each(CLAUDE_FRAME_CORPUS)('classifies the native frame $name', ({ frame, parentSpanId, unsupported }) => {
     const classified = parentSpanId === undefined ? input(frame) : { ...input(frame), parentSpanId }
     const category = classifyClaudeCodeMessage(classified)
     const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, classified, category)
-    expect(extraction.kind).not.toBe('unsupported')
+    expect(extraction.kind === 'unsupported').toBe(unsupported === true)
   })
 
   // A known frame that states no words draws nothing, never the no-display
@@ -384,6 +385,11 @@ describe('claude 2.1.300 frame corpus', () => {
     const classified = input(frame)
     const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, classified, classifyClaudeCodeMessage(classified))
     expect(extraction).toEqual(extractChatRow(AgentProvider.CLAUDE_CODE, classified, { kind: 'hidden' }))
+  })
+
+  it('leaves a stored compacting status unknown', () => {
+    const classified = input({ type: 'system', subtype: 'status', status: 'compacting' })
+    expect(classifyClaudeCodeMessage(classified)).toEqual({ kind: 'unknown' })
   })
 
   it('extracts the no-display card for an unknown subtype', () => {

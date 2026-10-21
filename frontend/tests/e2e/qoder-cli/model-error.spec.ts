@@ -1,4 +1,5 @@
 import { exerciseModelError, nativeErrorMarker } from '../helpers/nativeModelError'
+import { exerciseModelRetry } from '../helpers/nativeModelRetry'
 import { qoderTest } from '../qoder-fixtures'
 
 qoderTest('shows the native model error and runs a later valid turn', async ({ native }) => {
@@ -11,4 +12,8 @@ qoderTest('shows the native model error and runs a later valid turn', async ({ n
     // `errors` of its `result`.
     error: { status: 500, code: 'stream_error', message: nativeErrorMarker(), midStream: true },
   })
+})
+
+qoderTest('folds a retried model error into one resolved row', async ({ native }) => {
+  await exerciseModelRetry(native, { errors: [{ status: 503, message: 'The service is unavailable.' }] })
 })

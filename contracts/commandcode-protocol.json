@@ -1,5 +1,5 @@
 {
-  "_readme": "Command Code native JSON-RPC events come from `command-code --experimental --rpc`. Every event frame holds its native event under `event`. The backend keeps original provider bytes. Both languages read these event types and tool names. Permission modes are native state values.\n\nThe Worker preserves each native event. The browser shows reported output file paths beside the original inline preview. LeapMux reads no output file. The official mod bridge calls native session compaction through an authenticated local endpoint.",
+  "_readme": "Command Code native JSON-RPC events come from `command-code --experimental --rpc`. Every event frame holds its native event under `event`. The backend keeps original provider bytes. Both languages read these event types and tool names. Permission modes are native state values.\n\nThe Worker preserves each native event. The browser shows reported output file paths beside the original inline preview. LeapMux reads no output file. The official mod bridge calls native session compaction through an authenticated local endpoint.\n\ncompactionOutcomes holds the outcomes that both sides read. Only the Worker compares compactionTriggers. notificationEvents lists the events that the Worker persists as notifications. The browser threads them. A compaction start is live session state. The Worker consumes compaction_done.",
   "frameKinds": {
     "Event": "event"
   },
@@ -25,7 +25,12 @@
     "SubagentStop": "subagent_stop",
     "SubagentProgress": "subagent_progress",
     "PermissionModeChanged": "permission_mode_changed",
-    "ConfigSettingChanged": "config_setting_changed"
+    "ConfigSettingChanged": "config_setting_changed",
+    "StreamRestart": "stream_restart",
+    "ContinuationRecovery": "continuation_recovery",
+    "SkillLoaded": "skill_loaded",
+    "ModError": "mod_error",
+    "ToolHooks": "tool_hooks"
   },
   "methods": {
     "TurnCompleted": "turn/completed"
@@ -45,5 +50,99 @@
     "TodoWrite": "todo_write",
     "TaskCreate": "task_create",
     "TaskUpdate": "task_update"
+  },
+  "compactionOutcomes": {
+    "Summarized": "summarized",
+    "TooSmall": "too-small",
+    "Failed": "failed"
+  },
+  "compactionTriggers": {
+    "Manual": "manual",
+    "Overflow": "overflow"
+  },
+  "notificationEvents": [
+    "CompactionOutcome",
+    "Notice",
+    "ApiRetry",
+    "RunError",
+    "StreamRestart",
+    "ContinuationRecovery",
+    "SkillLoaded",
+    "ModError",
+    "ToolHooks"
+  ],
+  "_unread": {
+    "compactionOutcomes": {
+      "TooSmall": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores every native outcome without a separate comparison."
+      }
+    },
+    "compactionTriggers": {
+      "Overflow": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker preserves this trigger without a separate comparison."
+      }
+    },
+    "events": {
+      "CompactionDone": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "RunStart": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "RunEnd": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "ModelRequestEnd": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "ToolUpdate": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "SubagentStart": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "SubagentStop": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "PermissionModeChanged": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      },
+      "ConfigSettingChanged": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker consumes this event and stores no transcript row."
+      }
+    }
   }
 }

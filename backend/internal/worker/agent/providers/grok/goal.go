@@ -151,25 +151,23 @@ const (
 	grokGoalStatusBackOffPaused    = "back_off_paused"
 	grokGoalStatusNoProgressPaused = "no_progress_paused"
 	grokGoalStatusInfraPaused      = "infra_paused"
-	grokGoalStatusDoomLoopPaused   = "doom_loop_paused"
 	grokGoalStatusBlocked          = "blocked"
 	grokGoalStatusBudgetLimited    = "budget_limited"
 	grokGoalStatusComplete         = "complete"
 	grokGoalStatusCleared          = "cleared"
 )
 
-// grokGoalStatus maps Grok's nine status words onto the four neutral ones.
+// grokGoalStatus maps Grok's eight status words onto the four neutral ones.
 //
 // Every paused word maps to PAUSED, because `/goal resume` continues each of
-// them. `doom_loop_paused` is the legacy name of a user pause. An unknown word
-// maps to blocked for the reason Codex's does: a status this build cannot read
-// is one it must not offer Pause for.
+// them. An unknown word maps to blocked for the reason Codex's does: a status
+// this build cannot read is one it must not offer Pause for.
 func grokGoalStatus(wire string) agent.GoalStatus {
 	switch wire {
 	case grokGoalStatusActive:
 		return agent.GoalStatusActive
 	case grokGoalStatusUserPaused, grokGoalStatusBackOffPaused, grokGoalStatusNoProgressPaused,
-		grokGoalStatusInfraPaused, grokGoalStatusDoomLoopPaused:
+		grokGoalStatusInfraPaused:
 		return agent.GoalStatusPaused
 	case grokGoalStatusComplete:
 		return agent.GoalStatusDone
@@ -182,7 +180,7 @@ func grokGoalStatus(wire string) agent.GoalStatus {
 // pause or a block. A plain `active`, `user_paused` or `complete` needs no word.
 func grokGoalStatusDetail(update grokGoalUpdate) string {
 	switch update.Status {
-	case grokGoalStatusActive, grokGoalStatusUserPaused, grokGoalStatusDoomLoopPaused, grokGoalStatusComplete:
+	case grokGoalStatusActive, grokGoalStatusUserPaused, grokGoalStatusComplete:
 		return ""
 	}
 	word := strings.ReplaceAll(update.Status, "_", " ")

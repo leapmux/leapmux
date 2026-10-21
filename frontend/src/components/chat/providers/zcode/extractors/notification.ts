@@ -1,4 +1,4 @@
-import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
+import type { CompactionDetails, HookOutcome, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import {
   ZCODE_COMPACTION_STATUS,
@@ -6,48 +6,28 @@ import {
   ZCODE_EVENT,
   ZCODE_GOAL_VERIFICATION_STATUS,
   ZCODE_HOOK_RUN_OUTCOME,
-  ZCODE_METHOD,
-  ZCODE_MODEL_SELECTION_ORIGIN,
   ZCODE_NETWORK_STATUS,
-  ZCODE_STATE_REASON,
 } from '~/generated/contracts/zcode-protocol'
 import { pickCounter, pickObject, pickString } from '~/lib/jsonPick'
-import { zcodeIsMainQuery } from '../messageContent'
+import { retryEntry } from '../../../model/notification'
 import { zcodeSessionUpdateKind } from '../sessionUpdateKind'
 import { zcodeEnvelope } from './toolCommon'
 
 /**
- * The sentence for one resolved permission, per decision.
- *
- * Only a decision the app-server made BY ITSELF reaches a row -- one the user
- * answered is already recorded as its own answer row.
- *
- * This table lists every decision in the app-server's enumeration, and a decision that is
- * absent or outside it yields null: reporting an unread decision as a denial would
- * state the opposite of an `allow` and would turn an escalation into a refusal that
- * never happened.
- *
- * A Map rather than a plain object, for the reason `zcode/toolKinds.ts` gives: the
- * key is a WIRE word, and a plain object answers `toString` or `constructor` from
- * `Object.prototype` instead of reporting that it holds no entry. This table holds
- * FUNCTIONS, so that answer was then CALLED -- `toString` drew `[object Undefined]`
- * as the whole sentence, and `__proto__` threw and took the message into the
- * ErrorBoundary.
+ * Map the automatic decisions that the worker stores to their text.
+ * A user answer already has its own response row. The worker drops automatic allows.
+ * An unknown decision has no entry. It must not become a denial by default.
+ * The map does not inherit object properties, so a wire value cannot select Object.prototype methods.
  */
 const ZCODE_DECISION_PHRASE: ReadonlyMap<string, (tool: string) => string> = new Map([
-  [ZCODE_DECISION.Allow, (tool: string) => `Allowed ${tool} automatically`],
   [ZCODE_DECISION.Deny, (tool: string) => `Denied ${tool}`],
   [ZCODE_DECISION.Escalate, (tool: string) => `Escalated ${tool} for approval`],
   [ZCODE_DECISION.Modify, (tool: string) => `Ran ${tool} with modified input`],
 ])
 
 /**
- * A human-readable line for one ZCode notification row.
- *
- * Returns null for a shape ZCode does not own, so the shared provider-neutral
- * notification switch (settings_changed, interrupted, ...) can try it instead -- and
- * for a row of ZCode's own whose decision it cannot read, which the plugin then
- * hides rather than surfacing as an empty notification.
+ * Describe one native notification.
+ * Return null when this reader has no description. The shared reader can then check worker notifications.
  */
 export function describeZCodeNotification(parsed: unknown): string | null {
   const envelope = zcodeEnvelope(parsed)
@@ -98,21 +78,14 @@ const ZCODE_STEER_DISCARD_REASON_PHRASE: ReadonlyMap<string, string> = new Map([
 ])
 
 /**
- * The entries for one `session.updated` row, dispatched on the payload's kind.
- *
- * These are the notification rows that the worker persists:
- *
- *   - The final state of a goal check.
- *   - The compaction lifecycle.
- *   - The microcompact boundary.
- *   - The scheduled retry of the main turn.
- *   - The registry fallback.
- *   - A client-visible hook failure.
- *   - The workspace hook admission.
- *   - A discarded queued input.
- *
- * A shape that the reader has no text for answers with no entries, and the
- * classifier hides the row.
+ * Read the native notification shapes that the worker stores:
+ * - Goal check results.
+ * - Compaction ends and microcompact boundaries.
+ * - API retries.
+ * - Registry model fallbacks.
+ * - Hook failures and hook admission notices.
+ * - Discarded queued input.
+ * A shape with no readable facts returns no entries.
  */
 function zcodeSessionUpdateEntries(payload: Record<string, unknown>): NotificationEntry[] {
   switch (zcodeSessionUpdateKind(payload)) {
@@ -127,8 +100,6 @@ function zcodeSessionUpdateEntries(payload: Record<string, unknown>): Notificati
     case 'modelSelected': {
       // The registry fallback is the one switch that states its source and its
       // target. The worker persists no other model selection.
-      if (pickString(payload, 'origin') !== ZCODE_MODEL_SELECTION_ORIGIN.RegistryFallback)
-        return []
       const from = pickString(pickObject(payload, 'previousModelSelection'), 'modelId')
       const to = pickString(pickObject(payload, 'modelSelection'), 'modelId')
       return from && to ? [{ kind: 'text', text: `Switched from ${from} to ${to}` }] : []
@@ -137,7 +108,7 @@ function zcodeSessionUpdateEntries(payload: Record<string, unknown>): Notificati
       return zcodeHookRunEntries(payload)
     case 'hookAdmission': {
       const pending = pickCounter(payload, 'pendingCount')
-      if (!pending)
+      if (pending === undefined)
         return []
       const hooks = pending === 1 ? 'workspace hook' : 'workspace hooks'
       return [{ kind: 'text', text: `${pending} ${hooks} pending review; disabled for this session` }]
@@ -152,28 +123,27 @@ function zcodeSessionUpdateEntries(payload: Record<string, unknown>): Notificati
 }
 
 /**
- * The verb for each hook outcome that a user must see. A cancelled hook stopped
- * with its turn, which is not a failure, so it has no verb.
+ * Map native hook outcomes to neutral outcomes and their detail fields.
+ * A cancelled hook stops with its turn and supplies no failure notice.
  */
-const ZCODE_HOOK_OUTCOME_VERB: ReadonlyMap<string, { verb: string, messageKey: string | null }> = new Map([
-  [ZCODE_HOOK_RUN_OUTCOME.Failed, { verb: 'failed', messageKey: 'errorMessage' }],
-  [ZCODE_HOOK_RUN_OUTCOME.Blocked, { verb: 'blocked', messageKey: 'blockReason' }],
+const ZCODE_HOOK_OUTCOMES: ReadonlyMap<string, { outcome: HookOutcome, messageKey: string | null }> = new Map([
+  [ZCODE_HOOK_RUN_OUTCOME.Failed, { outcome: 'failed', messageKey: 'errorMessage' }],
+  [ZCODE_HOOK_RUN_OUTCOME.Blocked, { outcome: 'blocked', messageKey: 'blockReason' }],
   // ZCode's message for a timeout is "Hook timed out after {n}ms", which repeats
   // the verb. The row omits it.
-  [ZCODE_HOOK_RUN_OUTCOME.TimedOut, { verb: 'timed out', messageKey: null }],
+  [ZCODE_HOOK_RUN_OUTCOME.TimedOut, { outcome: 'timed-out', messageKey: null }],
 ])
 
-/** A client-visible hook run that did not do its work. */
+/**
+ * Read a stored hook failure. The worker already checked its visibility.
+ */
 function zcodeHookRunEntries(payload: Record<string, unknown>): NotificationEntry[] {
-  if (pickObject(payload, 'descriptor')?.clientVisible !== true)
-    return []
-  const outcome = ZCODE_HOOK_OUTCOME_VERB.get(pickString(payload, 'outcome'))
+  const outcome = ZCODE_HOOK_OUTCOMES.get(pickString(payload, 'outcome'))
   if (!outcome)
     return []
   const event = pickString(payload, 'hookEventName').trim()
-  const head = `${event ? `Hook ${event}` : 'A hook'} ${outcome.verb}`
   const message = outcome.messageKey ? pickString(payload, outcome.messageKey).trim() : ''
-  return [{ kind: 'text', text: message ? `${head}: ${message}` : head }]
+  return [{ kind: 'hook', outcome: outcome.outcome, ...(event ? { event } : {}), ...(message ? { detail: message } : {}) }]
 }
 
 /** `head — detail`, or `head` alone when the detail states nothing. */
@@ -238,43 +208,30 @@ function zcodeCompactionDetails(payload: Record<string, unknown>): CompactionDet
   return detail
 }
 
-/** The compaction lifecycle: one row for each state of the one rewrite. */
+/**
+ * Read a stored compaction end and its outcome.
+ */
 function zcodeCompactionLifecycleEntries(payload: Record<string, unknown>): NotificationEntry[] {
   const status = pickString(payload, 'status')
   switch (status) {
-    case ZCODE_COMPACTION_STATUS.Started:
-      return [{ kind: 'compaction', phase: 'start' }]
-    case ZCODE_COMPACTION_STATUS.Retrying: {
-      const attempt = pickCounter(payload, 'attempt')
-      const maxAttempts = pickCounter(payload, 'maxAttempts')
-      return [{
-        kind: 'retry',
-        scope: 'summarization',
-        ...(attempt !== undefined ? { attempt } : {}),
-        ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-      }]
-    }
     case ZCODE_COMPACTION_STATUS.Skipped:
-      return [{ kind: 'text', text: 'Context is up to date; no compression needed' }]
+      return [{ kind: 'compaction', phase: 'end', outcome: 'skipped' }]
     case ZCODE_COMPACTION_STATUS.Completed:
       return [{ kind: 'compaction', phase: 'end', detail: zcodeCompactionDetails(payload) }]
     case ZCODE_COMPACTION_STATUS.Failed:
       // A failed compaction states why in its `reason`.
-      return [{ kind: 'compaction', phase: 'end', error: pickString(payload, 'reason').trim() || 'the provider reported a failure' }]
+      return [{ kind: 'compaction', phase: 'end', outcome: 'failed', error: pickString(payload, 'reason').trim() || 'the provider reported a failure' }]
     case ZCODE_COMPACTION_STATUS.Interrupted:
-      return [{ kind: 'compaction', phase: 'end', error: 'aborted' }]
+      return [{ kind: 'compaction', phase: 'end', outcome: 'aborted' }]
     default:
       return []
   }
 }
 
 /**
- * The size facts of a completed compaction row, or null for any other row.
- *
- * The plugin's `compactionBoundaryFromMessage` hook. The context meter reads the
- * size after the rewrite from it, so an automatic compaction, which ends with no
- * reply of its own, moves the meter at once. Every other compaction state, a
- * microcompact and a stored `state.updated` row state no size after the rewrite.
+ * Read the sizes from a successful compaction end for the context meter.
+ * The measured post-compaction count takes precedence over the estimate.
+ * Other outcomes and microcompactions supply no size after the compaction.
  */
 export function zcodeCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const envelope = zcodeEnvelope(parsed.parentObject)
@@ -287,12 +244,10 @@ export function zcodeCompactionBoundary(parsed: ParsedMessageContent): Compactio
 }
 
 /**
- * The scheduled retry of the main turn, from the api-retry record that the
- * worker normalized. A side query's retry follows the rule of its reply: the
- * model call is the app-server's own, so it is not the user's.
+ * Read the native apiRetry record. The worker stores only main-request retries.
  */
 function zcodeNetworkRetryEntries(payload: Record<string, unknown>): NotificationEntry[] {
-  if (pickString(payload, 'type') !== ZCODE_NETWORK_STATUS.RetryScheduled || !zcodeIsMainQuery(payload))
+  if (pickString(payload, 'type') !== ZCODE_NETWORK_STATUS.RetryScheduled)
     return []
   const apiRetry = pickObject(pickObject(pickObject(payload, '_meta'), 'zcode'), 'apiRetry')
   if (!apiRetry)
@@ -300,42 +255,29 @@ function zcodeNetworkRetryEntries(payload: Record<string, unknown>): Notificatio
   const attempt = pickCounter(apiRetry, 'attempt')
   const maxAttempts = pickCounter(apiRetry, 'maxRetries')
   const delayMs = pickCounter(apiRetry, 'retryDelayMs')
-  return [{
-    kind: 'retry',
-    scope: 'api',
+  return [retryEntry('api', {
     ...(attempt !== undefined ? { attempt } : {}),
     ...(maxAttempts !== undefined ? { maxAttempts } : {}),
     ...(delayMs !== undefined ? { delayMs } : {}),
     error: pickString(apiRetry, 'error'),
-  }]
+  })]
 }
 
 /**
- * Read one ZCode notification row into the shared notification model.
- *
- * ZCode's SOLE notification seam, for a standalone row and for one entry of a
- * consolidated wrapper alike -- without it a multi-event thread would render only its
- * first message.
+ * Read one standalone notification or one member of a notification thread.
  */
 export function zcodeNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
-  if (pickString(msg, 'method') === ZCODE_METHOD.StateUpdated) {
-    const reason = pickString(pickObject(msg, 'params'), 'reason')
-    switch (reason) {
-      case ZCODE_STATE_REASON.CompactStarted:
-        return [{ kind: 'compaction', phase: 'start' }]
-      case ZCODE_STATE_REASON.SessionCompacted:
-        return [{ kind: 'compaction', phase: 'end', detail: {} }]
-      case ZCODE_STATE_REASON.SessionCompactFailed:
-        return [{ kind: 'compaction', phase: 'end', error: 'the provider reported a failure' }]
-      case ZCODE_STATE_REASON.SessionCompactCancelled:
-        return [{ kind: 'compaction', phase: 'end', error: 'cancelled' }]
-      default:
-        return []
-    }
-  }
   const envelope = zcodeEnvelope(msg)
   if (envelope && envelope.type === ZCODE_EVENT.SessionUpdated)
     return zcodeSessionUpdateEntries(envelope.payload)
   const text = describeZCodeNotification(msg)
   return text === null ? [] : [{ kind: 'text', text }]
+}
+
+/** Identify an old stored start without restoring its notification reader. */
+export function zcodeCompactionStart(message: Record<string, unknown>): boolean {
+  const envelope = zcodeEnvelope(message)
+  if (envelope?.type !== ZCODE_EVENT.SessionUpdated || zcodeSessionUpdateKind(envelope.payload) !== 'compaction')
+    return false
+  return envelope.payload.status === ZCODE_COMPACTION_STATUS.Started || envelope.payload.status === ZCODE_COMPACTION_STATUS.Retrying
 }

@@ -64,7 +64,6 @@ const PLAIN_ROW_TYPES: ReadonlySet<string> = new Set([
   NOTIFICATION_TYPE.Interrupted,
   NOTIFICATION_TYPE.AgentError,
   NOTIFICATION_TYPE.PlanUpdated,
-  NOTIFICATION_TYPE.Compacting,
   // The worker writes `plan_execution` in LeapMux's own envelope for EVERY provider,
   // and `leapmuxNotificationEntry` draws the one row for it, so every plugin that
   // meets one reaches the same answer. This entry answers for an UNWRAPPED row of the

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -81,14 +82,17 @@ type ampSourceEstimate struct {
 
 // buildUserLine encodes one message as a stdin line. It refuses a message that
 // Amp would refuse, with a reason the user can act on.
+// It also returns the text blocks in wire order for echo matching.
 //
 // The text travels as one block and each text attachment as a block of its
 // own, delimited with its file name. Each image travels as a base64 block of
 // its detected type.
-func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bool) ([]byte, error) {
+func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bool) ([]byte, []string, error) {
 	blocks := make([]any, 0, len(attachments)+1)
+	texts := make([]string, 0, len(attachments)+1)
 	estimate := make([]ampContentEstimate, 0, len(attachments)+1)
 	addText := func(text string) {
+		texts = append(texts, text)
 		blocks = append(blocks, textBlock{Type: contracts.AmpBlockTypeText, Text: text})
 		estimate = append(estimate, ampContentEstimate{Type: contracts.AmpBlockTypeText, Text: text})
 	}
@@ -103,11 +107,11 @@ func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bo
 		case agent.AttachmentKindImage:
 			mediaType, err := checkImage(attachment)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			images++
 			if images > maxImagesPerLine {
-				return nil, fmt.Errorf("the message holds %d images, and Amp takes at most %d in one message", countImages(attachments), maxImagesPerLine)
+				return nil, nil, fmt.Errorf("the message holds %d images, and Amp takes at most %d in one message", countImages(attachments), maxImagesPerLine)
 			}
 			data := base64.StdEncoding.EncodeToString(attachment.Data)
 			blocks = append(blocks, imageBlock{Type: blockTypeImage, Source: imageSource{Type: imageSourceBase64, MediaType: mediaType, Data: data}})
@@ -118,15 +122,15 @@ func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bo
 			})
 		default:
 			// ValidateAttachment refused these before the queue accepted them.
-			return nil, providerkit.RejectPDFAndBinaryAttachment("Amp", attachment)
+			return nil, nil, providerkit.RejectPDFAndBinaryAttachment("Amp", attachment)
 		}
 	}
 	size, err := jsonSize(estimate)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if size > maxLineContentBytes {
-		return nil, fmt.Errorf("the message is too large for Amp: it holds %d bytes as JSON, and Amp takes at most %d. Remove an image or shorten the text", size, maxLineContentBytes)
+		return nil, nil, fmt.Errorf("the message is too large for Amp: it holds %d bytes as JSON, and Amp takes at most %d. Remove an image or shorten the text", size, maxLineContentBytes)
 	}
 	line, err := json.Marshal(userLine{
 		Type:    contracts.AmpLineTypeUser,
@@ -134,9 +138,9 @@ func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bo
 		Message: userMessage{Role: roleUser, Content: blocks},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("encode the message for Amp: %w", err)
+		return nil, nil, fmt.Errorf("encode the message for Amp: %w", err)
 	}
-	return line, nil
+	return line, texts, nil
 }
 
 // countImages counts the image attachments of one message.
@@ -213,3 +217,6 @@ func checkImage(attachment agent.ClassifiedAttachment) (string, error) {
 	}
 	return mediaType, nil
 }
+
+// ampEchoKey identifies the ordered text blocks that Amp echoes.
+func ampEchoKey(texts []string) string { return strings.Join(texts, "\x00") }

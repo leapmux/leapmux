@@ -600,3 +600,58 @@ func TestWriteStoredConversationSkipsWhatItCannotShow(t *testing.T) {
 	r.agent.writeStoredConversation(backfillJob{target: child, label: "test"}, "stored", messages)
 	assert.Equal(t, []string{contracts.ClineEventAssistantFinished}, rowEvents(t, sink.Child(childID)))
 }
+
+func TestClineNoticeDuringASpawnLandsInTheChild(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.feed(t, contracts.ClineEventToolStarted, spawnStart("spawn_notice", "Read the file."))
+	r.feed(t, eventIterationStarted, map[string]any{"iteration": 1})
+	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "Retry the child model.", "agent": map[string]any{"kind": agentKindLead}, "metadata": map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry}})
+	child := r.childSink(t, "spawn_notice")
+	assert.Zero(t, r.sink.NotificationCount())
+	require.Len(t, child.PersistedNotifications(), 1)
+	assert.Contains(t, string(child.LastNotification().Content), "Retry the child model.")
+}
+
+func TestClineNoticeOutsideATurnStartsNoTurn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "The session notice."})
+	assert.False(t, r.turnActive())
+	assert.Equal(t, 1, r.sink.NotificationCount())
+}
+
+func TestClineNoticeOfAmbiguousSpawnsIsDropped(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.feed(t, contracts.ClineEventToolStarted, spawnStart("spawn_one", "Read one file."))
+	r.feed(t, contracts.ClineEventToolStarted, spawnStart("spawn_two", "Read another file."))
+	r.feed(t, eventIterationStarted, map[string]any{"iteration": 1})
+	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "An unowned notice."})
+	assert.Zero(t, r.sink.NotificationCount())
+	assert.Zero(t, r.childSink(t, "spawn_one").NotificationCount())
+	assert.Zero(t, r.childSink(t, "spawn_two").NotificationCount())
+}
+
+func TestClineChildCompactionEndsWithItsSpawn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.feed(t, contracts.ClineEventToolStarted, spawnStart("spawn_compact", "Read a file."))
+	r.feed(t, eventIterationStarted, map[string]any{"iteration": 1})
+	r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
+	child := r.childSink(t, "spawn_compact")
+	value, exists := child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+	r.feed(t, contracts.ClineEventToolFinished, spawnFinish("spawn_compact", "", "completed"))
+	value, exists = child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Nil(t, value)
+	notices := child.LeapMuxNotifications()
+	require.Len(t, notices, 1)
+	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notices[0][contracts.NotificationFieldType])
+	assert.Equal(t, contracts.CompactionEndOutcomeFailed, notices[0][contracts.NotificationFieldOutcome])
+}

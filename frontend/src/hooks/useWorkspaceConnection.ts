@@ -135,6 +135,7 @@ export function clearOfflineAgentState(
   // An offline worker cannot report that the agent settled.
   // Remove its stored activity level so the view removes the spinner and the unusable Interrupt button.
   stores.agentActivityStore?.forget(agentId)
+  stores.chatStore.clearLiveCompaction(agentId)
   clearPerTurnLiveState(agentId, stores)
 }
 

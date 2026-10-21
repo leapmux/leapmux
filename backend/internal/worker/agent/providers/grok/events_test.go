@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -21,7 +22,7 @@ func TestGrokConsumesItsOwnNotificationsSilently(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
 	for _, method := range []string{
-		"_x.ai/sessions/changed", "_x.ai/session/interjection", "_x.ai/mcp/servers_changed", "_x.ai/setup/phase",
+		"_x.ai/mcp/servers", "_x.ai/mcp/server_status", "_x.ai/session/update", "_x.ai/session/load",
 	} {
 		line := parsedLine(t, frame(t, map[string]any{"method": method, "params": map[string]any{"sessionId": grokTestSession}}))
 		assert.True(t, a.handleExtraMethod(line), method)
@@ -124,4 +125,60 @@ func TestGrokNotificationWithNoSessionIsTheMainSessions(t *testing.T) {
 	goal, ok := sink.LastGoal()
 	require.True(t, ok)
 	assert.Equal(t, "g-1", goal.NativeID)
+}
+
+// The known `_x.ai/` notification methods each have a verdict, and an unknown
+// notification of a served session persists raw (decision 1).
+func TestGrokNotificationTable(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{
+		"_x.ai/mcp/auth_trigger", "_x.ai/mcp/bearer", "_x.ai/mcp/delete",
+		"_x.ai/mcp/elicit_complete", "_x.ai/mcp/init_progress", "_x.ai/mcp/list",
+		"_x.ai/mcp/mcp_initialized", "_x.ai/mcp/sdk_call", "_x.ai/mcp/server_status",
+		"_x.ai/mcp/servers", "_x.ai/mcp/servers_updated", "_x.ai/mcp/setup",
+		"_x.ai/mcp/toggle_tool", "_x.ai/mcp/tools_changed", "_x.ai/mcp/upsert",
+		// The four below were observed on the wire of a live run: the setup
+		// phase walker, the MCP-ready twin, the session-list twin, and the
+		// prompt-complete twin of turn_completed.
+		"_x.ai/mcp_initialized", "_x.ai/session/setup",
+		"_x.ai/session/prompt_complete", "_x.ai/sessions/changed",
+		"_x.ai/session/interjection",
+		"_x.ai/session/close", "_x.ai/session/load", "_x.ai/session/update", "_x.ai/session/upsert",
+	} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+			a.HandleOutput(frame(t, map[string]any{
+				"method": method, "params": map[string]any{"sessionId": grokTestSession},
+			}))
+			assert.Empty(t, sink.Messages(), "%s is known live chrome, not a row", method)
+		})
+	}
+
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	unknown := frame(t, map[string]any{
+		"method": "_x.ai/future_method", "params": map[string]any{"sessionId": grokTestSession, "payload": true},
+	})
+	a.HandleOutput(unknown)
+	rows := sink.Messages()
+	require.Len(t, rows, 1, "an unknown notification of a served session persists raw")
+	assert.JSONEq(t, string(unknown), string(rows[0].Content))
+}
+
+// An unknown `_x.ai/` notification of the current session persists byte for
+// byte; one of another session reaches nothing.
+func TestGrokUnknownNotificationPersists(t *testing.T) {
+	t.Parallel()
+	unknownFrame := func(t *testing.T, sessionID string) []byte {
+		t.Helper()
+		return frame(t, map[string]any{"method": "_x.ai/future_method", "params": map[string]any{"sessionId": sessionID, "value": 1}})
+	}
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "current session", Frame: unknownFrame(t, grokTestSession)},
+		{Name: "other session", Frame: unknownFrame(t, "session-other"), OtherSession: true},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(tc.Frame)
+		return &sink.Sink
+	})
 }

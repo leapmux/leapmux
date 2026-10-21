@@ -19,7 +19,7 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
+import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, PROMPT_SUGGESTION_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -262,7 +262,7 @@ export function handleAgentSessionInfo(
   const { agentSessionStore, chatStore } = stores
   if (transcriptOnly || (delivery.phase === 'replay' && !agentSessionStore.acceptsReplay(agentId, delivery.replayId ?? 0n)))
     return true
-  const info = parsed.topLevel.info as Record<string, unknown> | undefined
+  const info = isObject(parsed.topLevel.info) ? parsed.topLevel.info : undefined
   const updates = wireSessionInfoToUpdates(info)
   const rateLimits = wireRateLimitUpdateFromSessionInfo(info)
   const generationProgress = wireGenerationProgress(info)
@@ -292,6 +292,27 @@ export function handleAgentSessionInfo(
           ...(learnMoreUrl !== '' ? { learnMoreUrl } : {}),
         })
       }
+    }
+  }
+  if (info && SESSION_INFO_KEY.Compaction in info) {
+    const value = info[SESSION_INFO_KEY.Compaction]
+    if (value === null) {
+      chatStore.clearLiveCompaction(agentId)
+    }
+    else if (isObject(value)) {
+      const trigger = pickString(value, COMPACTION_FIELD.Trigger)
+      chatStore.setLiveCompaction(agentId, trigger ? { trigger } : {})
+    }
+  }
+  if (info && SESSION_INFO_KEY.PromptSuggestion in info) {
+    const value = info[SESSION_INFO_KEY.PromptSuggestion]
+    if (value === null) {
+      chatStore.clearPromptSuggestion(agentId)
+    }
+    else if (isObject(value)) {
+      const text = pickString(value, PROMPT_SUGGESTION_FIELD.Text)
+      if (text.trim())
+        chatStore.setPromptSuggestion(agentId, { text })
     }
   }
   // Keep goal_progress beside the goal in the chat store.
@@ -348,6 +369,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
     // Replay restores scalar history through receipts and retains canonical to-dos.
     if (catchUpPhase === 'live') {
       chatStore.todos.clear(agentId)
+      chatStore.clearLiveCompaction(agentId)
       clearPerTurnLiveState(agentId, stores)
     }
   }
@@ -431,7 +453,8 @@ export function handleResultDivider(
     return
   const { agentSessionStore, view } = stores
   const delivery = messageMetadataDelivery(msg, catchUpPhase, replayId)
-  // A current live divider clears every indicator, regardless of its source.
+  // A current live divider clears its turn's indicators, regardless of their source.
+  // A live compaction can outlive this turn and keeps its indicator.
   // This includes a tool whose result never arrived after interruption or process failure.
   // Historical dividers retain the replacement turn's indicators.
   if (catchUpPhase === 'live')
@@ -490,6 +513,7 @@ export function dropFinishedToolProgress(
  * Drop live per-turn state after a lifecycle event or a lost connection.
  * The Worker normally sends explicit counter clears. This cleanup also handles
  * a connection that ends before those clears arrive.
+ * A compaction can outlive its turn. Only process or connection cleanup clears that state.
  */
 export function clearPerTurnLiveState(
   agentId: string,
@@ -499,6 +523,7 @@ export function clearPerTurnLiveState(
   stores.agentSessionStore.clearOutputBytes(agentId)
   stores.chatStore.clearToolProgress(agentId)
   stores.chatStore.clearTurnRetryOffer(agentId)
+  stores.chatStore.clearPromptSuggestion(agentId)
 }
 
 /**
@@ -659,6 +684,7 @@ export function handleAgentInactive(
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
 ): void {
   stores.controlStore.clearProviderRequests(agentId)
+  stores.chatStore.clearLiveCompaction(agentId)
   clearPerTurnLiveState(agentId, stores)
   // A process exit changes the worker's activity state. handleAgentSettled owns the resulting alert.
   // An INACTIVE status does not establish a turn boundary.
@@ -682,11 +708,14 @@ export function handleControlRequest(
     controlStore.cancelRequest(cr)
     return
   }
-  // A saved response can still need local recording after its provider stops.
+  // A saved response can still need local recording after its provider stops,
+  // and a non-blocking question belongs to the conversation: a reader who
+  // returns later must still find it. A blocking request of an inactive agent
+  // with no saved response is dropped: its provider no longer waits.
   const agentEntry = view.getAgentTab(cr.agentId)
   const hasSavedResponse = cr.responseState === ControlResponseState.DELIVERED
     || cr.responseState === ControlResponseState.PENDING || cr.responseState === ControlResponseState.UNCERTAIN
-  if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE && !hasSavedResponse)
+  if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE && !hasSavedResponse && !cr.nonBlocking)
     return
   // Retain an unreadable control request because the provider still waits for its answer.
   // The view must show these items:
@@ -710,7 +739,7 @@ export function handleControlRequest(
     log.warn('Keeping a control request whose payload is malformed', { agentId: cr.agentId, requestId: cr.requestId, err })
     payloadFault = 'malformed'
   }
-  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, agentSessionId: cr.agentSessionId, payload, ...(payloadFault ? { payloadFault } : {}), originalPayload: cr.payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq, responseState: cr.responseState })
+  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, agentSessionId: cr.agentSessionId, payload, ...(payloadFault ? { payloadFault } : {}), originalPayload: cr.payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq, responseState: cr.responseState, ...(cr.nonBlocking ? { nonBlocking: true } : {}) })
   if (catchUpPhase === 'live') {
     // Set the hidden tab's badge when its agent needs an answer.
     // Use the same tile visibility rule as FULL watch mode.

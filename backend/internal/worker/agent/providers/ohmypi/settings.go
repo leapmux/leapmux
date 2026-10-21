@@ -121,6 +121,8 @@ func (a *Agent) applyModel(model string, timeout time.Duration) error {
 	}
 	a.Mu.Lock()
 	a.model = settled
+	a.effectiveModel = settled
+	a.fallbackModel = ""
 	a.Mu.Unlock()
 	return nil
 }
@@ -201,10 +203,7 @@ func (a *Agent) handleConfigUpdate(raw []byte) {
 	a.publishSettings(func() bool {
 		changed := false
 		if frame.Model != nil && frame.Model.ID != "" {
-			if model := joinModelID(frame.Model.Provider, frame.Model.ID); model != a.model {
-				a.model = model
-				changed = true
-			}
+			changed = a.applyReportedModelLocked(joinModelID(frame.Model.Provider, frame.Model.ID))
 		}
 		if frame.ThinkingLevel != "" {
 			a.effectiveThinking = frame.ThinkingLevel
@@ -312,4 +311,29 @@ func (a *Agent) applyRefreshedState(raw json.RawMessage) {
 		a.Mu.Unlock()
 		a.sink.UpdateSessionID(handle)
 	}
+}
+
+// handleRetryFallback records a temporary model without changing the selected primary.
+func (a *Agent) handleRetryFallback(raw []byte) {
+	model := providerkit.StringField(raw, "to")
+	if model == "" {
+		return
+	}
+	provider, id := splitModelID(model)
+	a.Mu.Lock()
+	a.fallbackModel = joinModelID(provider, id)
+	a.Mu.Unlock()
+}
+
+// applyReportedModelLocked records native state while a temporary fallback runs.
+// The caller holds a.Mu. The result states whether the selected primary changed.
+func (a *Agent) applyReportedModelLocked(model string) bool {
+	a.effectiveModel = model
+	if model == a.fallbackModel {
+		return false
+	}
+	a.fallbackModel = ""
+	changed := a.model != model
+	a.model = model
+	return changed
 }

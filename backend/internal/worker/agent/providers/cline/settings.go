@@ -264,7 +264,7 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 		if err := a.rebuildSession(want); err != nil {
 			slog.Warn("cline rebuild the session for new settings", "agent_id", a.AgentID(), "error", err)
 		}
-		a.disarmTurn()
+		a.releaseInputTurn()
 	default:
 		a.applyLive(have, want)
 	}

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -15,11 +17,10 @@ import (
 )
 
 // errControlTimeout reports a control request that got no answer in time.
-var errControlTimeout = errors.New("timeout waiting for agent to respond")
+var errControlTimeout = errors.New("the agent did not answer the control request in time")
 
-// initializeTimeout is the handshake deadline. Qoder boots its runtime before
-// it answers initialize; the deadline is generous so a loaded machine does not
-// fail an agent that is merely slow.
+// initializeTimeout limits the handshake, including native runtime startup.
+// The limit permits slow startup on a loaded machine.
 const initializeTimeout = 30 * time.Second
 
 // shortID generates a short correlation id for a control request.
@@ -35,6 +36,9 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	if a.routeChildFrame(line.Raw) {
 		return
 	}
+	if qoderDropsFrame(line.Type, providerkit.StringField(line.Raw, "subtype")) {
+		return
+	}
 	switch line.Type {
 	case contracts.QoderFrameKindSystem:
 		a.handleSystem(line.Raw)
@@ -42,33 +46,113 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		a.handleAssistant(line.Raw)
 	case contracts.QoderFrameKindResult:
 		a.handleResult(line.Raw)
+	case contracts.QoderFrameKindStreamEvent:
+		a.handleRootStreamEvent(line.Raw)
 	case frameTypeControlRequest:
 		a.handleInboundControlRequest(line.Raw)
-	case "user":
+	case frameTypeControlCancelRequest:
+		a.handleControlCancellation(line.Raw)
+	case contracts.QoderFrameKindUser:
 		a.handleWorkflowLaunch(line.Raw)
-		if stored, _ := a.persistNativeToolFrame(a.sink, line.Raw); !stored {
-			a.persistRaw(line.Raw)
-		}
 		a.handleWorkflowReplayCompletion(line.Raw)
+		if qoderUserFrameHasToolResult(line.Raw) {
+			if stored, _ := a.persistNativeToolFrame(a.sink, line.Raw); !stored {
+				a.persistRaw(line.Raw)
+			}
+		}
 	default:
-		// stream_event, command_lifecycle, tool_progress, progress,
-		// attachment: forward verbatim for the browser plugin.
-		a.persistRaw(line.Raw)
+		a.persistUnknownFrame(line.Raw)
 	}
 }
 
-// handleInboundControlRequest publishes a can_use_tool control_request so the
-// worker can raise a control banner and answer it. The publish is what raises
-// the banner: the transcript copy alone never reaches the hub's control-request
-// store, and the CLI then waits on a request nobody can answer until stop
-// cancels it.
+// handleControlCancellation withdraws a native request without a transcript row.
+func (a *Agent) handleControlCancellation(raw []byte) {
+	var frame struct {
+		RequestID string `json:"request_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil || frame.RequestID == "" {
+		slog.Debug("qoder ignored an invalid control cancellation", "agent_id", a.AgentID())
+		return
+	}
+	if frame.SessionID != "" && frame.SessionID != a.nativeSessionID() {
+		slog.Debug("qoder ignored a control cancellation for another session", "agent_id", a.AgentID())
+		return
+	}
+	a.sink.CancelControlRequest(frame.RequestID)
+}
+
+// handleRootStreamEvent reports live generation. The complete assistant frame owns the stored text.
+func (a *Agent) handleRootStreamEvent(raw []byte) {
+	var frame qoderStreamEvent
+	if err := json.Unmarshal(raw, &frame); err != nil || frame.Event.Index < 0 || providerkit.RawPresent(frame.ParentToolUseID) {
+		return
+	}
+	event := frame.Event
+	var kind, text string
+	switch event.Type {
+	case "content_block_start":
+		if event.ContentBlock == nil {
+			return
+		}
+		kind = event.ContentBlock.Type
+		switch kind {
+		case "text":
+			text = event.ContentBlock.Text
+		case "thinking":
+			text = event.ContentBlock.Thinking
+		default:
+			return
+		}
+	case "content_block_delta":
+		switch event.Delta.Type {
+		case "text_delta":
+			kind, text = "text", event.Delta.Text
+		case "thinking_delta":
+			kind, text = "thinking", event.Delta.Thinking
+		default:
+			return
+		}
+		if text == "" {
+			return
+		}
+	case "content_block_stop":
+		a.mu.Lock()
+		kind = a.rootStreamKinds[event.Index]
+		delete(a.rootStreamKinds, event.Index)
+		a.mu.Unlock()
+		if kind != "" {
+			a.sink.ReportProgress(agent.CompleteModelProgress(qoderProgressScope(kind, event.Index)))
+		}
+		return
+	default:
+		// The complete assistant and result frames carry the message boundaries and retry outcome.
+		return
+	}
+	a.mu.Lock()
+	if a.rootStreamKinds == nil {
+		a.rootStreamKinds = make(map[int]string)
+	}
+	a.rootStreamKinds[event.Index] = kind
+	a.mu.Unlock()
+	if text != "" {
+		a.notificationState("").retry.Resolve(a.sink)
+		a.sink.ReportProgress(agent.ModelTextProgress(qoderProgressScope(kind, event.Index), text))
+	}
+}
+
+func qoderProgressScope(kind string, index int) string {
+	return "qoder:" + kind + ":" + strconv.Itoa(index)
+}
+
+// handleInboundControlRequest publishes a native request through the control service.
+// The control service stores and displays its card. A separate transcript row would duplicate the request.
 func (a *Agent) handleInboundControlRequest(raw []byte) {
 	var envelope controlRequestEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		slog.Warn("qoder: malformed control_request", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.persistRaw(raw)
 	if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: envelope.RequestID, Payload: raw}); err != nil {
 		slog.Error("qoder: publish control request", "agent_id", a.AgentID(), "request_id", envelope.RequestID, "error", err)
 		response, marshalErr := json.Marshal(map[string]any{
@@ -87,12 +171,20 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 
 // handleSystem applies native state, consumes task events, and publishes other frames.
 func (a *Agent) handleSystem(raw []byte) {
+	a.handleSystemTo(a.sink, raw, "")
+}
+
+func (a *Agent) handleSystemTo(target agent.ProviderServices, raw []byte, owner string) {
+	root := owner == ""
 	var envelope struct {
 		Subtype string `json:"subtype"`
 	}
 	if json.Unmarshal(raw, &envelope) == nil {
 		switch envelope.Subtype {
 		case contracts.QoderSystemSubtypeInit:
+			if !root {
+				return
+			}
 			var init systemInitMessage
 			if json.Unmarshal(raw, &init) == nil {
 				a.mu.Lock()
@@ -100,7 +192,8 @@ func (a *Agent) handleSystem(raw []byte) {
 					a.sessionID = init.SessionID
 				}
 				// The SDK init frame carries a model display label, which the native reviewer cannot resolve.
-				// Keep the ID from launch, a model change, or available_models_update.currentModel.
+				// Keep the native ID from launch or a confirmed model update.
+				// The initialize catalog supplies the picker labels.
 				if init.Permission != "" {
 					a.permissionMode = init.Permission
 				}
@@ -111,21 +204,182 @@ func (a *Agent) handleSystem(raw []byte) {
 					a.sink.UpdateSessionID(sessionID)
 				}
 			}
+			return
 		case contracts.QoderSystemSubtypeGoalUpdated:
-			a.handleGoalUpdated(raw)
+			if root {
+				a.handleGoalUpdated(raw)
+			}
+			return
 		case contracts.QoderSystemSubtypeGoalCleared:
-			a.handleGoalCleared(raw)
+			if root {
+				a.handleGoalCleared(raw)
+			}
+			return
 		case contracts.QoderSystemSubtypeAvailableModelsUpdate:
-			a.handleAvailableModelsUpdate(raw)
+			if root {
+				a.handleAvailableModelsUpdate(raw)
+			}
+			return
 		case contracts.QoderSystemSubtypePlanModeChanged:
-			a.handlePlanModeChanged(raw)
+			if root {
+				a.handlePlanModeChanged(raw)
+			}
+			return
+		case contracts.QoderSystemSubtypeInterrupt:
+			return
 		case qoderTaskStarted, qoderTaskNotification:
-			if a.handleTaskEvent(raw) {
+			if root && a.handleTaskEvent(raw) {
 				return
 			}
+			slog.Debug("qoder ignored a task frame without an agent route", "agent_id", a.AgentID())
+			return
+		case contracts.QoderSystemSubtypeAgentsMdSizeWarning:
+			a.mu.Lock()
+			stored := a.storedInstructionWarning
+			a.storedInstructionWarning = true
+			a.mu.Unlock()
+			if stored {
+				return
+			}
+			a.persistNotificationTo(target, raw)
+			return
+		case contracts.QoderSystemSubtypeHookResponse:
+			if providerkit.StringField(raw, "outcome") != "success" {
+				a.persistNotificationTo(target, raw)
+			}
+			return
+		case contracts.QoderSystemSubtypeStatus:
+			var status struct {
+				Status json.RawMessage `json:"status"`
+			}
+			if json.Unmarshal(raw, &status) == nil {
+				if value, ok := providerkit.RawString(status.Status); ok && value == contracts.QoderStatusCompacting {
+					state := a.notificationState(owner)
+					a.mu.Lock()
+					started := !state.compactionLive
+					state.compactionLive = true
+					a.mu.Unlock()
+					if started {
+						providerkit.PublishCompaction(target, "")
+					}
+					return
+				}
+				// A null status precedes the boundary. Keep the live key until that boundary or a result arrives.
+				if providerkit.RawKindOf(status.Status) == providerkit.RawNull {
+					return
+				}
+			}
+		case contracts.QoderSystemSubtypeCompactBoundary:
+			if !a.endNativeCompaction(target, owner) {
+				providerkit.EndCompaction(target)
+			}
+			a.persistNotificationTo(target, raw)
+			return
+		case contracts.QoderSystemSubtypeApiRetry:
+			a.persistNotificationTo(target, raw)
+			a.notificationState(owner).retry.NoteRetry()
+			return
+		case contracts.QoderSystemSubtypeModelQueueStatus:
+			a.persistNotificationTo(target, raw)
+			return
 		}
 	}
+	if root {
+		a.persistUnknownFrame(raw)
+	} else {
+		a.persistRawTo(target, raw)
+	}
+}
+
+type qoderNotificationState struct {
+	compactionLive bool // Guarded by Agent.mu.
+	retry          providerkit.RetryResolution
+}
+
+func (a *Agent) notificationState(owner string) *qoderNotificationState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.notifications == nil {
+		a.notifications = make(map[string]*qoderNotificationState)
+	}
+	state := a.notifications[owner]
+	if state == nil {
+		state = &qoderNotificationState{}
+		a.notifications[owner] = state
+	}
+	return state
+}
+
+// endNativeCompaction clears a live start. A native boundary remains valid when the start was absent.
+func (a *Agent) endNativeCompaction(target agent.ProviderServices, owner string) bool {
+	state := a.notificationState(owner)
+	a.mu.Lock()
+	live := state.compactionLive
+	state.compactionLive = false
+	a.mu.Unlock()
+	if live {
+		providerkit.EndCompaction(target)
+	}
+	return live
+}
+
+func (a *Agent) finishNotifications(target agent.ProviderServices, owner string, interrupted bool) {
+	a.notificationState(owner).retry.Reset()
+	if !a.endNativeCompaction(target, owner) {
+		return
+	}
+	outcome := providerkit.CompactionEndFailed
+	if interrupted {
+		outcome = providerkit.CompactionEndAborted
+	}
+	providerkit.PersistCompactionEnded(target, outcome, "")
+}
+
+func qoderDropsFrame(frameType, subtype string) bool {
+	switch frameType {
+	case contracts.QoderFrameKindToolProgress, contracts.QoderFrameKindProgress, contracts.QoderFrameKindCommandLifecycle, contracts.QoderFrameKindAttachment:
+		return true
+	case contracts.QoderFrameKindSystem:
+		switch subtype {
+		case qoderSubtypeHookStarted, qoderSubtypeHookProgress, qoderSubtypePermissionDenied, qoderSubtypeElicitationComplete, qoderSubtypeArtifactsUpdate, qoderSubtypeCommandsChanged, qoderSubtypeControlRequestProgress, qoderSubtypeTaskProgress:
+			return true
+		}
+	}
+	return false
+}
+
+func qoderUserFrameHasToolResult(raw []byte) bool {
+	var frame struct {
+		Message struct {
+			Content []struct {
+				Type string `json:"type"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &frame) != nil {
+		return false
+	}
+	for _, block := range frame.Message.Content {
+		if block.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) persistUnknownFrame(raw []byte) {
+	sessionID := providerkit.StringField(raw, "session_id")
+	if sessionID == "" || sessionID != a.nativeSessionID() {
+		slog.Debug("qoder ignored an unknown frame without the current session", "agent_id", a.AgentID())
+		return
+	}
 	a.persistRaw(raw)
+}
+
+func (a *Agent) persistNotificationTo(target agent.ProviderServices, raw []byte) {
+	if _, err := target.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, qoderMessageContent(raw, a.nativeSessionID())); err != nil {
+		slog.Error("qoder could not persist a notification", "agent_id", a.AgentID(), "error", err)
+	}
 }
 
 // handlePlanModeChanged applies Qoder's working state without losing its policy.
@@ -148,6 +402,7 @@ func (a *Agent) handlePlanModeChanged(raw []byte) {
 
 // handleAssistant retains the native frame and marks its turn active.
 func (a *Agent) handleAssistant(raw []byte) {
+	a.notificationState("").retry.Resolve(a.sink)
 	var msg assistantMessage
 	if json.Unmarshal(raw, &msg) == nil {
 		a.mu.Lock()
@@ -171,7 +426,12 @@ func (a *Agent) handleAssistant(raw []byte) {
 // handleResult ends the turn and publishes the frame verbatim, with the
 // turn's tool count as worker metadata and the user's stop as its completion.
 func (a *Agent) handleResult(raw []byte) {
+	a.mu.Lock()
+	clear(a.rootStreamKinds)
+	a.mu.Unlock()
+	a.sink.ReportProgress(agent.ResetModelProgress())
 	interrupted := a.takeInterruptRequest() && !qoderResultSucceeded(raw)
+	a.finishNotifications(a.sink, "", interrupted)
 	// Qoder's `result` carries no num_tool_uses field, so the Worker counts the
 	// tool calls of the turn itself. The count restarts here for the next turn.
 	a.Mu.Lock()
@@ -215,15 +475,22 @@ func (a *Agent) markTurnActiveFromOutput() {
 
 // persistRaw forwards one verbatim NDJSON frame to the transcript.
 func (a *Agent) persistRaw(raw []byte) {
+	a.persistRawTo(a.sink, raw)
+}
+
+func (a *Agent) persistRawTo(target agent.ProviderServices, raw []byte) {
 	content := qoderMessageContent(raw, a.nativeSessionID())
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
-		slog.Debug("qoder: persist message", "agent_id", a.AgentID(), "error", err)
+	if err := target.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+		slog.Error("qoder: persist message", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
 // qoderMessageContent preserves the native flag on an aborted assistant frame.
 // Qoder sends this frame before the result, including when it cuts a text block.
 func qoderMessageContent(raw []byte, sessionID string) agent.MessageContent {
+	if explicit := providerkit.StringField(raw, "session_id"); explicit != "" {
+		sessionID = explicit
+	}
 	content := agent.MessageContent{Original: raw, AgentSessionID: sessionID}
 	var frame struct {
 		Type    string `json:"type"`
@@ -296,23 +563,22 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte
 	return stored, opened
 }
 
-// HandleOutput processes a single NDJSON line from Qoder. It runs the same
-// pipeline as the reader loop: a pending control_response is answered first,
-// and only an unconsumed line reaches handleOutput.
+// HandleOutput processes one NDJSON line through the same handlers as the process reader.
+// It delivers control replies before it dispatches other frames.
 func (a *Agent) HandleOutput(content []byte) {
 	var envelope MessageEnvelope
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		return
 	}
-	line := &providerkit.ParsedLine{Raw: content, Type: string(envelope.Type)}
+	line := &providerkit.ParsedLine{Raw: content, Type: envelope.Type}
 	if a.handlePendingControlResponse(line) {
 		return
 	}
 	a.handleOutput(line)
 }
 
-// handlePendingControlResponse intercepts a control_response that answers one
-// of this agent's own pending requests.
+// handlePendingControlResponse delivers pending replies and consumes replies with no waiting caller.
+// An interrupt has no waiting caller. Its reply carries no session identity or transcript content.
 func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool {
 	if line.Type != frameTypeControlResponse {
 		return false
@@ -321,28 +587,8 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 	if err := json.Unmarshal(line.Raw, &envelope); err != nil {
 		return false
 	}
-	reqID := envelope.Response.RequestID
-	a.pendingControlMu.Lock()
-	ch, ok := a.pendingControl[reqID]
-	a.pendingControlMu.Unlock()
-	if !ok {
-		return false
-	}
-	result := qoderControlResult{
-		Success:     envelope.Response.Subtype == "success",
-		Error:       envelope.Response.Error,
-		RawResponse: envelope.Response.Response,
-	}
-	var inner struct {
-		Mode string `json:"mode"`
-	}
-	if len(envelope.Response.Response) > 0 {
-		_ = json.Unmarshal(envelope.Response.Response, &inner)
-	}
-	result.Mode = inner.Mode
-	select {
-	case ch <- result:
-	default:
+	if !a.controls.Deliver(envelope.Response.RequestID, line.Raw) {
+		slog.Debug("qoder received a control reply without a waiting caller", "agent_id", a.AgentID(), "request_id", envelope.Response.RequestID)
 	}
 	return true
 }
@@ -353,53 +599,80 @@ func (a *Agent) sendControlFire(requestBody string) error {
 	return a.SendRawInput([]byte(msg), agent.StopContext{})
 }
 
-// sendControlAndWait sends a control request and waits for its response.
+const qoderSendFailureExitTag = "qoder-send-failure-exit"
+
+// sendControlAndWait sends a control request and waits on the process clock.
 func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (qoderControlResult, error) {
 	requestID := shortID()
-	ch := make(chan qoderControlResult, 1)
-	a.pendingControlMu.Lock()
-	a.pendingControl[requestID] = ch
-	a.pendingControlMu.Unlock()
-	defer func() {
-		a.pendingControlMu.Lock()
-		delete(a.pendingControl, requestID)
-		a.pendingControlMu.Unlock()
-	}()
-
+	ch, release, err := a.controls.Register(requestID)
+	if err != nil {
+		return qoderControlResult{}, err
+	}
+	defer release()
 	msg := `{"type":"control_request","request_id":"` + requestID + `","request":` + requestBody + `}`
 	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
+		release()
+		// A failed stdin write can precede the process exit report.
+		timer := a.Clock().NewTimer(time.Second, qoderSendFailureExitTag)
+		defer timer.Stop(qoderSendFailureExitTag)
 		select {
 		case <-a.ProcessDone():
 			return qoderControlResult{}, a.ProcessExitError()
-		case <-time.After(1 * time.Second):
+		case <-timer.C:
 			return qoderControlResult{}, err
 		}
 	}
-	select {
-	case resp := <-ch:
-		if !resp.Success {
-			return resp, errors.New(resp.Error)
-		}
-		return resp, nil
-	case <-a.ProcessDone():
-		return qoderControlResult{}, a.ProcessExitError()
-	case <-time.After(timeout):
+	subtype := providerkit.StringField([]byte(requestBody), "subtype")
+	raw, err := providerkit.AwaitReply(&a.Process, a.Context(), ch, "qoder control "+subtype, timeout)
+	if errors.Is(err, providerkit.ErrAwaitTimeout) {
 		return qoderControlResult{}, errControlTimeout
 	}
+	if err != nil {
+		return qoderControlResult{}, err
+	}
+	var envelope controlResponseEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return qoderControlResult{}, fmt.Errorf("decode the Qoder control reply: %w", err)
+	}
+	result := qoderControlResult{
+		Success:     envelope.Response.Subtype == "success",
+		Error:       envelope.Response.Error,
+		RawResponse: envelope.Response.Response,
+		Mode:        providerkit.StringField(envelope.Response.Response, "mode"),
+	}
+	if !result.Success {
+		if result.Error == "" {
+			result.Error = "Qoder refused the control request"
+		}
+		return result, errors.New(result.Error)
+	}
+	return result, nil
 }
 
 // initializeStream completes Qoder's stream-json initialize handshake.
 //
-// The CLI refuses every user message until one initialize succeeds, with
-// `initialize_required: user message received before successful initialize`
-// and a cancelled session, so the launch runs this before it accepts input.
+// The CLI refuses user messages and cancels the session until initialize succeeds.
+// Its error is "initialize_required: user message received before successful initialize".
+// Startup completes this handshake before it accepts input.
 func (a *Agent) initializeStream() error {
-	body, err := json.Marshal(map[string]string{
-		"subtype": contracts.QoderControlRequestSubtypeInitialize,
+	body, err := json.Marshal(map[string]any{
+		"subtype":                       contracts.QoderControlRequestSubtypeInitialize,
+		"supportsAvailableModelsUpdate": true,
 	})
 	if err != nil {
 		return err
 	}
-	_, err = a.sendControlAndWait(string(body), initializeTimeout)
-	return err
+	result, err := a.sendControlAndWait(string(body), initializeTimeout)
+	if err != nil {
+		return err
+	}
+	if !providerkit.RawPresent(result.RawResponse) {
+		return nil
+	}
+	var response qoderInitializeResponse
+	if err := json.Unmarshal(result.RawResponse, &response); err != nil {
+		return fmt.Errorf("decode the Qoder initialize reply: %w", err)
+	}
+	a.applyModelCatalog(response.Models, "", true)
+	return nil
 }

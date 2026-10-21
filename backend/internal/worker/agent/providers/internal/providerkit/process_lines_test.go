@@ -90,7 +90,7 @@ func TestReadLines(t *testing.T) {
 		t.Parallel()
 		waiter := NewListenWaiter(regexp.MustCompile(`server listening on (\S+)`))
 		process := startLineServer(t, "", func(line []byte) { waiter.Observe(line) })
-		address, err := waiter.Wait(t.Context(), process.ProcessDone(), 30*time.Second)
+		address, err := waiter.Wait(t.Context(), process.Clock(), process.ProcessDone(), 30*time.Second)
 		require.NoError(t, err)
 		assert.Equal(t, "http://127.0.0.1:4096", address)
 	})

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -218,6 +219,7 @@ func TestPiOutputDisposalPreservesANativeEndDuringShutdown(t *testing.T) {
 	a.Mu.Unlock()
 	ended := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`)
 	a.HandleOutput(ended)
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	rows := sink.Messages()
 	require.Len(t, rows, 1, "shutdown must preserve the native divider")
 	assert.Equal(t, ended, rows[0].Content)
@@ -281,26 +283,28 @@ func TestPiQueuedTurnEventsKeepTheirObservationTimes(t *testing.T) {
 		t.Run(map[bool]string{false: "old and replacement turns", true: "negative clock"}[negative], func(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
-			a := newPiAgentWithSink(agent.NewProviderServices(sink))
-			now := time.Unix(100, 0)
-			a.nowFn = func() time.Time { return now }
+			clock, _ := piFakeClock(t, time.Unix(100, 0))
+			a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
+			ctx := testutil.DeadlineContext(t)
 			a.HandleOutput([]byte(`{"type":"agent_start"}`))
 			scope, active, stopped := a.beginPiInterrupt()
 			require.True(t, active)
 			require.False(t, stopped)
 			if negative {
-				now = time.Unix(90, 0)
+				clock.Set(time.Unix(90, 0)).MustWait(ctx)
 			} else {
-				now = time.Unix(103, 0)
+				clock.Set(time.Unix(103, 0)).MustWait(ctx)
 			}
 			a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`))
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 			if !negative {
-				now = time.Unix(110, 0)
+				clock.Set(time.Unix(110, 0)).MustWait(ctx)
 				a.HandleOutput([]byte(`{"type":"agent_start"}`))
-				now = time.Unix(114, 0)
+				clock.Set(time.Unix(114, 0)).MustWait(ctx)
 				a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`))
+				a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 			}
-			now = time.Unix(200, 0)
+			clock.Set(time.Unix(200, 0)).MustWait(ctx)
 			a.finishPiInterruptWrite(scope, nil)
 			rows := sink.Messages()
 			if negative {
@@ -343,6 +347,7 @@ func TestPiMalformedAgentEndKeepsStateUntilAValidEnd(t *testing.T) {
 			assert.Zero(t, sink.MessageCount(), "a malformed end must persist no divider")
 			assert.Zero(t, sink.AutoCancelCount(), "a malformed end changes no continuation")
 			a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[]}`))
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 			a.Mu.Lock()
 			assert.False(t, a.currentTurnActive)
 			a.Mu.Unlock()
@@ -371,6 +376,7 @@ func TestPiNullMessagesKeepsTheActiveQuestionAndContinuation(t *testing.T) {
 	assert.Zero(t, sink.AutoScheduleCount())
 	assert.Empty(t, sink.CanceledControls())
 	a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[]}`))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	a.Mu.Lock()
 	assert.False(t, a.currentTurnActive)
 	assert.Empty(t, a.questionDialogs)
@@ -384,6 +390,7 @@ func TestPiOmittedMessagesStillEndsTheObservedTurn(t *testing.T) {
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{"type":"agent_start"}`))
 	a.HandleOutput([]byte(`{"type":"agent_end"}`))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	a.Mu.Lock()
 	assert.False(t, a.currentTurnActive)
 	a.Mu.Unlock()

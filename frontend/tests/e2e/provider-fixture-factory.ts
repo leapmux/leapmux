@@ -10,6 +10,7 @@ import type { ManagedNativeScenarioContext, NativeContextFixtures } from './help
 import type { AgentWorkspace, AuthenticatedAgentWorkspaceOptions, ProviderAgent } from './helpers/workspace'
 import { test as base } from './fixtures'
 import { deliberateWorkingDir } from './helpers/providerWorkingDir'
+import { runTranscriptGuard } from './helpers/transcriptGuard'
 import { agentWorkspaceFixture, authenticatedAgentWorkspace, openProviderAgent, withTestWorkspace } from './helpers/workspace'
 import { ensureWorkerOnline, processTest } from './process-control-fixtures'
 
@@ -107,6 +108,10 @@ export function createProviderProcessTest(options: ProviderTestOptions & {
   return processTest.extend<CliSkipFixture & NativeFixture>({
     cliSkip: cliSkipFixture(options.skipReason),
     modelScript: providerModelScriptFixture(options.modelRules ?? []),
+    authenticatedWorkspace: async ({ page, authenticatedWorkspace, transcriptGuard }, use, testInfo) => {
+      await use(authenticatedWorkspace)
+      await runTranscriptGuard(page, transcriptGuard, testInfo)
+    },
     workspace: async ({ separateHubWorker, agentWorkingDir }, use) => {
       await ensureWorkerOnline(separateHubWorker)
       await withTestWorkspace(separateHubWorker, options.agent.prefix, async (workspace) => {

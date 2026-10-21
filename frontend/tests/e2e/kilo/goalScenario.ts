@@ -27,8 +27,10 @@ export async function exerciseKiloGoal(context: ManagedNativeScenarioContext): P
   const objective = scriptedObjective(modelScript, 'Keep the Kilo session goal until the browser clears it.')
   await setGoal(page, objective)
   await modelScript.waitForSteps(start + 1)
-  await openGoalMenu(page)
-  await goalAction(page, 'pause').click()
+  // Kilo's goal turn keeps running past its last model answer until its idle
+  // fallback settles, and the goal itself parks as paused once that turn ends:
+  // the Pause verb has nothing left to do, and its menu entry stays disabled.
+  await waitForKiloPromptEnd(context)
   await expectGoalStatus(page, 'paused')
 
   await page.reload()
