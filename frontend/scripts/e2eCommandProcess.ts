@@ -104,9 +104,9 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
     function handleSignalError(error: unknown) {
       if (finished)
         return
-      if (!ended && isProcessError(error, 'EPERM')) {
-        // An exited root can remain a zombie until its native exit event, and macOS reports EPERM for its group.
-        // Keep the shutdown deadlines active while waiting, because owned descendants can still require forced termination.
+      if (isProcessError(error, 'EPERM')) {
+        // An exited process in the group can remain a zombie until its parent reaps it, and macOS reports EPERM for that group.
+        // Keep the shutdown deadlines active while waiting, because other descendants can still require forced termination.
         pendingExitError ??= error
         if (timer !== undefined)
           clearTimeout(timer)
