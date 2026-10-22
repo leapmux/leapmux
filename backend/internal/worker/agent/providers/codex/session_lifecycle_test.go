@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -14,6 +15,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type codexSettingsPublicationGate struct {
+	agenttest.Sink
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+}
+
+func (s *codexSettingsPublicationGate) PersistSettingsRefresh(refresh optionmap.Map) {
+	s.enteredOnce.Do(func() { close(s.entered) })
+	<-s.release
+	s.Sink.PersistSettingsRefresh(refresh)
+}
 
 // The frames that a retry exchanges with Codex.
 const (
@@ -202,6 +216,38 @@ func TestCodexTurnRetrySendsTheRetainedInputAfterRevert(t *testing.T) {
 		}
 	}
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, kinds[beforeRetry], "retry acceptance closes steering immediately")
+}
+
+func TestCodexTurnRetryStartWaitsForSettingsPublication(t *testing.T) {
+	t.Parallel()
+
+	gate := &codexSettingsPublicationGate{entered: make(chan struct{}), release: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(gate.release) })
+	defer release()
+	var a *Agent
+	a, _, _ = newCodexAgentForRPC(t, retryResponder(&a, nil))
+	a.sink = agent.NewProviderServices(gate)
+	armRetryableTurn(t, a, &gate.Sink)
+	retryValue, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
+	require.NoError(t, err)
+	require.NotNil(t, retryValue)
+	retry := retryValue.(*codexTurnRetry)
+	require.NoError(t, retry.Replace())
+	started := make(chan error, 1)
+	go func() { started <- retry.Start() }()
+	<-gate.entered
+	require.NotNil(t, retry.start)
+	select {
+	case <-retry.start.done:
+		t.Fatal("turn/start was acknowledged before the settings refresh finished")
+	default:
+	}
+	release()
+	require.NoError(t, <-started)
+	require.Equal(t, 1, gate.SettingsRefreshCount())
+	refresh := gate.LastSettingsRefresh()
+	assert.Equal(t, "gpt-5.5", refresh.Model)
+	assert.Equal(t, "low", refresh.Effort)
 }
 
 // The offer identifies one turn and one model. BeginTurnRetry refuses anything

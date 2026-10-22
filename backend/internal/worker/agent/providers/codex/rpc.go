@@ -131,11 +131,12 @@ func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interfac
 	return pending, nil
 }
 
-// finishCodexTurnStartLocked settles only this request. The caller holds Mu.
+// finishCodexTurnStartLocked settles only this request and reports whether it did.
+// The caller holds Mu and closes pending.done after its event handling completes.
 // A response from a retired request must not remove a newer request's state.
-func (a *Agent) finishCodexTurnStartLocked(pending *codexPendingTurnStart, turnID string, err error) {
+func (a *Agent) finishCodexTurnStartLocked(pending *codexPendingTurnStart, turnID string, err error) bool {
 	if pending.settled {
-		return
+		return false
 	}
 	pending.settled, pending.turnID, pending.err = true, turnID, err
 	pending.input = nil
@@ -145,7 +146,7 @@ func (a *Agent) finishCodexTurnStartLocked(pending *codexPendingTurnStart, turnI
 	if pending.retry != nil && a.retry == pending.retry {
 		a.retry = nil
 	}
-	close(pending.done)
+	return true
 }
 
 func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, responseErr error) {
@@ -169,7 +170,9 @@ func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, res
 		a.Mu.Unlock()
 		return
 	}
-	a.finishCodexTurnStartLocked(pending, "", err)
+	if a.finishCodexTurnStartLocked(pending, "", err) {
+		close(pending.done)
+	}
 	a.Mu.Unlock()
 	if pending.retry != nil {
 		pending.retry.fail(codexTurnRetryStarting, err)
@@ -189,7 +192,9 @@ func (a *Agent) awaitCodexTurnStart(pending *codexPendingTurnStart) error {
 	case <-a.ProcessDone():
 		err = classifyCodexTurnStartRequestError("turn/start", a.ProcessExitError())
 		a.Mu.Lock()
-		a.finishCodexTurnStartLocked(pending, "", err)
+		if a.finishCodexTurnStartLocked(pending, "", err) {
+			close(pending.done)
+		}
 		a.Mu.Unlock()
 	case <-timer.C:
 		err = fmt.Errorf("%w: turn/start received no turn/started within %s", agent.ErrDeliveryUncertain, turnStartAckTimeout)
@@ -306,7 +311,9 @@ func (a *Agent) retireCodexInputAfterExit() {
 	}
 	if pending := a.pendingStart; pending != nil {
 		pending.cancelled = true
-		a.finishCodexTurnStartLocked(pending, "", err)
+		if a.finishCodexTurnStartLocked(pending, "", err) {
+			close(pending.done)
+		}
 	}
 	a.mainTurn.finish()
 }

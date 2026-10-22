@@ -78,9 +78,9 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
         // Handle the signal result before another microtask can deliver the child's exit event.
         // Otherwise, a pre-exit EPERM can look like a permission failure from surviving descendants.
         try {
-          const sent = signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')
+          signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')
           signaling = false
-          check(sent)
+          check()
         }
         catch (error) {
           signaling = false
@@ -88,21 +88,34 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
         }
       })
     }
-    function handleSignalError(error: unknown, afterSuccessfulTermination = false) {
+    function scheduleCheckOrEscalate(error?: unknown) {
+      if (performance.now() >= deadline) {
+        if (force) {
+          finish(error ?? new Error(`The owned process group ${groupId} did not exit after forced termination.`))
+          return
+        }
+        force = true
+        deadline = performance.now() + delay
+        terminate(true)
+        return
+      }
+      timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())))
+    }
+    function handleSignalError(error: unknown) {
       if (finished)
         return
-      if (!ended && isProcessError(error, 'EPERM') && (afterSuccessfulTermination || child.stdout?.readableEnded)) {
-        // The group probe can return EPERM after termination before native exit.
-        // Wait for that exact event before signaling surviving descendants again.
+      if (isProcessError(error, 'EPERM')) {
+        // An exited process in the group can remain a zombie until its parent reaps it, and macOS reports EPERM for that group.
+        // Keep the shutdown deadlines active while waiting, because other descendants can still require forced termination.
         pendingExitError ??= error
         if (timer !== undefined)
           clearTimeout(timer)
-        timer = setTimeout(finish, Math.max(0, deadline - performance.now()), pendingExitError)
+        scheduleCheckOrEscalate(pendingExitError)
         return
       }
       finish(error)
     }
-    function check(afterSuccessfulTermination = false) {
+    function check() {
       if (finished || signaling)
         return
       if (timer !== undefined) {
@@ -114,20 +127,10 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
           finish()
           return
         }
-        if (performance.now() >= deadline) {
-          if (force) {
-            finish(new Error(`The owned process group ${groupId} did not exit after forced termination.`))
-            return
-          }
-          force = true
-          deadline = performance.now() + delay
-          terminate(true)
-          return
-        }
-        timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())), afterSuccessfulTermination)
+        scheduleCheckOrEscalate()
       }
       catch (error) {
-        handleSignalError(error, afterSuccessfulTermination)
+        handleSignalError(error)
       }
     }
     function onExit() {

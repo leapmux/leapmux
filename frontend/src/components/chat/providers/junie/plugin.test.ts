@@ -4,6 +4,7 @@ import { OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { junieOutputFilePaths } from './extractors/outputFilePaths'
+import { juniePermissionPresets } from './permissionPresets'
 
 import './plugin'
 
@@ -18,5 +19,9 @@ describe('junie provider', () => {
     const configuration = providerFor(AgentProvider.JUNIE)?.configuration
     expect(configuration?.triggerModeGroupKey).toBe(OPTION_ID_PERMISSION_MODE)
     expect(configuration?.planMode).toBeDefined()
+  })
+
+  it('offers the Brave mode permission presets', () => {
+    expect(providerFor(AgentProvider.JUNIE)?.controls?.permissionPresets).toBe(juniePermissionPresets)
   })
 })

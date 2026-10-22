@@ -1,6 +1,6 @@
 /**
- * The unit tests check the order of a permission shortcut proof against fakes of the page, the model script, and the
- * Worker. The bypass-permissions-shortcut and smart-permissions-shortcut browser specs check the actual agents.
+ * These unit tests check the order of a permission shortcut test with fake dependencies.
+ * The browser specs check the actual agents for both permission shortcuts.
  */
 import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
@@ -14,7 +14,7 @@ import { fakeLocator } from '~/test-support/fakeLocator'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBypassPermissions, exerciseSmartPermissions } from './nativeBypassPermissions'
 
-const fake = vi.hoisted(() => ({ events: [] as string[], runDir: '', workingDir: '', waits: [] as number[], reads: [] as number[] }))
+const fake = vi.hoisted(() => ({ events: [] as string[], runDir: '', workingDir: '', waits: [] as number[], reads: [] as number[], commands: [] as string[] }))
 
 vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: fake.runDir }) }))
 vi.mock('./nativeScenario', async importOriginal => ({
@@ -56,6 +56,7 @@ beforeEach(() => {
   fake.events = []
   fake.waits = []
   fake.reads = []
+  fake.commands = []
   mkdirSync(scratchRoot, { recursive: true })
   fake.runDir = mkdtempSync(join(scratchRoot, 'native-shortcut-unit-'))
   fake.workingDir = join(fake.runDir, 'workspace')
@@ -64,10 +65,10 @@ beforeEach(() => {
 afterEach(() => rmSync(fake.runDir, { recursive: true, force: true }))
 
 /**
- * A context whose model script plays the agent: each answered step removes the target, as the native command does,
- * and the result request holds the output of the command.
+ * The model script simulates the agent. Each answered step removes the target, as the native command does.
+ * The result request holds the command output.
  */
-function shortcutContext(preset: 'smart' | 'bypass'): ManagedNativeScenarioContext {
+function shortcutContext(preset: 'smart' | 'bypass', options: { removeTarget?: boolean } = {}): ManagedNativeScenarioContext {
   const target = () => join(fake.workingDir, `native-${preset}-proof`)
   let queued = 0
   const toolIds: string[] = []
@@ -79,8 +80,9 @@ function shortcutContext(preset: 'smart' | 'bypass'): ManagedNativeScenarioConte
   })
   const modelScript = {
     prompt: (text: string) => text,
-    queue: async (step: { toolCalls?: Array<{ id: string }> }) => {
+    queue: async (step: { toolCalls?: Array<{ id: string, arguments: { command: string } }> }) => {
       toolIds.push(step.toolCalls?.[0]?.id ?? '')
+      fake.commands.push(step.toolCalls?.[0]?.arguments.command ?? '')
       fake.events.push(`queue:${toolIds.at(-1)}`)
       const start = queued
       queued += 2
@@ -88,7 +90,8 @@ function shortcutContext(preset: 'smart' | 'bypass'): ManagedNativeScenarioConte
     },
     waitForSteps: async (count: number) => {
       fake.waits.push(count)
-      rmSync(target(), { recursive: true, force: true })
+      if (options.removeTarget !== false)
+        rmSync(target(), { recursive: true, force: true })
     },
     requestAt: async (index: number): Promise<MockModelRequestRecord> => {
       fake.reads.push(index)
@@ -104,7 +107,7 @@ function shortcutContext(preset: 'smart' | 'bypass'): ManagedNativeScenarioConte
 }
 
 describe('exerciseBypassPermissions', () => {
-  it('prepares the session before it reads the agent and applies the preset, and runs one pass before and one after a reload', async () => {
+  it('prepares the session before both passes and reloads between them', async () => {
     await exerciseBypassPermissions(shortcutContext('bypass'), {
       prepare: async () => { fake.events.push('prepare') },
       settingsProof: () => { fake.events.push('settings') },
@@ -134,7 +137,10 @@ describe('exerciseBypassPermissions', () => {
       'answer The native bypass command completed in pass 2. to.be.visible',
     ])
     expect(existsSync(join(fake.workingDir, 'native-bypass-proof'))).toBe(false)
-    // Each pass queues two steps from its own start, waits for both, and reads the request of its answer step.
+    // Each pass starts at its own step index:
+    // - Queue two steps.
+    // - Wait for both steps.
+    // - Read the request for the answer step.
     expect(fake.waits).toEqual([2, 4])
     expect(fake.reads).toEqual([1, 3])
   })
@@ -152,5 +158,66 @@ describe('exerciseSmartPermissions', () => {
     await exerciseSmartPermissions(shortcutContext('smart'))
     expect(fake.events).toContain('preset:smart')
     expect(fake.events.filter(event => event.startsWith('queue:'))).toEqual(['queue:native-smart-0', 'queue:native-smart-1'])
+  })
+
+  it('uses each custom command and awaits its proof before the next pass', async () => {
+    const results: string[] = []
+    await exerciseSmartPermissions(shortcutContext('smart'), {
+      commandProof: (target, pass) => {
+        expect(existsSync(join(target, 'keep.txt'))).toBe(true)
+        expect(results).toHaveLength(pass - 1)
+        return {
+          command: `custom-removal-${pass}`,
+          resultProof: async (outcome) => {
+            await Promise.resolve()
+            results.push(outcome.text)
+          },
+        }
+      },
+    })
+
+    expect(fake.commands).toEqual(['custom-removal-1', 'custom-removal-2'])
+    expect(results).toEqual(['SMART-1-42\n', 'SMART-2-42\n'])
+    expect(fake.reads).toEqual([1, 3])
+    expect(fake.events.filter(event => event.startsWith('answer '))).toHaveLength(2)
+    expect(fake.events).toContain('reload')
+  })
+
+  it('stops when the custom result proof rejects', async () => {
+    await expect(exerciseSmartPermissions(shortcutContext('smart'), {
+      commandProof: () => ({
+        command: 'custom-removal',
+        resultProof: async () => {
+          await Promise.resolve()
+          throw new Error('The native result failed verification.')
+        },
+      }),
+    })).rejects.toThrow('The native result failed verification.')
+
+    expect(fake.commands).toEqual(['custom-removal'])
+    expect(fake.events).not.toContain('reload')
+  })
+
+  it('requires target removal even when the custom result proof accepts the result', async () => {
+    const context = shortcutContext('smart', { removeTarget: false })
+    const resultProof = vi.fn()
+
+    await expect(exerciseSmartPermissions(context, {
+      commandProof: () => ({ command: 'custom-removal', resultProof }),
+    })).rejects.toThrow('The native command must remove its target.')
+
+    expect(existsSync(join(fake.workingDir, 'native-smart-proof', 'keep.txt'))).toBe(true)
+    expect(resultProof).not.toHaveBeenCalled()
+    expect(fake.events).not.toContain('reload')
+  })
+
+  it('stops before a model request when the command factory throws', async () => {
+    await expect(exerciseSmartPermissions(shortcutContext('smart'), {
+      commandProof: () => { throw new Error('The command is unavailable.') },
+    })).rejects.toThrow('The command is unavailable.')
+
+    expect(fake.commands).toEqual([])
+    expect(fake.events).not.toContain('send')
+    expect(fake.events).not.toContain('reload')
   })
 })

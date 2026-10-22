@@ -145,7 +145,8 @@ function requireProcessExit(record: FixtureRecord, key: string): void {
   const pid = record[key]
   if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0)
     throw new Error(`The fixture record has no valid ${key}.`)
-  expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+  expect(() => process.kill(pid, 0), `The fixture ${key} (${pid}) must exit before launcher completion.`)
+    .toThrow(expect.objectContaining({ code: 'ESRCH' }))
 }
 
 function cancelPrivateRunner(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -368,15 +369,15 @@ describe('runE2E Playwright integration', () => {
     }, () => stopPrivateRunner(root, records, runner))
   }, CANCELLATION_TEST_DEADLINE_MS)
 
-  it.each(CANCELLATION_CASES)('stops every fixture descendant and retains logs after $signal', async ({ signal, code }) => {
-    const root = createFixture({ cancellation: true })
+  it.each(CANCELLATION_CASES.flatMap(testCase => [false, true].map(holdWorkerTeardown => ({ ...testCase, holdWorkerTeardown }))))('stops every fixture descendant and retains logs after $signal with held teardown $holdWorkerTeardown', async ({ signal, code, holdWorkerTeardown }) => {
+    const root = createFixture({ cancellation: true, holdWorkerTeardown })
     const records = join(root, 'records')
     const runner = startPrivateRunner(root)
     await withCleanup(async () => {
       await waitForFixtureFiles(records, ['entry-alpha.json', 'entry-beta.json'], runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS), runner.log)
       cancelPrivateRunner(runner.child, signal)
       const result = await waitForRunnerCompletion(runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS))
-      expect(result).toEqual({ code, signal: null })
+      expect(result, `Launcher console:\n${readFileSync(runner.log, 'utf8')}`).toEqual({ code, signal: null })
       expect(readFileSync(join(root, 'build-count'), 'utf8')).toBe('1')
       const setupFiles = readdirSync(records).filter(file => file.startsWith('setup-'))
       expect(setupFiles).toHaveLength(2)

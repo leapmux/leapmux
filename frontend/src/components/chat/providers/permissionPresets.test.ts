@@ -19,7 +19,7 @@ describe('PROVIDER_PERMISSION_PRESETS', () => {
   })
 
   it('retains explicit absence for providers that offer no standard permission preset', () => {
-    for (const provider of [AgentProvider.UNSPECIFIED, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.CURSOR, AgentProvider.KILO, AgentProvider.JUNIE, AgentProvider.DIRAC, AgentProvider.FAST_AGENT])
+    for (const provider of [AgentProvider.UNSPECIFIED, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.CURSOR, AgentProvider.KILO, AgentProvider.DIRAC, AgentProvider.FAST_AGENT])
       expect(permissionPresetsFor(provider)).toBeUndefined()
     expect(permissionPresetsFor(undefined)).toBeUndefined()
   })

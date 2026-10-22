@@ -13,6 +13,7 @@ import { droidPermissionPresets } from './droid/permissionPresets'
 import { geminiPermissionPresets } from './gemini/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
 import { grokPermissionPresets } from './grok/permissionPresets'
+import { juniePermissionPresets } from './junie/permissionPresets'
 import { kimiPermissionPresets } from './kimi/permissionPresets'
 import { kiroPermissionPresets } from './kiro/permissionPresets'
 import { lettaPermissionPresets } from './letta/permissionPresets'
@@ -47,7 +48,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.AMP]: ampPermissionPresets,
   [AgentProvider.CLINE]: clinePermissionPresets,
   [AgentProvider.CODEBUDDY]: codebuddyPermissionPresets,
-  [AgentProvider.JUNIE]: undefined,
+  [AgentProvider.JUNIE]: juniePermissionPresets,
   [AgentProvider.LETTA]: lettaPermissionPresets,
   [AgentProvider.DIRAC]: undefined,
   [AgentProvider.QODER]: qoderPermissionPresets,

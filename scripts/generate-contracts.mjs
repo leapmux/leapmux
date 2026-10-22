@@ -3019,11 +3019,13 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Junie',
     preamble: [
       'Junie owns the session modes and native terminal metadata.',
+      'Junie owns the config option identifiers also.',
       'The Worker and browser use these values from one contract.',
       'LeapMux stores the reported output file path beside the original native preview.',
       'The native archive supplies the output file path. LeapMux reads no log body.',
     ].join('\n// '),
     tables: [
+      { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'JunieConfig', doc: 'config option identifiers' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'JunieMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'JunieSupplementField', owner: 'LeapMux chose these', doc: 'provider fields beside the unchanged native result' },
       { key: 'outputFilePath', goTable: 'OutputFilePathField', tsTable: 'OUTPUT_FILE_PATH', tsType: 'JunieOutputFilePathField', owner: 'LeapMux chose these', goTagPin: 'backend/internal/worker/agent/providers/junie/contract_tags_test.go', doc: 'native identity and reported output file path' },

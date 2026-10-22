@@ -5072,11 +5072,11 @@
         "verified": true
       },
       "junie": {
-        "support": "leapmux-limit",
-        "userNote": "Junie has an Auto brave mode. It checks terminal commands for safety and asks about risky ones. LeapMux does not offer it as the Smart shortcut yet. See the [Junie docs](https://junie.jetbrains.com/docs/junie-cli.html).",
-        "detailNote": "LeapMux offers no Smart shortcut. The test inspects the catalog and completes a real related tool turn.\n\nClassified as a LeapMux limit: the session/new result of Junie 26.9.22 lists the config option brave_mode with the values brave-auto, on, and off. The docs say Auto classifies terminal commands with a safety check, approves the safe ones, and asks about the rest. Junie therefore exposes a safety-assisted option in its option catalog (checked 2026-10-05).\n\nSources fetched on 2026-10-05:\n- <https://junie.jetbrains.com/docs/junie-cli.html>: The quickstart describes Brave mode with three levels. Auto classifies terminal commands with a safety check, approves the ones it considers safe, and asks about risky or unrecognized commands.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/514.",
+        "support": "supported",
+        "userNote": "Smart selects Junie's Brave Auto mode. Brave Auto uses a safety check to classify terminal commands. It approves the safe commands. It asks about risky or unrecognized commands.",
+        "detailNote": "Smart selects Junie's Brave Auto (`brave_mode` value `brave-auto`). The shortcut requires a mutable `brave_mode` group whose catalog includes `brave-auto`. Junie 26.9.22 supplies this catalog.",
         "spec": "frontend/tests/e2e/junie/smart-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -5344,11 +5344,11 @@
         "verified": true
       },
       "junie": {
-        "support": "leapmux-limit",
-        "userNote": "Junie has a Brave On mode that runs sensitive actions without approval. LeapMux does not offer it as the Bypass shortcut yet.",
-        "detailNote": "The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. Junie, Dirac, Qoder and Fast Agent are in that group today.\n\nClassified as a LeapMux limit: Junie 26.9.22 lists brave_mode with the values brave-auto, on, and off. The docs say On executes all potentially sensitive actions without user approval. Several Junie specs already set brave_mode to on through the open options, so the agent accepts it (checked 2026-10-05).\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "support": "supported",
+        "userNote": "Bypass selects Junie's Brave On mode, which executes potentially sensitive actions without approval.",
+        "detailNote": "Bypass selects Junie's Brave On (`brave_mode` value `on`). Brave Off remains an ordinary `brave_mode` option. The presets never change the plan/default mode axis, so Plan and a preset can remain active together. The shortcut requires a mutable `brave_mode` group whose catalog includes `on`. Junie 26.9.22 supplies this catalog.",
         "spec": "frontend/tests/e2e/junie/bypass-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -5364,7 +5364,7 @@
       "dirac": {
         "support": "leapmux-limit",
         "userNote": "Dirac has a YOLO option that skips approval prompts. LeapMux does not offer a Bypass permissions shortcut for it yet.",
-        "detailNote": "The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. Junie, Dirac, Qoder and Fast Agent are in that group today.\n\nClassified as a LeapMux limit. Dirac 0.5.17 reports a yolo boolean option that bypasses approval and safety prompts (upstream source checked 2026-10-05). The Dirac plugin declares no permission preset, so LeapMux renders no shortcut.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "detailNote": "The Bypass shortcut switches the session to the provider's bypass mode. LeapMux shows no Bypass shortcut when the provider declares no Bypass preset.\n\nClassified as a LeapMux limit. Dirac 0.5.17 reports a yolo boolean option that bypasses approval and safety prompts (upstream source checked 2026-10-05). The Dirac plugin declares no permission preset, so LeapMux renders no shortcut.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
         "spec": "frontend/tests/e2e/dirac/bypass-permissions-shortcut.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -5391,7 +5391,7 @@
       "fast-agent": {
         "support": "leapmux-limit",
         "userNote": "Fast Agent can skip all permission prompts when it starts with the `--no-permissions` flag. LeapMux does not offer a Bypass permissions shortcut for it yet.",
-        "detailNote": "The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. Junie, Dirac, Qoder and Fast Agent are in that group today.\n\nClassified as a LeapMux limit with medium confidence. Fast Agent 0.10.42 documents --no-permissions as a launch flag of its ACP command. The docs say: Disable prompts entirely, all tools are allowed (upstream docs checked 2026-10-05). The LeapMux launch passes no such flag. The Fast Agent plugin declares no permission preset. The flag needs a restart of the process.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "detailNote": "The Bypass shortcut switches the session to the provider's bypass mode. LeapMux shows no Bypass shortcut when the provider declares no Bypass preset.\n\nClassified as a LeapMux limit with medium confidence. Fast Agent 0.10.42 documents --no-permissions as a launch flag of its ACP command. The docs say: Disable prompts entirely, all tools are allowed (upstream docs checked 2026-10-05). The LeapMux launch passes no such flag. The Fast Agent plugin declares no permission preset. The flag needs a restart of the process.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
         "spec": "frontend/tests/e2e/fast-agent/bypass-permissions-shortcut.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
