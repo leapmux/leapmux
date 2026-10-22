@@ -221,6 +221,16 @@ import process from 'node:process'
 createServer((request, response) => response.end('owned fixture child')).listen(0, '127.0.0.1', () => process.send('ready'));
 `
 
+// A held teardown keeps a real Playwright worker alive after its parent exits.
+// The release file ends the hold during failure cleanup. No sleep controls the race.
+const heldWorkerTeardown = String.raw`
+import { waitForFile } from '../../${WAIT_FOR_FILE_MODULE}'
+import { resolve } from 'node:path'
+test.afterAll(async () => {
+  await waitForFile(resolve(process.cwd(), '../records/release-worker-teardown'));
+});
+`
+
 export interface FixtureRecord {
   [key: string]: unknown
 }
@@ -309,6 +319,8 @@ export interface FixturePolicy {
   /** The fixture cases that fail on purpose: `alpha`, `beta`, or both. */
   failCases?: readonly string[]
   cancellation?: boolean
+  /** Hold worker teardown until the launcher stops the tree or cleanup creates the release file. */
+  holdWorkerTeardown?: boolean
   holdBuild?: boolean
   browserTrace?: boolean
 }
@@ -348,14 +360,14 @@ export default {
   for (const label of ['alpha', 'beta']) {
     const browserFixture = policy.browserTrace ? '{ page }' : '{}'
     const browserArgument = policy.browserTrace ? ', page' : ''
-    writeFileSync(join(tests, `${label}.spec.ts`), `import { test } from '@playwright/test'\nimport { runCase } from './fixture.mjs'\ntest('executes ${label}', async (${browserFixture}, testInfo) => runCase(${JSON.stringify(label)}, testInfo${browserArgument}))\n`)
+    writeFileSync(join(tests, `${label}.spec.ts`), `import { test } from '@playwright/test'\nimport { runCase } from './fixture.mjs'\n${policy.holdWorkerTeardown ? heldWorkerTeardown : ''}\ntest('executes ${label}', async (${browserFixture}, testInfo) => runCase(${JSON.stringify(label)}, testInfo${browserArgument}))\n`)
   }
   return root
 }
 
 /** Release every waiting fixture process before the cleanup stops the launcher that owns it. */
 export function releaseFixtureProcesses(records: string): void {
-  for (const file of ['release-alpha', 'release-beta', 'release-build']) {
+  for (const file of ['release-alpha', 'release-beta', 'release-build', 'release-worker-teardown']) {
     const path = join(records, file)
     if (!existsSync(path))
       writeFileSync(path, 'release')

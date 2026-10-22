@@ -170,6 +170,9 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     let owner: CommandProcess | undefined
     const result = runCommand(name, argv, launch, {
       ...runtime,
+      // A Playwright parent can exit before its workers finish teardown.
+      // Retain ownership of the whole command tree until every process exits.
+      ownership: { ...runtime.ownership, ownTree: true },
       observe: (ownedProcess) => {
         owner = ownedProcess
         owned.add(ownedProcess)
@@ -208,7 +211,7 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       LEAPMUX_E2E_NONCE: undefined,
       [RUN_ROOT_ENV]: undefined,
     }
-    const buildCode = await command(resolveTaskBin(), ['build-backend'], { cwd: projectRoot, env }, { ownership: { ownTree: true } })
+    const buildCode = await command(resolveTaskBin(), ['build-backend'], { cwd: projectRoot, env })
     if (interrupted || buildCode !== 0)
       return interrupted || buildCode
     const runParent = runRootParent()

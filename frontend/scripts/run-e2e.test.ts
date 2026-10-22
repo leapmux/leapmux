@@ -12,6 +12,7 @@ import { copyRunBinary, LEAPMUX_BINARY_NAME, runBinaryPath } from '../tests/e2e/
 import { RUN_ROOT_ENV } from '../tests/e2e/helpers/runRoot'
 import { initGitRepo } from '../tests/e2e/helpers/worktree'
 import { runE2E, runRootParent } from './run-e2e'
+import { spawnWindowsCommandJob } from './windowsCommandJob'
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
@@ -27,7 +28,7 @@ vi.mock('./windowsCommandJob', async () => {
   return {
     // The stop mirrors the POSIX group stop: the mocked process.kill decides whether
     // signaling the owned command fails, and an ESRCH answer means it is gone already.
-    spawnWindowsCommandJob: (command: string, args: string[], options: SpawnOptions) => {
+    spawnWindowsCommandJob: vi.fn((command: string, args: string[], options: SpawnOptions) => {
       const child = spawn(command, args, options)
       return {
         child,
@@ -44,7 +45,7 @@ vi.mock('./windowsCommandJob', async () => {
           }
         },
       }
-    },
+    }),
   }
 })
 vi.mock('../tests/e2e/helpers/runBinary', async (importOriginal) => {
@@ -54,6 +55,7 @@ vi.mock('../tests/e2e/helpers/runBinary', async (importOriginal) => {
 
 const calls: { command: string, args: string[], env: NodeJS.ProcessEnv }[] = []
 const runDirs = new Set<string>()
+const commandGroups = new Map<number, ChildProcess>()
 const releaseHeldCommands = new Set<() => Promise<void>>()
 /** The report that the mocked discovery run writes. A test replaces it to select other tests. */
 let discoveredReport: () => unknown
@@ -169,12 +171,12 @@ it('keeps serial runtime roots short and preserves their full tool output run la
 
 beforeEach(() => {
   calls.length = 0
+  commandGroups.clear()
+  vi.mocked(spawnWindowsCommandJob).mockClear()
   discoveredReport = selectedReport
   mergedReport = selectedReport
   // Mocked command PIDs must never select a real process or process group.
-  vi.spyOn(process, 'kill').mockImplementation(() => {
-    throw Object.assign(new Error('The mocked process does not exist.'), { code: 'ESRCH' })
-  })
+  vi.spyOn(process, 'kill').mockImplementation(signalCommandGroup)
   vi.stubEnv('LEAPMUX_DEV', '')
   vi.stubEnv('LEAPMUX_E2E_NONCE_PATH', '')
   vi.stubEnv('LEAPMUX_E2E_NONCE', '')
@@ -197,6 +199,18 @@ afterEach(async () => {
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
 })
+
+/** Route a private group signal to its controlled child. Never signal an operating-system process. */
+function signalCommandGroup(pid: number, signal: string | number = 'SIGTERM'): true {
+  const child = commandGroups.get(-pid)
+  if (!child || child.exitCode !== null || child.signalCode !== null)
+    throw Object.assign(new Error('The mocked process group does not exist.'), { code: 'ESRCH' })
+  if (signal === 'SIGTERM' || signal === 'SIGKILL')
+    child.kill(signal)
+  else if (signal !== 0)
+    throw new Error(`The controlled process group received an unsupported signal: ${signal}.`)
+  return true
+}
 
 function selectedReport() {
   return {
@@ -297,6 +311,7 @@ function partialLaunchFailure(options: { stopFailure?: Error, signal?: boolean, 
       }),
     })
     child = started
+    commandGroups.set(started.pid, started)
     return started
   })
   return {
@@ -348,6 +363,7 @@ function heldSerialCommand(options: { stopFailure?: Error, inheritedPipe?: boole
       }),
     })
     child = started
+    commandGroups.set(started.pid, started)
     launched.resolve()
     return started
   })
@@ -371,6 +387,24 @@ function failureLeaves(error: unknown): unknown[] {
 }
 
 describe('end-to-end launcher', () => {
+  it.each([1, 2])('owns every command tree with %s worker slots', async (workers) => {
+    processes()
+    expect(await runE2E([`--workers=${workers}`], projectRoot)).toBe(0)
+    expect(calls.some(call => call.command === 'task')).toBe(true)
+    expect(calls.some(call => call.args.includes('test'))).toBe(true)
+    if (workers === 2) {
+      expect(calls.some(call => call.args.includes('--list'))).toBe(true)
+      expect(calls.some(call => call.args.includes('merge-reports'))).toBe(true)
+    }
+    if (process.platform === 'win32') {
+      expect(spawnWindowsCommandJob).toHaveBeenCalledTimes(calls.length)
+    }
+    else {
+      for (const [, , options] of vi.mocked(spawn).mock.calls)
+        expect(options?.detached).toBe(true)
+    }
+  })
+
   it('stops an earlier shard before removing its directory after a later shard setup fails', async () => {
     const fixture = partialLaunchFailure()
     await expect(runE2E(['--workers=2'], projectRoot)).rejects.toBe(fixture.state.setupFailure)
@@ -397,6 +431,8 @@ describe('end-to-end launcher', () => {
   it('closes a recorded inherited pipe before waiting for the stopped command close event', async () => {
     const fixture = partialLaunchFailure({ trackedRecord: true, inheritedPipe: true })
     vi.mocked(process.kill).mockImplementation((pid, signal) => {
+      if (pid < 0)
+        return signalCommandGroup(pid, signal)
       if (pid === 123 && signal === 'SIGTERM')
         fixture.finish()
       throw Object.assign(new Error('The mocked process does not exist.'), { code: 'ESRCH' })
@@ -480,6 +516,8 @@ describe('end-to-end launcher', () => {
   it('cleans recorded inherited pipes after a successful serial signal stop', async () => {
     const fixture = heldSerialCommand({ inheritedPipe: true })
     vi.mocked(process.kill).mockImplementation((pid, signal) => {
+      if (pid < 0)
+        return signalCommandGroup(pid, signal)
       if (pid === 123 && signal === 'SIGTERM')
         fixture.finish()
       throw Object.assign(new Error('The mocked process does not exist.'), { code: 'ESRCH' })
