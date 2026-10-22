@@ -78,9 +78,9 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
         // Handle the signal result before another microtask can deliver the child's exit event.
         // Otherwise, a pre-exit EPERM can look like a permission failure from surviving descendants.
         try {
-          const sent = signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')
+          signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')
           signaling = false
-          check(sent)
+          check()
         }
         catch (error) {
           signaling = false
@@ -88,7 +88,7 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
         }
       })
     }
-    function scheduleCheckOrEscalate(afterSuccessfulTermination: boolean, error?: unknown) {
+    function scheduleCheckOrEscalate(error?: unknown) {
       if (performance.now() >= deadline) {
         if (force) {
           finish(error ?? new Error(`The owned process group ${groupId} did not exit after forced termination.`))
@@ -99,23 +99,23 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
         terminate(true)
         return
       }
-      timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())), afterSuccessfulTermination)
+      timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())))
     }
-    function handleSignalError(error: unknown, afterSuccessfulTermination = false) {
+    function handleSignalError(error: unknown) {
       if (finished)
         return
-      if (!ended && isProcessError(error, 'EPERM') && (afterSuccessfulTermination || child.stdout?.readableEnded)) {
+      if (!ended && isProcessError(error, 'EPERM')) {
         // An exited root can remain a zombie until its native exit event, and macOS reports EPERM for its group.
         // Keep the shutdown deadlines active while waiting, because owned descendants can still require forced termination.
         pendingExitError ??= error
         if (timer !== undefined)
           clearTimeout(timer)
-        scheduleCheckOrEscalate(afterSuccessfulTermination, pendingExitError)
+        scheduleCheckOrEscalate(pendingExitError)
         return
       }
       finish(error)
     }
-    function check(afterSuccessfulTermination = false) {
+    function check() {
       if (finished || signaling)
         return
       if (timer !== undefined) {
@@ -127,10 +127,10 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
           finish()
           return
         }
-        scheduleCheckOrEscalate(afterSuccessfulTermination)
+        scheduleCheckOrEscalate()
       }
       catch (error) {
-        handleSignalError(error, afterSuccessfulTermination)
+        handleSignalError(error)
       }
     }
     function onExit() {

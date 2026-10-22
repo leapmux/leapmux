@@ -377,7 +377,7 @@ describe('runE2E Playwright integration', () => {
       await waitForFixtureFiles(records, ['entry-alpha.json', 'entry-beta.json'], runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS), runner.log)
       cancelPrivateRunner(runner.child, signal)
       const result = await waitForRunnerCompletion(runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS))
-      expect(result).toEqual({ code, signal: null })
+      expect(result, `Launcher console:\n${readFileSync(runner.log, 'utf8')}`).toEqual({ code, signal: null })
       expect(readFileSync(join(root, 'build-count'), 'utf8')).toBe('1')
       const setupFiles = readdirSync(records).filter(file => file.startsWith('setup-'))
       expect(setupFiles).toHaveLength(2)

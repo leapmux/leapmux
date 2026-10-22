@@ -298,14 +298,80 @@ describe('spawnCommandProcess', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('reports permission failures instead of treating the group as absent', async () => {
+  it('reports permission failures after forced termination instead of treating the group as absent', async () => {
     const { emitter, resource } = treeProcess()
     const failure = Object.assign(new Error('The controlled signal failed.'), { code: 'EPERM' })
     kernel.failure = failure
-    await expect(resource.stop()).rejects.toBe(failure)
-    expect(emitter.listenerCount('exit')).toBe(0)
-    expect(emitter.listenerCount('error')).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(50)
+      expect(process.kill).toHaveBeenCalledWith(-123, 'SIGKILL')
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(50)
+      await stopped
+      expect(result).toBe(failure)
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+    finally {
+      kernel.failure = undefined
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGKILL'
+      emitter.emit('exit', null, 'SIGKILL')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+    }
+  })
+
+  it('handles a SIGTERM EPERM before a queued native exit without EOF', async () => {
+    const { emitter, resource } = treeProcess()
+    const stdout = new PassThrough()
+    Object.assign(emitter, { stdout })
+    const failure = Object.assign(new Error('The root is a zombie until its native exit arrives.'), { code: 'EPERM' })
+    const previousSignal = vi.mocked(process.kill).getMockImplementation()!
+    let firstSignal = true
+    vi.mocked(process.kill).mockImplementation((pid, signal) => {
+      if (firstSignal && signal === 'SIGTERM') {
+        firstSignal = false
+        queueMicrotask(() => {
+          kernel.alive.delete(-123)
+          emitter.signalCode = 'SIGTERM'
+          emitter.emit('exit', null, 'SIGTERM')
+        })
+        throw failure
+      }
+      return previousSignal(pid, signal)
+    })
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(stdout.readableEnded).toBe(false)
+      expect(result).toBe('finished')
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGTERM')).toHaveLength(2)
+      expect(vi.getTimerCount()).toBe(0)
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+    }
+    finally {
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGTERM'
+      emitter.emit('exit', null, 'SIGTERM')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+      vi.mocked(process.kill).mockImplementation(previousSignal)
+      stdout.destroy()
+    }
   })
 
   it('waits for native exit and group disappearance after successful termination and probe EPERM without EOF', async () => {
