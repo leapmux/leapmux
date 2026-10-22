@@ -2,55 +2,68 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { JUNIE_BRAVE } from '../../../src/components/chat/providers/junie/permissionPresets'
-import { expectNoNativeControl } from '../helpers/nativeControlObservation'
+import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
+import { JUNIE_CONFIG, JUNIE_MODE } from '../../../src/generated/contracts/junie-protocol'
+import { exerciseSmartPermissions } from '../helpers/nativeBypassPermissions'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
-import { currentNativeAgent, expectNativeOptionValue, nativeOptionGroup, nativeOptionValue, nativeTextStep, nativeToolOutcome } from '../helpers/nativeScenario'
+import { currentNativeAgent, expectNativeOptionValue, nativeOptionGroup, nativeOptionValue } from '../helpers/nativeScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { applyPermissionPreset, assistantBubbles, chooseSettingsOption, expectPermissionShortcuts, sendMessage, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, chooseSettingsOption, expectPermissionShortcuts, waitForNativeSettingsHydrated, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { junieTest } from '../junie-fixtures'
 
-// The Smart permissions shortcut selects Junie's Brave Auto (`brave-auto`), never the
-// plan/default mode axis, so the session mode stays what it was through the switch.
+// Both shortcuts change Brave mode. Neither shortcut changes the session's Plan mode.
 junieTest('switches the Brave mode axis between the Smart shortcut and the other values', async ({ native }) => {
   const { page } = native
   await waitForSettingsHydrated(page)
   const agent = await currentNativeAgent(native)
-  expect(nativeOptionGroup(agent, 'brave_mode')?.mutable).toBe(true)
-  expect(nativeOptionGroup(agent, 'brave_mode')?.options.map(option => option.id))
+  expect(nativeOptionGroup(agent, JUNIE_CONFIG.BraveMode)?.mutable).toBe(true)
+  expect(nativeOptionGroup(agent, JUNIE_CONFIG.BraveMode)?.options.map(option => option.id))
     .toEqual(expect.arrayContaining([JUNIE_BRAVE.Auto, JUNIE_BRAVE.On, JUNIE_BRAVE.Off]))
   // A shortcut that is already on disables itself, so each state follows the value the session starts in.
-  const initial = nativeOptionValue(agent, 'brave_mode')
+  const initial = nativeOptionValue(agent, JUNIE_CONFIG.BraveMode)
   await expectPermissionShortcuts(page, {
     smart: initial === JUNIE_BRAVE.Auto ? 'disabled' : 'offered',
     bypass: initial === JUNIE_BRAVE.On ? 'disabled' : 'offered',
   })
 
+  await chooseSettingsOption(page, `${OPTION_ID_PERMISSION_MODE}-${JUNIE_MODE.Plan}`)
+  await waitForSettingsIdle(page)
+  await expectNativeOptionValue(native, OPTION_ID_PERMISSION_MODE, JUNIE_MODE.Plan)
+  await chooseSettingsOption(page, `${JUNIE_CONFIG.BraveMode}-${JUNIE_BRAVE.Off}`)
+  await waitForSettingsIdle(page)
+  await expectNativeOptionValue(native, JUNIE_CONFIG.BraveMode, JUNIE_BRAVE.Off)
+
   await applyPermissionPreset(page, 'bypass')
-  await expectNativeOptionValue(native, 'brave_mode', JUNIE_BRAVE.On)
+  await expectNativeOptionValue(native, JUNIE_CONFIG.BraveMode, JUNIE_BRAVE.On)
+  await expectNativeOptionValue(native, OPTION_ID_PERMISSION_MODE, JUNIE_MODE.Plan)
   await expectPermissionShortcuts(page, { smart: 'offered', bypass: 'disabled' })
 
   await applyPermissionPreset(page, 'smart')
-  await expectNativeOptionValue(native, 'brave_mode', JUNIE_BRAVE.Auto)
+  await expectNativeOptionValue(native, JUNIE_CONFIG.BraveMode, JUNIE_BRAVE.Auto)
   await expectPermissionShortcuts(page, { smart: 'disabled', bypass: 'offered' })
+  await expectNativeOptionValue(native, OPTION_ID_PERMISSION_MODE, JUNIE_MODE.Plan)
+  await page.reload()
+  await waitForNativeSettingsHydrated(page)
+  await expectNativeOptionValue(native, OPTION_ID_PERMISSION_MODE, JUNIE_MODE.Plan)
+  await expectNativeOptionValue(native, JUNIE_CONFIG.BraveMode, JUNIE_BRAVE.Auto)
 })
 
-// Brave Auto decides a plain removal inside the workspace by itself, with no ACP permission
-// request. The shared Smart proof cannot serve because its compound removal-plus-printf
-// command makes Junie consult its own allowlist model, which the mock server cannot answer.
-// The same removal asks under Brave Off, and that contrast is the proof.
+// Brave Auto approves a plain removal inside the workspace without an Agent Client Protocol permission request.
+// A compound command requires Junie's allowlist model, which the mock server cannot answer.
+// The same removal requests approval under Brave Off.
 junieTest('runs by itself a native removal that Brave Off asks about, before and after reload', async ({ native }) => {
-  const { page, modelScript } = native
+  const { page } = native
   const agent = await currentNativeAgent(native)
   assertPrivateNativePath(agent.workingDir, getGlobalState().tmpDir)
   const ask = join(agent.workingDir, 'native-smart-ask')
   mkdirSync(ask, { recursive: true })
   writeFileSync(join(ask, 'keep.txt'), 'Remove only through the denied native Smart command.\n')
-  await chooseSettingsOption(page, `brave_mode-${JUNIE_BRAVE.Off}`)
+  await chooseSettingsOption(page, `${JUNIE_CONFIG.BraveMode}-${JUNIE_BRAVE.Off}`)
   await waitForSettingsIdle(page)
-  await expectNativeOptionValue(native, 'brave_mode', JUNIE_BRAVE.Off)
+  await expectNativeOptionValue(native, JUNIE_CONFIG.BraveMode, JUNIE_BRAVE.Off)
   await exerciseNativePermissionDecision(native, {
     toolCall: bashToolCall(native.provider, 'native-smart-ask', `rm -rf ${quotePosixShellArgument(ask)}`),
     decision: 'deny',
@@ -60,36 +73,13 @@ junieTest('runs by itself a native removal that Brave Off asks about, before and
       expect(JSON.stringify(request.body)).toContain('Human rejected execution')
     },
   })
-  await applyPermissionPreset(page, 'smart')
-  await waitForSettingsIdle(page)
-  for (const reload of [false, true]) {
-    // One agent session runs both passes. Each pass removes its own directory, so the second
-    // pass cannot pass on what the first pass shows.
-    const pass = Number(reload) + 1
-    const target = join(agent.workingDir, `native-smart-safe-${pass}`)
-    mkdirSync(target, { recursive: true })
-    writeFileSync(join(target, 'keep.txt'), `Remove only through the isolated native Smart command of pass ${pass}.\n`)
-    assertPrivateNativePath(target, getGlobalState().tmpDir)
-    if (reload) {
-      await page.reload()
-      await waitForNativeSettingsHydrated(page)
-    }
-    // The shortcut's value survives the reload.
-    await expectNativeOptionValue(native, 'brave_mode', JUNIE_BRAVE.Auto)
-    await expectNoNativeControl(native, { testId: 'control-banner', relatedProof: async () => {
-      const id = `native-smart-safe-${Number(reload)}`
-      const answer = `The native Smart removal completed in pass ${pass}.`
-      const start = await modelScript.queue(
-        { toolCalls: [bashToolCall(native.provider, id, `rm -rf ${quotePosixShellArgument(target)}`)] },
-        nativeTextStep(native, answer),
-      )
-      await sendMessage(page, modelScript.prompt('Run the scripted removal under Smart permissions.'))
-      await modelScript.waitForSteps(start + 2)
-      await waitForAgentIdle(page)
-      expect(existsSync(target)).toBe(false)
-      const request = await modelScript.requestAt(start + 1)
-      expect((await nativeToolOutcome(native, request, id)).text).toContain('exit code 0')
-      await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
-    } })
-  }
+  await exerciseSmartPermissions(native, {
+    settingsProof: () => expectNativeOptionValue(native, JUNIE_CONFIG.BraveMode, JUNIE_BRAVE.Auto),
+    commandProof: target => ({
+      command: `rm -rf ${quotePosixShellArgument(target)}`,
+      resultProof: (outcome) => {
+        expect(outcome.text).toContain('exit code 0')
+      },
+    }),
+  })
 })

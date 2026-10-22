@@ -24,26 +24,31 @@ var junieStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPermission
 // junieLocator finds the Junie CLI on the user's PATH.
 var junieLocator = launch.Binaries("junie")
 
-// Registration states everything the worker knows about Junie before any of
-// its agents runs. Junie reports its live modes, models and config options on
-// the session; the static group is the fallback for a session that has not
-// reported yet. The effort axis is the well-known `effort` id.
+// Registration states what the worker knows about Junie before an agent starts.
+// Junie reports these catalogs on the session:
+//   - Modes.
+//   - Models.
+//   - Config options.
+//
+// The static group supplies the fallback until the session reports its catalog.
+// The effort axis uses the well-known `effort` ID.
 func Registration() agent.Registration {
 	return agent.Registration{
 		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_JUNIE,
 		Plugin:   junieProvider{},
 		Start:    Start,
 		Locator:  junieLocator,
-		// Models come from Junie's custom-model profiles and its account; the
-		// session reports the catalog on the `model` config option under a
-		// decorated wire id, which NormalizeModelID folds back to the profile id.
+		// Models come from Junie's custom-model profiles and its account.
+		// The session reports the catalog through the `model` config option with decorated wire IDs.
+		// NormalizeModelID converts each decorated wire ID to its profile ID.
 		DefaultModels:    nil,
 		OptionGroups:     junieStaticOptionGroups,
 		NormalizeModelID: normalizeJunieModelID,
 		AdditionalOptionIDs: []string{
 			agent.OptionIDPermissionMode,
 			agent.OptionIDEffort,
-			junieConfigBraveMode,
+			// The worker recognizes this ID but forwards its values without interpretation.
+			contracts.JunieConfigBraveMode,
 		},
 		PermissionDefaults: agent.PermissionDefaults{
 			Fallback: contracts.JunieModeDefault,
@@ -52,9 +57,3 @@ func Registration() agent.Registration {
 		EnvEffortKey: "LEAPMUX_JUNIE_DEFAULT_EFFORT",
 	}
 }
-
-// junieConfigBraveMode is the config-option id of Junie's shell-safety axis.
-// Junie owns the id and its three values (`brave-auto`, `on`, `off`); the
-// worker lists it so an incoming settings map can carry it, and forwards the
-// value without reading it.
-const junieConfigBraveMode = "brave_mode"

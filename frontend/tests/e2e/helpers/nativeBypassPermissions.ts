@@ -1,5 +1,5 @@
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeToolOutcome } from './nativeScenario'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -11,12 +11,20 @@ import { getGlobalState } from './server'
 import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
 import { applyPermissionPreset, assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
 
-/** What a permission shortcut proof runs around its native command. */
+/** A native command and the proof of its result. */
+export interface NativeShortcutCommand {
+  command: string
+  resultProof: (outcome: NativeToolOutcome) => void | Promise<void>
+}
+
+/** The optional checks and command for a permission shortcut test. */
 export interface NativeShortcutProof {
   /** Bring the session to the state that the shortcut must change, before the shortcut applies. */
   prepare?: () => Promise<void>
   /** Prove the native settings of the agent before each pass of the command. */
   settingsProof?: (agent: AgentInfo) => void | Promise<void>
+  /** Supply a provider-specific command and its result proof for each pass. */
+  commandProof?: (target: string, pass: number) => NativeShortcutCommand
 }
 
 /** Prove Bypass changes native permission behavior before and after reload. */
@@ -48,24 +56,31 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
     }
     await options.settingsProof?.(await currentNativeAgent(context))
     await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
-      // One agent session runs both passes. Each pass gives its tool call, its output, and its answer their own text,
-      // so a check of the second pass cannot pass on what the first pass shows.
+      // One agent session runs both passes. Each pass uses a distinct tool call ID and assistant answer.
+      // The default command produces a distinct output marker also.
+      // Each pass recreates the target, so the first removal cannot satisfy the second check.
       const pass = Number(reload) + 1
       const id = `native-${preset}-${Number(reload)}`
       const output = `${outputPrefix}-${pass}-42`
       const answer = `The native ${preset} command completed in pass ${pass}.`
+      const proof = options.commandProof?.(target, pass) ?? {
+        command: `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(`${outputPrefix}-${pass}-`, 42)}`,
+        resultProof: async (outcome: NativeToolOutcome) => {
+          expect(outcome.text).toContain(output)
+          // The command computes the output, so only execution can produce the complete marker.
+          await expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible()
+        },
+      }
       const start = await context.modelScript.queue(
-        { toolCalls: [bashToolCall(context.provider, id, `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(`${outputPrefix}-${pass}-`, 42)}`)] },
+        { toolCalls: [bashToolCall(context.provider, id, proof.command)] },
         nativeTextStep(context, answer),
       )
       await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
       await context.modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(context.page)
-      expect(existsSync(target)).toBe(false)
+      expect(existsSync(target), 'The native command must remove its target.').toBe(false)
       const request = await context.modelScript.requestAt(start + 1)
-      expect((await nativeToolOutcome(context, request, id)).text).toContain(output)
-      // The command computes no part of the output in its text, so only the run of the command shows it.
-      await expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible()
+      await proof.resultProof(await nativeToolOutcome(context, request, id))
       await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
     } })
   }

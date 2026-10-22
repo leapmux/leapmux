@@ -5073,8 +5073,8 @@
       },
       "junie": {
         "support": "supported",
-        "userNote": "Smart selects Junie's Brave Auto mode. It classifies terminal commands with a safety check, approves the safe ones, and asks about risky or unrecognized ones.",
-        "detailNote": "Smart is Junie's Brave Auto (`brave_mode` value `brave-auto`). The shortcut renders only while the session's option catalog offers the `brave_mode` option, which Junie 26.9.22 does.",
+        "userNote": "Smart selects Junie's Brave Auto mode. Brave Auto uses a safety check to classify terminal commands. It approves the safe commands. It asks about risky or unrecognized commands.",
+        "detailNote": "Smart selects Junie's Brave Auto (`brave_mode` value `brave-auto`). The shortcut requires a mutable `brave_mode` group whose catalog includes `brave-auto`. Junie 26.9.22 supplies this catalog.",
         "spec": "frontend/tests/e2e/junie/smart-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -5346,7 +5346,7 @@
       "junie": {
         "support": "supported",
         "userNote": "Bypass selects Junie's Brave On mode, which executes potentially sensitive actions without approval.",
-        "detailNote": "Bypass is Junie's Brave On (`brave_mode` value `on`). Brave Off stays a plain `brave_mode` option pick, and the presets never touch the plan/default mode axis, so Plan and a preset can be on together. The shortcuts render only while the session's option catalog offers the `brave_mode` option, which Junie 26.9.22 does.",
+        "detailNote": "Bypass selects Junie's Brave On (`brave_mode` value `on`). Brave Off remains an ordinary `brave_mode` option. The presets never change the plan/default mode axis, so Plan and a preset can remain active together. The shortcut requires a mutable `brave_mode` group whose catalog includes `on`. Junie 26.9.22 supplies this catalog.",
         "spec": "frontend/tests/e2e/junie/bypass-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -5364,7 +5364,7 @@
       "dirac": {
         "support": "leapmux-limit",
         "userNote": "Dirac has a YOLO option that skips approval prompts. LeapMux does not offer a Bypass permissions shortcut for it yet.",
-        "detailNote": "The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. Dirac, Qoder and Fast Agent are in that group today.\n\nClassified as a LeapMux limit. Dirac 0.5.17 reports a yolo boolean option that bypasses approval and safety prompts (upstream source checked 2026-10-05). The Dirac plugin declares no permission preset, so LeapMux renders no shortcut.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "detailNote": "The Bypass shortcut switches the session to the provider's bypass mode. LeapMux shows no Bypass shortcut when the provider declares no Bypass preset.\n\nClassified as a LeapMux limit. Dirac 0.5.17 reports a yolo boolean option that bypasses approval and safety prompts (upstream source checked 2026-10-05). The Dirac plugin declares no permission preset, so LeapMux renders no shortcut.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
         "spec": "frontend/tests/e2e/dirac/bypass-permissions-shortcut.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -5391,7 +5391,7 @@
       "fast-agent": {
         "support": "leapmux-limit",
         "userNote": "Fast Agent can skip all permission prompts when it starts with the `--no-permissions` flag. LeapMux does not offer a Bypass permissions shortcut for it yet.",
-        "detailNote": "The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. Dirac, Qoder and Fast Agent are in that group today.\n\nClassified as a LeapMux limit with medium confidence. Fast Agent 0.10.42 documents --no-permissions as a launch flag of its ACP command. The docs say: Disable prompts entirely, all tools are allowed (upstream docs checked 2026-10-05). The LeapMux launch passes no such flag. The Fast Agent plugin declares no permission preset. The flag needs a restart of the process.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "detailNote": "The Bypass shortcut switches the session to the provider's bypass mode. LeapMux shows no Bypass shortcut when the provider declares no Bypass preset.\n\nClassified as a LeapMux limit with medium confidence. Fast Agent 0.10.42 documents --no-permissions as a launch flag of its ACP command. The docs say: Disable prompts entirely, all tools are allowed (upstream docs checked 2026-10-05). The LeapMux launch passes no such flag. The Fast Agent plugin declares no permission preset. The flag needs a restart of the process.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
         "spec": "frontend/tests/e2e/fast-agent/bypass-permissions-shortcut.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",

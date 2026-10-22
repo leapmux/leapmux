@@ -1,9 +1,10 @@
 import type { ProviderPermissionPresets } from '../../providerSettings'
+import { JUNIE_CONFIG } from '~/generated/contracts/junie-protocol'
 
 /**
- * The values of Junie's Brave mode config option (`brave_mode`), its own wire
- * vocabulary for the shell-safety axis. The worker forwards them unread, so
- * they live here and not in a contract.
+ * Junie owns these values for its Brave mode config option.
+ * The worker forwards the values without interpretation, so this module owns them.
+ * The shared contract supplies the option ID that both language consumers read.
  */
 export const JUNIE_BRAVE = {
   Auto: 'brave-auto',
@@ -14,13 +15,15 @@ export const JUNIE_BRAVE = {
 /**
  * The canonical permission changes that this provider's presets apply.
  *
- * Smart selects Brave Auto, which classifies terminal commands with a safety
- * check, approves the safe ones, and asks about the rest. Bypass selects Brave
- * On, which runs sensitive actions without approval. Brave Off stays a plain
- * `brave_mode` option pick, like Claude Code's default mode. The presets never
- * touch the plan/default mode axis, so Plan and a preset can be on together.
+ * Smart selects Brave Auto. Brave Auto uses a safety check to classify terminal commands.
+ * It approves the safe commands. It asks about the remaining commands.
+ *
+ * Bypass selects Brave On, which runs sensitive actions without approval.
+ * Brave Off remains an ordinary option, like Claude Code's default mode.
+ * The presets never change the plan/default mode axis.
+ * Thus, Plan and a preset can remain active together.
  */
 export const juniePermissionPresets = {
-  smart: { sets: { brave_mode: JUNIE_BRAVE.Auto } },
-  bypass: { sets: { brave_mode: JUNIE_BRAVE.On } },
+  smart: { sets: { [JUNIE_CONFIG.BraveMode]: JUNIE_BRAVE.Auto } },
+  bypass: { sets: { [JUNIE_CONFIG.BraveMode]: JUNIE_BRAVE.On } },
 } satisfies ProviderPermissionPresets

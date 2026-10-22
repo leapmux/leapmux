@@ -1,5 +1,8 @@
 {
-  "_readme": "Junie owns the native mode and terminal metadata values. LeapMux reads native session metadata to retain an output file path beside the original preview. LeapMux reads no terminal log body.",
+  "_readme": "Junie owns the native mode and terminal metadata values. Junie owns the config option identifiers also. LeapMux reads native session metadata to retain an output file path beside the original preview. LeapMux reads no terminal log body.",
+  "configIds": {
+    "BraveMode": "brave_mode"
+  },
   "modes": {
     "Default": "default",
     "Plan": "plan"
