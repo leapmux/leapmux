@@ -303,6 +303,7 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	pending := a.pendingStart
 	matched := pending != nil && pending.threadID == threadID
 	publishSettings := false
+	settled := false
 	if matched {
 		a.mainTurn.input = pending.input
 		if pending.retry != nil {
@@ -321,7 +322,7 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 			pending.cancelDone = make(chan error, 1)
 			a.mainTurn.input = nil
 		}
-		a.finishCodexTurnStartLocked(pending, turnID, nil)
+		settled = a.finishCodexTurnStartLocked(pending, turnID, nil)
 	}
 	a.TurnToolUses = 0
 	a.turnSawPlan = false
@@ -340,6 +341,9 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 		if pending.cancelDone != nil {
 			go func() { pending.cancelDone <- a.interruptCancelledCodexStart(threadID, turnID) }()
 		}
+	}
+	if settled {
+		close(pending.done)
 	}
 }
 

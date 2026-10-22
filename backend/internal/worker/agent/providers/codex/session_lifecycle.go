@@ -123,7 +123,9 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 			pending.retry.cancelled = true
 			err = errCodexTurnRetryCancelled
 		}
-		a.finishCodexTurnStartLocked(pending, "", err)
+		if a.finishCodexTurnStartLocked(pending, "", err) {
+			close(pending.done)
+		}
 	}
 	oldThreadID := a.threadID
 	if a.retiredCodexThreads == nil {
