@@ -383,7 +383,7 @@ describe('spawnCommandProcess', () => {
     }
   })
 
-  it('returns the original post-termination probe EPERM at the deadline when no native exit arrives', async () => {
+  it('escalates a post-termination probe EPERM and returns it at the forced deadline when no native exit arrives', async () => {
     const { emitter, resource, stdout, failure, allowProbes, restoreSignal } = treeProcessWithProbeFailure()
     const unrelated = () => {}
     emitter.on('exit', unrelated)
@@ -398,9 +398,11 @@ describe('spawnCommandProcess', () => {
       expect(stdout.readableEnded).toBe(false)
       expect(result).toBeUndefined()
       await vi.advanceTimersByTimeAsync(1)
+      expect(process.kill).toHaveBeenCalledWith(-123, 'SIGKILL')
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(50)
       await stopped
       expect(result).toBe(failure)
-      expect(process.kill).not.toHaveBeenCalledWith(-123, 'SIGKILL')
       expect(emitter.listeners('exit')).toEqual([unrelated])
       expect(emitter.listenerCount('error')).toBe(0)
       expect(vi.getTimerCount()).toBe(0)
@@ -408,8 +410,45 @@ describe('spawnCommandProcess', () => {
     finally {
       allowProbes()
       kernel.alive.delete(-123)
-      emitter.signalCode = 'SIGTERM'
-      emitter.emit('exit', null, 'SIGTERM')
+      emitter.signalCode = 'SIGKILL'
+      emitter.emit('exit', null, 'SIGKILL')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+      restoreSignal()
+      stdout.destroy()
+    }
+  })
+
+  it('finishes after a post-termination probe EPERM clears following forced termination', async () => {
+    const { emitter, resource, stdout, allowProbes, restoreSignal } = treeProcessWithProbeFailure()
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(50)
+      expect(process.kill).toHaveBeenCalledWith(-123, 'SIGKILL')
+      expect(result).toBeUndefined()
+      allowProbes()
+      emitter.signalCode = 'SIGKILL'
+      emitter.emit('exit', null, 'SIGKILL')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(result).toBeUndefined()
+      kernel.alive.delete(-123)
+      await vi.advanceTimersByTimeAsync(25)
+      await stopped
+      expect(result).toBe('finished')
+      expect(vi.getTimerCount()).toBe(0)
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+    }
+    finally {
+      allowProbes()
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGKILL'
+      emitter.emit('exit', null, 'SIGKILL')
       await vi.advanceTimersByTimeAsync(100)
       await stopped
       restoreSignal()
@@ -604,7 +643,7 @@ describe('spawnCommandProcess', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('returns the original EOF permission error if no native exit arrives before the deadline', async () => {
+  it('escalates an EOF permission error and returns it at the forced deadline when no native exit arrives', async () => {
     const { emitter, resource } = await treeProcessAfterPipeEnd()
     const failure = Object.assign(new Error('The owned process refuses its signal.'), { code: 'EPERM' })
     kernel.failure = failure
@@ -614,18 +653,27 @@ describe('spawnCommandProcess', () => {
     }, (error) => {
       result = error
     })
-    await vi.advanceTimersByTimeAsync(0)
     try {
+      await vi.advanceTimersByTimeAsync(49)
       expect(result).toBeUndefined()
-    }
-    finally {
+      await vi.advanceTimersByTimeAsync(1)
+      expect(process.kill).toHaveBeenCalledWith(-123, 'SIGKILL')
+      expect(result).toBeUndefined()
       await vi.advanceTimersByTimeAsync(50)
       await stopped
+      expect(result).toBe(failure)
+      expect(vi.getTimerCount()).toBe(0)
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
     }
-    expect(result).toBe(failure)
-    expect(vi.getTimerCount()).toBe(0)
-    expect(emitter.listenerCount('exit')).toBe(0)
-    expect(emitter.listenerCount('error')).toBe(0)
+    finally {
+      kernel.failure = undefined
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGKILL'
+      emitter.emit('exit', null, 'SIGKILL')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+    }
   })
 
   it('keeps forced termination and its deadline after native exit resolves an EOF permission error', async () => {

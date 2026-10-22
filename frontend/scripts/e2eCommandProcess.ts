@@ -88,16 +88,29 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
         }
       })
     }
+    function scheduleCheckOrEscalate(afterSuccessfulTermination: boolean, error?: unknown) {
+      if (performance.now() >= deadline) {
+        if (force) {
+          finish(error ?? new Error(`The owned process group ${groupId} did not exit after forced termination.`))
+          return
+        }
+        force = true
+        deadline = performance.now() + delay
+        terminate(true)
+        return
+      }
+      timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())), afterSuccessfulTermination)
+    }
     function handleSignalError(error: unknown, afterSuccessfulTermination = false) {
       if (finished)
         return
       if (!ended && isProcessError(error, 'EPERM') && (afterSuccessfulTermination || child.stdout?.readableEnded)) {
-        // The group probe can return EPERM after termination before native exit.
-        // Wait for that exact event before signaling surviving descendants again.
+        // An exited root can remain a zombie until its native exit event, and macOS reports EPERM for its group.
+        // Keep the shutdown deadlines active while waiting, because owned descendants can still require forced termination.
         pendingExitError ??= error
         if (timer !== undefined)
           clearTimeout(timer)
-        timer = setTimeout(finish, Math.max(0, deadline - performance.now()), pendingExitError)
+        scheduleCheckOrEscalate(afterSuccessfulTermination, pendingExitError)
         return
       }
       finish(error)
@@ -114,17 +127,7 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
           finish()
           return
         }
-        if (performance.now() >= deadline) {
-          if (force) {
-            finish(new Error(`The owned process group ${groupId} did not exit after forced termination.`))
-            return
-          }
-          force = true
-          deadline = performance.now() + delay
-          terminate(true)
-          return
-        }
-        timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())), afterSuccessfulTermination)
+        scheduleCheckOrEscalate(afterSuccessfulTermination)
       }
       catch (error) {
         handleSignalError(error, afterSuccessfulTermination)
