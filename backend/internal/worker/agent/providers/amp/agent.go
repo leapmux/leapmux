@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,7 +25,7 @@ import (
 // the thread goes on in the next process (`amp threads continue`). The LeapMux
 // agent ends only when Stop runs.
 //
-// It starts no process until the first message. Amp creates its server thread
+// It starts no conversation process until the first message. Amp creates its server thread
 // when the process starts, so an agent that sends nothing leaves nothing in the
 // user's account, and a mode change before the first message needs no restart.
 type Agent struct {
@@ -50,7 +51,7 @@ type Agent struct {
 
 	// startFn starts one process. Production leaves it nil, which selects
 	// startProcess. A test installs a starter of fake processes.
-	startFn func(threadID, mode string) (*ampProcess, error)
+	startFn func(threadID string, config threadConfiguration) (*ampProcess, error)
 	// stderrFn reads the stderr of a process that exited. Production leaves it
 	// nil, which reads the process's own stderr. A test installs a reader.
 	stderrFn func(proc *ampProcess) string
@@ -64,6 +65,9 @@ type Agent struct {
 	userEnvRead bool
 	userGetenv  func(string) string
 	userHome    string
+
+	// settingsMu serializes setting changes through their persistence. Take it before mu.
+	settingsMu sync.Mutex
 
 	// mu guards every field below it.
 	mu sync.Mutex
@@ -79,7 +83,9 @@ type Agent struct {
 	importedMessages map[string]bool
 	// agentMode is the mode the thread starts with. modeLocked is true once the
 	// thread received its first message, after which Amp keeps the mode.
-	agentMode  string
+	agentMode string
+	// fastMode is true, false, or empty when native resume metadata is unavailable.
+	fastMode   string
 	modeLocked bool
 	// permissionMode decides each permission request when it arrives.
 	permissionMode string
@@ -321,13 +327,13 @@ func (a *Agent) processForTurn(proc *ampProcess) (*ampProcess, error) {
 		}
 	}
 	a.mu.Lock()
-	threadID, mode := a.threadID, a.agentMode
+	threadID, config := a.threadID, threadConfiguration{mode: a.agentMode, fast: a.fastMode == "true"}
 	active := a.turn.active || a.reconciling
 	a.mu.Unlock()
 	if active {
 		return nil, agent.ErrAgentBusy
 	}
-	return a.start(threadID, mode)
+	return a.start(threadID, config)
 }
 
 // start starts one process for threadID, or for a new thread in mode when
@@ -335,7 +341,7 @@ func (a *Agent) processForTurn(proc *ampProcess) (*ampProcess, error) {
 //
 // It checks the workspace first, because a process loads the workspace's
 // settings and plugins as soon as it starts (see checkWorkspace).
-func (a *Agent) start(threadID, mode string) (*ampProcess, error) {
+func (a *Agent) start(threadID string, config threadConfiguration) (*ampProcess, error) {
 	if err := a.checkUncertainThread(threadID); err != nil {
 		return nil, err
 	}
@@ -343,9 +349,9 @@ func (a *Agent) start(threadID, mode string) (*ampProcess, error) {
 		return nil, err
 	}
 	if a.startFn != nil {
-		return a.startFn(threadID, mode)
+		return a.startFn(threadID, config)
 	}
-	return a.startProcess(threadID, mode)
+	return a.startProcess(threadID, config)
 }
 
 // awaitExit waits for a process that is on its way out, and for its exit
@@ -389,21 +395,25 @@ func (a *Agent) disarmTurn() {
 }
 
 // lockMode records that the thread received its first message. Amp keeps the
-// mode from here on, so the mode group turns read-only, and the settings view
+// mode and speed from here on, so both groups turn read-only, and the settings view
 // learns it at once.
 //
 // The mode locks at the value that proc started the thread in. A change that
 // landed while proc started does not reach the thread, so it must not show.
 func (a *Agent) lockMode(proc *ampProcess) {
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 	a.mu.Lock()
 	changed := !a.modeLocked
 	a.modeLocked = true
-	if changed && proc.mode != "" {
-		a.agentMode = proc.mode
+	if changed && proc.config.mode != "" {
+		a.agentMode = proc.config.mode
+		a.fastMode = strconv.FormatBool(proc.config.fast)
 	}
 	threadID := a.threadID
 	a.mu.Unlock()
 	if changed {
+		a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
 		a.sink.BroadcastStatusActive(threadID)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/coder/quartz"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -242,6 +243,7 @@ func newTestAgentWithClock(t *testing.T, rt *fakeRuntime, clock quartz.Clock) (*
 
 // testAgentOptions states what a test agent differs in.
 type testAgentOptions struct {
+	launchOptions optionmap.Map
 	// clock is the agent's clock. Nil is the real clock.
 	clock quartz.Clock
 	// apiTimeout limits each request. Zero is 10 seconds.
@@ -265,7 +267,7 @@ func newTestAgentWith(t *testing.T, rt *fakeRuntime, options testAgentOptions) (
 	if options.services != nil {
 		services = options.services(services)
 	}
-	a := newAgent(agent.Options{AgentID: "cw-1", WorkingDir: t.TempDir()}, services, clock)
+	a := newAgent(agent.Options{AgentID: "cw-1", WorkingDir: t.TempDir(), Options: options.launchOptions}, services, clock)
 	ctx, cancelContext := context.WithCancel(context.Background())
 	// The process "exits" when its context ends, as the runtime does when the
 	// worker cancels it, so a Stop does not wait for a process that never ran.

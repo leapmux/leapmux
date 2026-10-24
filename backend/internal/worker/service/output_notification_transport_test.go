@@ -163,7 +163,7 @@ func TestNotificationJournalTransportMeasuresCompactGrowthAndContinuesReplay(t *
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(envelope), channelwire.MaxReassembledMessageSize(transport.writer.MaxPayloadBudget()))
 	writeNotificationTransportReceipt(t, notificationTransportByteMetrics(t, last, payload, envelope, stored, originals, transport.writer.MaxPayloadBudget()))
-	replay := newReplaySink(transport.writer, 9007199254740993)
+	replay := newReplaySink(transport.writer, 9007199254740993, nil)
 	broadcastReplayAgentEvent(replay, "transport-owner", last)
 	broadcastReplayAgentEvent(replay, "transport-owner", &leapmuxv1.AgentEvent{AgentId: "transport-owner", Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}}})
 	assert.True(t, replay.alive())
@@ -299,7 +299,7 @@ func TestNotificationJournalTransportDeliversConsolidatedLiveAndReplay(t *testin
 	row, err := svc.Queries.GetAgentByID(t.Context(), ownerID)
 	require.NoError(t, err)
 	const replayID = uint64(9007199254740993)
-	svc.replayAgentCatchUp(newReplaySink(replayed.writer, replayID), &leapmuxv1.WatchAgentEntry{AgentId: ownerID}, row, nil)
+	svc.replayAgentCatchUp(newReplaySink(replayed.writer, replayID, nil), &leapmuxv1.WatchAgentEntry{AgentId: ownerID}, row, nil)
 	replayMessages := 0
 	for _, event := range replayed.snapshot() {
 		assert.True(t, event.Replay)
@@ -344,7 +344,7 @@ func TestNotificationJournalTransportRejectsOversizedVisiblePayloadAndContinuesR
 	oversized := notificationTransportEvent(content, nil)
 	response := &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: oversized}}
 	require.ErrorIs(t, broadcastWatchEvent(transport.writer, response), channel.ErrMessageRejected)
-	replay := newReplaySink(transport.writer, 23)
+	replay := newReplaySink(transport.writer, 23, nil)
 	broadcastReplayAgentEvent(replay, "transport-owner", oversized)
 	broadcastReplayAgentEvent(replay, "transport-owner", &leapmuxv1.AgentEvent{AgentId: "transport-owner", Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}}})
 	assert.True(t, replay.alive())

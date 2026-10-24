@@ -255,6 +255,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/kiroSurface.test.ts',
   'tests/e2e/helpers/launcherFixtureProject.test.ts',
   'tests/e2e/helpers/lettaEnvironment.test.ts',
+  'tests/e2e/helpers/lettaTransport.test.ts',
   'tests/e2e/helpers/mockAgentEnvironment.test.ts',
   'tests/e2e/helpers/mockModelScenario.test.ts',
   'tests/e2e/helpers/mockModelScript.test.ts',

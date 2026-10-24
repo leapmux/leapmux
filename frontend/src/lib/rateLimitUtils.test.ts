@@ -6,10 +6,26 @@ import {
   formatRateLimitSummary,
   getResetsAt,
   pickUrgentRateLimit,
+  rateLimitStatusLabel,
 } from './rateLimitUtils'
 
 /** Unix seconds `secs` in the future, for a deterministically-positive countdown. */
 const future = (secs: number): number => Math.floor(Date.now() / 1000) + secs
+
+describe('rateLimitStatusLabel', () => {
+  it.each([
+    ['allowed', 'Allowed'],
+    ['allowed_warning', 'Warning'],
+    ['exceeded', 'Exceeded'],
+    ['rejected', 'Exceeded'],
+    ['toString', 'Exceeded'],
+    ['constructor', 'Exceeded'],
+    ['', undefined],
+    [undefined, undefined],
+  ])('labels status %s', (status, expected) => {
+    expect(rateLimitStatusLabel(status)).toBe(expected)
+  })
+})
 
 const UNKNOWN_TYPE_PREFIX_RE = /^Rate limit \(unknown_type\):/
 
@@ -90,6 +106,15 @@ describe('pickUrgentRateLimit', () => {
 
   it('returns null when no rate limits exist', () => {
     expect(pickUrgentRateLimit({})).toBeNull()
+  })
+
+  it('orders an epoch-zero reset before a future reset of equal severity', () => {
+    const picked = pickUrgentRateLimit({
+      future: { status: 'allowed_warning', resetsAt: future(3600), rateLimitType: 'seven_day' },
+      epoch: { status: 'allowed_warning', resetsAt: 0, rateLimitType: 'five_hour' },
+    })
+    expect(picked?.info.rateLimitType).toBe('five_hour')
+    expect(picked?.countdown).toBeNull()
   })
 
   it('returns null when every tier is allowed', () => {

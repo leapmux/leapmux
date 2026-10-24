@@ -381,7 +381,7 @@ export async function createMockAgentEnvironment(
       ...createAmpEnvironment({ origin, modelKey: MODEL_KEY }),
       ...createClineEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: CLINE_PROVIDER_ID, modelID: MOCK_MODELS.cline, mcpEchoServer }),
       ...createDroidEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, primary: { handle: DROID_MOCK_MODEL_IDS.primary, model: MOCK_MODELS.droid }, alternate: { handle: DROID_MOCK_MODEL_IDS.alternate, model: MOCK_MODELS.droidAlt } }),
-      ...createLettaEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, temporaryEnv }),
+      ...await createLettaEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, temporaryEnv }),
       ...createCodebuddyEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: CODEBUDDY_ALT_MODEL_WIRE_ID, startModel: CODEBUDDY_MODEL_ID }),
       ...createQoderEnvironment({ homeDir, shimsDirectory: cliShimsDir, origin, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: MOCK_MODELS.qoder }),
       ...createJunieEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, origin, modelKey: MODEL_KEY, modelID: MOCK_MODELS.junie, childModel: JUNIE_MOCK_MODEL, proxyProvider: JUNIE_PROXY_PROVIDER, realHomeDir: options.realHomeDir }),

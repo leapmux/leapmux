@@ -1028,11 +1028,11 @@
         "verified": true
       },
       "factory-droid": {
-        "support": "leapmux-limit",
-        "userNote": "Factory Droid accepts a PDF file as message input, but LeapMux does not send PDF files to it yet. LeapMux refuses a PDF upload for this agent.",
-        "detailNote": "LeapMux refuses the upload and keeps the actual file bytes out of the next native model request.\n\nClassified as a LeapMux limit: the droid.add_user_message schema of Droid 0.233.0 has a files input for base64 application/pdf documents. LeapMux sends only images and inline text (installed binary strings checked 2026-10-05). Droid accepts a PDF in the files input, and only LeapMux refuses it. Not run natively: a model without PDF support may need parsedData text that the client extracts.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/510.",
+        "support": "supported",
+        "userNote": "Models marked as supporting PDFs accept files up to 3 MiB. If the selected model cannot receive the PDF, choose a compatible model and retry the queued message.",
+        "detailNote": "Verified with Factory Droid 0.245.1. Native add_user_message.files carries base64 application/pdf sources with the original filename and bytes. The adapter follows native supportsPDFs metadata and the verified custom Anthropic/OpenAI converters. Generic Chat Completions substitutes text and custom Bedrock Converse drops documents, so unsupported or unknown selected models fail before native delivery. Empty and over-3-MiB PDFs are refused before Droid can replace the file with extracted text. Model changes and input admission are serialized; child delivery uses the bound child process and its own catalog.\n\nNative acceptance: all 16 tests in ten complete related browser files passed with zero retries in e2e-IE21RY. The PDF cases prove exact original bytes through Anthropic and OpenAI Responses, prompted and attachment-only input after reload, same-item retry after a compatible model change, and size refusal with no rejected data in the next clean turn. All 410 Droid backend tests and 410 race tests passed. The shared attachment-proof suite passed all 267 tests.",
         "spec": "frontend/tests/e2e/factory-droid/pdf-attachments.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -2208,20 +2208,20 @@
         "verified": true
       },
       "kilo": {
-        "support": "leapmux-limit",
-        "userNote": "Kilo reports a finished compaction on its event stream, but LeapMux does not read that event from Kilo yet. The chat therefore shows no compaction notice.",
-        "detailNote": "On these LeapMux paths, native compaction produces no completed event that the chat renders as a notice. A running status or a smaller next context alone does not count.\n\nClassified as a LeapMux limit: Kilo 7.8.1 publishes session.compacted after a successful compaction (session/compaction.ts at tag v7.8.1). The ACP adapter handles session.status, permission.asked, message.updated, message.part.updated, and message.part.delta only. LeapMux reads the daemon stream for questions only (checked 2026-10-05). The state depends on counting the daemon event stream as part of the native protocol.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/512.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Kilo 7.8.15 publishes session.compacted after successful native compaction. LeapMux reads the daemon event stream, filters the native session, flushes preceding output, stores the native event and renders its completed boundary. Browser proof reads the stored event, including its ID, and verifies one divider before and after reload. A held or failed summary produces no completed notice. An explicit retry retains the original context and produces one notice after success. Both complete compaction specs and all 148 OpenCode/Kilo browser cases passed with zero retries in e2e-ngbdTV on 2026-10-24.\n\nNative route and integration tracking: https://github.com/leapmux/leapmux/issues/512.",
         "spec": "frontend/tests/e2e/kilo/compaction-notice.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
       "opencode": {
-        "support": "leapmux-limit",
-        "userNote": "OpenCode reports a finished compaction on its event stream, but LeapMux does not read that event from OpenCode yet. The chat therefore shows no compaction notice.",
-        "detailNote": "On these LeapMux paths, native compaction produces no completed event that the chat renders as a notice. A running status or a smaller next context alone does not count.\n\nClassified as a LeapMux limit: OpenCode 1.18.34 publishes the session.compacted event after a successful compaction (session/compaction.ts). The ACP adapter handles only session.status, permission.asked, message.part.updated, and message.part.delta. The LeapMux daemon reader handles question events only (checked 2026-10-05). The state depends on counting the daemon event stream as part of the native protocol.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/512.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "OpenCode 1.19.4 publishes session.compacted after successful native compaction. LeapMux reads the daemon event stream, filters the native session, flushes preceding output, stores the native event and renders its completed boundary. Browser proof reads the stored event, including its ID, and verifies one divider before and after reload. A held or failed summary produces no completed notice. An explicit retry retains the original context and produces one notice after success. Both complete compaction specs and all 148 OpenCode/Kilo browser cases passed with zero retries in e2e-ngbdTV on 2026-10-24.\n\nNative route and integration tracking: https://github.com/leapmux/leapmux/issues/512.",
         "spec": "frontend/tests/e2e/opencode/compaction-notice.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -2244,11 +2244,11 @@
         "verified": true
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix reports a finished compaction only as a plain text line in its reply, so LeapMux shows no compaction notice.",
-        "detailNote": "On these LeapMux paths, native compaction produces no completed event that the chat renders as a notice. A running status or a smaller next context alone does not count.\n\nClassified as an agent limit: Reasonix 1.38.7 dispatch.go turns event.CompactionDone into the agent_message_chunk '[compacted N earlier messages to save context]' and states in a comment that ACP has no compaction-card concept (source read 2026-10-05).",
+        "support": "supported",
+        "userNote": "Reasonix automatically summarizes older context and shows a compaction notice that remains after reload.",
+        "detailNote": "Verified against the installed Reasonix v1.38.7 binary and its embedded source revision 036c7c50c5c154f747419aee6b75667f9044c8fa. internal/acp/dispatch.go emits the native agent_message_chunk notice only when CompactionDone has a nonempty summary. LeapMux already extracts that provider notice as completed compaction. The former test exercised only /compact as ordinary prompt text and did not test automatic compaction.\n\nNative acceptance: all three tests in the complete compaction-notice and manual-compaction files passed in e2e-vQWSyB. A private 50000-token context window triggers an actual native summary request. The next model request contains the supplied summary and omits the oldest assistant answer. The native session remains unchanged, and the completed notice remains visible after reload. The separate manual-compaction limitation is unchanged.",
         "spec": "frontend/tests/e2e/reasonix/compaction-notice.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -2361,11 +2361,11 @@
         "verified": true
       },
       "letta-code": {
-        "support": "leapmux-limit",
-        "userNote": "Letta Code reports a finished compaction with a summary, but LeapMux does not show it as a notice yet.",
-        "detailNote": "A running status or a smaller next context alone does not count.\n\nClassified as a LeapMux limit: the Letta Code 0.34.2 local backend streams an event_message (compaction) and a summary_message when it compacts, and the Letta adapter has no reader for them (installed letta.js and LeapMux source checked 2026-10-05). Letta Code produces completed compaction events, and LeapMux does not render them. Not run natively.\n\nThe native compaction result is not integrated. See https://github.com/leapmux/leapmux/issues/500.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Letta Code 0.34.20 emits native slash_command_start and slash_command_end events for manual compaction. LeapMux preserves the native end and renders one completed boundary after success, including after reload. Failed compaction renders its native failure and does not claim a context rewrite. Native message counts are not treated as token counts. Existing event_message and summary_message handling remains intact. The complete compaction specs and all 16 related browser cases passed in e2e-t7HUpi with zero retries, including failure recovery and native interruption refusal. Original report: https://github.com/leapmux/leapmux/issues/500.",
         "spec": "frontend/tests/e2e/letta-code/compaction-notice.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -2633,11 +2633,11 @@
         "verified": true
       },
       "letta-code": {
-        "support": "leapmux-limit",
-        "userNote": "Letta Code can compact a conversation when asked, but LeapMux does not use that function yet. LeapMux sends `/compact` as ordinary text, so the model reads it as a normal message and nothing is compacted.",
-        "detailNote": "Classified as a LeapMux limit: Letta Code 0.34.2 compacts through the execute_command compact case and through conversation_compact (installed letta.js checked 2026-10-05). The compact command returns a result. A plain text input that starts with /compact reaches the model as ordinary text only because LeapMux sends it that way. Not run natively.\n\nThe native compaction command is not integrated. See https://github.com/leapmux/leapmux/issues/500.",
+        "support": "supported",
+        "userNote": "Compaction cannot be interrupted once it starts.",
+        "detailNote": "Letta Code 0.34.20 accepts the scoped execute_command compact request. LeapMux sends that native command and waits for its correlated reply before releasing queued input. Installed-source and local mock probes verified that the next model request uses the summary instead of the original context. Native help and invalid arguments preserve the conversation. The native abort operation reports aborted=false during compaction, so LeapMux reports that restriction without claiming cancellation. Both complete compaction specs and all 16 related browser cases passed in e2e-t7HUpi with zero retries. Original report: https://github.com/leapmux/leapmux/issues/500.",
         "spec": "frontend/tests/e2e/letta-code/manual-compaction.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -2905,11 +2905,11 @@
         "verified": true
       },
       "letta-code": {
-        "support": "leapmux-limit",
-        "userNote": "Letta Code can read the quota windows of a connected ChatGPT subscription. LeapMux does not show them yet, so Agent info shows no rate-limit row.",
-        "detailNote": "Letta Code publishes no quota window or reset state through this native output path. A completed turn consumes the mock quota headers, but the Agent info card shows no quota row before or after reload.\n\nClassified as a LeapMux limit with medium confidence: Letta Code 0.34.2 reports ChatGPT subscription usage windows only for a ChatGPT OAuth provider. A key-based provider has no such data in this protocol. LeapMux never sends chatgpt_usage_read (installed letta.js checked 2026-10-05). Not run natively.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/513.",
+        "support": "supported",
+        "userNote": "Quota windows are available for connected ChatGPT subscriptions. API-key models do not report subscription quota through this route.",
+        "detailNote": "Letta Code 0.34.20 exposes chatgpt_usage_read for local and API-backed ChatGPT connections. LeapMux resolves the active model connection, reads quota asynchronously, and publishes native windows through the existing Agent info state. Owner cancellation rejects stale replies after model changes. Endpoint throttling retains the last valid snapshot and respects connection-specific retry delays. Native local/API probes verified usage windows, zero values and refusal recovery. All five quota browser cases passed, including reload, API-key clearing and epoch-zero reset handling. Complete acceptance passed all 93 Letta browser cases plus four affected Codex/Copilot/Muse quota cases with zero retries in e2e-fpu7IK. Original report: https://github.com/leapmux/leapmux/issues/513.",
         "spec": "frontend/tests/e2e/letta-code/rate-limit-state.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -4087,7 +4087,7 @@
       "codex": {
         "support": "supported",
         "userNote": "Codex asks blocking questions in Plan mode. On models that offer request_user_input_async, it also asks in any mode without waiting, and you answer or skip each question later.",
-        "detailNote": "Codex offers its `request_user_input` question tool in Plan mode. Its default mode does not offer that tool.\n\nIn Codex 0.160.0 the request_user_input tool answers with a message that it is unavailable in the current mode, outside its available modes (request_user_input_spec.rs).\n\nCodex 0.163 offers `request_user_input_async` to a main agent on models whose catalog entry lists it (`gpt-6-*` in the bundled catalog). LeapMux shows each question as a non-blocking control request and sends the answer in Codex\u2019s `send_user_message_question_reply` format.",
+        "detailNote": "Codex offers its `request_user_input` question tool in Plan mode. Its default mode does not offer that tool.\n\nIn Codex 0.160.0 the request_user_input tool answers with a message that it is unavailable in the current mode, outside its available modes (request_user_input_spec.rs).\n\nCodex 0.163 offers `request_user_input_async` to a main agent on models whose catalog entry lists it (`gpt-6-*` in the bundled catalog). LeapMux shows each question as a non-blocking control request and sends the answer in Codex’s `send_user_message_question_reply` format.",
         "spec": "frontend/tests/e2e/codex/agent-questions.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -4247,11 +4247,11 @@
         "verified": true
       },
       "codebuddy-code": {
-        "support": "leapmux-limit",
-        "userNote": "CodeBuddy Code can ask questions in stream-JSON mode, but only when the client declares support at startup. LeapMux does not declare it yet, so the agent offers no question tool and no question banner appears. See the [CodeBuddy SDK guide](https://www.codebuddy.ai/docs/cli/sdk).",
-        "detailNote": "Its ToolSearch cannot add that tool. A native attempt returns a tool-not-found result, so LeapMux receives no question banner.\n\nClassified as a LeapMux limit: the AskUserQuestion tool of CodeBuddy 2.160.0 is enabled in stream-JSON mode only when capabilities.askUserQuestion is true in the initialize request (binary check, 2026-10-05). The official SDK sends that capability, and the can_use_tool path returns the answers in updatedInput. LeapMux Start sends no initialize request, and the E2E model request holds no AskUserQuestion tool. The permission mode (Default or Bypass) does not decide this. The capability in the initialize request decides it.\n\nSources fetched on 2026-10-05:\n- <https://www.codebuddy.ai/docs/cli/sdk>: The SDK guide has a section 'Handling AskUserQuestion': the AI asks questions through the AskUserQuestion tool, and the permission callback answers with updatedInput that holds answers.\n\nThe startup exchange does not declare native question support. See https://github.com/leapmux/leapmux/issues/502.",
+        "support": "supported",
+        "userNote": "Answer CodeBuddy's questions by selecting options or typing a response. Your choices and drafts survive page reloads. Questions still require your answer in Bypass mode.",
+        "detailNote": "CodeBuddy Code 2.173.0 enables AskUserQuestion in stream-JSON mode when initialize declares capabilities.askUserQuestion:true. LeapMux completes that handshake before publishing the session and returns answers through the native can_use_tool response with allowed:true and updatedInput. Native probes prove the answer reaches the next model request, including in Bypass mode.\n\nThe native question can precede its completed assistant frame. LeapMux records ownership from the validated root tool stream so interruption sends the required permission refusal. Startup consumes native resume history before accepting new input, preventing duplicate transcript rows and repeated plan-rejection restarts.\n\nAll 79 CodeBuddy browser cases passed with zero retries in e2e-np7JXC on 2026-10-24. The five question cases prove selected answers, multi-select pages, typed answers, reloads, tab and draft isolation, interruption and same-session continuation. Final backend checks passed 407 package tests and the same race suite. Source evidence comes from the installed 2.173.0 binary and isolated native protocol probes.",
         "spec": "frontend/tests/e2e/codebuddy-code/agent-questions.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -4964,11 +4964,11 @@
         "verified": true
       },
       "reasonix": {
-        "support": "leapmux-limit",
-        "userNote": "Reasonix has an Auto approval mode that approves ordinary tool calls and still obeys deny and ask rules ([documentation](https://github.com/esengine/DeepSeek-Reasonix/blob/v1.38.7/docs/TOOL_APPROVAL_MODES.md)). LeapMux offers it in the settings menu, but has no Smart shortcut for it.",
-        "detailNote": "Reasonix offers native tool approval controls and a Bypass shortcut. Its LeapMux plugin declares no safety-assisted preset or Smart shortcut.\n\nClassified as a LeapMux limit with low confidence: the tool_approval option of Reasonix 1.38.7 holds ask, auto, and yolo, and LeapMux maps only yolo (the Bypass preset). Auto uses fixed rules and no safety classifier, so it may not meet the definition of a safety-assisted preset (documentation read 2026-10-05).\n\nSources fetched on 2026-10-05:\n- <https://github.com/esengine/DeepSeek-Reasonix/blob/v1.38.7/docs/TOOL_APPROVAL_MODES.md>: Auto auto-approves ordinary tool permissions. Explicit deny and ask rules, plan confirmation, new write roots, nested Bash, MCP destructive calls, and ask questions still need a decision.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/514.",
+        "support": "supported",
+        "userNote": "Smart selects Reasonix Auto. It approves ordinary tools while preserving configured ask and deny rules and native protected decisions.",
+        "detailNote": "Verified against Reasonix v1.38.7 and binary source revision 036c7c50c5c154f747419aee6b75667f9044c8fa. The native tool_approval option accepts auto. Its permission policy approves ordinary operations, blocks explicit deny rules, and asks for explicit ask rules or protected operations such as nested Bash. Auto uses native permission rules; this shortcut does not claim an AI risk classifier. The same canonical preset object supplies the browser plugin and the pure provider registry.\n\nNative acceptance: all 13 tests in five complete related browser files passed with zero retries in e2e-GvlwLu. The Smart test proves actual ordinary file writes, native deny results with the exact matched rule, explicit ask prompts, persistence after reload, nested Bash prompts, and restored ordinary prompts after returning to Ask. Native session, model, mode, and effort remain unchanged. All 46 related frontend unit tests passed.",
         "spec": "frontend/tests/e2e/reasonix/smart-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -5108,11 +5108,11 @@
         "verified": true
       },
       "factory-droid": {
-        "support": "leapmux-limit",
-        "userNote": "Factory Droid's Auto levels run a tool call when its risk fits the level and ask about riskier calls. LeapMux offers these levels in the Mode menu. It has no Smart shortcut for them yet. See [Droid autonomy levels](https://docs.factory.com/autonomy-and-safety/auto-run).",
-        "detailNote": "LeapMux offers no Smart shortcut. The test inspects the catalog and completes a real related tool turn.\n\nClassified as a LeapMux limit: Droid autonomy levels compare the risk of each tool call with the level, then run it, ask, or block it (docs.factory.com checked 2026-10-05). The Auto levels fit the definition of a safety-assisted preset, and the LeapMux plugin maps only Bypass. Open question for the maintainers: which level a Smart shortcut selects.\n\nTested version: Factory Droid 0.233.0.\n\nSources fetched on 2026-10-05:\n- <https://docs.factory.com/autonomy-and-safety/auto-run>: Droid compares the risk of a tool call with the autonomy level. It runs the call at or below the level, asks above it, and blocks a call that matches a blocklist.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/514.",
+        "support": "supported",
+        "userNote": "Smart selects Droid Auto (Medium). It automatically approves low- and medium-risk operations; high-risk commands still ask for approval.",
+        "detailNote": "Verified with Factory Droid 0.245.1. The canonical Smart preset selects permissionMode=auto-medium, which the native session API reports as interactionMode=auto and autonomyLevel=medium. LeapMux no longer adds --skip-permissions-unsafe for AutoHigh because that process flag overrides later native autonomy changes. The ignored --auto launch argument was removed also. Startup and live changes now use the same native autonomy settings.\n\nNative acceptance: all 13 tests in five complete related browser files passed with zero retries in e2e-ORPkeB. The Smart scenario starts in AutoHigh, selects AutoMedium, verifies automatic edits and medium-risk command execution before and after reload, rejects high-risk commands without creating their files, and returns to Default for an ordinary Edit prompt. Native session, model, and effort remain unchanged. All 363 backend tests, 363 race tests, and 189 related frontend unit tests passed.",
         "spec": "frontend/tests/e2e/factory-droid/smart-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -5182,11 +5182,11 @@
         "verified": true
       },
       "cursor": {
-        "support": "leapmux-limit",
-        "userNote": "Cursor can run every tool without asking when it starts with `--force` ([documented here](https://cursor.com/docs/cli/reference/parameters)). LeapMux does not use that option yet. Cursor offers no such mode in its Agent, Plan, and Ask list.",
-        "detailNote": "Cursor offers Agent, Plan, and Ask modes only. OpenCode and Kilo have no permission-mode axis. Pi has no permission controls.\n\nClassified as a LeapMux limit: Cursor 2026.09.28-64d2043 honors --force (alias --yolo) in ACP mode as Run Everything, but it is a start option, not a session mode, and LeapMux starts Cursor with the acp argument only (installed bundle read 2026-10-05). Using it needs a restart of the Cursor process when the user selects the shortcut.\n\nSources fetched on 2026-10-05:\n- <https://cursor.com/docs/cli/reference/parameters>: The Cursor CLI parameters page lists --force ('Force allow commands unless explicitly denied') and --yolo as its alias. It does not say whether they apply to agent acp.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "support": "supported",
+        "userNote": "Bypass starts Cursor in native Run Everything mode. Once enabled, Bypass stays On for that session. Start a new session to turn it off. Explicit denials and team rules still apply.",
+        "detailNote": "Verified against Cursor 2026.09.28-64d2043. The ACP startup accepts --force and persists isRunEverything in the native session metadata. Removing the flag does not clear that state, and the ACP runtime exposes no reset operation. LeapMux enables Bypass through a process restart, then shows read-only On with the new-session requirement. Same-session Off requests preserve the native state and do not apply other settings in the refused batch. Resume reads the native SQLite metadata without changing it; stored On overrides an absent or false requested value.\n\nNative acceptance: all 77 Cursor browser tests passed with zero retries in e2e-GKbwdi. The Bypass file proves actual shell execution before and after reload, API Off refusal without changing the model or session, native web-fetch approval after refusal, normal permission requests in a fresh Off session, and retained native Bypass after worker restart. All 207 Cursor backend tests passed, including malformed metadata, cancellation, WAL-backed reads, and preservation of stored metadata.",
         "spec": "frontend/tests/e2e/cursor/bypass-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -5237,8 +5237,8 @@
       },
       "reasonix": {
         "support": "supported",
-        "userNote": "",
-        "detailNote": "",
+        "userNote": "Bypass skips ordinary tool prompts. Native protected decisions, including access to a new writable directory, still require confirmation.",
+        "detailNote": "Reasonix v1.38.7 marks protected requests through fresh, the write_access kind, or a protected tool identity. LeapMux requires explicit fresh:false with no special kind before an ordinary pending request can receive an automatic reply. Questions, plan approval, memory decisions, sandbox escape, and managed configuration writes remain manual when the native runtime requests them. Native Yolo still decides which operations need no request at all.\n\nMatching binary source revision: 036c7c50c5c154f747419aee6b75667f9044c8fa, internal/acp/dispatch.go and internal/control/approval.go/write_access.go. Regression tests reproduced automatic reasonix_write_once replies both when Yolo was active and when Ask changed to Yolo. All 191 Reasonix backend tests and race tests passed after correction. All 8 tests in the complete Bypass and permission-prompts browser files passed with zero retries in e2e-dJYo25. The native protected-write cases retain the banner, reject access, inspect the declined-access result, and prove no file was written. The pending case also reloads before enabling Bypass. Existing ordinary pending-and-next-tool behavior remains covered and passed.",
         "spec": "frontend/tests/e2e/reasonix/bypass-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -5362,11 +5362,11 @@
         "verified": true
       },
       "dirac": {
-        "support": "leapmux-limit",
-        "userNote": "Dirac has a YOLO option that skips approval prompts. LeapMux does not offer a Bypass permissions shortcut for it yet.",
-        "detailNote": "The Bypass shortcut switches the session to the provider's bypass mode. LeapMux shows no Bypass shortcut when the provider declares no Bypass preset.\n\nClassified as a LeapMux limit. Dirac 0.5.17 reports a yolo boolean option that bypasses approval and safety prompts (upstream source checked 2026-10-05). The Dirac plugin declares no permission preset, so LeapMux renders no shortcut.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Verified with installed Dirac 0.5.22 and source commit 441c5766c0b6f57f6ec2f9abd0e3745709d603b5 on 2026-10-23. Native probes confirmed mutable yolo booleans and the required typed session/set_config_option request. LeapMux surfaces typed ACP booleans, maps Bypass to yolo:true, and settles ordinary pending tool approvals without changing Plan/Act, model, effort, or auto_approve. Native retry dialogs and manual task controls remain explicit. All 82 tests across the complete Dirac browser suite passed with zero retries in e2e-C2HrTj. Native command/file receipts verify reload, disabling Bypass, pending and subsequent tools, and real tool execution after worker restart. Full repository tests, lint, type checks, site validation, and 828 ACP/Dirac race tests also passed in broad-validation-08.log.",
         "spec": "frontend/tests/e2e/dirac/bypass-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -5381,19 +5381,19 @@
       },
       "factory-droid": {
         "support": "supported",
-        "userNote": "",
-        "detailNote": "",
+        "userNote": "Bypass selects Droid Auto (High). It approves ordinary tools at every risk level while preserving native protected decisions.",
+        "detailNote": "Verified with Factory Droid 0.245.1. Startup and live Bypass use native AutoHigh without the overriding --skip-permissions-unsafe process flag. The pending-approval bridge still answers ordinary root tools. It checks every native confirmation in a batch and preserves Shield, sandbox, plan, question, unknown, and malformed confirmations for a human decision. Script calls with protected confirmations or alwaysAsk:true remain manual.\n\nAll 363 backend tests and 363 race tests passed, including protected-request publication and manual answerability before and after live High selection. The five complete related browser files passed all 13 tests with zero retries in e2e-ORPkeB, including pending-and-next-tool Bypass and effective High-to-Medium changes.",
         "spec": "frontend/tests/e2e/factory-droid/bypass-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
       "fast-agent": {
-        "support": "leapmux-limit",
-        "userNote": "Fast Agent can skip all permission prompts when it starts with the `--no-permissions` flag. LeapMux does not offer a Bypass permissions shortcut for it yet.",
-        "detailNote": "The Bypass shortcut switches the session to the provider's bypass mode. LeapMux shows no Bypass shortcut when the provider declares no Bypass preset.\n\nClassified as a LeapMux limit with medium confidence. Fast Agent 0.10.42 documents --no-permissions as a launch flag of its ACP command. The docs say: Disable prompts entirely, all tools are allowed (upstream docs checked 2026-10-05). The LeapMux launch passes no such flag. The Fast Agent plugin declares no permission preset. The flag needs a restart of the process.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.",
+        "support": "supported",
+        "userNote": "Changing this setting restarts Fast Agent and stops any active turn. Saved conversations resume with the selected permission behavior.",
+        "detailNote": "Verified with installed Fast Agent 0.10.46 and source commit 5c4453b8e13d1bfc808db6236516b283c4f2c227 on 2026-10-23. LeapMux uses the native --no-permissions flag through an immutable local option and the existing settings-restart path. A private native probe with production-equivalent client capabilities proved normal permission requests, actual file bytes with no request under Bypass, and restored requests after relaunch without the flag in the same session. Invalid flag input causes no restart or live settings write. The setting description states the restart consequence. All five complete related browser files passed, 17 tests with zero retries, in e2e-AcgFkP. They cover Bypass before the first message, native file removal, reload, Off/refusal, unchanged native session identity after history exists, worker restart, and subsequent native writes with and without approval.",
         "spec": "frontend/tests/e2e/fast-agent/bypass-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -5897,11 +5897,11 @@
         "verified": true
       },
       "letta-code": {
-        "support": "leapmux-limit",
-        "userNote": "Letta Code can set a reasoning effort for the model, but LeapMux does not offer an effort selector for it yet.",
-        "detailNote": "Letta Code exposes no selectable reasoning-effort group in the live Worker option catalog. The real composer catalog stays without that control after a native turn and reload.\n\nClassified as a LeapMux limit: the update_model command of Letta Code 0.34.2 carries reasoning_effort (installed letta.js checked 2026-10-05), and the Letta adapter has the write path without an option group. Open upstream issue 4746 shows that Letta ties effort to model identifiers in its own clients.\n\nNative effort updates exist, but the settings catalog exposes no effort control. See https://github.com/leapmux/leapmux/issues/501.",
+        "support": "supported",
+        "userNote": "Available effort levels depend on the model.",
+        "detailNote": "Letta Code 0.34.20 advertises model-specific effort variants through list_models. LeapMux exposes those levels and Auto, selects native variant IDs on model changes, and preserves unrelated settings during effort-only updates. Native replies confirm the effective value, including alias normalization and inherited settings. Local mock probes verified Low/High/None model requests, preserved output limits, and clearing older effort representations. The complete reasoning-effort spec proves live changes, reload, an effort-less model round trip, a second reasoning model, configured startup effort, and worker restart with the same native session and history. All 89 Letta browser cases passed with zero retries in e2e-Tr6na7. Original report: https://github.com/leapmux/leapmux/issues/501.",
         "spec": "frontend/tests/e2e/letta-code/reasoning-effort.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -6378,11 +6378,11 @@
         "verified": true
       },
       "oh-my-pi": {
-        "support": "leapmux-limit",
-        "userNote": "Oh My Pi 18.4.11 and later can create and drop a goal for a client, but LeapMux does not use that yet. A new goal needs the `goal.enabled` setting. LeapMux only shows a goal that Oh My Pi reports.",
-        "detailNote": "Classified as a LeapMux limit: the RPC documentation, the changelog (18.4.11, 2026-10-02) and the 18.6.0 binary have the goal command with get, create, resume, pause and drop. Create needs the goal.enabled setting, and automatic continuation over RPC needs goal.continuationModes. LeapMux goal.go still says that no RPC command reaches the goal runtime, and that comment is outdated.\n\nThe native goal RPC is not integrated. See https://github.com/leapmux/leapmux/issues/503.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native goal RPC accepts create, pause, resume, and drop. LeapMux enables RPC goal continuation in a private process configuration and sends acknowledged native commands. Goal events remain the source of displayed state. Both complete goal browser specs passed with zero retries in e2e-VSGSeS, including autonomous work after create and resume, pause across reload, clearing, and creating a second goal. A pause stops continuation while the current round finishes. Clear an existing active or paused goal before setting another.",
         "spec": "frontend/tests/e2e/oh-my-pi/session-goal-set-and-clear.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -6650,11 +6650,11 @@
         "verified": true
       },
       "oh-my-pi": {
-        "support": "leapmux-limit",
-        "userNote": "Oh My Pi 18.4.11 and later can pause and resume a goal for a client, but LeapMux does not use that yet. LeapMux only shows the goal state that Oh My Pi reports.",
-        "detailNote": "Classified as a LeapMux limit: the RPC documentation, the changelog (18.4.11, 2026-10-02) and the 18.6.0 binary have the goal command with pause and resume. LeapMux SupportedGoalActions returns no action.\n\nThe native goal pause and resume operations are not integrated. See https://github.com/leapmux/leapmux/issues/503.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native goal RPC accepts create, pause, resume, and drop. LeapMux enables RPC goal continuation in a private process configuration and sends acknowledged native commands. Goal events remain the source of displayed state. Both complete goal browser specs passed with zero retries in e2e-VSGSeS, including autonomous work after create and resume, pause across reload, clearing, and creating a second goal. A pause stops continuation while the current round finishes. Clear an existing active or paused goal before setting another.",
         "spec": "frontend/tests/e2e/oh-my-pi/session-goal-pause-and-resume.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8010,11 +8010,11 @@
         "verified": true
       },
       "oh-my-pi": {
-        "support": "leapmux-limit",
-        "userNote": "Oh My Pi 18.4.9 and later can send a message to a running subagent. LeapMux does not use that yet, so the child tab is read-only.",
-        "detailNote": "The child transcript exists, but the current provider bridge exposes no direct input route for that child. Its composer is read-only.\n\nClassified as a LeapMux limit: the Oh My Pi RPC documentation, the changelog (18.4.9, 2026-10-01) and the 18.6.0 binary have steer_subagent, which sends a message to a running subagent as its user. LeapMux does not send it.\n\nThe native steer_subagent command is not integrated. See https://github.com/leapmux/leapmux/issues/506.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native steer_subagent command delivers text to the selected running child. LeapMux resolves the complete session-scoped child key and preserves native errors. Child text attachments are inlined; the native command has no image field. The complete browser spec proved the child model request received the steered message, the child transcript retained it, and the parent accepted another prompt. Both complete child-control browser specs passed with zero retries in e2e-Gv41gl.",
         "spec": "frontend/tests/e2e/oh-my-pi/send-to-a-subagent.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8282,11 +8282,11 @@
         "verified": true
       },
       "oh-my-pi": {
-        "support": "leapmux-limit",
-        "userNote": "Oh My Pi 18.4.9 and later can stop one running subagent without stopping its parent. LeapMux does not use that yet, so the child tab has no Interrupt control.",
-        "detailNote": "LeapMux keeps the child Interrupt control absent and refuses direct child interruption.\n\nClassified as a LeapMux limit: the Oh My Pi RPC documentation, the changelog (18.4.9, 2026-10-01) and the 18.6.0 binary have cancel_subagent, which aborts one subagent without aborting the parent turn. LeapMux does not send it. cancel_subagent is the native child interrupt route of the provider bridge.\n\nThe native cancel_subagent command is not integrated. See https://github.com/leapmux/leapmux/issues/506.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native cancel_subagent command stops the selected child without aborting the parent. LeapMux resolves the complete session-scoped child key and leaves final state to native lifecycle events. The complete browser spec proved child cancellation, removal of child activity controls, parent continuation, and parent input after cancellation. Both complete child-control browser specs passed with zero retries in e2e-Gv41gl.",
         "spec": "frontend/tests/e2e/oh-my-pi/interrupt-a-subagent.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -11845,11 +11845,11 @@
         "testStatus": "passed"
       },
       "codebuddy-code": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "The LeapMux provider adapter stores native output but publishes no live ReportProgress update. The indicator cannot report an advancing token or byte count on this path.\n\nClassified as a LeapMux limit: the CLI help of CodeBuddy 2.160.0 describes --include-partial-messages as raw incremental model messages in stream-json output. The writer emits stream_event frames with text and thinking deltas. LeapMux starts the process without the flag.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/521.",
+        "detailNote": "Verified with CodeBuddy Code 2.172.1. LeapMux enables --include-partial-messages and consumes native stream_event text and thinking deltas through the existing estimated-token counter. Events retain native request/message/block identity and their root or known child owner. Completed scopes refuse late deltas, and later child events use the output sink captured at admission. Partial frames create no transcript rows; complete assistant/result frames and the existing final-answer fallback remain authoritative. The exercised native shell route still has no live byte counter.\n\nThe native child probe also exposed an untagged child init that previously replaced the parent session ID. Initialization now accepts only the root identity pinned at launch. All 361 provider tests and 361 race tests passed. All 15 cases across nine complete related browser files passed with zero retries in e2e-aEViEB, including held text/reasoning streams, held child counts with no parent leakage, parent identity, interruption, errors and complete results after reload. The 251 focused frontend tests also passed. Current four-field shell records are proved against their exact native Bash calls, and empty failure records remain visible instead of a generic notice.",
         "spec": "frontend/tests/e2e/codebuddy-code/generation-progress.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -11863,11 +11863,11 @@
         "testStatus": "passed"
       },
       "letta-code": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "The indicator cannot report an advancing token or byte count on this path.\n\nClassified as a LeapMux limit with low confidence: Letta Code 0.34.2 streams text deltas, and the Letta adapter reports no token or byte count for them. Tool output windows are not cumulative byte counts (installed letta.js and LeapMux source checked 2026-10-05). The Letta adapter does report the text tail of a running tool output (OutputTailProgress in the tool output code), but it reports no counter and nothing for model text.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/521.",
+        "detailNote": "Letta Code 0.34.20 emits additive assistant_message and reasoning_message fragments through its native App Server. LeapMux reports estimated model tokens for each root or child transcript, resets discarded retry attempts, and completes progress even when a transcript write fails. Native tool progress remains a replacement text window without an authoritative byte total; LeapMux preserves the window and does not invent a byte counter. Installed-source and local mock probes verified root and child fragments. All four generation-progress cases and the child live-transcript case passed in e2e-kJQmyK with zero retries. Original report: https://github.com/leapmux/leapmux/issues/521.",
         "spec": "frontend/tests/e2e/letta-code/generation-progress.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -11890,11 +11890,11 @@
         "testStatus": "passed"
       },
       "factory-droid": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "The native generation-progress spec shows no advancing token or byte count during the model stream. LeapMux reports live tool output separately, and the shell spec verifies that output. This result does not imply that the adapter lacks ReportProgress calls.\n\nTested version: Factory Droid 0.243.0.\n\nTrack the generation counters: https://github.com/leapmux/leapmux/issues/521.",
+        "detailNote": "Verified with Factory Droid 0.245.1. assistant_text_delta and thinking_text_delta now feed the existing estimated-token counter. Each native block keeps its completion state, including empty blocks, so late deltas cannot reopen progress; a retracted message can reuse its native ID. Native tool_progress_update.fullOutput supplies a preview without its completeness flag. The adapter reports the observed UTF-8 byte length as a minimum total, never sums repeated snapshots, and does not count text-only status messages. It no longer infers truncation from preview length. Parent and child progress remain separate.\n\nNative acceptance: all 16 tests in ten complete related browser files passed with zero retries in e2e-IE21RY. Held model and tool streams prove counters advance before completion; the byte counter displays its minimum marker and tooltip. The shell test preserves one live card and one final result. All 410 Droid backend tests and 410 race tests passed, including Unicode, repeated/shrinking snapshots, completion, retraction, and child ownership.",
         "spec": "frontend/tests/e2e/factory-droid/generation-progress.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13324,11 +13324,11 @@
     },
     "extended-thinking": {
       "cursor": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "Cursor encodes thinking in model variants. It offers no separate LeapMux setting for that flag.\n\nClassified as a LeapMux limit: Cursor 2026.09.28-64d2043 can expose model parameters such as thinking as separate config options when the client sets _meta.parameterizedModelPicker. LeapMux sets only the subagents capability, so Cursor returns exploded variant ids such as claude-fable-5[thinking=true,...] (installed bundle read 2026-10-05).\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/524.",
+        "detailNote": "Verified against installed Cursor 2026.09.28-64d2043 on 2026-10-23. LeapMux advertises parameterizedModelPicker and exposes the native model parameter selectors. Native session/set_config_option changes thinking and fast independently of the selected model and effort. Boolean selectors are excluded from ACP effort overrides. Installed-bundle inspection and prompt-free native catalog probes confirmed the protocol. All six affected complete browser specs passed, 9 tests with zero retries, in e2e-qlbP0y. Decoded native Run requests verified both boolean choices and persistence after reload, and retained model, effort, and Plan-mode behavior.",
         "spec": "frontend/tests/e2e/cursor/extended-thinking.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13468,20 +13468,20 @@
         "testStatus": "passed"
       },
       "cline": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "The provider exposes thinking through its model or effort axis, where available. LeapMux exposes no independent thinking-enable setting.\n\nClassified as a LeapMux limit: `session.update_connection` of Cline 3.0.68 takes `thinking` (boolean), `thinkingBudgetTokens`, and `reasoningEffort`; LeapMux sends `thinking: false` for the Off effort and `thinking: true` with an effort for the others, and offers no separate setting (source checked 2026-10-05). Setting `thinking` to false also clears the effort, so the coupling is partly native.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/524.",
+        "detailNote": "Cline 3.0.73 accepts independent thinking and reasoningEffort fields through session.update_connection and sessionConfig at creation. LeapMux exposes Auto, Off and On separately from effort, retains the selected effort while Off, and restores it when enabling thinking. Startup and rebuild payloads place the fields in sessionConfig, where the installed runtime reads them. Returning to native defaults rebuilds the same session with its history because a null update removes fields without reloading the configured profile. Native probes and browser requests prove first-request Off, profile Low restoration, unchanged profile files, mode/model/reload preservation and queued input waiting for a deferred reset. All four extended-thinking cases and all 84 Cline browser cases passed with zero retries in e2e-nLSllP on 2026-10-24.\n\nNative route and integration tracking: https://github.com/leapmux/leapmux/issues/524.",
         "spec": "frontend/tests/e2e/cline/extended-thinking.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
       "codebuddy-code": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "The current LeapMux native setting groups offer no separate extended thinking setting. A model variant or native TUI/slash command does not satisfy this feature.\n\nClassified as a LeapMux limit: the set_config handler of CodeBuddy 2.160.0 lists alwaysThinkingEnabled among its configurable keys (binary check, 2026-10-05), and the settings guide documents the setting. LeapMux offers only model, effort, and permission groups.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/524.",
+        "detailNote": "CodeBuddy 2.173.0 accepts alwaysThinkingEnabled as a native boolean through set_config and startup --settings. LeapMux exposes Auto, Off and On independently of reasoning effort. Explicit changes apply live after exact native confirmation. Auto restores the native profile through a same-session restart without an override. Native probes and actual browser model requests prove both profile values, preservation of High effort and conversation context, output-style restarts, model changes and reloads. The profile file remains unchanged. All four extended-thinking cases and all 84 CodeBuddy browser cases passed with zero retries in e2e-o709rH on 2026-10-24.\n\nNative route and integration tracking: https://github.com/leapmux/leapmux/issues/524.",
         "spec": "frontend/tests/e2e/codebuddy-code/extended-thinking.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13596,11 +13596,11 @@
     },
     "fast-mode": {
       "cursor": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "Cursor encodes fast serving in model variants. It offers no separate LeapMux setting for that flag.\n\nClassified as a LeapMux limit: Cursor 2026.09.28-64d2043 can expose each model parameter, such as the fast=true variant flag, as a separate config option when the client sets _meta.parameterizedModelPicker, and LeapMux does not set it (installed bundle read 2026-10-05). Confidence is low because the real model catalog was not read to confirm a fast parameter.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/525.",
+        "detailNote": "Verified against installed Cursor 2026.09.28-64d2043 on 2026-10-23. LeapMux advertises parameterizedModelPicker and exposes the native model parameter selectors. Native session/set_config_option changes thinking and fast independently of the selected model and effort. Boolean selectors are excluded from ACP effort overrides. Installed-bundle inspection and prompt-free native catalog probes confirmed the protocol. All six affected complete browser specs passed, 9 tests with zero retries, in e2e-qlbP0y. Decoded native Run requests verified both boolean choices and persistence after reload, and retained model, effort, and Plan-mode behavior.",
         "spec": "frontend/tests/e2e/cursor/fast-mode.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13704,11 +13704,11 @@
         "testStatus": "passed"
       },
       "oh-my-pi": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "Oh My Pi native RPC supports set_fast_mode, but the LeapMux adapter exposes only model, effort, and approval. This is a LeapMux integration gap.\n\nClassified as a LeapMux limit: the RPC documentation and the 18.6.0 binary have set_fast_mode { enabled }, and get_state reports fastModeEnabled. The LeapMux adapter exposes model, effort and approval only.\n\nThe native set_fast_mode command has no LeapMux setting. See https://github.com/leapmux/leapmux/issues/507.",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. LeapMux uses set_fast_mode and consumes get_state.fastModeEnabled. Native refusals keep the process running and leave the choice unresolved. State reads and settings writes serialize with session replacement. The complete fast-mode browser spec passed with zero retries in e2e-bOefoU using an isolated native gpt-5.5 model configuration. Captured requests proved service_tier=priority when enabled, its absence when disabled, unchanged model and effort, and persistence across reload and a native process restart.",
         "spec": "frontend/tests/e2e/oh-my-pi/fast-mode.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13731,11 +13731,11 @@
         "testStatus": "passed"
       },
       "amp": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "LeapMux exposes no independent native fast-serving setting for this provider.\n\nClassified as a LeapMux limit: Amp 0.0.1791074829 documents `--fast` as an alias for `--features fast` that runs a new thread in Fast mode, and LeapMux passes neither flag nor offers a setting (documentation and installed bundle checked 2026-10-05). The flag applies to new threads only, so a setting would be read-only after the first message, like the Mode group.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/525.",
+        "detailNote": "Verified with installed Amp 0.0.1792670445-ge8d5b3 on 2026-10-23. Native help and isolated probes confirmed that --fast sets the new thread features to [fast] without changing agentMode. LeapMux offers Off/On before the first message and makes the native choice read-only afterward. Ordinary threads export supplies authoritative agentMode and meta.features for resumed sessions; absent or malformed metadata stays unknown. Settings publication serializes with the first-message lock. All three complete fast-mode, mode, and session-resume browser files passed, 7 tests with zero retries, in e2e-Cn48Uy. Native creation receipts prove both feature choices, unchanged High mode, persistence through session reopening and page reload, and readback after a worker restart.",
         "spec": "frontend/tests/e2e/amp/fast-mode.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13940,11 +13940,11 @@
         "testStatus": "passed"
       },
       "codewhale": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "LeapMux exposes no native response-style setting for this provider.\n\nClassified as a LeapMux limit: CodeWhale documents `verbosity` (normal keeps the default prompt; concise adds a block for direct, low-chatter output), set by the configuration key or `CODEWHALE_VERBOSITY`, and a runtime thread reads it. The runtime API has no per-thread field for it. LeapMux sets neither (source checked 2026-10-05). Medium confidence because the setting is a process-level choice, not a thread field.\n\nTested version: CodeWhale 0.10.0.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/526.",
+        "detailNote": "Verified with Codewhale 0.10.1 (fead51eeea0f). LeapMux exposes Auto, Normal and Concise. Auto preserves native configuration; explicit choices set CODEWHALE_VERBOSITY only for this agent process. The native thread and turn APIs have no verbosity field, so a change uses the existing process restart and resumes the same native thread. No shared configuration or prompt template is changed.\n\nNative source and an isolated Normal -> Concise -> Normal probe confirm that only Concise adds Codewhale's own Concise Output Discipline instructions, while the thread, model and earlier conversation remain intact. All 614 provider tests and 614 race tests passed. All ten cases across complete output-style, model, reasoning-effort, session-resume and steer-mid-turn browser files passed with zero retries in e2e-7kygXG. The style proof also restores the inherited concise default through Auto, preserves prior user text across restarts, and retains style after a model switch and reload.",
         "spec": "frontend/tests/e2e/codewhale/output-style.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13976,11 +13976,11 @@
         "testStatus": "passed"
       },
       "oh-my-pi": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "LeapMux exposes no native response-style setting for this provider.\n\nClassified as a LeapMux limit, with low confidence: Oh My Pi 18.6.0 has a personality setting (default, friendly, pragmatic, none) and a textVerbosity setting, and the CLI loads an extra settings overlay with --config. No RPC command sets them. LeapMux passes neither.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/526.",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. LeapMux selects the native personality through a private process configuration. Auto preserves native configuration; explicit choices are default, friendly, pragmatic, and none. Changing the choice restarts the native process while preserving its session. The complete output-style browser spec passed with zero retries in e2e-J1RB5l. Captured model requests proved the native personality blocks changed, none removed the block, reload preserved the choice, and model and effort stayed unchanged.",
         "spec": "frontend/tests/e2e/oh-my-pi/output-style.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -14021,11 +14021,11 @@
         "testStatus": "passed"
       },
       "codebuddy-code": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "CodeBuddy mentions output_style in native initialization, but LeapMux OptionGroups and UpdateSettings expose only model, effort, and permissions. No style can be selected.\n\nClassified as a LeapMux limit: outputStyle is a configurable key of the set_config handler of CodeBuddy 2.160.0, and the initialize reply lists the available output styles (binary check, 2026-10-05). The settings guide documents the setting and says that an already opened session is not affected by a direct file edit. The init frame reports output_style as the constant default.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/526.",
+        "detailNote": "CodeBuddy Code 2.173.0 reports output_style and available_output_styles through initialize. LeapMux exposes the native choices, preserves a configured custom style missing from the initial snapshot, and refreshes the catalog after turns. Catalog enrichment preserves the selected ID and does not assert that the process is active. Native name matching uses full Unicode lowercase conversion.\n\nCodeBuddy retains the session's initial style, so set_config can acknowledge a change without applying it. LeapMux changes styles through a session-preserving process restart with a native --settings outputStyle override. Actual model requests prove Default, Concise, Explanatory and custom style instructions, while the profile's configured outputStyle remains unchanged.\n\nAll 81 CodeBuddy browser cases passed with zero retries in e2e-2VHIC5 on 2026-10-24, including all three output-style scenarios. They cover conversation and session preservation, reloads, model switches, delayed custom-style discovery and profile preservation. All 444 package/race tests and full repository tests, lint and site validation passed. Source evidence comes from the installed 2.173.0 binary and isolated native protocol probes.",
         "spec": "frontend/tests/e2e/codebuddy-code/output-style.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },

@@ -30,7 +30,7 @@ var permissionModeGroup = &leapmuxv1.AvailableOptionGroup{
 }
 
 // staticOptionGroups holds the option groups that do not depend on a running
-// agent. The model catalog is discovered at startup (settings.go).
+// agent. The model catalog is discovered at startup (catalog.go).
 var staticOptionGroups = []*leapmuxv1.AvailableOptionGroup{permissionModeGroup}
 
 // Registration states everything the worker knows about Letta Code before any
@@ -42,10 +42,11 @@ func Registration() agent.Registration {
 		Start:    Start,
 		Locator:  lettaLocator,
 		// The running server reports the models its provider configuration
-		// exposes (settings.go).
+		// exposes (catalog.go).
 		DefaultModels:       defaultModels,
 		OptionGroups:        staticOptionGroups,
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},
+		ManagesEffort:       true,
 		// A new session, and a session that stored no mode, run Standard:
 		// Letta's own default, which asks before the tools it marks.
 		PermissionDefaults: agent.PermissionDefaults{

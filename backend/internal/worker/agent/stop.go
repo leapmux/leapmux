@@ -1,6 +1,22 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// InterruptUnavailableError reports that the provider cannot interrupt its current operation.
+// Message supplies the reason that the user sees.
+type InterruptUnavailableError struct {
+	Message string
+}
+
+func (e *InterruptUnavailableError) Error() string {
+	if e != nil && strings.TrimSpace(e.Message) != "" {
+		return e.Message
+	}
+	return "the current operation cannot be interrupted"
+}
 
 // agentRegistration identifies one provider instance without comparing Agent values.
 // Manager.mu guards done and exiting. The provider remains fixed.

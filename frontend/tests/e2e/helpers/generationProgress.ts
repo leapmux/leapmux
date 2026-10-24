@@ -23,8 +23,10 @@ export interface OutputBoundary {
 
 /** The options that both generation progress scenarios take. */
 interface NativeProgressCase {
-  /** True when the provider shows a live counter that advances. False when no counter shows for the whole turn. */
+  /** True when the scenario's live counter advances. False checks its absence throughout the turn. */
   supported: boolean
+  /** Require both counters absent by default, or explicitly check only this scenario's counter. */
+  unsupportedCounterScope?: 'all' | 'selected'
   prepare?: () => Promise<void>
 }
 
@@ -155,7 +157,7 @@ async function generationReadings(context: ManagedNativeScenarioContext): Promis
   return (await context.page.evaluate(() => [...(window.__nativeGenerationProbe?.samples ?? [])])).map(parseGenerationCounters)
 }
 
-async function waitForIncreasingCounter(context: ManagedNativeScenarioContext, counter: 'tokens' | 'bytes', previous = 0): Promise<number> {
+export async function waitForIncreasingCounter(context: ManagedNativeScenarioContext, counter: 'tokens' | 'bytes', previous = 0): Promise<number> {
   let current = 0
   await expect.poll(async () => {
     const values = (await generationReadings(context)).flatMap((reading) => {
@@ -182,12 +184,13 @@ interface ProgressTurnSetup {
  * Run one native progress turn between the shared setup and the shared tail.
  *
  * `turn` runs the native turn until its last step arrives and returns a text that the completed transcript holds.
- * The tail waits for the native idle edge, requires that no counter showed for a provider without one, reloads, and
- * requires the completed text again.
+ * The tail waits for the native idle edge and checks unsupported counters according to the chosen scope.
+ * It then reloads and requires the completed text again.
  */
 async function exerciseProgressTurn(
   context: ManagedNativeScenarioContext,
   options: NativeProgressCase,
+  counter: 'tokens' | 'bytes',
   turn: (setup: ProgressTurnSetup) => Promise<string>,
 ): Promise<void> {
   await options.prepare?.()
@@ -201,7 +204,12 @@ async function exerciseProgressTurn(
     await waitForAgentIdle(context.page)
     if (!options.supported) {
       const readings = await generationReadings(context)
-      expect(readings.some(reading => reading.tokens !== undefined || reading.bytes !== undefined), 'the whole native turn exposes no live counter').toBe(false)
+      const selectedOnly = options.unsupportedCounterScope === 'selected'
+      const observed = readings.some(reading => selectedOnly
+        ? reading[counter] !== undefined
+        : reading.tokens !== undefined || reading.bytes !== undefined)
+      const message = selectedOnly ? `the whole native turn exposes no live ${counter} counter` : 'the whole native turn exposes no live counter'
+      expect(observed, message).toBe(false)
     }
     await context.page.reload()
     await expect(messageContents(context.page).filter({ hasText: completedText }).first()).toBeVisible()
@@ -215,10 +223,10 @@ async function exerciseProgressTurn(
 
 /**
  * Prove that the live token counter advances while a streamed answer holds after each of its first two chunks.
- * For a provider without a token counter (`supported: false`), prove that no counter shows for the whole turn.
+ * For supported:false, require no counters throughout the turn unless unsupportedCounterScope selects tokens only.
  */
 export async function exerciseTokenProgress(context: ManagedNativeScenarioContext, options: NativeTokenProgressCase): Promise<void> {
-  await exerciseProgressTurn(context, options, async ({ onCleanup }) => {
+  await exerciseProgressTurn(context, options, 'tokens', async ({ onCleanup }) => {
     const suffix = uniqueMarker()
     const firstGate = `progress-first-${suffix}`
     const secondGate = `progress-second-${suffix}`
@@ -254,10 +262,10 @@ const OUTPUT_PROGRESS_ANSWER = 'The native output scenario completed.'
 /**
  * Prove that the live byte counter advances while a real shell command holds after each of its first two output
  * segments, and that the completed result holds both segments.
- * For a provider without a byte counter (`supported: false`), prove that no counter shows for the whole turn.
+ * For supported:false, require no counters throughout the turn unless unsupportedCounterScope selects bytes only.
  */
 export async function exerciseOutputByteProgress(context: ManagedNativeScenarioContext, options: NativeOutputByteProgressCase): Promise<void> {
-  await exerciseProgressTurn(context, options, async ({ agent, onCleanup }) => {
+  await exerciseProgressTurn(context, options, 'bytes', async ({ agent, onCleanup }) => {
     const output = createToolOutputControl(agent.workingDir, options.outputMarkers, { holdFirstOutput: options.waitForToolStart !== undefined })
     onCleanup(async () => {
       await output.releaseFirstOutput()

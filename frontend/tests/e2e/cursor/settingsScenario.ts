@@ -2,6 +2,7 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { AgentOptionSettlementState, UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
@@ -24,24 +25,25 @@ export function expectCursorNativeSettings(request: MockModelRequestRecord, opti
 
 /** Select two effort levels of the same model, then retain the final level after reload. */
 export async function exerciseCursorReasoningEffort(context: ManagedNativeScenarioContext): Promise<void> {
-  const low = 'mock-grok[context=256k,reasoning_effort=low]'
-  await chooseSettingsOption(context.page, `model-${low}`)
+  await chooseSettingsOption(context.page, 'model-mock-grok')
+  await chooseSettingsOption(context.page, 'reasoning_effort-low')
   await waitForSettingsIdle(context.page)
   const first = await sendNativeAnswer(context, 'Reply once at the selected low effort.', 'The native low effort turn ended.')
   expectCursorNativeSettings(first, { model: true, effort: 'low' })
   await exerciseNativeOption(context, {
-    groupId: 'model',
-    value: 'mock-grok[context=256k,reasoning_effort=xhigh]',
+    groupId: 'reasoning_effort',
+    value: 'xhigh',
     nativeProof(request) {
       expectCursorNativeSettings(request, { model: true, effort: 'xhigh' })
     },
   })
 }
 
-/** Prove the native model variant and Plan enum before and after restoring the selected axis. */
+/** Prove independent native model/effort selection and Plan mode before and after restoring the selected axis. */
 export async function exerciseCursorSelectedPlanSettings(context: ManagedNativeScenarioContext, restoreGroup: 'model' | 'permissionMode'): Promise<void> {
-  const value = 'mock-grok[context=256k,reasoning_effort=low]'
+  const value = 'mock-grok'
   await chooseSettingsOption(context.page, `model-${value}`)
+  await chooseSettingsOption(context.page, 'reasoning_effort-low')
   await chooseSettingsOption(context.page, 'permissionMode-plan')
   await waitForSettingsIdle(context.page)
   await expectSettingsOptionChosen(context.page, `model-${value}`)
@@ -57,6 +59,17 @@ export async function exerciseCursorSelectedPlanSettings(context: ManagedNativeS
   })
   await expectSettingsOptionChosen(context.page, `model-${value}`)
   await expectSettingsChip(context.page, 'Plan')
+}
+
+/** Check the actual native model and every selected parameter without relying on array order. */
+export function expectCursorNativeParameters(request: MockModelRequestRecord, model: string, parameters: Record<string, string>): void {
+  const native = request.nativeRequest
+  if (!isObject(native) || !isObject(native.requestedModel))
+    throw new Error('The Cursor request has no native model selection.')
+  expect(native.requestedModel.modelId).toBe(model)
+  const expected = Object.entries(parameters).map(([id, value]) => ({ id, value }))
+  expect(native.requestedModel.parameters).toHaveLength(expected.length)
+  expect(native.requestedModel.parameters).toEqual(expect.arrayContaining(expected))
 }
 
 /** Keep the actual confirmed set-mode RPC and verify its next native request after reload. */

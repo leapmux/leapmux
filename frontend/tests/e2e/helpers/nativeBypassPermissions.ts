@@ -1,11 +1,11 @@
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { ManagedNativeScenarioContext, NativeToolOutcome } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeAnswerStep, NativeToolOutcome } from './nativeScenario'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { assertPrivateNativePath } from './nativePrivatePath'
-import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
+import { currentNativeAgent, nativeTextStep, nativeToolOutcome, toolTurnSteps } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
 import { getGlobalState } from './server'
 import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
@@ -19,6 +19,8 @@ export interface NativeShortcutCommand {
 
 /** The optional checks and command for a permission shortcut test. */
 export interface NativeShortcutProof {
+  /** Where the native exchange carries its answer. Supply context.readToolResult when results arrive outside model requests. */
+  answerStep?: NativeAnswerStep
   /** Bring the session to the state that the shortcut must change, before the shortcut applies. */
   prepare?: () => Promise<void>
   /** Prove the native settings of the agent before each pass of the command. */
@@ -71,15 +73,17 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
           await expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible()
         },
       }
-      const start = await context.modelScript.queue(
-        { toolCalls: [bashToolCall(context.provider, id, proof.command)] },
+      const steps = toolTurnSteps(
+        [bashToolCall(context.provider, id, proof.command)],
         nativeTextStep(context, answer),
+        options.answerStep,
       )
+      const start = await context.modelScript.queue(...steps)
       await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
-      await context.modelScript.waitForSteps(start + 2)
+      await context.modelScript.waitForSteps(start + steps.length)
       await waitForAgentIdle(context.page)
       expect(existsSync(target), 'The native command must remove its target.').toBe(false)
-      const request = await context.modelScript.requestAt(start + 1)
+      const request = await context.modelScript.requestAt(start + steps.length - 1)
       await proof.resultProof(await nativeToolOutcome(context, request, id))
       await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
     } })

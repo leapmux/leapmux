@@ -64,3 +64,17 @@ describe('lettaPlugin a failed model request', () => {
     expect(read?.(loopError)).toEqual([{ kind: 'text', text: `400: {"type":"invalid_request_error","code":"invalid_request_error","message":"${LETTA_MODEL_ERROR_MARKER}"}` }])
   })
 })
+
+describe('lettaPlugin native manual compaction', () => {
+  it('identifies starts and successful context rewrites without inventing token sizes', () => {
+    const plugin = pluginFor(AgentProvider.LETTA)
+    const start = { message_type: 'slash_command_start', command_id: 'compact', input: '/compact' }
+    const end = { ...start, message_type: 'slash_command_end', success: true, output: 'Compaction completed. Message buffer length reduced from 20 to 2.' }
+    expect(plugin?.transcript.compactionStart?.(start)).toBe(true)
+    expect(plugin?.transcript.compactionStart?.({ ...start, input: '/compact help' })).toBe(false)
+    expect(plugin?.session?.compactionBoundaryFromMessage?.(input(end))).toEqual({ trigger: 'manual' })
+    expect(plugin?.session?.compactionBoundaryFromMessage?.(input({ ...end, success: false }))).toBeNull()
+    expect(plugin?.session?.compactionBoundaryFromMessage?.(input({ ...end, input: '/compact help' }))).toBeNull()
+    expect(plugin?.session?.compactionBoundaryFromMessage?.(input({ ...end, success: 'true' }))).toBeNull()
+  })
+})

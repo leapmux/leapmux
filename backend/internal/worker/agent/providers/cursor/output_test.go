@@ -66,7 +66,7 @@ func TestHandleCursorOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testin
 	agent := newCursorAgentWithSink(agent.NewProviderServices(sink))
 	agent.SetPermissionModeForTest(ModeAgent)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"default[]","options":[{"value":"default[]","name":"Auto"},{"value":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"default","options":[{"value":"default","name":"Auto"},{"value":"gpt-5.4","name":"GPT-5.4"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, ModePlan, agent.PermissionModeForTest())

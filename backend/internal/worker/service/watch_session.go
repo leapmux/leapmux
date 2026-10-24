@@ -161,7 +161,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 		return
 	}
 	if err != nil {
-		s.cancel()
+		s.OnCancel()
 		sendStreamError(s.sender, codes.InvalidArgument, err.Error())
 		return
 	}
@@ -238,7 +238,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 		return
 	}
 
-	sink := newReplaySink(s.sender, r.GetUpdateId())
+	sink := newReplaySink(s.sender, r.GetUpdateId(), s.OnCancel)
 
 	// The git-status batch feeds only the agent replay below, so start it
 	// BEFORE the terminal catch-up and let the two overlap: the terminal
@@ -291,9 +291,6 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 		}
 		sink.replayID = agentEntry.GetReplayId()
 		s.svc.replayAgentCatchUp(sink, agentEntry, promotedAgentRows[i], replayGitStatuses[i])
-	}
-	if !sink.alive() {
-		s.cancel()
 	}
 }
 

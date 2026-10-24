@@ -1,12 +1,20 @@
+import { expect } from '@playwright/test'
 import { droidTest } from '../droid-fixtures'
 import { exerciseOutputByteProgress, exerciseTokenProgress } from '../helpers/generationProgress'
 
-droidTest('exposes no token or byte counter throughout the completed native stream', async ({ native }) => {
-  await exerciseTokenProgress(native, { supported: false })
+droidTest('shows an advancing estimated token count during native generation', async ({ native }) => {
+  await exerciseTokenProgress(native, { supported: true })
 })
 
-droidTest('reports no byte count throughout an actual native shell output stream', async ({ native }) => {
-  await exerciseOutputByteProgress(native, { supported: false })
+droidTest('shows an advancing minimum byte count during native tool output', async ({ native }) => {
+  await exerciseOutputByteProgress(native, {
+    supported: true,
+    afterOutputBoundary: async () => {
+      const count = native.page.locator('[data-testid="thinking-output-count"]:visible')
+      await expect(count).toContainText('≥')
+      await count.hover()
+      await expect(native.page.getByRole('tooltip').filter({ hasText: 'The provider limits live output. This count is a minimum.' })).toBeVisible()
+      await native.page.mouse.move(0, 0)
+    },
+  })
 })
-
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/521.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
@@ -12,11 +13,26 @@ var _ agent.StartFunc = Start
 
 // Start starts a Cursor CLI ACP agent process and performs the handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	bypass, err := opts.Options.Bool(contracts.CursorOptionBypassPermissions)
+	if err != nil {
+		return nil, err
+	}
+	if opts.ResumeSessionID != "" {
+		storedBypass, err := readCursorBypassPolicy(ctx, agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}, opts.ResumeSessionID)
+		if err != nil {
+			return nil, err
+		}
+		bypass = bypass || storedBypass
+	}
+	args := []string{"acp"}
+	if bypass {
+		args = []string{"--force", "acp"}
+	}
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration: Registration(),
 		ProviderName: "cursor",
-		BaseArgs:     []string{"acp"},
-		NewAgent:     func() *Agent { return &Agent{} },
+		BaseArgs:     args,
+		NewAgent:     func() *Agent { return &Agent{bypassPermissions: bypass} },
 		Base:         func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {
 			storeQuery := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
@@ -28,8 +44,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			)
 			a.transcript = transcript
 			return acp.Hooks{
+				LocalOptionGroups:      a.localOptionGroups,
 				Sink:                   transcript,
-				ClientCapabilityMeta:   map[string]any{"subagents": true},
+				ClientCapabilityMeta:   map[string]any{"subagents": true, "parameterizedModelPicker": true},
 				SessionMetadataHandler: a.handleCursorSubagentLifecycle,
 				SessionUpdateHandler:   a.handleCursorSessionUpdate,
 				// Cursor stores the normalized (display) model id, not the wire form. The
@@ -39,9 +56,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ModelIDNormalizer: normalizeCursorModelID,
 				// Cursor writes models through setCursorModel (id -> wire form); the base
 				// UpdateSettings / reapply / refresh use this via effectiveSetModel, so Cursor
-				// needs no overrides of its own.
+				// needs no model-specific lifecycle overrides.
 				ModelSetter: a.setCursorModel,
-				// Cursor states its metadata in the model id, not in `_meta`.
+				// Native model parameters are separate selectors. Keep the model's supplied display name.
 				ModelDecorator: func(m *agent.ModelInfo, _ json.RawMessage) { decorateCursorModel(m) },
 				ModeChannel:    acp.ModeChannelPermissionMode,
 				ExtraMethod:    a.handleExtraMethod,

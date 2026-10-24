@@ -1,8 +1,9 @@
 import { rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
 import { test as base } from './fixtures'
+import { captureClipboardText } from './helpers/clipboardCapture'
 import { settleFrames, settleTransitions } from './helpers/frames'
 import { createTestDirectory } from './helpers/runDirectory'
 import { agentTabs, clickTreeContextItem, openTreeContextMenu, terminalTabs, treeMenuItem, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
@@ -17,8 +18,6 @@ const test = base.extend({
     await use(authenticatedWorkspace)
   },
 })
-
-const ABSOLUTE_PATH_RE = /^\//
 
 test.describe('DirectoryTree', () => {
   // Most cases read the tree of the frontend directory. A case that needs a
@@ -104,9 +103,8 @@ test.describe('DirectoryTree', () => {
     await expect(terminalTabs(page)).toBeVisible()
   })
 
-  test('copy path copies absolute path to clipboard', async ({ page, context, authenticatedWorkspace }) => {
+  test('copy path copies absolute path to clipboard', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
     // Wait for file tree
     await expect(treeRow(page, 'package.json')).toBeVisible()
@@ -117,12 +115,11 @@ test.describe('DirectoryTree', () => {
     // steps, a re-render of the sidebar between them can detach the item
     // during the click, and Playwright then fails with "element was detached
     // from the DOM".
-    await clickTreeContextItem(treeRow(page, 'package.json'), 'tree-copy-path-button')
+    const clipboardText = await captureClipboardText(page, () => clickTreeContextItem(treeRow(page, 'package.json'), 'tree-copy-path-button'))
 
     // Clipboard should contain the absolute path (ends with /package.json)
-    const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
     expect(clipboardText).toContain('package.json')
-    expect(clipboardText).toMatch(ABSOLUTE_PATH_RE)
+    expect(isAbsolute(clipboardText)).toBe(true)
   })
 
   test('collapsing a directory does not scroll the tree', async ({ page, authenticatedWorkspace }) => {

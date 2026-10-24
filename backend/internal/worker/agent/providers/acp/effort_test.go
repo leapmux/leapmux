@@ -9,6 +9,64 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestEffortSelectionKeepsBooleanThinkingIndependent(t *testing.T) {
+	t.Parallel()
+	thinking := ConfigOption{ID: "thinking", Category: acpConfigOptionCategoryThoughtLevel, CurrentValue: "false", Options: []ConfigOptionValue{{Value: "false"}, {Value: "true"}}}
+	effort := ConfigOption{ID: agent.OptionIDEffort, Category: acpConfigOptionCategoryThoughtLevel, CurrentValue: "low", Options: []ConfigOptionValue{{Value: "low"}, {Value: "high"}}}
+	assert.False(t, isEffortConfigOption(thinking, ""))
+	selected, ok := acpEffortConfigOption([]ConfigOption{thinking, effort}, "")
+	require.True(t, ok)
+	assert.Equal(t, effort.ID, selected.ID)
+	g := &optionState{templates: map[string]ConfigOption{thinking.ID: thinking, effort.ID: effort}}
+	assert.Empty(t, g.thoughtLevelConfigOptionID(), "canonical effort does not map into the boolean switch")
+	delete(g.templates, effort.ID)
+	assert.Empty(t, g.thoughtLevelConfigOptionID(), "a boolean switch cannot receive an effort override")
+}
+
+func TestEffortSelectionPrefersDeclaredAndCanonicalAxes(t *testing.T) {
+	t.Parallel()
+	other := ConfigOption{ID: "other", Category: acpConfigOptionCategoryThoughtLevel, Options: []ConfigOptionValue{{Value: "low"}, {Value: "high"}}}
+	canonical := other
+	canonical.ID = agent.OptionIDEffort
+	declared := other
+	declared.ID = "declared"
+	options := []ConfigOption{other, canonical, declared}
+	selected, ok := acpEffortConfigOption(options, declared.ID)
+	require.True(t, ok)
+	assert.Equal(t, declared.ID, selected.ID)
+	selected, ok = acpEffortConfigOption(options, "")
+	require.True(t, ok)
+	assert.Equal(t, canonical.ID, selected.ID)
+}
+
+func TestBooleanConfigOption(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isBooleanConfigOption(ConfigOption{Type: "boolean"}))
+	assert.False(t, isEffortConfigOption(ConfigOption{Type: "boolean", Category: acpConfigOptionCategoryThoughtLevel}, ""))
+	for _, tc := range []struct {
+		name   string
+		values []string
+		want   bool
+	}{
+		{"absent options", nil, false},
+		{"false only", []string{"false"}, true},
+		{"true only", []string{"true"}, true},
+		{"both boolean values", []string{"false", "true"}, true},
+		{"duplicate boolean values", []string{"false", "false"}, true},
+		{"ranked enable level", []string{"off", "enabled"}, false},
+		{"mixed levels", []string{"false", "high"}, false},
+		{"empty value", []string{""}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var options []ConfigOptionValue
+			for _, value := range tc.values {
+				options = append(options, ConfigOptionValue{Value: value})
+			}
+			assert.Equal(t, tc.want, isBooleanConfigOption(ConfigOption{Options: options}))
+		})
+	}
+}
+
 // `enabled` is ZCode's on/off toggle for a model that offers no ladder, and its
 // rank carries two obligations that are easy to break independently.
 func TestEffortRank_RanksTheOnOffToggleAboveOff(t *testing.T) {

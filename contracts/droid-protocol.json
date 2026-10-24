@@ -1,5 +1,5 @@
 {
-  "_readme": "This contract holds Factory Droid's stream-jsonrpc vocabulary for the Go provider and the TypeScript renderer plugin. The worker persists each transcript row as Droid's native notification envelope. The browser dispatches on the same `notification.type` and reads the fields in `notificationFields`. `notifications` marks frame kinds that belong to Droid alone. `toolNotifications` holds `tool_call` and `tool_result` without the frameKind mark. The shared `MessageCategory` union also uses `tool_result`. Marking this table would forbid a literal that shared chat code owns. The shared tool-request category is `tool_use`, not `tool_call`. `tools` holds the tool names that both sides use. The worker opens a subagent row for `Task`. It answers an `AskUser` question. It reports the `Execute` output tail from `tool_progress_update` as live progress and stores no row for it. The browser draws each tool. `workingStates` holds the `newState` values of `droid_working_state_changed`. The worker uses these values to update the busy state. The browser draws the stored row. `turnEndReasons` holds the `reason` values of `agent_turn_completed`. Droid 0.240.0 supplies all 18 reasons in this table. Completed work and a specification handoff succeed. Cancellation and an early process exit interrupt the turn. Every refusal and model failure fails the turn. Both the worker and the browser classify these reasons. Droid uses `cancelled` when `droid.interrupt_session` stops a turn. It uses `error` for a generic failure. `permissionOptions` holds the 16 `selectedOption` values for a `droid.request_permission` answer. `confirmationTypes` holds the `confirmationType` values in `toolUses[]`. These values identify plan review when the agent exits spec mode or proposes a mission. They also identify the reason for a Droid Shield refusal. The worker answers with `proceed_once` or `cancel`. It forwards another option from the browser's decision only when the request offered that option. The browser uses the option to describe the banner and saved answer. `askUserFields` holds the fields of one `droid.ask_user` question and one answer. The worker publishes these fields as map keys. It reads the request and reply through struct tags that `contract_tags_test.go` checks against this table. The browser reads the same fields. Droid identifies each answer by its question's `index`. The browser's decision uses that index for each answer. `reply` holds the native reply fields for both requests. The worker writes these fields. The browser reads them from the saved answer and uses them in its decision. `requestTypes` holds the control-request `type` values that the worker publishes for both requests. The browser uses these values to identify each request. Factory owns every value except the `modes`, `efforts` and `requestTypes` tables. LeapMux owns `modes`, which maps permission-mode values to Droid's `autonomyMode` at launch. LeapMux also owns `efforts`, which maps reasoning-effort values to `--reasoning-effort`. LeapMux owns `requestTypes`.",
+  "_readme": "This contract holds Factory Droid's stream-jsonrpc vocabulary for the Go provider and the TypeScript renderer plugin. The worker persists each transcript row as Droid's native notification envelope. The browser dispatches on the same `notification.type` and reads the fields in `notificationFields`. `notifications` marks frame kinds that belong to Droid alone. `toolNotifications` holds `tool_call` and `tool_result` without the frameKind mark. The shared `MessageCategory` union also uses `tool_result`. Marking this table would forbid a literal that shared chat code owns. The shared tool-request category is `tool_use`, not `tool_call`. `tools` holds the tool names that both sides use. The worker opens a subagent row for `Task`. It answers an `AskUser` question. It reports the `Execute` output tail from `tool_progress_update` as live progress and stores no row for it. The browser draws each tool. `workingStates` holds the `newState` values of `droid_working_state_changed`. The worker uses these values to update the busy state. The browser draws the stored row. `turnEndReasons` holds the `reason` values of `agent_turn_completed`. Droid 0.240.0 supplies all 18 reasons in this table. Completed work and a specification handoff succeed. Cancellation and an early process exit interrupt the turn. Every refusal and model failure fails the turn. Both the worker and the browser classify these reasons. Droid uses `cancelled` when `droid.interrupt_session` stops a turn. It uses `error` for a generic failure. `permissionOptions` holds the 16 `selectedOption` values for a `droid.request_permission` answer. `confirmationTypes` holds the `confirmationType` values in `toolUses[]`. These values identify plan review when the agent exits spec mode or proposes a mission. They also identify the reason for a Droid Shield refusal. The worker answers with `proceed_once` or `cancel`. A plan approval with a selected autonomy level uses the offered `proceed_auto_run_low`, `proceed_auto_run_medium` or `proceed_auto_run_high` option. It forwards another option from the browser's decision only when the request offered that option. The browser uses the option to describe the banner and saved answer. `askUserFields` holds the fields of one `droid.ask_user` question and one answer. The worker publishes these fields as map keys. It reads the request and reply through struct tags that `contract_tags_test.go` checks against this table. The browser reads the same fields. Droid identifies each answer by its question's `index`. The browser's decision uses that index for each answer. `reply` holds the native reply fields for both requests. The worker writes these fields. The browser reads them from the saved answer and uses them in its decision. `requestTypes` holds the control-request `type` values that the worker publishes for both requests. The browser uses these values to identify each request. Factory owns every value except the `modes`, `efforts` and `requestTypes` tables. LeapMux owns `modes`, which maps permission-mode values to Droid's `autonomyMode` at launch. LeapMux also owns `efforts`, which maps reasoning-effort values to `--reasoning-effort`. LeapMux owns `requestTypes`.",
   "_unread": {
     "notificationFields": {
       "BlockIndex": {
@@ -76,24 +76,6 @@
         ],
         "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
-      "ProceedAutoRunHigh": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
-      },
-      "ProceedAutoRunLow": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
-      },
-      "ProceedAutoRunMedium": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
-      },
       "ProceedNewSession": {
         "sides": [
           "go"
@@ -128,10 +110,9 @@
     "confirmationTypes": {
       "ApplyPatch": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
       },
       "AskUser": {
         "sides": [
@@ -142,10 +123,9 @@
       },
       "Create": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
       },
       "DroidShieldViolation": {
         "sides": [
@@ -155,30 +135,21 @@
       },
       "Edit": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
       },
       "Exec": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "ExitSpecMode": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards a confirmation whole and never branches on its type; the browser reads the type of a review card from the stored bytes"
+        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
       },
       "MCPTool": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
       },
       "ProposeMission": {
         "sides": [
@@ -202,10 +173,9 @@
       },
       "Script": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
       },
       "StartMissionRun": {
         "sides": [

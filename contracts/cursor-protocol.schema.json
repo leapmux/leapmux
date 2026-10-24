@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "cursor-protocol.schema.json",
-  "title": "Cursor ACP tool vocabulary",
+  "title": "Cursor ACP vocabulary and launch settings",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "_readme",
+    "options",
     "toolNames",
     "methods",
     "supplement",
@@ -150,6 +151,9 @@
     },
     "structs": {
       "$ref": "#/$defs/structs"
+    },
+    "options": {
+      "$ref": "#/$defs/table"
     }
   }
 }

@@ -183,6 +183,31 @@ describe('amp ids', () => {
   })
 })
 
+describe('createAmpSurface thread features', () => {
+  it.each([{ features: [] }, { features: ['fast'] }, { features: ['plaid'] }])('preserves creation features $features across native reads and continuation', async ({ features }) => {
+    mock = await startMock([{ text: 'Feature receipt.' }])
+    const created = await mock.post('/api/thread-actors', { agentMode: 'high', features })
+    const threadID = String(created.threadId)
+    await mock.post('/api/thread-actors', { threadId: threadID, agentMode: 'low', features: ['replacement'] })
+    const threads = await (await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`)).json()
+    expect(threads).toEqual([expect.objectContaining({ id: threadID, agentMode: 'high', features })])
+    const exported = await mock.post('/api/internal?getThreadTail', { params: { thread: threadID } })
+    expect(exported).toMatchObject({ result: { thread: { data: { agentMode: 'high', meta: { features } } } } })
+    const client = await CliSocket.open(mock.origin, threadID)
+    client.request('client_resume')
+    await expect.poll(() => client.frames.find(Array.isArray)).toEqual(expect.arrayContaining([{ type: 'thread_features', features }]))
+    client.request('client_append_user_msg', userMessage('Read the feature receipt.'))
+    await expect.poll(() => client.messages().find(message => message.role === 'assistant')).toMatchObject({ usage: { features } })
+  })
+
+  it.each([{ features: null }, { features: 'fast' }, { features: [1] }, { features: ['fast', null] }])('rejects malformed creation features $features', async ({ features }) => {
+    mock = await startMock([])
+    const response = await fetch(`${mock.origin}/api/thread-actors`, { method: 'POST', body: JSON.stringify({ features }) })
+    expect(response.status).toBe(400)
+    expect(await (await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`)).json()).toEqual([])
+  })
+})
+
 describe('the Amp surface claim', () => {
   it('claims Amp\'s REST routes, the actor gateway and the test route, and nothing of a model API', async () => {
     const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
@@ -846,7 +871,7 @@ describe('the Amp thread list', () => {
   it('answers a seeded thread with its view', async () => {
     mock = await startMock([])
     expect(await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-seed', title: 'Seed', tree: 'file:///w', messages: seededMessages(3) }))
-      .toEqual({ id: 'T-seed', agentMode: 'medium', tree: 'file:///w', title: 'Seed', messageCount: 3, archived: false })
+      .toEqual({ id: 'T-seed', agentMode: 'medium', features: [], tree: 'file:///w', title: 'Seed', messageCount: 3, archived: false })
   })
 
   it('includes seeded messages in the next inference after a thread resumes', async () => {

@@ -1,38 +1,40 @@
-import type { Locator, Page } from '@playwright/test'
+import type { Locator } from '@playwright/test'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
+import { createClipboardPageFixture } from '~/test-support/clipboardPage'
 import { computedNativeToolOutput, copyNativeToolOutputPreview } from './nativeToolOutput'
 
-// The Copy proof polls the clipboard. A short limit keeps the failing case fast.
+// The observer polls for a successful write. Keep deliberate no-copy failures fast.
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   return { ...actual, expect: actual.expect.configure({ timeout: 200 }) }
 })
 
-/** A page whose clipboard holds `clipboard()` after Copy, and that records each browser operation. */
-function copyFixture(clipboard: () => string) {
-  const events: string[] = []
-  const copy = { click: async () => events.push('click') }
+/** A page that copies the supplied text and records each browser operation. */
+function copyFixture(clipboard: () => string, overwrite?: string) {
+  const fixture = createClipboardPageFixture()
+  const { events, page } = fixture
+  const copy = { click: async () => {
+    events.push('click')
+    await fixture.copy(clipboard())
+    if (overwrite !== undefined)
+      await fixture.overwriteFromAnotherPage(overwrite)
+  } }
   const view = { hover: async () => events.push('hover'), getByRole: () => copy }
   const result = { locator: () => view } as unknown as Locator
-  const page = {
-    context: () => ({ grantPermissions: async (permissions: string[]) => events.push(`grant:${permissions.join(',')}`) }),
-    evaluate: async (_operation: unknown, sentinel?: string) => {
-      if (sentinel !== undefined) {
-        events.push('clear')
-        return undefined
-      }
-      return clipboard()
-    },
-  } as unknown as Page
-  return { events, page, result }
+  return { ...fixture, events, page, result }
 }
 
 describe('copyNativeToolOutputPreview', () => {
-  it('grants the clipboard permissions before it clears the clipboard and clicks Copy', async () => {
+  it.each(['another browser copied a notification', ''])('retains proof of its own copy when another page writes %j afterward', async (otherText) => {
+    const f = copyFixture(() => 'native preview', otherText)
+    await copyNativeToolOutputPreview(f.page, f.result, 'native preview')
+    expect(f.text()).toBe(otherText)
+  })
+  it('grants the clipboard permissions before it clicks Copy', async () => {
     const f = copyFixture(() => 'native preview')
     await copyNativeToolOutputPreview(f.page, f.result, 'native preview')
-    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'clear', 'hover', 'click'])
+    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'hover', 'click'])
   })
 
   it('refuses empty preview text before it grants a permission', async () => {
@@ -41,11 +43,10 @@ describe('copyNativeToolOutputPreview', () => {
     expect(f.events).toEqual([])
   })
 
-  it('fails when Copy leaves other text in the clipboard', async () => {
+  it('fails when Copy writes text that differs from the preview', async () => {
     const f = copyFixture(() => 'native preview with another tail')
-    // The poll ends with the failure of its `toEqual` check on the exact copied text.
     await expect(copyNativeToolOutputPreview(f.page, f.result, 'native preview')).rejects.toThrow(/toEqual/)
-    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'clear', 'hover', 'click'])
+    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'hover', 'click'])
   })
 })
 

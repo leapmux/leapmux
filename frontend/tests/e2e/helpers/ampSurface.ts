@@ -159,6 +159,7 @@ export function ampScriptOptions(host: MockModelScriptHost, instructionFiles: In
 export interface AmpThreadView {
   id: string
   agentMode: string
+  features: string[]
   tree: string
   title: string
   messageCount: number
@@ -224,6 +225,7 @@ interface RunningTurn {
 interface ActorThread {
   id: string
   agentMode: string
+  features: string[]
   seq: number
   messages: ActorMessage[]
   tree: string
@@ -245,12 +247,13 @@ const MOCK_USER = { id: 'user_leapmux_e2e', email: 'e2e@leapmux.invalid', userna
 export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
   const threads = new Map<string, ActorThread>()
 
-  function threadFor(id: string, agentMode?: string): ActorThread {
+  function threadFor(id: string, agentMode?: string, features: string[] = []): ActorThread {
     let thread = threads.get(id)
     if (!thread) {
       thread = {
         id,
         agentMode: agentMode || DEFAULT_AGENT_MODE,
+        features: [...features],
         seq: 0,
         messages: [],
         tree: '',
@@ -302,8 +305,13 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     }
     if (url.pathname === '/api/thread-actors' && request.method === 'POST') {
       const body = await readAmpJSON(request)
+      const features: unknown = isObject(body) && body.features !== undefined ? body.features : []
+      if (!Array.isArray(features) || !features.every((feature): feature is string => typeof feature === 'string')) {
+        writeMockJSON(response, 400, { error: 'Amp thread features must be an array of strings.' })
+        return
+      }
       const requested = isObject(body) && typeof body.threadId === 'string' ? body.threadId : ''
-      const thread = threadFor(requested || `T-${randomUUID()}`, isObject(body) && typeof body.agentMode === 'string' ? body.agentMode : undefined)
+      const thread = threadFor(requested || `T-${randomUUID()}`, isObject(body) && typeof body.agentMode === 'string' ? body.agentMode : undefined, features)
       const credential = mockCredentialReceipt(request.headers)
       thread.mockCredential = { kind: 'service', accepted: credential.accepted }
       writeMockJSON(response, 200, {
@@ -373,7 +381,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         return {
           ok: true,
           result: {
-            thread: { data: { id: thread.id, v: thread.seq, created: thread.updatedAt, agentMode: thread.agentMode, meta: { agentMode: thread.agentMode, executorType: 'local-client', usesDtw: true, usesThreadActors: true, visibility: 'private' } } },
+            thread: { data: { id: thread.id, v: thread.seq, created: thread.updatedAt, agentMode: thread.agentMode, meta: { agentMode: thread.agentMode, features: thread.features, executorType: 'local-client', usesDtw: true, usesThreadActors: true, visibility: 'private' } } },
             messages: [],
             hasMoreBefore: false,
           },
@@ -468,7 +476,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         member.connection.send(JSON.stringify([
           { type: 'agent_state', state: thread.turn ? 'working' : 'idle', agentMode: thread.agentMode },
           { type: 'thread_settings', settings: {} },
-          { type: 'thread_features', features: [] },
+          { type: 'thread_features', features: thread.features },
           { type: 'queued_messages', messages: [], openConversationBatchId: null },
           { type: 'tool_approval_queue', approvals: [] },
         ]))
@@ -610,7 +618,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       const messageId = ampMessageID()
       notify(thread, 'inference_tools', { messageId, agentMode: thread.agentMode, tools: [] })
       notify(thread, 'agent_state', { state: 'streaming', messageId, agentMode: thread.agentMode })
-      addMessage(thread, { role: 'assistant', content, messageId, usage: usage(step), state: { type: 'complete' } })
+      addMessage(thread, { role: 'assistant', content, messageId, usage: usage(step, thread.features), state: { type: 'complete' } })
 
       if (calls.length === 0) {
         // A steering line that arrived after the last tool continues the turn.
@@ -798,10 +806,10 @@ function messageCount(thread: ActorThread): number {
 }
 
 function viewOf(thread: ActorThread): AmpThreadView {
-  return { id: thread.id, agentMode: thread.agentMode, tree: thread.tree, title: thread.title, messageCount: messageCount(thread), archived: thread.archived }
+  return { id: thread.id, agentMode: thread.agentMode, features: [...thread.features], tree: thread.tree, title: thread.title, messageCount: messageCount(thread), archived: thread.archived }
 }
 
-function usage(step: MockModelStep): Record<string, unknown> {
+function usage(step: MockModelStep, features: readonly string[]): Record<string, unknown> {
   const inputTokens = step.usage?.inputTokens ?? 10
   const outputTokens = step.usage?.outputTokens ?? 5
   return {
@@ -813,7 +821,7 @@ function usage(step: MockModelStep): Record<string, unknown> {
     cacheReadInputTokens: 0,
     totalInputTokens: inputTokens,
     timestamp: new Date().toISOString(),
-    features: [],
+    features,
   }
 }
 

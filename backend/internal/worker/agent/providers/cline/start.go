@@ -161,6 +161,7 @@ func (a *Agent) launchSettings(opts agent.Options) clineSettings {
 	settings := clineSettings{
 		model:          a.configuredModel(),
 		effort:         agent.EffortAuto,
+		thinking:       thinkingAuto,
 		permissionMode: Registration().PermissionDefaults.Fallback,
 	}
 	if model := opts.Model(); !agent.UsesAccountDefaultModel(model) && a.modelInfo(model) != nil {
@@ -168,6 +169,9 @@ func (a *Agent) launchSettings(opts agent.Options) clineSettings {
 	}
 	if effort := opts.Effort(); effort != "" && a.modelTakesEffort(settings.model, effort) {
 		settings.effort = effort
+	}
+	if thinking := opts.Get(OptionThinking); validThinking(thinking) {
+		settings.thinking = thinking
 	}
 	if mode := opts.PermissionMode(); validPermissionMode(mode) {
 		settings.permissionMode = mode

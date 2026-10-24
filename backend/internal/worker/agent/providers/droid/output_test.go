@@ -239,19 +239,20 @@ func TestToolProgressUpdateReportsATailAndStoresNoRow(t *testing.T) {
 	t.Parallel()
 	// The update shape comes from .tmp/probe/droid/run3, frames 20 through 29.
 	for _, tc := range []struct {
-		name      string
-		update    map[string]any
-		tail      string
-		truncated bool
+		name   string
+		update map[string]any
+		tail   string
+		bytes  int64
 	}{
-		{"text", map[string]any{"text": "partial"}, "partial", false},
-		{"full output", map[string]any{"text": "delta", "fullOutput": "whole output"}, "whole output", false},
-		{"empty full output", map[string]any{"text": "old", "fullOutput": ""}, "", false},
-		{"null full output", map[string]any{"text": "fallback", "fullOutput": nil}, "fallback", false},
-		{"absent text", map[string]any{}, "", false},
-		{"below limit", map[string]any{"fullOutput": strings.Repeat("x", 8191)}, strings.Repeat("x", 8191), false},
-		{"at limit", map[string]any{"fullOutput": strings.Repeat("x", 8192)}, strings.Repeat("x", 8192), true},
-		{"above limit", map[string]any{"fullOutput": strings.Repeat("x", 8193)}, strings.Repeat("x", 8193), true},
+		{"text", map[string]any{"text": "partial"}, "partial", 0},
+		{"full output", map[string]any{"text": "delta", "fullOutput": "whole output"}, "whole output", 12},
+		{"Unicode output", map[string]any{"fullOutput": "雪🙂"}, "雪🙂", 7},
+		{"empty full output", map[string]any{"text": "old", "fullOutput": ""}, "", 0},
+		{"null full output", map[string]any{"text": "fallback", "fullOutput": nil}, "fallback", 0},
+		{"absent text", map[string]any{}, "", 0},
+		{"below limit", map[string]any{"fullOutput": strings.Repeat("x", 8191)}, strings.Repeat("x", 8191), 8191},
+		{"at limit", map[string]any{"fullOutput": strings.Repeat("x", 8192)}, strings.Repeat("x", 8192), 8192},
+		{"above limit", map[string]any{"fullOutput": strings.Repeat("x", 8193)}, strings.Repeat("x", 8193), 8193},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -261,9 +262,16 @@ func TestToolProgressUpdateReportsATailAndStoresNoRow(t *testing.T) {
 			a.HandleOutput(droidAuditNotification(t, "main-session", payload))
 			assert.Empty(t, sink.PersistedNotifications())
 			assert.Empty(t, sink.Messages())
-			assert.Equal(t, []agent.ProgressUpdate{agent.OutputTailProgress("droid-tool-call", tc.tail, tc.truncated)}, sink.ProgressUpdates())
+			want := []agent.ProgressUpdate{agent.OutputTailProgress("droid-tool-call", tc.tail, false)}
+			if tc.bytes > 0 {
+				want = append(want, agent.OutputTotalProgress("droid-tool-call", tc.bytes, true))
+			}
+			assert.Equal(t, want, sink.ProgressUpdates())
+			assert.Equal(t, tc.bytes, sink.ProgressSnapshot().OutputBytes)
+			assert.Equal(t, tc.bytes > 0, sink.ProgressSnapshot().OutputBytesMinimum)
 			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_result","toolUseId":"call","content":"result"}`)))
 			assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("droid-tool-call"))
+			assert.Zero(t, sink.ProgressSnapshot().OutputBytes)
 		})
 	}
 }
@@ -283,12 +291,118 @@ func TestToolProgressUpdateStaysInTheChildTranscript(t *testing.T) {
 	row, ok := sink.BackgroundTask("child-1")
 	require.True(t, ok)
 	a.HandleOutput(droidAuditNotification(t, "child-1", []byte(`{"type":"tool_progress_update","toolUseId":"child-call","update":{"fullOutput":"child output"}}`)))
-	a.HandleOutput(droidAuditNotification(t, "child-1", []byte(`{"type":"tool_result","toolUseId":"child-call","content":"done"}`)))
 	child := sink.Child(row.ChildAgentID)
+	assert.Equal(t, int64(12), child.ProgressSnapshot().OutputBytes)
+	assert.True(t, child.ProgressSnapshot().OutputBytesMinimum)
+	a.HandleOutput(droidAuditNotification(t, "child-1", []byte(`{"type":"tool_result","toolUseId":"child-call","content":"done"}`)))
 	assert.Contains(t, child.ProgressUpdates(), agent.OutputTailProgress("droid-tool-child-call", "child output", false))
 	assert.Contains(t, child.ProgressUpdates(), agent.CompleteOutputProgress("droid-tool-child-call"))
 	assert.Empty(t, child.PersistedNotifications())
 	assert.Empty(t, sink.ProgressUpdates())
+}
+
+func TestToolProgressCountsSnapshotsWithoutAddingThem(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	for _, tc := range []struct {
+		text string
+		want int64
+	}{{"abc", 3}, {"abcdef", 6}, {"abcdef", 6}, {"def", 6}} {
+		payload, err := json.Marshal(map[string]any{"type": "tool_progress_update", "toolUseId": "call", "update": map[string]string{"fullOutput": tc.text}})
+		require.NoError(t, err)
+		a.HandleOutput(droidAuditNotification(t, "main-session", payload))
+		assert.Equal(t, tc.want, sink.ProgressSnapshot().OutputBytes)
+		assert.True(t, sink.ProgressSnapshot().OutputBytesMinimum, "the native frame omits the completeness flag")
+	}
+}
+
+func TestModelProgressUsesNativeDeltasAndCompletion(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"assistant", "thinking"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSteerAgent(t)
+			a.sink = agent.NewModelProgressResetSink(a.sink)
+			delta := []byte(`{"type":"` + kind + `_text_delta","messageId":"message","blockIndex":0,"textDelta":"雪🙂 words "}`)
+			a.HandleOutput(droidAuditNotification(t, "main-session", delta))
+			first := sink.ProgressSnapshot().ThinkingTokens
+			require.Positive(t, first)
+			a.HandleOutput(droidAuditNotification(t, "main-session", delta))
+			assert.Greater(t, sink.ProgressSnapshot().ThinkingTokens, first)
+			assert.Empty(t, sink.Messages(), "progress must not publish an uncommitted message")
+			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"`+kind+`_text_complete","messageId":"message","blockIndex":0}`)))
+			assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+			a.HandleOutput(droidAuditNotification(t, "main-session", delta))
+			assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens, "a completed block cannot reopen from a late delta")
+			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"assistant_message_retracted","messageId":"message"}`)))
+			a.HandleOutput(droidAuditNotification(t, "main-session", delta))
+			assert.Equal(t, first, sink.ProgressSnapshot().ThinkingTokens, "a retry can reuse the retracted native message ID")
+			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"create_message","message":{"id":"message","role":"assistant","content":[{"type":"text","text":"final"}]}}`)))
+			assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+			a.HandleOutput(droidAuditNotification(t, "main-session", delta))
+			assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens, "a committed message cannot reopen progress")
+		})
+	}
+}
+
+func TestModelProgressRejectsInvalidDeltas(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{
+		`{"type":"assistant_text_delta","messageId":"message","textDelta":""}`,
+		`{"type":"assistant_text_delta","textDelta":"missing identity"}`,
+		`{"type":"assistant_text_delta","messageId":"message","blockIndex":-1,"textDelta":"negative index"}`,
+		`{"type":"assistant_text_delta","messageId":"message","textDelta":12}`,
+	} {
+		a, sink, _ := newSteerAgent(t)
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(payload)))
+		assert.Empty(t, sink.ProgressUpdates())
+		assert.Empty(t, sink.Messages())
+	}
+}
+
+func TestModelProgressCompletesOnlyItsOwnBlock(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	delta := func(index int) {
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(fmt.Sprintf(`{"type":"assistant_text_delta","messageId":"message","blockIndex":%d,"textDelta":"abcdefghijklmnop"}`, index))))
+	}
+	complete := func(index int) {
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(fmt.Sprintf(`{"type":"assistant_text_complete","messageId":"message","blockIndex":%d}`, index))))
+	}
+	delta(0)
+	delta(1)
+	before := sink.ProgressSnapshot().ThinkingTokens
+	require.Positive(t, before)
+	complete(0)
+	assert.Equal(t, before, sink.ProgressSnapshot().ThinkingTokens, "the second block still owns live progress")
+	delta(0)
+	assert.Equal(t, before, sink.ProgressSnapshot().ThinkingTokens, "the first block is already complete")
+	delta(1)
+	assert.Greater(t, sink.ProgressSnapshot().ThinkingTokens, before)
+	complete(1)
+	assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+	assert.Empty(t, sink.Messages(), "a block boundary does not commit the message")
+}
+
+func TestModelProgressCannotReopenAnEmptyCompletedBlock(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"thinking_text_complete","messageId":"empty","blockIndex":0}`)))
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"thinking_text_delta","messageId":"empty","blockIndex":0,"textDelta":"This arrived after the block ended."}`)))
+	assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+	assert.Empty(t, sink.ProgressUpdates())
+	assert.Empty(t, sink.Messages())
+}
+
+func TestModelProgressStaysInItsChild(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	a.HandleOutput([]byte(droidChildAvailable))
+	row, ok := sink.BackgroundTask("child-1")
+	require.True(t, ok)
+	a.HandleOutput(droidAuditNotification(t, "child-1", []byte(`{"type":"thinking_text_delta","messageId":"child-thought","blockIndex":0,"textDelta":"Child reasoning progresses."}`)))
+	assert.Positive(t, sink.Child(row.ChildAgentID).ProgressSnapshot().ThinkingTokens)
+	assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
 }
 
 func TestToolCallStoresOneRowWithTheFinalInput(t *testing.T) {

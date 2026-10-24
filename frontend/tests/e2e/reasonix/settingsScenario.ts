@@ -45,7 +45,7 @@ export async function exerciseReasonixSessionSettings(context: ManagedNativeScen
   const request = await sendNativeAnswer(context, 'Reply once after the effort switch.', 'Reasonix answered at low effort.')
   expect(request.body).toMatchObject({ reasoning_effort: 'low' })
   await rejectPlanExit(page)
-  await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
+  await expectPermissionShortcuts(page, { smart: 'offered', bypass: 'offered' })
   await applyPermissionPreset(page, 'bypass')
   await waitForSettingsIdle(page)
   await exerciseRestoredNativeOption(context, {

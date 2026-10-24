@@ -92,6 +92,7 @@ func newRig(t *testing.T) *rig {
 		model:         "mock/mock-model",
 		thinkingLevel: "high",
 		approvalMode:  "write",
+		outputStyle:   "auto",
 		sessionID:     "01a0cf77-9ae4-72d8-9a42-665c431d3beb",
 		sessionFile:   "/sessions/2026-09-23T18-11-57-284Z_01a0cf77-9ae4-72d8-9a42-665c431d3beb.jsonl",
 	}

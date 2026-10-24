@@ -2,6 +2,7 @@ package codewhale
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Codewhale's four settings axes.
+// Codewhale's settings axes.
 //
 //   - model: the thread's model, within the provider the thread runs on. The
 //     thread update route sets it.
@@ -22,6 +23,8 @@ import (
 //   - codewhale_mode: agent or plan. Plan mode is a thread setting: the runtime
 //     refuses every mutating call centrally, and no tool asks to leave it.
 //   - permissionMode: the thread's permission posture.
+//   - outputStyle: native response verbosity, selected through the process environment.
+//     The thread and turn APIs expose no verbosity field, so changing it requires a restart.
 
 // ModeLabel labels the mode axis.
 const ModeLabel = "Mode"
@@ -60,9 +63,9 @@ var codewhalePostureGroup = &leapmuxv1.AvailableOptionGroup{
 
 // codewhaleStaticOptionGroups holds the axes that do not depend on a running
 // agent.
-var codewhaleStaticOptionGroups = []*leapmuxv1.AvailableOptionGroup{codewhaleModeGroup, codewhalePostureGroup}
+var codewhaleStaticOptionGroups = []*leapmuxv1.AvailableOptionGroup{codewhaleModeGroup, codewhalePostureGroup, codewhaleOutputStyleGroup}
 
-// codewhaleSettings is the agent's view of its thread's settings.
+// codewhaleSettings holds the thread, turn and launch settings.
 type codewhaleSettings struct {
 	model string
 	// provider and providerID address the catalog of the thread's model
@@ -74,6 +77,8 @@ type codewhaleSettings struct {
 	effort  string
 	mode    string
 	posture string
+	// outputStyle is the launch choice. Auto delegates to the native configuration.
+	outputStyle string
 	// defaultModel is the model the runtime chose for a thread that LeapMux
 	// opened with no model, which is the provider's default. It is empty when
 	// nothing states the default: a resumed thread, a thread opened with an
@@ -124,6 +129,7 @@ func (a *Agent) optionGroupsLocked() []*leapmuxv1.AvailableOptionGroup {
 	return append(groups,
 		providerkit.LiveGroup(codewhaleModeGroup, a.settings.mode),
 		providerkit.LiveGroup(codewhalePostureGroup, a.settings.posture),
+		providerkit.LiveGroup(codewhaleOutputStyleGroup, a.settings.outputStyle),
 	)
 }
 
@@ -132,14 +138,28 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(agent.CurrentOptions(a.OptionGroups()))
 }
 
-// UpdateSettings applies each requested axis to the running thread.
+// UpdateSettings applies live options or requests a restart for an output-style change.
 //
 // The model, the mode and the posture ride ONE thread update, and the reply
 // states the values the runtime settled on. The effort is LeapMux's own and
 // takes effect at the next turn.
 func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
-	defer a.approvePendingPermissions()
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: make(agent.OptionSettlements)}
+	if value := requested[OptionOutputStyle]; value != "" {
+		style, err := resolveOutputStyle(value)
+		if err != nil {
+			result.Settlements[OptionOutputStyle] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
+			result.SurfacedOptions = agent.CurrentOptions(a.OptionGroups())
+			return result
+		}
+		a.Mu.Lock()
+		current := a.settings.outputStyle
+		a.Mu.Unlock()
+		if style != current {
+			return agent.RestartRequiredSettings(requested)
+		}
+	}
+	defer a.approvePendingPermissions()
 	var update updateThreadRequest
 	patched := false
 	for key, value := range requested {
@@ -147,6 +167,10 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 			continue
 		}
 		switch key {
+		case OptionOutputStyle:
+			confirmed := value
+			result.Settlements[key] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &confirmed}
+			continue
 		case agent.OptionIDModel:
 			update.Model = new(string)
 			*update.Model = value
@@ -204,6 +228,18 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 	}
 	a.sink.PersistSettingsRefresh(result.SurfacedOptions)
 	return result
+}
+
+func resolveOutputStyle(value string) (string, error) {
+	if value == "" {
+		value = codewhaleOutputStyleGroup.GetDefaultValue()
+	}
+	for _, option := range codewhaleOutputStyleGroup.GetOptions() {
+		if option.GetId() == value {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("unsupported Codewhale output style %q", value)
 }
 
 // postureIsKnown reports whether a posture is one that LeapMux offers.

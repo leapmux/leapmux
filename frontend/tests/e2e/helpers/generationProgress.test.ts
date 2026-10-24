@@ -319,9 +319,52 @@ describe('exerciseTokenProgress', () => {
     expect(fakes.events).not.toContain('reload')
     expect(fakes.events.at(-1)).toBe('evaluate')
   })
+
+  it('permits byte samples when the absence proof selects only tokens', async () => {
+    fakes.samples.push('8 B')
+    const options = { supported: false, unsupportedCounterScope: 'selected' as const }
+    await exerciseTokenProgress(fakeContext(0, streamingScript(0)), options)
+    expect(fakes.events).toContain('reload')
+    expect(fakes.events.at(-1)).toBe('evaluate')
+  })
+
+  it('rejects token samples when the absence proof selects tokens', async () => {
+    fakes.samples.push('5 tokens', '8 B')
+    const options = { supported: false, unsupportedCounterScope: 'selected' as const }
+    await expect(exerciseTokenProgress(fakeContext(0, streamingScript(0)), options)).rejects.toThrow('the whole native turn exposes no live tokens counter')
+    expect(fakes.events).not.toContain('reload')
+    expect(fakes.events.at(-1)).toBe('evaluate')
+  })
+
+  it('still rejects byte samples by default when tokens are unsupported', async () => {
+    fakes.samples.push('8 B')
+    await expect(exerciseTokenProgress(fakeContext(0, streamingScript(0)), { supported: false })).rejects.toThrow('the whole native turn exposes no live counter')
+    expect(fakes.events).not.toContain('reload')
+  })
 })
 
 describe('exerciseOutputByteProgress', () => {
+  it('permits token samples when the absence proof selects only bytes', async () => {
+    fakes.samples.push('5 tokens')
+    const options = { supported: false, unsupportedCounterScope: 'selected' as const }
+    await exerciseOutputByteProgress(fakeContext(0), options)
+    expect(fakes.events).toContain('reload')
+    expect(fakes.events.slice(-3)).toEqual(['release-first-output', 'evaluate', 'release-final-output'])
+  })
+
+  it('rejects byte samples when the absence proof selects bytes', async () => {
+    fakes.samples.push('5 tokens', '8 B')
+    const options = { supported: false, unsupportedCounterScope: 'selected' as const }
+    await expect(exerciseOutputByteProgress(fakeContext(0), options)).rejects.toThrow('the whole native turn exposes no live bytes counter')
+    expect(fakes.events).not.toContain('reload')
+    expect(fakes.events.slice(-3)).toEqual(['release-first-output', 'evaluate', 'release-final-output'])
+  })
+
+  it('still rejects token samples by default when bytes are unsupported', async () => {
+    fakes.samples.push('5 tokens')
+    await expect(exerciseOutputByteProgress(fakeContext(0), { supported: false })).rejects.toThrow('the whole native turn exposes no live counter')
+    expect(fakes.events).not.toContain('reload')
+  })
   it('approves the command after the agent requests its step, and releases the held output when the turn fails', async () => {
     const failure = new Error('The first output segment never arrived.')
     vi.spyOn(fakes.output, 'waitForFirstOutput').mockRejectedValueOnce(failure)

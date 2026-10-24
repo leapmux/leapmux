@@ -3,6 +3,7 @@ package codebuddy
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -20,10 +21,15 @@ func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {
 
 // handleOutput dispatches one NDJSON frame.
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	if a.consumeResumeFrame(line) {
+		return
+	}
 	if a.routeChildFrame(line.Type, line.Raw) {
 		return
 	}
 	switch line.Type {
+	case frameTypeStreamEvent:
+		a.handleStreamEvent(line.Raw)
 	case frameTypeFileHistorySnapshot, frameTypeAiTitle, frameTypeTopic, contracts.CodebuddyFrameKindControlNotification:
 		// These frames contain native history metadata or control receipts. They supply no chat row.
 		return
@@ -35,8 +41,14 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		a.handleResult(line.Raw)
 	case contracts.CodebuddyFrameKindUser:
 		a.observeAgentToolResults(line.Raw)
-		a.observePlanModeToolResults(line.Raw)
+		rejectedPlan := a.observePlanModeToolResults(line.Raw)
 		a.persistRaw(line.Raw)
+		if rejectedPlan {
+			a.mu.Lock()
+			a.pendingPlanModeTools = nil
+			a.mu.Unlock()
+			a.setTurnActive(false)
+		}
 	case frameTypeControlRequest:
 		a.handleInboundControlRequest(line.Raw)
 	case frameTypeControlResponse:
@@ -95,8 +107,11 @@ func (a *Agent) handleSystem(raw []byte) {
 		if json.Unmarshal(raw, &init) == nil {
 			mode := init.PermissionMode
 			a.mu.Lock()
-			if init.SessionID != "" {
-				a.sessionID = init.SessionID
+			// Native child init frames have their own session ID but no parent tag.
+			// Start pins this process's root session before any output arrives.
+			if init.SessionID == "" || init.SessionID != a.sessionID {
+				a.mu.Unlock()
+				return
 			}
 			if init.Model != "" {
 				a.model = init.Model
@@ -105,8 +120,6 @@ func (a *Agent) handleSystem(raw []byte) {
 				a.permissionMode = mode
 			}
 			sessionID := a.sessionID
-			settleRejectedPlan := a.awaitingRejectedPlanInit && a.active
-			a.awaitingRejectedPlanInit = false
 			a.mu.Unlock()
 			if sessionID != "" {
 				a.sink.UpdateSessionID(sessionID)
@@ -116,9 +129,6 @@ func (a *Agent) handleSystem(raw []byte) {
 			if mode != "" {
 				a.sink.UpdatePermissionMode(mode)
 				a.queuePermissionApprovals()
-			}
-			if settleRejectedPlan {
-				a.setTurnActive(false)
 			}
 		}
 		return
@@ -181,6 +191,7 @@ func (a *Agent) handleAssistant(raw []byte) {
 	}
 	var msg assistantMessage
 	if json.Unmarshal(raw, &msg) == nil {
+		a.completeModelStream("", raw)
 		a.mu.Lock()
 		a.lastDiagnostic = msg.diagnostic()
 		if msg.SessionID != "" && a.sessionID == "" {
@@ -233,7 +244,6 @@ func (a *Agent) handleResult(raw []byte) {
 	a.lastDiagnostic = nil
 	a.assistantTextStreamed = false
 	a.pendingPlanModeTools = nil
-	a.awaitingRejectedPlanInit = false
 	toolUses := len(a.turnToolCalls)
 	a.turnToolCalls = nil
 	// One `result` ends one turn, so it spends the notes of every stop request
@@ -290,6 +300,12 @@ func (a *Agent) handleResult(raw []byte) {
 	}
 	a.sink.ResetSpans()
 	a.setTurnActive(false)
+	a.mu.Lock()
+	refreshStyles := a.outputStyles != nil
+	a.mu.Unlock()
+	if refreshStyles && !a.IsStopped() {
+		a.catalogRefresh.Run("output-styles", a.refreshOutputStyleCatalog)
+	}
 }
 
 // codebuddyDiagnostic records a displayed runtime message until its request ends.
@@ -323,13 +339,14 @@ func (message assistantMessage) diagnostic() *codebuddyDiagnostic {
 }
 
 // The native plan tool results state when a plan starts or waits for revision.
-// Stream JSON sends no turn end after a rejected ExitPlanMode. Its next init
-// says the CLI is ready for input, so that frame ends the pending turn.
+// Stream JSON sends no turn end after a rejected ExitPlanMode. The rejection
+// result ends that turn; a session-preserving restart restores native input.
 const codebuddyPlanRejectionPrefix = "The user doesn't want to proceed with this plan yet."
 
-func (a *Agent) observePlanModeToolResults(raw []byte) {
+func (a *Agent) observePlanModeToolResults(raw []byte) bool {
 	var frame struct {
-		Message struct {
+		SessionID string `json:"session_id"`
+		Message   struct {
 			Content []struct {
 				Type      string `json:"type"`
 				ToolUseID string `json:"tool_use_id"`
@@ -342,8 +359,15 @@ func (a *Agent) observePlanModeToolResults(raw []byte) {
 		} `json:"message"`
 	}
 	if json.Unmarshal(raw, &frame) != nil {
-		return
+		return false
 	}
+	a.mu.Lock()
+	owned := frame.SessionID == "" || frame.SessionID == a.sessionID
+	a.mu.Unlock()
+	if !owned {
+		return false
+	}
+	turnRejected := false
 	for _, block := range frame.Message.Content {
 		if block.Type != "tool_result" || block.ToolUseID == "" {
 			continue
@@ -363,24 +387,41 @@ func (a *Agent) observePlanModeToolResults(raw []byte) {
 		rejectedPlan := pending && kind == agent.PlanModeControlExit && block.IsError != nil && *block.IsError && planRejected
 		confirmedMode := ""
 		if enteredPlan {
+			if a.permissionMode != contracts.CodebuddyModePlan {
+				a.planReturnMode = a.permissionMode
+			}
 			confirmedMode = contracts.CodebuddyModePlan
 		} else if exitedPlan {
-			confirmedMode = contracts.CodebuddyModeAcceptEdits
+			confirmedMode = a.permissionMode
+			if confirmedMode == contracts.CodebuddyModePlan {
+				// EnterPlanMode saves the prior mode in native process metadata.
+				// Launching in Plan or selecting it through the SDK can leave it absent.
+				confirmedMode = a.planReturnMode
+				if confirmedMode == "" {
+					confirmedMode = contracts.CodebuddyModeDefault
+				}
+			}
+			a.planReturnMode = ""
 		} else if rejectedPlan {
 			confirmedMode = contracts.CodebuddyModePlan
 		}
-		if rejectedPlan {
-			a.awaitingRejectedPlanInit = true
-		}
+		turnRejected = turnRejected || rejectedPlan
 		if confirmedMode != "" {
 			a.permissionMode = confirmedMode
-			a.nativeTurnRestartRequired = confirmedMode != a.opts.PermissionMode()
+			// The native print loop records a rejected plan with skipRun and can
+			// leave later prompts queued. Even matching launch settings need a
+			// new process to restore input for this session.
+			a.nativeModeRestartRequired = confirmedMode != a.opts.PermissionMode()
+			if rejectedPlan {
+				a.nativeInputRestartRequired = true
+			}
 		}
 		a.mu.Unlock()
-		if confirmedMode != "" && !rejectedPlan {
+		if confirmedMode != "" {
 			a.sink.UpdatePermissionMode(confirmedMode)
 		}
 	}
+	return turnRejected
 }
 
 // CodeBuddy can omit streamed text after reasoning, while result.result still
@@ -494,11 +535,15 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		Error:    envelope.Response.Error,
 	}
 	var inner struct {
-		Mode            string                `json:"mode"`
-		Model           string                `json:"model"`
-		AvailableModels *[]codebuddyModelInfo `json:"availableModels"`
-		Steered         *bool                 `json:"steered"`
-		Reason          string                `json:"reason"`
+		Mode            string                   `json:"mode"`
+		Model           string                   `json:"model"`
+		AvailableModels *[]codebuddyModelInfo    `json:"availableModels"`
+		OutputStyle     string                   `json:"output_style"`
+		OutputStyles    *[]string                `json:"available_output_styles"`
+		ConfigUpdated   *codebuddyNativeSettings `json:"updated"`
+		ConfigErrors    map[string]string        `json:"errors"`
+		Steered         *bool                    `json:"steered"`
+		Reason          string                   `json:"reason"`
 	}
 	validInner := true
 	if len(envelope.Response.Response) > 0 {
@@ -512,6 +557,13 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		}
 	}
 	if validInner {
+		result.ConfigUpdated = inner.ConfigUpdated
+		result.ConfigErrors = inner.ConfigErrors
+		result.OutputStyle = inner.OutputStyle
+		if inner.OutputStyles != nil {
+			result.OutputStyles = *inner.OutputStyles
+			result.HasOutputStyleCatalog = true
+		}
 		result.Mode = inner.Mode
 		result.Model = inner.Model
 		if inner.AvailableModels != nil {
@@ -589,9 +641,16 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (c
 
 // applyPermissionMode sends set_permission_mode and records the result.
 func (a *Agent) applyPermissionMode(mode string) error {
+	a.mu.Lock()
+	sessionID := a.sessionID
+	a.mu.Unlock()
+	if sessionID == "" {
+		return fmt.Errorf("CodeBuddy session is not initialized")
+	}
 	body, err := json.Marshal(map[string]string{
-		"subtype": contracts.CodebuddyControlRequestSubtypeSetPermissionMode,
-		"mode":    mode,
+		"subtype":    contracts.CodebuddyControlRequestSubtypeSetPermissionMode,
+		"mode":       mode,
+		"session_id": sessionID,
 	})
 	if err != nil {
 		return err
@@ -606,7 +665,7 @@ func (a *Agent) applyPermissionMode(mode string) error {
 	} else {
 		a.permissionMode = mode
 	}
-	a.nativeTurnRestartRequired = false
+	a.nativeModeRestartRequired = false
 	a.mu.Unlock()
 	a.queuePermissionApprovals()
 	return nil

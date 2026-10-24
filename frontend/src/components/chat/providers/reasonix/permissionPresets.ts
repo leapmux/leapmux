@@ -3,5 +3,6 @@ import { REASONIX_APPROVAL, REASONIX_CONFIG } from '~/generated/contracts/reason
 
 /** The canonical permission changes that this provider's presets apply. */
 export const reasonixPermissionPresets = {
+  smart: { sets: { [REASONIX_CONFIG.ToolApproval]: REASONIX_APPROVAL.Auto } },
   bypass: { sets: { [REASONIX_CONFIG.ToolApproval]: REASONIX_APPROVAL.Yolo } },
 } satisfies ProviderPermissionPresets

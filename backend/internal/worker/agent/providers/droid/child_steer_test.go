@@ -48,11 +48,23 @@ func (b *bufferStdin) Write(p []byte) (int, error) {
 
 func (b *bufferStdin) Close() error { return nil }
 
-// frames returns each written line as its own string.
+// frames returns the captured lines, or no entries when nothing was written.
 func (b *bufferStdin) frames() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.buf.Len() == 0 {
+		return nil
+	}
 	return strings.Split(strings.TrimSpace(b.buf.String()), "\n")
+}
+
+func TestBufferStdinFramesDistinguishesNoWritesFromABlankLine(t *testing.T) {
+	t.Parallel()
+	stdin := &bufferStdin{}
+	assert.Empty(t, stdin.frames(), "an untouched stream contains no native input frame")
+	_, err := stdin.Write([]byte("\n"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{""}, stdin.frames(), "a real blank-line write must remain observable")
 }
 
 // newSteerAgent builds an agent with a capturing stdin and a test sink.
@@ -162,7 +174,7 @@ func TestSendChildInputWritesEndOfTurn(t *testing.T) {
 	assert.Equal(t, "hello", params["text"])
 	assert.Equal(t, "end_of_turn", params["queuePlacement"], "a send queues for the child's next turn")
 	assert.True(t, a.ActiveChildTurnState(steerChildID).Active, "a send arms the child's turn")
-	assert.Empty(t, strings.TrimSpace(rootStdin.frames()[0]), "the root stream receives no child input")
+	assert.Empty(t, rootStdin.frames(), "the root stream receives no child input")
 }
 
 // A send to a running child refuses with ErrAgentBusy so the LeapMux queue
@@ -174,8 +186,7 @@ func TestSendChildInputRefusesABusyChild(t *testing.T) {
 
 	err := a.SendChildInput(steerChildID, "hello", nil)
 	require.ErrorIs(t, err, agent.ErrAgentBusy, "a running child refuses a new message")
-	frames := childStdin.frames()
-	assert.Empty(t, strings.TrimSpace(frames[0]), "a refused message writes no request")
+	assert.Empty(t, childStdin.frames(), "a refused message writes no request")
 	assert.True(t, a.ActiveChildTurnState(steerChildID).Steerable,
 		"a busy child is steerable, so the queue offers the message as a steer")
 }
@@ -194,7 +205,7 @@ func TestSendChildInputWaitsForAnUnboundBackgroundChild(t *testing.T) {
 	state := a.ActiveChildTurnState(steerChildID)
 	assert.True(t, state.Active)
 	assert.False(t, state.Steerable, "the root stream cannot steer the running child")
-	assert.Empty(t, strings.TrimSpace(rootStdin.frames()[0]))
+	assert.Empty(t, rootStdin.frames())
 }
 
 // A steer writes Droid's active-turn placement and needs a running turn.
@@ -217,8 +228,7 @@ func TestSteerChildInputRefusesAnIdleChild(t *testing.T) {
 
 	err := a.SteerChildInput(steerChildID, "more", nil)
 	require.ErrorIs(t, err, agent.ErrNoActiveTurn, "a steer needs a running turn")
-	frames := childStdin.frames()
-	assert.Empty(t, strings.TrimSpace(frames[0]), "a refused steer writes no request")
+	assert.Empty(t, childStdin.frames(), "a refused steer writes no request")
 	assert.False(t, a.ActiveChildTurnState(steerChildID).Active)
 }
 
@@ -229,8 +239,7 @@ func TestSendChildInputRefusesAnEmptyKey(t *testing.T) {
 
 	err := a.SendChildInput("", "hello", nil)
 	require.Error(t, err, "an empty child key is refused")
-	frames := stdin.frames()
-	assert.Empty(t, strings.TrimSpace(frames[0]), "a refused message writes no request")
+	assert.Empty(t, stdin.frames(), "a refused message writes no request")
 }
 
 func TestChildInputRefusesAnUnregisteredSession(t *testing.T) {
@@ -240,7 +249,7 @@ func TestChildInputRefusesAnUnregisteredSession(t *testing.T) {
 	assert.ErrorIs(t, a.SendChildInput(unknown, "hello", nil), agent.ErrChildRouteNotReady)
 	a.armChildTurn(unknown)
 	assert.ErrorIs(t, a.SteerChildInput(unknown, "guide", nil), agent.ErrChildRouteNotReady)
-	assert.Empty(t, strings.TrimSpace(stdin.buf.String()), "an unregistered child cannot use the root stream")
+	assert.Empty(t, stdin.frames(), "an unregistered child cannot use the root stream")
 }
 
 // The turn state of one child does not affect another.
@@ -300,14 +309,16 @@ func TestAgentTurnCompletedForTheMainSessionDisarmsTheTurn(t *testing.T) {
 		"the main turn ends")
 }
 
-// The child sends text and image bytes to its own session.
+// The child sends text, image bytes, and PDF bytes through its own process.
 func TestSendChildInputCarriesAttachments(t *testing.T) {
 	t.Parallel()
-	a, _, _, childStdin := newBoundChildAgent(t)
+	a, child, rootStdin, childStdin := newBoundChildAgent(t)
+	installDroidPDFCatalog(t, child, "child-pdf-model", []map[string]any{{"id": "child-pdf-model", "supportsPDFs": true}})
 
 	attachments := []*leapmuxv1.Attachment{
 		{Data: []byte("notes")},
 		{MimeType: "image/png", Filename: "shot.png", Data: []byte{0x89, 'P', 'N', 'G'}},
+		{MimeType: "application/pdf", Filename: "sample.pdf", Data: []byte("%PDF")},
 	}
 	require.NoError(t, a.SendChildInput(steerChildID, "hello", attachments))
 	params := lastRequest(t, childStdin)
@@ -318,4 +329,8 @@ func TestSendChildInputCarriesAttachments(t *testing.T) {
 	assert.Equal(t, []any{map[string]any{
 		"type": "base64", "mediaType": "image/png", "data": "iVBORw==",
 	}}, params["images"])
+	assert.Equal(t, []any{map[string]any{
+		"type": "base64", "mediaType": "application/pdf", "data": "JVBERg==", "name": "sample.pdf",
+	}}, params["files"])
+	assert.Empty(t, rootStdin.frames(), "the parent process must not receive the child's attachment")
 }

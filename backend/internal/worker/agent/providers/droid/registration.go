@@ -12,8 +12,8 @@ import (
 var droidLocator = launch.Binaries(droidBinaryName)
 
 // PermissionModeLabel is the label of LeapMux's permission-mode axis for
-// Droid. Droid states the autonomy axis itself (`--auto`), and the worker maps
-// a permission-mode choice onto that axis at launch.
+// Droid. The worker maps this choice onto the native session API's autonomy
+// settings at startup and during live changes.
 const PermissionModeLabel = "Permissions"
 
 // permissionModeGroup is the static option group of the permission mode.
@@ -33,7 +33,7 @@ var permissionModeGroup = &leapmuxv1.AvailableOptionGroup{
 		{Id: contracts.DroidModeSpec, Name: "Spec", Description: "Write a plan and ask for approval before implementation"},
 		{Id: contracts.DroidModeAutoLow, Name: "Auto (Low)", Description: "Auto-approve low-risk tools"},
 		{Id: contracts.DroidModeAutoMedium, Name: "Auto (Medium)", Description: "Auto-approve medium-risk tools"},
-		{Id: contracts.DroidModeAutoHigh, Name: "Auto (High)", Description: "Auto-approve every tool"},
+		{Id: contracts.DroidModeAutoHigh, Name: "Auto (High)", Description: "Auto-approve ordinary tools at every risk level; protected decisions still ask"},
 	},
 }
 
@@ -76,7 +76,7 @@ func Registration() agent.Registration {
 			NewSession: map[string]string{agent.OptionIDPermissionMode: contracts.DroidModeDefault},
 			Fallback:   contracts.DroidModeDefault,
 		},
-		// LeapMux states the four modes completely, so the worker refuses an
+		// LeapMux states the supported modes completely, so the worker refuses an
 		// unknown value at launch.
 		FixedPermissionModes: true,
 		EnvModelKey:          "LEAPMUX_DROID_DEFAULT_MODEL",

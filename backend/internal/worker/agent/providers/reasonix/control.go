@@ -2,18 +2,21 @@ package reasonix
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// permissionAllowsBypass excludes the native ask and plan-exit dialogs.
-// Both dialogs use session/request_permission, as ordinary tools do.
+// permissionAllowsBypass admits only ordinary native tool approvals.
+// Fresh approvals, directory expansion, and protected operations still need a person in Yolo.
 func permissionAllowsBypass(line *providerkit.ParsedLine) bool {
 	var request struct {
 		ToolCall struct {
 			Meta struct {
 				Reasonix struct {
-					Tool string `json:"tool"`
+					Tool  string `json:"tool"`
+					Fresh *bool  `json:"fresh"`
+					Kind  string `json:"kind"`
 				} `json:"reasonix.io"`
 			} `json:"_meta"`
 		} `json:"toolCall"`
@@ -21,6 +24,14 @@ func permissionAllowsBypass(line *providerkit.ParsedLine) bool {
 	if json.Unmarshal(line.Params, &request) != nil {
 		return false
 	}
-	tool := request.ToolCall.Meta.Reasonix.Tool
-	return tool != "" && tool != "ask" && tool != "exit_plan_mode"
+	metadata := request.ToolCall.Meta.Reasonix
+	if metadata.Fresh == nil || *metadata.Fresh || metadata.Kind != "" || strings.TrimSpace(metadata.Tool) == "" {
+		return false
+	}
+	switch metadata.Tool {
+	case "ask", "exit_plan_mode", "remember", "forget", "sandbox_escape", "config_write":
+		return false
+	default:
+		return true
+	}
 }

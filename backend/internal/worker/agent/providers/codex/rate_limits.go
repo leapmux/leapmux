@@ -69,7 +69,7 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 		}
 		rateLimitType := codexWindowToType(tier.WindowDurationMins)
 		status := codexTierStatus(tier.UsedPercent)
-		if status == codexRateLimitStatusExceeded {
+		if status == contracts.RateLimitStatusExceeded {
 			anyExceeded = true
 		}
 		info := map[string]interface{}{
@@ -85,7 +85,7 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 			if summary.latestReset == nil || resetAt.After(*summary.latestReset) {
 				summary.latestReset = &resetAt
 			}
-			if status == codexRateLimitStatusExceeded &&
+			if status == contracts.RateLimitStatusExceeded &&
 				(summary.latestExceededReset == nil || resetAt.After(*summary.latestExceededReset)) {
 				summary.latestExceededReset = &resetAt
 			}
@@ -100,13 +100,13 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 
 	if reachedType == codexRateLimitReachedTimeWindow && !anyExceeded && bindingTierKey != "" {
 		if info, ok := summary.rateLimits[bindingTierKey].(map[string]interface{}); ok {
-			info[contracts.RateLimitFieldStatus] = codexRateLimitStatusExceeded
+			info[contracts.RateLimitFieldStatus] = contracts.RateLimitStatusExceeded
 		}
 	}
 	accountBlock := map[string]interface{}{}
 	if reachedType != "" && reachedType != codexRateLimitReachedTimeWindow {
 		accountBlock[contracts.RateLimitFieldRateLimitType] = reachedType
-		accountBlock[contracts.RateLimitFieldStatus] = codexRateLimitStatusExceeded
+		accountBlock[contracts.RateLimitFieldStatus] = contracts.RateLimitStatusExceeded
 	}
 	summary.rateLimits[codexRateLimitAccountBlockKey] = accountBlock
 	return summary
@@ -118,12 +118,6 @@ type codexRateLimitTier struct {
 	ResetsAt           *int64  `json:"resetsAt"`
 }
 
-const (
-	codexRateLimitStatusAllowed        = "allowed"
-	codexRateLimitStatusAllowedWarning = "allowed_warning"
-	codexRateLimitStatusExceeded       = "exceeded"
-)
-
 // codexRateLimitReachedTimeWindow identifies the Codex limit that the rolling-window timer clears.
 // The other limits require a billing or usage change.
 const codexRateLimitReachedTimeWindow = "rate_limit_reached"
@@ -134,11 +128,11 @@ const codexRateLimitAccountBlockKey = "account_block"
 func codexTierStatus(usedPercent float64) string {
 	switch {
 	case usedPercent >= 100:
-		return codexRateLimitStatusExceeded
+		return contracts.RateLimitStatusExceeded
 	case usedPercent >= 80:
-		return codexRateLimitStatusAllowedWarning
+		return contracts.RateLimitStatusAllowedWarning
 	default:
-		return codexRateLimitStatusAllowed
+		return contracts.RateLimitStatusAllowed
 	}
 }
 
@@ -162,9 +156,9 @@ func codexRateLimitResumeReset(reachedType string, summary codexRateLimitSummary
 func codexWindowToType(mins int) string {
 	switch mins {
 	case 300:
-		return "five_hour"
+		return contracts.RateLimitTypeFiveHour
 	case 10080:
-		return "seven_day"
+		return contracts.RateLimitTypeSevenDay
 	default:
 		if mins >= 1440 {
 			return fmt.Sprintf("%d_day", (mins+720)/1440)

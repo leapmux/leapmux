@@ -156,9 +156,9 @@ var clineAutoEffort = &agent.EffortInfo{
 	Description: "Use the reasoning that your Cline settings state for the model",
 }
 
-// effortOff is Cline's word for no reasoning. The hub takes it as `thinking:
-// false`, because its reasoning-effort field refuses the word.
-const effortOff = "none"
+// Native models can list none, but Cline's effort field refuses that value.
+// The independent thinking preference controls disabled reasoning instead.
+const nativeDisabledEffort = "none"
 
 // modelEfforts lists the efforts of one model: Auto first, then the model's
 // ladder strongest first. A model with no ladder takes no effort at all.
@@ -168,7 +168,7 @@ func modelEfforts(efforts []string) []*agent.EffortInfo {
 	}
 	levels := make([]*agent.EffortInfo, 0, len(efforts))
 	for _, effort := range efforts {
-		if effort = strings.TrimSpace(effort); effort != "" {
+		if effort = strings.TrimSpace(effort); effort != "" && effort != nativeDisabledEffort {
 			levels = append(levels, providerkit.EffortTier(effort))
 		}
 	}

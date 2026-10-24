@@ -19,11 +19,14 @@ func TestLaunchArgs(t *testing.T) {
 		"--no-ide", "--no-notifications", "--no-color", "--no-remote-control-terminal",
 	}
 
-	newThread := launchArgs("", agentModeHigh, "/state/settings.json")
+	newThread := launchArgs("", threadConfiguration{mode: agentModeHigh}, "/state/settings.json")
 	assert.Equal(t, append(append([]string{}, common...), "--mode", "high", "--no-archive-after-execute"), newThread,
 		"a new thread states its mode, and stays resumable")
 
-	resumed := launchArgs("T-1", agentModeHigh, "/state/settings.json")
+	fast := launchArgs("", threadConfiguration{mode: agentModeHigh, fast: true}, "/state/settings.json")
+	assert.Equal(t, append(append([]string{}, newThread...), "--fast"), fast)
+
+	resumed := launchArgs("T-1", threadConfiguration{mode: agentModeHigh, fast: true}, "/state/settings.json")
 	assert.Equal(t, append([]string{"threads", "continue", "T-1"}, common...), resumed,
 		"a resumed thread keeps its own mode, and Amp archives only a thread it created")
 }

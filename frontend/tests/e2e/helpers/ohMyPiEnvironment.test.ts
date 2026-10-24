@@ -50,6 +50,7 @@ describe('createOhMyPiEnvironment', () => {
     const models = JSON.parse(readFileSync(join(ohMyPiAgentDirectory(homeDir, 'unit-profile'), 'models.yml'), 'utf8'))
     expect(models.providers['unit-provider']).toMatchObject({ baseUrl: 'http://127.0.0.1:4567/v1', apiKey: 'LEAPMUX_E2E_MODEL_API_KEY', api: 'openai-completions' })
     expect(models.providers['unit-provider'].models.map((model: { id: string }) => model.id)).toEqual(['unit-model', 'unit-alt'])
+    expect(models.providers['unit-provider'].models.map((model: { name: string }) => model.name)).toEqual(['GLM-5.3', 'GLM-5.3 Alternate'])
   })
 
   it('pins the structured batch task contract that the child scenarios exercise', () => {

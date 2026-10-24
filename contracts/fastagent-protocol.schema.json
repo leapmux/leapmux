@@ -1,14 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "fastagent-protocol.schema.json",
-  "title": "Fast Agent wire vocabulary",
-  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal fast-agent sends. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
+  "title": "Fast Agent integration vocabulary",
+  "description": "Native Fast Agent modes and LeapMux option IDs shared by the worker and browser. Each table maps a PascalCase identifier to its string value.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "_readme",
     "modes",
-    "defaultMode"
+    "defaultMode",
+    "options"
   ],
   "$defs": {
     "table": {
@@ -75,6 +76,9 @@
       "description": "The key in `modes` a fresh fast-agent session runs on. A key, not a literal, so it cannot name a mode the table does not carry -- the generator checks the membership.",
       "type": "string",
       "pattern": "^[A-Z][A-Za-z0-9]*$"
+    },
+    "options": {
+      "$ref": "#/$defs/table"
     }
   }
 }

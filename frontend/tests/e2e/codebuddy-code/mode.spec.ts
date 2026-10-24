@@ -29,6 +29,7 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
     const baseline = 'The first mode probe answered.'
     await sendNativeAnswer(native, 'Reply before I change mode.', baseline)
 
+    const original = await currentNativeAgent(native)
     await chooseSettingsOption(page, `permissionMode-${CODEBUDDY_MODE.Plan}`)
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Plan')
@@ -43,6 +44,22 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
     await answerPlanReview(page, 'reject')
     await waitForAgentIdle(page)
     await expectSettingsChip(page, 'Plan')
+    const revised = await sendNativeAnswer(native, 'Revise the rejected plan.', 'The revised plan retains the conversation.')
+    expect(nativeModelContextText(revised)).toContain(baseline)
+    expect((await currentNativeAgent(native)).agentSessionId).toBe(original.agentSessionId)
+
+    // This process starts in Plan, so rejection must restore input even when its launch mode matches.
+    const repeated = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.CODEBUDDY, 'exit-repeated-plan', '# Revised probe plan')] })
+    await sendMessage(page, modelScript.prompt('Present the revised plan for review.'))
+    await modelScript.requestAt(repeated)
+    await waitForControlBanner(page)
+    await answerPlanReview(page, 'reject')
+    await waitForAgentIdle(page)
+    await expectSettingsChip(page, 'Plan')
+    const final = await sendNativeAnswer(native, 'Revise the plan once more.', 'The second revision retains the conversation.')
+    expect(nativeModelContextText(final)).toContain(baseline)
+    expect(nativeModelContextText(final)).toContain('The revised plan retains the conversation.')
+    expect((await currentNativeAgent(native)).agentSessionId).toBe(original.agentSessionId)
   })
 
   codebuddyTest('returns from Plan to Default and proves both native modes after reload', async ({ native }) => {

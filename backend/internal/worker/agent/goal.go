@@ -27,7 +27,7 @@ import (
 //   - Qwen Code.
 //   - Grok Build.
 //   - Kiro, which runs its goal as a workflow and reports the workflow.
-//   - Oh My Pi, which reports its goal and takes no change.
+//   - Oh My Pi, which reports its goal and accepts native goal commands.
 //
 // These providers change their goal through a delivered message:
 //   - Claude Code.
@@ -286,8 +286,8 @@ type GoalOutcome struct {
 //   - Clear.
 //   - Pause.
 //   - Resume.
-//   - Oh My Pi reports its goal and implements no GoalWriter: no RPC command
-//     reaches its goal runtime.
+//   - Oh My Pi sends create, pause, resume, and drop through its goal RPC.
+//     Its native controller starts continuation after create and resume.
 //
 // The browser reads SupportedGoalActions to disable controls that the running provider cannot perform.
 // The method belongs to the same interface as the operation to keep both decisions together.

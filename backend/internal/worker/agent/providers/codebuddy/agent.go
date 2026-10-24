@@ -18,25 +18,35 @@ type Agent struct {
 	sink agent.ProviderServices
 	opts agent.Options
 
-	mu                        sync.Mutex
-	sessionID                 string
-	model                     string
-	models                    []codebuddyModelInfo
-	permissionMode            string
-	effort                    string
-	active                    bool
-	compactionLive            bool
-	manualCompaction          bool
-	assistantTextStreamed     bool
-	lastDiagnostic            *codebuddyDiagnostic
-	pendingPlanModeTools      map[string]agent.PlanModeControlKind
-	awaitingRejectedPlanInit  bool
-	nativeTurnRestartRequired bool
-	turnOrder                 providerkit.TurnSeq
-	activityRev               uint64
-	turnToolCalls             map[string]struct{}
-	interruptRequests         map[uint64]struct{}
-	interruptAttempt          uint64
+	mu             sync.Mutex
+	sessionID      string
+	resumeState    *codebuddyResumeState
+	model          string
+	models         []codebuddyModelInfo
+	permissionMode string
+	planReturnMode string
+	effort         string
+	outputStyle    string
+	thinkingChoice string
+	// A nil catalog means native initialization supplied no style metadata.
+	outputStyles               []string
+	catalogRefresh             providerkit.CoalescingWork
+	active                     bool
+	compactionLive             bool
+	manualCompaction           bool
+	assistantTextStreamed      bool
+	lastDiagnostic             *codebuddyDiagnostic
+	pendingPlanModeTools       map[string]agent.PlanModeControlKind
+	nativeModeRestartRequired  bool
+	nativeInputRestartRequired bool
+	turnOrder                  providerkit.TurnSeq
+	activityRev                uint64
+	turnToolCalls              map[string]struct{}
+	// modelStreams keeps the latest response per transcript owner. Empty identifies the root.
+	// The map and every stream state are guarded by mu.
+	modelStreams      map[string]*codebuddyModelStream
+	interruptRequests map[uint64]struct{}
+	interruptAttempt  uint64
 	// controls holds each native request until its answer or withdrawal.
 	controls     map[string]*nativeControl
 	approvalWork providerkit.CoalescingWork
@@ -64,13 +74,18 @@ var _ agent.NativeTurnRestarter = (*Agent)(nil)
 type codebuddyControlResult struct {
 	// Answered is true when CodeBuddy sent a control_response for the request.
 	// A request with no answer may still have reached CodeBuddy.
-	Answered        bool
-	Success         bool
-	Error           string
-	Mode            string
-	Model           string
-	Models          []codebuddyModelInfo
-	HasModelCatalog bool
+	Answered              bool
+	Success               bool
+	Error                 string
+	Mode                  string
+	Model                 string
+	Models                []codebuddyModelInfo
+	HasModelCatalog       bool
+	OutputStyle           string
+	OutputStyles          []string
+	HasOutputStyleCatalog bool
+	ConfigUpdated         *codebuddyNativeSettings
+	ConfigErrors          map[string]string
 	// Steered and SteerReason are the answer to a steer request. Steered is
 	// nil when the answer states no outcome.
 	Steered     *bool
@@ -87,12 +102,12 @@ type codebuddyModelInfo struct {
 // AgentID returns the worker's identifier for this agent.
 func (a *Agent) AgentIDValue() string { return a.AgentID() }
 
-// NativeTurnRestartRequired reports a native Plan tool change that launch
-// options must carry into the next prompt of this session.
+// NativeTurnRestartRequired reports when the next prompt needs a new process
+// to apply native Plan settings or restore input after a rejected plan.
 func (a *Agent) NativeTurnRestartRequired() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.nativeTurnRestartRequired
+	return a.nativeModeRestartRequired || a.nativeInputRestartRequired
 }
 
 // PublishTurnActive republishes the turn flag through the sink.
@@ -115,6 +130,7 @@ func (a *Agent) setTurnActive(active bool) {
 	a.active = active
 	endCompaction := !active && a.manualCompaction
 	if !active {
+		a.closeModelStreamLocked("")
 		a.lastDiagnostic = nil
 		if endCompaction {
 			a.manualCompaction = false
@@ -364,5 +380,3 @@ func (a *Agent) Wait() error {
 func (a *Agent) ClearContext() (string, error) {
 	return "", agent.ErrContextClearUnsupported
 }
-
-// sessionHandle returns the current session handle.

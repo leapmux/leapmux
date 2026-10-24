@@ -20,7 +20,8 @@
     "stopReasons",
     "toolOutput",
     "toolStatuses",
-    "eventTypes"
+    "eventTypes",
+    "compaction"
   ],
   "$defs": {
     "table": {
@@ -175,6 +176,9 @@
       "$ref": "#/$defs/table"
     },
     "eventTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "compaction": {
       "$ref": "#/$defs/table"
     }
   }

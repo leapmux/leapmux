@@ -7,6 +7,26 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
+// OptionOutputStyle selects a native style through the process settings override.
+const OptionOutputStyle = "outputStyle"
+
+const (
+	OptionThinking        = "thinking"
+	codebuddyThinkingAuto = "auto"
+	codebuddyThinkingOff  = "false"
+	codebuddyThinkingOn   = "true"
+)
+
+var codebuddyThinkingModes = []agent.OptionDef{
+	{Id: codebuddyThinkingAuto, Name: "Auto", Description: "Use CodeBuddy's configured preference.", Default: true},
+	{Id: codebuddyThinkingOff, Name: "Off", Description: "Do not request extended thinking."},
+	{Id: codebuddyThinkingOn, Name: "On", Description: "Request extended thinking on supported models."},
+}
+
+func codebuddyThinkingGroup(current string) *leapmuxv1.AvailableOptionGroup {
+	return agent.SelectGroup(OptionThinking, "Extended Thinking", agent.OptionOrderProviderFirst, codebuddyThinkingValue(current), codebuddyThinkingModes)
+}
+
 // codebuddyLocator finds the CodeBuddy Code CLI on the user's PATH.
 // `cbc` is the short alias and resolves to the same executable.
 var codebuddyLocator = launch.Binaries("codebuddy", "cbc")
@@ -58,8 +78,9 @@ func Registration() agent.Registration {
 		OptionGroups: []*leapmuxv1.AvailableOptionGroup{
 			codebuddyEffortGroup(""),
 			codebuddyPermissionModeGroup(""),
+			codebuddyThinkingGroup(""),
 		},
-		AdditionalOptionIDs: []string{agent.OptionIDEffort},
+		AdditionalOptionIDs: []string{agent.OptionIDEffort, OptionOutputStyle},
 		PermissionDefaults: agent.PermissionDefaults{
 			// A new session asks for Default: prompt for dangerous operations,
 			// which is the narrowest mode that still lets work proceed.

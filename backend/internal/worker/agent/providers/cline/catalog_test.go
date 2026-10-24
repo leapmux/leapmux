@@ -28,16 +28,17 @@ func TestTheCatalogHoldsDistinctModelsOfEachProvider(t *testing.T) {
 
 func TestModelEffortsPutAutoFirst(t *testing.T) {
 	t.Parallel()
-	efforts := modelEfforts([]string{"low", "high", effortOff, "max"})
+	efforts := modelEfforts([]string{"low", "high", "none", "max"})
 	require.NotEmpty(t, efforts)
 	assert.Equal(t, agent.EffortAuto, efforts[0].GetId())
 	ids := make([]string, 0, len(efforts))
 	for _, effort := range efforts {
 		ids = append(ids, effort.GetId())
 	}
-	assert.Equal(t, []string{agent.EffortAuto, "max", "high", "low", effortOff}, ids, "strongest first, Off last")
+	assert.Equal(t, []string{agent.EffortAuto, "max", "high", "low"}, ids, "thinking has its own Off choice")
 	assert.Nil(t, modelEfforts(nil), "a model with no ladder takes no effort")
 	assert.Nil(t, modelEfforts([]string{" "}))
+	assert.Nil(t, modelEfforts([]string{"none", " "}))
 }
 
 func TestSessionCatalog(t *testing.T) {

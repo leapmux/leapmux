@@ -81,9 +81,19 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string, scope *runtimeS
 	case lettaDeltaApprovalRequestMessage, lettaDeltaApprovalClassificationEnd, lettaDeltaErrorMessage:
 		return
 	}
+	commandLifecycle := kind == contracts.LettaDeltaKindSlashCommandStart || kind == contracts.LettaDeltaKindSlashCommandEnd
+	if commandLifecycle && !a.ownsRuntime(scope) {
+		return
+	}
 	target, ok := a.toolOutputTarget(subagentID, kind)
 	if !ok {
 		slog.Debug("letta ignored a delta without an active target", "agent_id", a.AgentID(), "subagent_id", subagentID)
+		return
+	}
+	if commandLifecycle {
+		if !a.handleCompactionDelta(payload, target, subagentID) {
+			a.persistUnknownDelta(target, payload, scope)
+		}
 		return
 	}
 	var delta lettaDelta
@@ -95,9 +105,13 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string, scope *runtimeS
 
 	switch delta.MessageType {
 	case contracts.LettaDeltaKindAssistantMessage:
-		a.onAssistantDelta(&delta, subagentID)
+		a.appendModelText(target, subagentID, agent.AssembledMessageKindText, deltaText(delta.Content))
 	case contracts.LettaDeltaKindReasoningMessage:
-		a.onReasoningDelta(&delta, subagentID)
+		text := delta.Reasoning
+		if text == "" {
+			text = deltaText(delta.Content)
+		}
+		a.appendModelText(target, subagentID, agent.AssembledMessageKindReasoning, text)
 	case contracts.LettaDeltaKindToolReturnMessage:
 		if subagentID == "" && !isLettaToolProgress(&delta) {
 			a.rememberChildTaskReceipt(&delta)
@@ -304,7 +318,12 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 		return
 	}
 	a.outputEnded = true
+	if a.quotaState.cancel != nil {
+		a.quotaState.cancel()
+	}
+	a.quotaRetries = nil
 	a.Mu.Lock()
+	a.manualCompaction = nil
 	if a.transportErr != nil {
 		completion = agent.MessageCompletionError
 	}
@@ -379,39 +398,28 @@ func deltaText(content json.RawMessage) string {
 	if json.Unmarshal(content, &blocks) != nil {
 		return ""
 	}
-	out := ""
+	var out strings.Builder
 	for _, b := range blocks {
-		out += b.Text
+		if b.Type == "text" {
+			out.WriteString(b.Text)
+		}
 	}
-	return out
+	return out.String()
 }
 
-// onAssistantDelta accumulates streamed assistant text.
-func (a *Agent) onAssistantDelta(delta *lettaDelta, subagentID string) {
-	text := deltaText(delta.Content)
+// appendModelText buffers one native fragment and reports progress to its transcript.
+func (a *Agent) appendModelText(target agent.ProviderServices, subagentID string, kind agent.AssembledMessageKind, text string) {
 	if text == "" {
 		return
 	}
 	// Keep reasoning open until the model commits a tool or turn boundary, so a retry can discard the whole attempt.
-	if target, ok := a.outputTarget(subagentID); ok {
-		a.retryForTarget(subagentID).Resolve(target)
+	a.retryForTarget(subagentID).Resolve(target)
+	scope := lettaGenerationScope(subagentID)
+	if kind == agent.AssembledMessageKindReasoning {
+		scope += ":reasoning"
 	}
-	a.generation.Append(lettaGenerationScope(subagentID), agent.AssembledMessageKindText, text, providerkit.JoinVerbatim)
-}
-
-// onReasoningDelta accumulates streamed thinking text.
-func (a *Agent) onReasoningDelta(delta *lettaDelta, subagentID string) {
-	text := delta.Reasoning
-	if text == "" {
-		text = deltaText(delta.Content)
-	}
-	if text == "" {
-		return
-	}
-	if target, ok := a.outputTarget(subagentID); ok {
-		a.retryForTarget(subagentID).Resolve(target)
-	}
-	a.generation.Append(lettaGenerationScope(subagentID)+":reasoning", agent.AssembledMessageKindReasoning, text, providerkit.JoinVerbatim)
+	a.generation.Append(scope, kind, text, providerkit.JoinVerbatim)
+	target.ReportProgress(agent.ModelTextProgress(scope, text))
 }
 
 // onToolStart opens a tool span.
@@ -510,6 +518,13 @@ func lettaTurnCompletion(stopReason string) agent.MessageCompletion {
 
 // onTurnFinished ends the turn. PersistTurnEnd runs before the clear.
 func (a *Agent) onTurnFinished(payload []byte) {
+	a.Mu.Lock()
+	manual := a.manualCompaction != nil
+	a.Mu.Unlock()
+	if manual {
+		// This command ends only at its correlated execute_command_response.
+		return
+	}
 	var finished lettaTurnFinished
 	if err := json.Unmarshal(payload, &finished); err != nil {
 		slog.Debug("letta could not decode all turn-end fields", "agent_id", a.AgentID(), "error", err)
@@ -539,6 +554,7 @@ func (a *Agent) onTurnFinished(payload []byte) {
 	a.finishToolOutputScope("", a.sink)
 	a.withdrawPermissions()
 	a.setTurnActive(false)
+	a.requestQuotaRefreshLocked()
 }
 
 // flushGenerationFor stores the reasoning and text completed so far in one transcript.
@@ -564,6 +580,8 @@ func (a *Agent) flushGenerationScope(subagentID string, reasoning bool, completi
 	if !ready {
 		return
 	}
+	// A finished native segment stops generating even when its transcript write fails.
+	defer target.ReportProgress(agent.CompleteModelProgress(scope))
 	a.persistRowTo(target, raw, agent.SpanInfo{})
 	if subagentID != "" && !reasoning {
 		var message struct {

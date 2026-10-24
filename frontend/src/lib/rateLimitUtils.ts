@@ -1,21 +1,35 @@
 import type { RateLimitInfo } from '~/models/agentSession'
+import { RATE_LIMIT_STATUS, RATE_LIMIT_TYPE } from '~/generated/contracts/session-info'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 
 const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
-  five_hour: '5-hour',
-  seven_day: '7-day',
+  [RATE_LIMIT_TYPE.FiveHour]: '5-hour',
+  [RATE_LIMIT_TYPE.SevenDay]: '7-day',
 }
 
 const RATE_LIMIT_POPOVER_LABELS: Record<string, string> = {
-  five_hour: '5-Hour Rate Limit',
-  seven_day: '7-Day Rate Limit',
+  [RATE_LIMIT_TYPE.FiveHour]: '5-Hour Rate Limit',
+  [RATE_LIMIT_TYPE.SevenDay]: '7-Day Rate Limit',
+}
+
+const RATE_LIMIT_STATUS_LABELS: Record<string, string> = {
+  [RATE_LIMIT_STATUS.Allowed]: 'Allowed',
+  [RATE_LIMIT_STATUS.AllowedWarning]: 'Warning',
+  [RATE_LIMIT_STATUS.Exceeded]: 'Exceeded',
+}
+
+/** Native block statuses outside the normalized vocabulary retain the exceeded label. */
+export function rateLimitStatusLabel(status: string | undefined): string | undefined {
+  if (!status)
+    return undefined
+  return Object.hasOwn(RATE_LIMIT_STATUS_LABELS, status) ? RATE_LIMIT_STATUS_LABELS[status] : 'Exceeded'
 }
 
 /**
  * The short words for a rate-limit type, or undefined for one this build does not
  * know.
  *
- * `Object.hasOwn`, not a bare index: two producers feed `rateLimitType` unconstrained
+ * `Object.hasOwn`, not a bare index: providers feed `rateLimitType` unconstrained
  * wire text, and `"toString"` resolves to `Object.prototype.toString` -- a truthy
  * value, so the caller's own fallback never ran and the label rendered as the
  * function's source text.
@@ -61,12 +75,12 @@ export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): 
 
   for (const info of Object.values(rateLimits)) {
     const status = info.status
-    if (status === 'allowed' || !status)
+    if (status === RATE_LIMIT_STATUS.Allowed || !status)
       continue
-    const severity = (status === 'allowed_warning') ? 1 : 2
+    const severity = (status === RATE_LIMIT_STATUS.AllowedWarning) ? 1 : 2
     const resetsAt = getResetsAt(info)
-    const remaining = resetsAt ? resetsAt - Math.floor(Date.now() / 1000) : Infinity
-    const countdown = resetsAt ? formatCountdown(resetsAt) : null
+    const remaining = resetsAt !== undefined ? resetsAt - Math.floor(Date.now() / 1000) : Infinity
+    const countdown = resetsAt !== undefined ? formatCountdown(resetsAt) : null
     if (severity > bestSeverity || (severity === bestSeverity && remaining < bestRemaining)) {
       best = info
       bestCountdown = countdown
@@ -88,7 +102,7 @@ export function formatRateLimitMessage(info: RateLimitInfo): string {
     : rateLimitType ? `Rate limit (${rateLimitType})` : 'Rate limit'
 
   const parts: string[] = []
-  if (status && status !== 'allowed' && status !== 'allowed_warning')
+  if (status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning)
     parts.push('reached')
   if (typeof utilization === 'number')
     parts.push(`${Math.round(utilization * 100)}% used`)
@@ -111,18 +125,15 @@ export function formatResetTimestamp(unixSec: number): string {
 /** Build a concise single-line summary for the popover card. */
 export function formatRateLimitSummary(info: RateLimitInfo): string {
   const status = info.status
-  const exceeded = !!status && status !== 'allowed' && status !== 'allowed_warning'
+  const exceeded = !!status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning
   const resetsAt = getResetsAt(info)
 
   const parts: string[] = []
 
   // Status label
-  if (status === 'allowed')
-    parts.push('Allowed')
-  else if (status === 'allowed_warning')
-    parts.push('Warning')
-  else if (exceeded)
-    parts.push('Exceeded')
+  const label = rateLimitStatusLabel(status)
+  if (label)
+    parts.push(label)
 
   // Utilization — skip when exceeded (redundant)
   if (typeof info.utilization === 'number' && !exceeded)

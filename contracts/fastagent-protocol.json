@@ -1,7 +1,10 @@
 {
-  "_readme": "fast-agent owns the session mode id below. LeapMux owns no value in this file. Both sides read it -- the worker falls back to the one mode a default fast-agent setup reports and lists it on the permission-mode axis, and the browser plugin badges that same default on the settings panel. fast-agent's modes are its configured agents; a default setup has one, and the session reports it on the `modes` channel.",
+  "_readme": "Fast Agent owns the session mode IDs. Both languages read the mode that a default setup reports. Fast Agent modes select configured agents, and the native session reports them on the modes channel. LeapMux owns the BypassPermissions option ID: the worker uses it to select the native --no-permissions launch flag, and the browser uses it for the Bypass preset. Changing that flag requires a process restart.",
   "modes": {
     "Agent": "agent"
   },
-  "defaultMode": "Agent"
+  "defaultMode": "Agent",
+  "options": {
+    "BypassPermissions": "bypassPermissions"
+  }
 }

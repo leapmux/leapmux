@@ -1392,11 +1392,10 @@ func stopInputQueue(t *testing.T, svc *Service, agentID string) {
 // is a condition the user can correct, and an agent that the user cannot stop
 // is not.
 //
-// This test reads the CONTENT of the rejection list, not its length. The RPC
-// waits for the agent's answer to the interrupt, and the `cat` mock sends no
-// answer, so the call ends on the control timeout and reports the agent as not
-// running. The refused pause must never be what the caller reads. The raw-frame
-// test below covers the empty list, on the stop path that waits for no answer.
+// The RPC waits for an interrupt acknowledgment, and the cat fixture sends none.
+// The caller must receive that control timeout after the signal reaches the process.
+// The refused queue pause must not replace the provider's error. The raw-frame
+// test below covers the stop path that waits for no answer.
 func TestInterruptAgentRunsWhenTheQueuePauseFails(t *testing.T) {
 	t.Parallel()
 
@@ -1408,11 +1407,11 @@ func TestInterruptAgentRunsWhenTheQueuePauseFails(t *testing.T) {
 	dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
 
 	requireInterruptReachedAgent(t, svc, "agent-1")
-	for _, rejection := range writer.rejections() {
-		assert.NotEqual(t, int32(codes.Internal), rejection.code,
-			"the failed pause became the caller's answer, and the agent kept running")
-		assert.NotContains(t, rejection.message, "pause agent input queue")
-	}
+	failures := writer.rejections()
+	require.Len(t, failures, 1)
+	assert.Equal(t, int32(codes.Internal), failures[0].code)
+	assert.Contains(t, failures[0].message, "timeout waiting for agent to respond")
+	assert.NotContains(t, failures[0].message, "pause agent input queue")
 }
 
 // TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored pins the

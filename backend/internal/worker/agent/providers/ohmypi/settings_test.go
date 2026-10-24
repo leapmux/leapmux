@@ -42,6 +42,169 @@ func optionIDs(group *leapmuxv1.AvailableOptionGroup) []string {
 	return ids
 }
 
+func TestOutputStyleGroup(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	group := groupByID(r.agent.OptionGroups(), "outputStyle")
+	require.NotNil(t, group)
+	assert.Equal(t, "auto", group.CurrentValue)
+	assert.Equal(t, []string{"auto", "default", "friendly", "pragmatic", "none"}, optionIDs(group))
+	assert.True(t, group.Mutable)
+}
+
+func TestFastModeNativeSettings(t *testing.T) {
+	t.Parallel()
+	r := withCatalog(newRig(t))
+	group := groupByID(r.agent.OptionGroups(), "fastMode")
+	require.NotNil(t, group)
+	assert.Equal(t, "false", group.CurrentValue)
+	r.respond(func(command recordedCommand) *rigReply {
+		assert.Equal(t, "set_fast_mode", command.Type)
+		unlocked := r.agent.sessionMu.TryLock()
+		if unlocked {
+			r.agent.sessionMu.Unlock()
+		}
+		assert.False(t, unlocked, "settings changes cannot overlap a state refresh")
+		if command.Payload["enabled"] == true {
+			return &rigReply{Data: json.RawMessage(`{"enabled":true,"active":true}`)}
+		}
+		return &rigReply{Data: json.RawMessage(`{"enabled":false,"active":false}`)}
+	})
+	for _, value := range []string{"true", "false"} {
+		result := r.agent.UpdateSettings(optionmap.Map{"fastMode": value})
+		assert.True(t, result.AppliedLive)
+		assert.Equal(t, value, result.ConfirmedOptions()["fastMode"])
+		assert.Equal(t, value, r.sink.LastSettingsRefresh().Options["fastMode"])
+		assert.Equal(t, "mock/mock-model", result.ConfirmedOptions()[agent.OptionIDModel])
+		assert.Equal(t, "high", result.ConfirmedOptions()[agent.OptionIDEffort])
+	}
+	commands := r.commandsOfType("set_fast_mode")
+	require.Len(t, commands, 2)
+	assert.Equal(t, true, commands[0].Payload["enabled"])
+	assert.Equal(t, false, commands[1].Payload["enabled"])
+	r.agent.UpdateSettings(optionmap.Map{"fastMode": "false"})
+	assert.Len(t, r.commandsOfType("set_fast_mode"), 2, "unchanged values write nothing")
+}
+
+func TestFastModeRefusalsKeepTheRunningProcessAndChoice(t *testing.T) {
+	t.Parallel()
+	for name, reply := range map[string]*rigReply{
+		"native refusal": {Error: "Fast mode is unavailable for the current model."},
+		"absent state":   {Data: json.RawMessage(`{}`)},
+		"wrong type":     {Data: json.RawMessage(`{"enabled":"true","active":true}`)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.respond(func(recordedCommand) *rigReply { return reply })
+			result := r.agent.UpdateSettings(optionmap.Map{"fastMode": "true"})
+			assert.True(t, result.AppliedLive, "a native refusal must not restart with the same rejected value")
+			assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements["fastMode"].State)
+			assert.Equal(t, "false", result.SurfacedOptions["fastMode"])
+			assert.Equal(t, "false", r.agent.SettingsSnapshot().ConfirmedOptions()["fastMode"])
+		})
+	}
+}
+
+func TestFastModeStateRefreshAndNativeSettledValue(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.agent.applyRefreshedState(json.RawMessage(`{"fastModeEnabled":true}`))
+	require.Equal(t, "true", r.agent.SettingsSnapshot().ConfirmedOptions()["fastMode"])
+	assert.Equal(t, "true", r.sink.LastSettingsRefresh().Options["fastMode"])
+	r.agent.applyRefreshedState(json.RawMessage(`{"thinkingLevel":"medium"}`))
+	assert.Equal(t, "true", r.agent.SettingsSnapshot().ConfirmedOptions()["fastMode"], "an absent field does not clear native state")
+	r.agent.applyRefreshedState(json.RawMessage(`{"fastModeEnabled":false}`))
+	assert.Equal(t, "false", r.sink.LastSettingsRefresh().Options["fastMode"])
+	r.respond(func(recordedCommand) *rigReply {
+		return &rigReply{Data: json.RawMessage(`{"enabled":false,"active":false}`)}
+	})
+	result := r.agent.UpdateSettings(optionmap.Map{"fastMode": "true"})
+	assert.Equal(t, "false", result.SurfacedOptions["fastMode"], "the reply supplies the settled value, not the request")
+	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements["fastMode"].State)
+}
+
+func TestFastModeLocalCommandRefreshesState(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type == CommandPrompt {
+			return &rigReply{Data: json.RawMessage(`{"agentInvoked":false}`)}
+		}
+		return &rigReply{Data: json.RawMessage(`{"fastModeEnabled":true}`)}
+	})
+	require.NoError(t, r.agent.SendInput("/fast on", nil))
+	r.waitForCommand(CommandGetState, 1)
+	waitFor(t, func() bool { return r.agent.SettingsSnapshot().ConfirmedOptions()["fastMode"] == "true" })
+}
+
+func TestFastModeStateReadSerializesWithSettings(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.respond(func(command recordedCommand) *rigReply {
+		assert.Equal(t, CommandGetState, command.Type)
+		unlocked := r.agent.sessionMu.TryLock()
+		if unlocked {
+			r.agent.sessionMu.Unlock()
+		}
+		assert.False(t, unlocked, "a state read cannot overtake a settings write")
+		return &rigReply{Data: json.RawMessage(`{"fastModeEnabled":true}`)}
+	})
+	r.agent.stateRefresh.schedule(r.agent)
+	waitFor(t, func() bool { return r.agent.SettingsSnapshot().ConfirmedOptions()[OptionFastMode] == "true" })
+}
+
+func TestFastModeIsReappliedAfterAModelChange(t *testing.T) {
+	t.Parallel()
+	r := withCatalog(newRig(t))
+	r.agent.applyState(json.RawMessage(`{"fastModeEnabled":true}`))
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type == CommandSetFastMode {
+			return &rigReply{Data: json.RawMessage(`{"enabled":true,"active":true}`)}
+		}
+		return &rigReply{Data: json.RawMessage(`{"id":"mock-model-2","provider":"mock"}`)}
+	})
+	result := r.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "mock/mock-model-2", OptionFastMode: "true"})
+	assert.True(t, result.AppliedLive)
+	assert.Equal(t, "true", result.ConfirmedOptions()[OptionFastMode])
+	assert.Len(t, r.commandsOfType(CommandSetFastMode), 1, "the same choice must reach the new model's service-tier family")
+}
+
+func TestFastModeRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"1", "True", "on", "invalid"} {
+		r := newRig(t)
+		result := r.agent.UpdateSettings(optionmap.Map{OptionFastMode: value})
+		assert.True(t, result.AppliedLive)
+		assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[OptionFastMode].State)
+		assert.Empty(t, r.commandsOfType(CommandSetFastMode))
+	}
+}
+
+func TestOutputStyleChangeRequiresRestart(t *testing.T) {
+	t.Parallel()
+	r := withCatalog(newRig(t))
+	result := r.agent.UpdateSettings(optionmap.Map{"outputStyle": "friendly", agent.OptionIDModel: "mock/mock-model-2"})
+	assert.False(t, result.AppliedLive)
+	assert.Empty(t, r.commandsOfType(CommandSetModel), "restart-required settings are checked before any live change")
+	assert.Equal(t, "auto", r.agent.SettingsSnapshot().ConfirmedOptions()["outputStyle"])
+}
+
+func TestOutputStyleSurvivesNativeSettingsChanges(t *testing.T) {
+	t.Parallel()
+	r := withCatalog(newRig(t))
+	r.agent.outputStyle = "friendly"
+	r.emit(`{"type":"thinking_level_changed","thinkingLevel":"low"}`)
+	assert.Equal(t, "friendly", r.sink.LastSettingsRefresh().Options[OptionOutputStyle])
+	result := r.agent.UpdateSettings(optionmap.Map{OptionOutputStyle: "friendly", agent.OptionIDModel: "mock/mock-model-2"})
+	assert.True(t, result.AppliedLive)
+	assert.Equal(t, "friendly", result.ConfirmedOptions()[OptionOutputStyle])
+	assert.Equal(t, "friendly", r.sink.LastSettingsRefresh().Options[OptionOutputStyle])
+	result = r.agent.UpdateSettings(optionmap.Map{OptionOutputStyle: "auto"})
+	assert.False(t, result.AppliedLive)
+	assert.Equal(t, "friendly", r.agent.SettingsSnapshot().ConfirmedOptions()[OptionOutputStyle])
+}
+
 func TestOptionGroupsWithACatalog(t *testing.T) {
 	t.Parallel()
 	r := withCatalog(newRig(t))
@@ -81,6 +244,8 @@ func TestSettingsSnapshotConfirmsTheRunningValues(t *testing.T) {
 	assert.True(t, result.AppliedLive)
 	assert.Equal(t, optionmap.Map{
 		agent.OptionIDModel: "mock/mock-model", agent.OptionIDEffort: "high", agent.OptionIDPermissionMode: "write",
+		OptionOutputStyle: "auto",
+		OptionFastMode:    "false",
 	}, result.ConfirmedOptions())
 }
 

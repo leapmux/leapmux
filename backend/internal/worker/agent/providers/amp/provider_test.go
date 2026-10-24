@@ -33,7 +33,7 @@ func TestRegistrationStatesTheSettings(t *testing.T) {
 	t.Parallel()
 	reg := Registration()
 	assert.Empty(t, reg.DefaultModels, "Amp picks the model from the mode")
-	assert.Equal(t, []*leapmuxv1.AvailableOptionGroup{agentModeGroup, permissionModeGroup}, reg.OptionGroups)
+	assert.Equal(t, []*leapmuxv1.AvailableOptionGroup{agentModeGroup, permissionModeGroup, fastModeGroup}, reg.OptionGroups)
 	assert.Equal(t, contracts.AmpPermissionModeAsk, reg.PermissionDefaults.NewSession[agent.OptionIDPermissionMode])
 	assert.Equal(t, contracts.AmpPermissionModeAsk, reg.PermissionDefaults.Fallback)
 	assert.True(t, reg.FixedPermissionModes)

@@ -148,13 +148,22 @@ func TestProcessRunsATurnWithTheLaunchArguments(t *testing.T) {
 	assert.Equal(t, "T-fake", h.sink.LastSessionID(), "the init line states the thread")
 
 	settingsPath := filepath.Join(h.agent.launch.stateDir, settingsFileName)
-	assert.Equal(t, launchArgs("", agentModeMedium, settingsPath), h.lines(h.argsFile))
+	assert.Equal(t, launchArgs("", threadConfiguration{mode: agentModeMedium}, settingsPath), h.lines(h.argsFile))
 	assert.Equal(t, []string{
 		envSkipUpdateCheck + "=1",
 		h.agent.launch.helperEnv,
 	}, h.lines(h.envFile))
 	_, err := os.Stat(settingsPath)
 	assert.NoError(t, err, "the settings file exists before Amp starts")
+}
+
+func TestFastModeReachesTheNativeLaunch(t *testing.T) {
+	t.Parallel()
+	h := newProcessHarness(t)
+	h.agent.UpdateSettings(map[string]string{"fastMode": "true"})
+	require.NoError(t, h.agent.SendInput("ping", nil))
+	h.awaitTurnEnds(1)
+	assert.Contains(t, h.lines(h.argsFile), "--fast")
 }
 
 // SIGINT makes Amp print its cancellation and exit. The turn ends as

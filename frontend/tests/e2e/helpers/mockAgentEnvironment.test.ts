@@ -22,14 +22,30 @@ const setupBoundary = vi.hoisted(() => {
  * The Letta setup test supplies its own controlled binary through mockImplementationOnce.
  */
 function executeWithoutInstalledLetta(actual: typeof import('node:child_process').execFileSync) {
-  return (file: string, args?: readonly string[], options?: ExecFileSyncOptions) => basename(file) === 'letta' ? Buffer.alloc(0) : actual(file, args, options)
+  return (file: string, args?: readonly string[], options?: ExecFileSyncOptions) => /^letta(?:\.cmd|\.exe)?$/i.test(basename(file)) ? Buffer.alloc(0) : actual(file, args, options)
 }
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   setupBoundary.original.execute = actual.execFileSync
   setupBoundary.execute.mockImplementation(executeWithoutInstalledLetta(actual.execFileSync))
-  return { ...actual, execFileSync: setupBoundary.execute }
+  return {
+    ...actual,
+    execFileSync: setupBoundary.execute,
+    execFile: (file: string, args: readonly string[], options: ExecFileSyncOptions, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      if (!/^letta(?:\.cmd|\.exe)?$/i.test(basename(file)))
+        return Reflect.apply(actual.execFile, undefined, [file, args, options, callback])
+      queueMicrotask(() => {
+        try {
+          callback(null, setupBoundary.execute(file, args, options).toString(), '')
+        }
+        catch (error) {
+          callback(error instanceof Error ? error : new Error(String(error)), '', '')
+        }
+      })
+      return new actual.ChildProcess()
+    },
+  }
 })
 
 let directory: string

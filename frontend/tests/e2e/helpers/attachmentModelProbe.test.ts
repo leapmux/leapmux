@@ -598,9 +598,64 @@ describe('expectNativePdfPart', () => {
     expect(() => expectNativePdfPart(nativeRequest('google-generative-language', body), pdf)).toThrow(NO_PDF_PART)
   })
 
-  it('states that no file route uses the Responses protocol', () => {
+  it('accepts the exact PDF in a Responses input_file part', () => {
     const request = nativeRequest('openai-responses', { input: [{ role: 'user', content: [{ type: 'input_file', file_data: pdfDataURI(encoded) }] }] })
-    expect(() => expectNativePdfPart(request, pdf)).toThrow('no provider that sends a typed file part uses the openai-responses protocol')
+    expect(() => expectNativePdfPart(request, pdf)).not.toThrow()
+  })
+
+  it('accepts a Responses file after user context and before a trailing instruction', () => {
+    const request = responses(
+      { role: 'user', content: [{ type: 'input_text', text: 'Environment context.' }] },
+      { role: 'user', content: [{ type: 'input_file', filename: 'doc.pdf', file_data: pdfDataURI(encoded) }] },
+      { role: 'developer', content: 'Follow the project instructions.' },
+    )
+    expect(() => expectNativePdfPart(request, pdf)).not.toThrow()
+  })
+
+  it.each(['system', 'developer', 'assistant', 'tool'])('rejects a Responses file in a %s row', (role) => {
+    const request = responses({ role, content: [{ type: 'input_file', file_data: pdfDataURI(encoded) }] })
+    expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
+  })
+
+  it('rejects a Responses file from an earlier turn', () => {
+    const request = responses(
+      { role: 'user', content: [{ type: 'input_file', file_data: pdfDataURI(encoded) }] },
+      { role: 'assistant', content: [{ type: 'output_text', text: 'The earlier answer.' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'A new turn without a file.' }] },
+    )
+    expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
+  })
+
+  it('rejects a Responses file in tool output or unrelated metadata', () => {
+    const part = { type: 'input_file', file_data: pdfDataURI(encoded) }
+    expect(() => expectNativePdfPart(responses({ type: 'function_call_output', call_id: 'tool', output: [part] }), pdf)).toThrow(NO_PDF_PART)
+    expect(() => expectNativePdfPart(responses({ role: 'user', content: [{ type: 'input_text', text: encoded }], metadata: { file: part } }), pdf)).toThrow(NO_PDF_PART)
+  })
+
+  it.each([
+    { name: 'missing data', data: undefined, reason: 'has no value in file_data' },
+    { name: 'remote URL', data: 'https://example.invalid/doc.pdf', reason: 'not of the form data:' },
+    { name: 'raw base64', data: encoded, reason: 'not of the form data:' },
+    { name: 'wrong media type', data: `data:text/plain;base64,${encoded}`, reason: 'not PDF' },
+    { name: 'empty bytes', data: pdfDataURI(''), reason: 'has empty data' },
+    { name: 'missing padding', data: pdfDataURI(encoded.slice(0, -1)), reason: 'not canonical base64' },
+    { name: 'truncated bytes', data: pdfDataURI(pdf.subarray(0, -1).toString('base64')), reason: `has ${pdf.length - 1} bytes` },
+  ])('rejects a Responses file with $name', ({ data, reason }) => {
+    const request = responses({ role: 'user', content: [{ type: 'input_file', file_data: data }] })
+    expect(() => expectNativePdfPart(request, pdf)).toThrow(reason)
+  })
+
+  it('rejects a Responses file ID that supplies no original bytes', () => {
+    const request = responses({ role: 'user', content: [{ type: 'input_file', file_id: 'file-existing' }] })
+    expect(() => expectNativePdfPart(request, pdf)).toThrow('has no value in file_data')
+  })
+
+  it('rejects Responses bytes of the same length with different content', () => {
+    const changed = Buffer.from(pdf)
+    expect(changed[0]).toBe(0x25)
+    changed[0] = 0
+    const request = responses({ role: 'user', content: [{ type: 'input_file', file_data: pdfDataURI(changed.toString('base64')) }] })
+    expect(() => expectNativePdfPart(request, pdf)).toThrow('bytes with SHA-256')
   })
 })
 

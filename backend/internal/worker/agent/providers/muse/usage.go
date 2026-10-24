@@ -146,8 +146,8 @@ func (a *Agent) handleUsage(raw []byte, sink agent.ProviderServices) {
 	sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyRateLimits: map[string]any{
 		contracts.RateLimitUpdateFieldMode: contracts.RateLimitUpdateModeReplace,
 		contracts.RateLimitUpdateFieldValues: map[string]any{
-			"five_hour": event.Window.normalized("five_hour"),
-			"seven_day": event.Weekly.normalized("seven_day"),
+			contracts.RateLimitTypeFiveHour: event.Window.normalized(contracts.RateLimitTypeFiveHour),
+			contracts.RateLimitTypeSevenDay: event.Weekly.normalized(contracts.RateLimitTypeSevenDay),
 		},
 	}})
 }

@@ -108,3 +108,38 @@ func TestRoundTrip_MarshalParse(t *testing.T) {
 	encoded := original.Marshal()
 	assert.Equal(t, encoded, Parse(encoded).Marshal(), "marshal->parse->marshal is stable")
 }
+
+func TestMap_Bool(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		options Map
+		want    bool
+		invalid bool
+	}{
+		{name: "nil"},
+		{name: "absent", options: Map{"unrelated": "true"}},
+		{name: "empty", options: Map{"flag": ""}},
+		{name: "false", options: Map{"flag": "false"}},
+		{name: "true", options: Map{"flag": "true"}, want: true},
+		{name: "zero", options: Map{"flag": "0"}, invalid: true},
+		{name: "one", options: Map{"flag": "1"}, invalid: true},
+		{name: "negative", options: Map{"flag": "-1"}, invalid: true},
+		{name: "large number", options: Map{"flag": "99999999999999999999999999999999999"}, invalid: true},
+		{name: "whitespace", options: Map{"flag": " true "}, invalid: true},
+		{name: "mixed case", options: Map{"flag": "True"}, invalid: true},
+		{name: "uppercase", options: Map{"flag": "FALSE"}, invalid: true},
+		{name: "short form", options: Map{"flag": "t"}, invalid: true},
+		{name: "another word", options: Map{"flag": "yes"}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := tc.options.Bool("flag")
+			if tc.invalid {
+				require.ErrorContains(t, err, "flag")
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.want, value)
+		})
+	}
+}

@@ -461,7 +461,11 @@ func TestCodebuddyWorkflowArchiveRetryKeepsOriginalSessionID(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, bgtask.StatusRunning, child.Status)
 
-	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"parent-2"}`))
+	// Simulate root state replacement after the retry captured its original owner.
+	// Native foreign init frames cannot replace the pinned root session.
+	a.mu.Lock()
+	a.sessionID = "parent-2"
+	a.mu.Unlock()
 	require.Equal(t, "parent-2", a.sessionID)
 	writeCodebuddyChildHistory(t, sessionDir, codebuddyTestChildID)
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"run-1","status":"completed"}`))

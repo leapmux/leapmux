@@ -26,7 +26,7 @@ func TestRegistration(t *testing.T) {
 	assert.Equal(t, "LEAPMUX_CODEWHALE_DEFAULT_MODEL", registration.EnvModelKey)
 	assert.Equal(t, "LEAPMUX_CODEWHALE_DEFAULT_EFFORT", registration.EnvEffortKey)
 
-	require.Len(t, registration.OptionGroups, 2)
+	require.Len(t, registration.OptionGroups, 3)
 	mode, posture := registration.OptionGroups[0], registration.OptionGroups[1]
 	assert.Equal(t, contracts.CodewhaleOptionMode, mode.GetId())
 	assert.Equal(t, contracts.CodewhaleDefaultMode, mode.GetDefaultValue())
@@ -36,4 +36,13 @@ func TestRegistration(t *testing.T) {
 		postures = append(postures, option.GetId())
 	}
 	assert.Equal(t, []string{contracts.CodewhalePostureAsk, contracts.CodewhalePostureAutoReview, contracts.CodewhalePostureFullAccess}, postures)
+	style := registration.OptionGroups[2]
+	assert.Equal(t, "outputStyle", style.GetId())
+	assert.Equal(t, "auto", style.GetDefaultValue())
+	assert.True(t, style.GetMutable())
+	var styles []string
+	for _, option := range style.GetOptions() {
+		styles = append(styles, option.GetId())
+	}
+	assert.Equal(t, []string{"auto", "normal", "concise"}, styles)
 }

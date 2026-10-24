@@ -2,6 +2,7 @@ package amp
 
 import (
 	"slices"
+	"strconv"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -37,45 +38,45 @@ func launchPermissionMode(opts agent.Options) string {
 // lockedModeNote is what the mode group states once the thread keeps its mode.
 const lockedModeNote = "Amp keeps the mode that a thread's first message used. Start a new session for another mode."
 
-// OptionGroups returns the agent-mode group and the permission-mode group.
-//
-// The mode group is mutable until the thread gets its first message. From then
-// on it shows the thread's mode alone, read-only, with its read-only reason
-// saying why.
-// Amp cannot change the mode of a thread, and the worker never starts a new
-// thread in silence to change it.
+// lockedFastModeNote explains why the speed cannot change on an existing thread.
+const lockedFastModeNote = "Amp keeps a thread's speed. Start a new session to change Fast Mode."
+
+// OptionGroups returns the thread's native settings and its live permission setting.
+// Native mode and speed become read-only after the first message.
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
-	mode, locked, permission := a.agentMode, a.modeLocked, a.permissionMode
-	a.mu.Unlock()
+	defer a.mu.Unlock()
 	return []*leapmuxv1.AvailableOptionGroup{
-		modeGroup(mode, locked),
-		providerkit.LiveGroup(permissionModeGroup, permission),
+		threadOptionGroup(agentModeGroup, a.agentMode, a.modeLocked, lockedModeNote),
+		providerkit.LiveGroup(permissionModeGroup, a.permissionMode),
+		threadOptionGroup(fastModeGroup, a.fastMode, a.modeLocked, lockedFastModeNote),
 	}
 }
 
-// modeGroup projects the agent mode: the mutable template before the first
-// message, and a read-only group that holds the current mode after it.
-func modeGroup(mode string, locked bool) *leapmuxv1.AvailableOptionGroup {
+// threadOptionGroup keeps the native choice visible when it cannot change.
+// An unreadable resumed value stays unknown instead of claiming a default.
+func threadOptionGroup(template *leapmuxv1.AvailableOptionGroup, value string, locked bool, reason string) *leapmuxv1.AvailableOptionGroup {
 	if !locked {
-		return providerkit.LiveGroup(agentModeGroup, mode)
+		return providerkit.LiveGroup(template, value)
 	}
-	option := &leapmuxv1.AvailableOption{Id: mode, Name: mode}
-	for _, candidate := range agentModeGroup.GetOptions() {
-		if candidate.GetId() == mode {
-			option = candidate
+	group := &leapmuxv1.AvailableOptionGroup{
+		Id: template.GetId(), Label: template.GetLabel(),
+		CurrentValue: value, DefaultValue: value,
+		Order: template.GetOrder(), ReadOnlyReason: reason,
+	}
+	if value != "" {
+		option := &leapmuxv1.AvailableOption{Id: value, Name: value}
+		for _, candidate := range template.GetOptions() {
+			if candidate.GetId() == value {
+				option = candidate
+				break
+			}
 		}
+		group.Options = []*leapmuxv1.AvailableOption{option}
+	} else {
+		group.ReadOnlyReason = "Amp did not report this thread's setting. " + reason
 	}
-	return &leapmuxv1.AvailableOptionGroup{
-		Id:             agentModeGroup.GetId(),
-		Label:          agentModeGroup.GetLabel(),
-		Options:        []*leapmuxv1.AvailableOption{option},
-		CurrentValue:   mode,
-		DefaultValue:   mode,
-		Mutable:        false,
-		Order:          agentModeGroup.GetOrder(),
-		ReadOnlyReason: lockedModeNote,
-	}
+	return group
 }
 
 // SettingsSnapshot confirms every value the agent holds.
@@ -91,11 +92,13 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 //     decidePermission), so a change writes no file.
 //   - The agent mode takes effect at the next process that starts a thread,
 //     which is the first message's. After the first message the thread keeps
-//     its mode, and a request for another one changes nothing: the snapshot
+//     its mode and speed, and a request for another choice changes nothing: the snapshot
 //     then confirms the mode the thread keeps.
 //
 // A value that is not one of the axis's options changes nothing either.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 	a.mu.Lock()
 	if mode := options.Get(agent.OptionIDPermissionMode); slices.Contains(permissionModes, mode) {
 		a.permissionMode = mode
@@ -103,12 +106,21 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	if mode := options.Get(contracts.AmpOptionAgentMode); !a.modeLocked && slices.Contains(agentModes, mode) {
 		a.agentMode = mode
 	}
-	mode, permission := a.agentMode, a.permissionMode
+	if fast := options.Get(OptionFastMode); !a.modeLocked && (fast == "true" || fast == "false") {
+		a.fastMode = fast
+	}
+	mode, fast, permission := a.agentMode, a.fastMode, a.permissionMode
 	a.mu.Unlock()
 	a.approvePendingPermissions()
 	a.sink.PersistSettingsRefresh(map[string]string{
 		contracts.AmpOptionAgentMode: mode,
+		OptionFastMode:               fast,
 		agent.OptionIDPermissionMode: permission,
 	})
 	return a.SettingsSnapshot()
+}
+
+// launchFastMode selects the native flag only for an explicit On choice.
+func launchFastMode(opts agent.Options) string {
+	return strconv.FormatBool(opts.Get(OptionFastMode) == "true")
 }

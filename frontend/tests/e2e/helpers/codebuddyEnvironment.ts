@@ -2,6 +2,8 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { writePrivateJSON } from './privateConfigFile'
 
+export type CodebuddyModelReasoning = { supported: false } | { supported: true, defaultEffort: string }
+
 export interface CodebuddyEnvironmentOptions {
   /** The isolated HOME of the run. */
   homeDir: string
@@ -14,6 +16,11 @@ export interface CodebuddyEnvironmentOptions {
   alternateModelID: string
   /** The model that CodeBuddy starts on, as the `custom-local:` prefix selects it. */
   startModel: string
+  /** An explicit native profile preference; absence keeps the native default. */
+  thinkingEnabled?: boolean
+  /** Optional reasoning declarations for the two independent native models. */
+  primaryReasoning?: CodebuddyModelReasoning
+  alternateReasoning?: CodebuddyModelReasoning
 }
 
 /**
@@ -43,7 +50,10 @@ export function createCodebuddyEnvironment(options: CodebuddyEnvironmentOptions)
   const configDir = join(options.homeDir, '.codebuddy')
   mkdirSync(configDir, { recursive: true })
   writePrivateJSON(join(configDir, 'models.json'), codebuddyModels(options))
-  writePrivateJSON(join(configDir, 'settings.json'), { model: options.startModel })
+  writePrivateJSON(join(configDir, 'settings.json'), {
+    model: options.startModel,
+    ...(options.thinkingEnabled === undefined ? {} : { alwaysThinkingEnabled: options.thinkingEnabled }),
+  })
   return {
     CODEBUDDY_CONFIG_DIR: configDir,
     DISABLE_TELEMETRY: '1',
@@ -63,9 +73,7 @@ export function createCodebuddyEnvironment(options: CodebuddyEnvironmentOptions)
  * A plain JSON completion causes error_during_execution.
  */
 function codebuddyModels(options: CodebuddyEnvironmentOptions): Record<string, unknown> {
-  const primary = {
-    id: options.modelID,
-    name: 'Mock Model',
+  const transport = {
     vendor: 'Mock',
     apiKey: options.modelKey,
     maxInputTokens: 128_000,
@@ -78,7 +86,18 @@ function codebuddyModels(options: CodebuddyEnvironmentOptions): Record<string, u
     supportsImages: true,
   }
   return {
-    models: [primary, { ...primary, id: options.alternateModelID, name: 'Alternate Mock Model' }],
+    models: [
+      { id: options.modelID, name: 'Mock Model', ...transport, ...codebuddyReasoningProperties(options.primaryReasoning) },
+      { id: options.alternateModelID, name: 'Alternate Mock Model', ...transport, ...codebuddyReasoningProperties(options.alternateReasoning) },
+    ],
     availableModels: [options.modelID, options.alternateModelID],
   }
+}
+
+function codebuddyReasoningProperties(reasoning: CodebuddyModelReasoning | undefined): Record<string, unknown> {
+  if (reasoning === undefined)
+    return {}
+  return reasoning.supported
+    ? { supportsReasoning: true, reasoning: { defaultEffort: reasoning.defaultEffort } }
+    : { supportsReasoning: false }
 }

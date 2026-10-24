@@ -203,7 +203,7 @@ const BASE64_DATA_URI = /^data:([^;,]+);base64,(.*)$/s
  * Read a typed file part whose payload is a base64 data URI.
  *
  * Chat Completions carries a file as `file.file_data` and an image as
- * `image_url.url`. OpenAI Responses carries an image as `image_url`. Each must
+ * `image_url.url`. OpenAI Responses uses `file_data` for files and `image_url` for images. Each must
  * have the form `data:<type>;base64,<data>`. Each provider that a proof covers
  * writes that form with no media type parameter. A raw base64 string, a URL, a
  * data URI without `;base64`, or a data URI with a parameter is a defect.
@@ -275,6 +275,12 @@ function anthropicFileParts(body: unknown): TypedFilePart[] {
 function chatCompletionFileParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (part, location) =>
     part.type === 'file' ? dataURIPart(location, 'file.file_data', pickObject(part, 'file')?.file_data) : undefined)
+}
+
+/** OpenAI Responses: an input_file part with inline file_data in the current user turn. */
+function responsesFileParts(body: unknown): TypedFilePart[] {
+  return currentTurnContentParts(body, 'input', 'content', (part, location) =>
+    part.type === 'input_file' ? dataURIPart(location, 'file_data', part.file_data) : undefined)
 }
 
 /** Read the entries of one file list of Kiro's current user input message. */
@@ -535,7 +541,7 @@ const PROTOCOL_ATTACHMENT_READERS = {
   'openai-chat-completions': { textParts: modelCurrentUserTextParts, fileParts: chatCompletionFileParts, imageParts: chatCompletionImageParts },
   'openai-responses': {
     textParts: modelCurrentUserTextParts,
-    fileParts: () => { throw new Error('no provider that sends a typed file part uses the openai-responses protocol, so the file proof has no reader for it') },
+    fileParts: responsesFileParts,
     imageParts: responsesImageParts,
   },
   'aws-event-stream': { textParts: kiroCurrentUserTextParts, fileParts: kiroDocumentParts, imageParts: kiroImageParts },

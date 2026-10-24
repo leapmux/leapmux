@@ -71,39 +71,57 @@ func TestHandshakeReportsNativeLoadError(t *testing.T) {
 
 func TestHandshakeCreatesANewSession(t *testing.T) {
 	t.Parallel()
-	a, _, stdin := newSteerAgent(t)
-	a.Mu.Lock()
-	a.sessionID = ""
-	a.Mu.Unlock()
-	returned := make(chan error, 1)
-	go func() { returned <- a.handshake(agent.Options{WorkingDir: "/work"}) }()
-	select {
-	case <-stdin.written:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the handshake wrote no request")
-	}
-	frames := stdin.frames()
-	require.Len(t, frames, 1)
-	var request droidEnvelope
-	require.NoError(t, json.Unmarshal([]byte(frames[0]), &request))
-	assert.Equal(t, droidMethodInitializeSession, request.Method)
-	var params map[string]any
-	require.NoError(t, json.Unmarshal(request.Params, &params))
-	assert.Equal(t, "/work", params["cwd"])
-	assert.NotEmpty(t, params["machineId"])
-	assert.NotContains(t, params, "sessionId")
+	for _, tc := range []struct {
+		mode string
+		wire string
+	}{
+		{mode: "", wire: "normal"},
+		{mode: "default", wire: "normal"},
+		{mode: "spec", wire: "spec"},
+		{mode: "auto-low", wire: "auto-low"},
+		{mode: "auto-medium", wire: "auto-medium"},
+		{mode: "auto-high", wire: "auto-high"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			t.Parallel()
+			a, _, stdin := newSteerAgent(t)
+			a.Mu.Lock()
+			a.sessionID = ""
+			a.Mu.Unlock()
+			returned := make(chan error, 1)
+			go func() {
+				returned <- a.handshake(agent.Options{WorkingDir: "/work", Options: map[string]string{agent.OptionIDPermissionMode: tc.mode}})
+			}()
+			select {
+			case <-stdin.written:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the handshake wrote no request")
+			}
+			frames := stdin.frames()
+			require.Len(t, frames, 1)
+			var request droidEnvelope
+			require.NoError(t, json.Unmarshal([]byte(frames[0]), &request))
+			assert.Equal(t, droidMethodInitializeSession, request.Method)
+			var params map[string]any
+			require.NoError(t, json.Unmarshal(request.Params, &params))
+			assert.Equal(t, "/work", params["cwd"])
+			assert.NotEmpty(t, params["machineId"])
+			assert.NotContains(t, params, "sessionId")
+			assert.Equal(t, tc.wire, params["autonomyMode"])
 
-	a.HandleOutput([]byte(`{"type":"response","id":"leapmux-init","result":{"sessionId":"fresh-session","settings":{},"availableModels":[]}}`))
-	select {
-	case err := <-returned:
-		require.NoError(t, err)
-	case <-time.After(30 * time.Second):
-		t.Fatal("the native initialize response did not settle the handshake")
+			a.HandleOutput([]byte(`{"type":"response","id":"leapmux-init","result":{"sessionId":"fresh-session","settings":{},"availableModels":[]}}`))
+			select {
+			case err := <-returned:
+				require.NoError(t, err)
+			case <-time.After(30 * time.Second):
+				t.Fatal("the native initialize response did not settle the handshake")
+			}
+			a.Mu.Lock()
+			sessionID := a.sessionID
+			a.Mu.Unlock()
+			assert.Equal(t, "fresh-session", sessionID)
+		})
 	}
-	a.Mu.Lock()
-	sessionID := a.sessionID
-	a.Mu.Unlock()
-	assert.Equal(t, "fresh-session", sessionID)
 }
 
 func TestDroidOutputPathStartupDoesNotRequireAWorkerReaderRoot(t *testing.T) {

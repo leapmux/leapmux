@@ -920,7 +920,7 @@ func assertHistoricalChildReplay(t *testing.T, svc *Service, childID string, cou
 	row, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
 	writer := &testResponseWriter{channelID: "historical-child-replay"}
-	svc.replayAgentCatchUp(newReplaySink(writer, 0), &leapmuxv1.WatchAgentEntry{AgentId: childID}, row, nil)
+	svc.replayAgentCatchUp(newReplaySink(writer, 0, nil), &leapmuxv1.WatchAgentEntry{AgentId: childID}, row, nil)
 	var messages int
 	for _, stream := range writer.streamsSnapshot() {
 		event := decodeWatchAgentEvent(t, stream)

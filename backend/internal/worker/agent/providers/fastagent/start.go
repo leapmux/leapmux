@@ -11,27 +11,37 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
+var _ agent.StartFunc = Start
+
 // Start starts a fast-agent ACP process and performs the handshake.
 //
 // The launch takes `--no-update-check acp --model <model> -x --subagents`: the
 // root option that turns off the PyPI release check, the ACP server entry, the
 // model string the session runs, the local shell runtime that exposes coding
 // tools, and the subagent tools. The option must come before `acp`, which swallows
-// an unknown option that follows it. Fast Agent's ACP permission handler asks
-// before tool execution. The model is fixed at session creation; fast-agent offers
-// no live model switch.
+// an unknown option that follows it. Unless --no-permissions is selected,
+// Fast Agent applies its native tool permission rules and prompts.
+// The model is fixed at session creation; fast-agent offers no live model switch.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	bypass, err := opts.Options.Bool(contracts.FastagentOptionBypassPermissions)
+	if err != nil {
+		return nil, err
+	}
 	registration := Registration()
 	model := opts.Model()
 	if model == "" {
 		model = registration.DefaultModel()
 	}
+	args := []string{"--no-update-check", "acp", "--model", model, "-x", "--subagents"}
+	if bypass {
+		args = append(args, "--no-permissions")
+	}
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration: registration,
 		ProviderName: "fastagent",
-		BaseArgs:     []string{"--no-update-check", "acp", "--model", model, "-x", "--subagents"},
+		BaseArgs:     args,
 		NewAgent: func() *Agent {
-			return &Agent{home: fastagentHome(agent.StoredSessionQuery{WorkingDir: opts.WorkingDir, HomeDir: opts.HomeDir}), clock: quartz.NewReal()}
+			return &Agent{bypassPermissions: bypass, home: fastagentHome(agent.StoredSessionQuery{WorkingDir: opts.WorkingDir, HomeDir: opts.HomeDir}), clock: quartz.NewReal()}
 		},
 		Base: func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {
@@ -51,7 +61,7 @@ func (a *Agent) hooks(model string, sink agent.ProviderServices) acp.Hooks {
 	// Fast Agent raises no steer method. Its mode list arrives in the session
 	// response, and its usage status arrives on the outer notification metadata.
 	return acp.Hooks{
-		InitialModel:               model,
+		LocalOptionGroups: a.localOptionGroups, InitialModel: model,
 		ModeChannel:                acp.ModeChannelUnmapped,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,

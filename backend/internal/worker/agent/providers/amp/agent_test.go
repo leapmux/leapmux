@@ -153,8 +153,8 @@ func TestAFailedStartDisarmsNothingAndReportsTheError(t *testing.T) {
 func TestAFailedWriteDisarmsTheTurn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	h.agent.startFn = func(threadID, mode string) (*ampProcess, error) {
-		proc, err := h.start(threadID, mode)
+	h.agent.startFn = func(threadID string, config threadConfiguration) (*ampProcess, error) {
+		proc, err := h.start(threadID, config)
 		if err != nil {
 			return nil, err
 		}
@@ -243,24 +243,27 @@ func TestModeLocksAtTheFirstMessage(t *testing.T) {
 func TestModeLocksAtTheModeThatTheThreadStartedWith(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	entered := make(chan string, 1)
+	entered := make(chan threadConfiguration, 1)
 	gate := make(chan struct{})
-	h.agent.startFn = func(threadID, mode string) (*ampProcess, error) {
-		entered <- mode
+	h.agent.startFn = func(threadID string, config threadConfiguration) (*ampProcess, error) {
+		entered <- config
 		<-gate
-		return h.start(threadID, mode)
+		return h.start(threadID, config)
 	}
 	sent := make(chan error, 1)
 	go func() { sent <- h.agent.SendInput("go", nil) }()
 	started := <-entered
-	h.agent.UpdateSettings(map[string]string{contracts.AmpOptionAgentMode: agentModeHigh})
+	h.agent.UpdateSettings(map[string]string{contracts.AmpOptionAgentMode: agentModeHigh, OptionFastMode: "true"})
 	close(gate)
 	require.NoError(t, <-sent)
 
-	assert.Equal(t, agentModeMedium, started, "the thread started in the mode that it read")
+	assert.Equal(t, agentModeMedium, started.mode, "the thread started in the mode that it read")
 	group := groupByID(t, h.agent.OptionGroups(), contracts.AmpOptionAgentMode)
 	assert.False(t, group.GetMutable())
-	assert.Equal(t, started, group.GetCurrentValue(), "the locked mode is the thread's mode")
+	assert.Equal(t, started.mode, group.GetCurrentValue(), "the locked mode is the thread's mode")
+	assert.False(t, started.fast)
+	assert.Equal(t, "false", groupByID(t, h.agent.OptionGroups(), OptionFastMode).CurrentValue)
+	assert.Equal(t, "false", h.sink.LastSettingsRefresh().Options[OptionFastMode])
 }
 
 func TestResumedAgentStartsWithTheModeLocked(t *testing.T) {
@@ -366,7 +369,7 @@ func TestResumeThatStopOvertakesWritesNoNotice(t *testing.T) {
 
 	entered := make(chan struct{})
 	gate := make(chan struct{})
-	h.agent.startFn = func(string, string) (*ampProcess, error) {
+	h.agent.startFn = func(string, threadConfiguration) (*ampProcess, error) {
 		close(entered)
 		<-gate
 		return nil, errors.New("signal: killed")

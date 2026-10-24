@@ -7,6 +7,18 @@ import './index'
 const providers = Object.values(AgentProvider).filter((value): value is AgentProvider => typeof value === 'number')
 
 describe('PROVIDER_PERMISSION_PRESETS', () => {
+  it('exposes the native Fast Agent launch policy without browser plugins', () => {
+    expect(permissionPresetsFor(AgentProvider.FAST_AGENT)?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+  })
+
+  it('exposes the native Dirac bypass choice to callers without browser plugins', () => {
+    expect(permissionPresetsFor(AgentProvider.DIRAC)?.bypass).toEqual({ sets: { yolo: 'true' } })
+  })
+
+  it('exposes the native Cursor bypass choice to callers that do not load browser plugins', () => {
+    expect(permissionPresetsFor(AgentProvider.CURSOR)?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+  })
+
   it('lists every proto provider explicitly, including UNSPECIFIED', () => {
     expect(Object.keys(PROVIDER_PERMISSION_PRESETS).map(Number).sort((a, b) => a - b)).toEqual([...providers].sort((a, b) => a - b))
     expect(PROVIDER_PERMISSION_PRESETS[AgentProvider.UNSPECIFIED]).toBeUndefined()
@@ -19,7 +31,7 @@ describe('PROVIDER_PERMISSION_PRESETS', () => {
   })
 
   it('retains explicit absence for providers that offer no standard permission preset', () => {
-    for (const provider of [AgentProvider.UNSPECIFIED, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.CURSOR, AgentProvider.KILO, AgentProvider.DIRAC, AgentProvider.FAST_AGENT])
+    for (const provider of [AgentProvider.UNSPECIFIED, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.KILO])
       expect(permissionPresetsFor(provider)).toBeUndefined()
     expect(permissionPresetsFor(undefined)).toBeUndefined()
   })

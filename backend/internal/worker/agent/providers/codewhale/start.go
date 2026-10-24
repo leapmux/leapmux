@@ -28,6 +28,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 }
 
 func startWith(ctx context.Context, opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) (agent.Agent, error) {
+	style, err := resolveOutputStyle(opts.Get(OptionOutputStyle))
+	if err != nil {
+		return nil, err
+	}
+	opts.Options = opts.Options.Clone()
+	opts.Options[OptionOutputStyle] = style
 	spec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
 	if err != nil {
 		return nil, err
@@ -126,10 +132,15 @@ func startWith(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 
 // newAgent builds an agent that has no process yet.
 func newAgent(opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) *Agent {
+	style := opts.Get(OptionOutputStyle)
+	if style == "" {
+		style = codewhaleOutputStyleGroup.GetDefaultValue()
+	}
 	return &Agent{
 		sink:       agent.NewModelProgressResetSink(sink),
 		workingDir: opts.WorkingDir,
 		clock:      clock,
+		settings:   codewhaleSettings{outputStyle: style},
 	}
 }
 

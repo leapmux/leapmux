@@ -61,6 +61,7 @@ type fakeLaunchRecord struct {
 	HasToken    bool     `json:"has_token"`
 	WorkerFlag  string   `json:"worker_flag"`
 	SandboxFlag string   `json:"sandbox_flag"`
+	Verbosity   string   `json:"verbosity"`
 }
 
 // installFakeCodewhale puts the fake process on PATH as `codewhale`. Not
@@ -127,6 +128,7 @@ func runFakeRuntimeProcess(args []string) int {
 		HasToken:    os.Getenv(envRuntimeToken) != "",
 		WorkerFlag:  os.Getenv("LEAPMUX_WORKER"),
 		SandboxFlag: os.Getenv("CODEWHALE_SANDBOX"),
+		Verbosity:   os.Getenv("CODEWHALE_VERBOSITY"),
 	}
 	if path := os.Getenv(fakeProcessRecordEnv); path != "" {
 		if encoded, err := json.Marshal(record); err == nil {

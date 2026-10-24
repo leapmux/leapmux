@@ -370,7 +370,7 @@ func (a *Agent) finishTask(rowKey string, status bgtask.Status, summary string) 
 	providerkit.LogRegistryRefusal("codebuddy", "finish task", a.sink.UpdateBackgroundTaskStatus(rowKey, status, summary))
 	providerkit.LogRegistryRefusal("codebuddy", "close task", a.sink.CloseBackgroundTask(rowKey, status))
 	if childID, _, exists, err := a.sink.LookupBackgroundTask(rowKey); err == nil && exists && childID != "" {
-		a.sink.CleanupChildAgent(childID)
+		a.cleanupChild(childID)
 	}
 	a.tasks.forgetRow(rowKey)
 }
@@ -413,7 +413,7 @@ func (a *Agent) closeWorkflowChild(child codebuddyWorkflowChild, parentStatus bg
 	if err != nil {
 		slog.Warn("codebuddy: look up workflow child", "row_key", child.rowKey, "error", err)
 	} else if exists && childID != "" {
-		a.sink.CleanupChildAgent(childID)
+		a.cleanupChild(childID)
 	}
 }
 
@@ -432,7 +432,7 @@ func (a *Agent) replayWorkflowChild(runID string, child codebuddyWorkflowChild, 
 	linked := false
 	defer func() {
 		if !linked {
-			a.sink.CleanupChildAgent(childID)
+			a.cleanupChild(childID)
 		}
 	}()
 	toolNames := make(map[string]string)
@@ -603,12 +603,23 @@ func (a *Agent) routeChildFrame(frameType string, raw []byte) bool {
 	}
 	var err error
 	if frameType == "result" {
+		a.mu.Lock()
+		a.closeModelStreamLocked(childID)
+		a.mu.Unlock()
 		err = a.sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: raw}, agent.SpanInfo{})
 	} else {
+		if frameType == "assistant" {
+			a.completeModelStream(childID, raw)
+		}
 		err = a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, agent.SpanInfo{})
 	}
 	if err != nil {
 		slog.Warn("codebuddy: persist child frame", "spawn_id", envelope.ParentToolUseID, "error", err)
 	}
 	return true
+}
+
+func (a *Agent) cleanupChild(childID string) {
+	a.forgetModelStream(childID)
+	a.sink.CleanupChildAgent(childID)
 }

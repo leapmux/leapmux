@@ -20,7 +20,8 @@ import { createProviderTest } from './provider-fixture-factory'
 export const CODEBUDDY_E2E_SKIP_REASON: string | null = missingBinaryReason('codebuddy', 'CodeBuddy E2E requires the codebuddy CLI on PATH (https://cnb.cool/codebuddy/codebuddy-code)')
 
 /**
- * The agent opens in Bypass Permissions, which answers every tool call at once.
+ * The agent opens in Bypass Permissions, which approves ordinary tools automatically.
+ * Questions and plan decisions still require a user answer.
  *
  * The control-request spec opens its own workspace in Default.
  */
@@ -30,14 +31,14 @@ export const codebuddyTest = createProviderTest({
   agent: CODEBUDDY_AGENT,
   nativeContext,
   skipReason: CODEBUDDY_E2E_SKIP_REASON,
-  /** An agent in Bypass Permissions, which raises no banner for a tool call. */
+  /** An agent in Bypass Permissions, which asks only for protected decisions. */
   workspaceName: 'authenticatedCodebuddyWorkspace',
   workspaceOptions: { openOptions: CODEBUDDY_BYPASS },
 }).extend<{
   /**
    * An agent in Default mode, which raises a banner for each tool call.
    * The control-request spec needs the banner.
-   * The bypass workspace answers every call at once and never raises a banner.
+   * The bypass workspace approves ordinary tools automatically.
    */
   askingCodebuddyWorkspace: AgentWorkspace
 }>({

@@ -114,20 +114,19 @@ func (codebuddyProvider) PlanModeControl(toolName string) agent.PlanModeControlK
 	}
 }
 
-// PlanModePermissionMode returns the mode that a plan tool enters.
+// PlanModePermissionMode supplies the static entry mode. ExitPlanMode restores
+// a runtime-dependent mode, which the native tool result handler publishes.
 func (codebuddyProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
 	switch kind {
 	case agent.PlanModeControlEnter:
 		return contracts.CodebuddyModePlan
-	case agent.PlanModeControlExit:
-		return contracts.CodebuddyModeAcceptEdits
 	default:
 		return ""
 	}
 }
 
-// IsSelfDisplayingControlTool reports false: CodeBuddy echoes no control answer
-// back into its output stream as a tool_result the way Claude does.
+// IsSelfDisplayingControlTool keeps the stored control response visible.
+// Native tool results remain separate transcript rows.
 func (codebuddyProvider) IsSelfDisplayingControlTool(string) bool { return false }
 
 // TurnEndToolUses reads the tool-use count of a result frame.

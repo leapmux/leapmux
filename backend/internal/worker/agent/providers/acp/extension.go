@@ -65,7 +65,7 @@ type Hooks struct {
 	//
 	// It is "" for a provider whose effort axis IS "effort" (OpenCode and Kilo,
 	// where the override maps to "effort" directly) or that has no effort axis
-	// (Cursor). applyStartupOptions maps the env-effort override, which LeapMux
+	// on the current model. applyStartupOptions maps the env-effort override, which LeapMux
 	// stores under the well-known "effort" id, onto this id, so the start pushes
 	// the operator default again whatever id the daemon uses.
 	//
@@ -178,7 +178,7 @@ type Hooks struct {
 	// when the base completes the output of that call.
 	ToolOutputComplete func(toolCallID string)
 	// ModelIDNormalizer, when set, rewrites each model id that the base parses
-	// from configOptions (for example Cursor's auto<->default[] aliasing) before
+	// from configOptions (for example Cursor's auto<->default aliasing) before
 	// the id reaches availableModels.
 	ModelIDNormalizer func(string) string
 	// ModelSetter, when set, replaces how the base writes a model over ACP.

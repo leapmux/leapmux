@@ -6,17 +6,86 @@ import { readCodeBuddyShellResult } from './shellResult'
 const failed: ShellCommand = { callId: 'bash-failure', command: 'printf MARK%s 77 >&2; exit 7', printedPrefix: 'MARK', output: 'MARK77', exitCode: 7 }
 const successful: ShellCommand = { callId: 'bash-success', command: 'printf MARK%s 42', printedPrefix: 'MARK', output: 'MARK42', exitCode: 0 }
 
-/** Build a native model request with one exact result for the generated call. */
+/** Build a native model request with one exact Bash call and its result. */
 function request(content: unknown, command = failed, extra: Record<string, unknown> = {}): MockModelRequestRecord {
-  return { protocol: 'anthropic-messages', path: '/v1/messages', body: { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: command.callId, content, ...extra }] }] } }
+  return { protocol: 'anthropic-messages', path: '/v1/messages', body: { messages: [
+    { role: 'assistant', content: [{ type: 'tool_use', id: command.callId, name: 'Bash', input: { command: command.command } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: command.callId, content, ...extra }] },
+  ] } }
 }
 
-/** Format the five fields that the installed CLI writes, including output line breaks. */
+function chatRequest(content: string, command = successful, argumentsText = JSON.stringify({ command: command.command })): MockModelRequestRecord {
+  return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
+    { role: 'assistant', tool_calls: [{ id: command.callId, type: 'function', function: { name: 'Bash', arguments: argumentsText } }] },
+    { role: 'tool', tool_call_id: command.callId, content },
+  ] } }
+}
+
+/** Format the four result fields, including native output line breaks. */
+function recordWithoutCommand(command = failed, stdout = '(empty)', stderr = '(empty)', exitCode = command.exitCode): string {
+  return `Stdout: ${stdout}\nStderr: ${stderr}\nExit Code: ${exitCode}\nSignal: (none)`
+}
+
+/** Format the same record with its optional command header. */
 function record(command = failed, stdout = '(empty)', stderr = '(empty)', exitCode = command.exitCode): string {
-  return `Command: ${command.command}\nStdout: ${stdout}\nStderr: ${stderr}\nExit Code: ${exitCode}\nSignal: (none)`
+  return `Command: ${command.command}\n${recordWithoutCommand(command, stdout, stderr, exitCode)}`
 }
 
 describe('readCodeBuddyShellResult', () => {
+  it.each([successful, failed])('reads the current four-field record for $callId', (command) => {
+    const text = recordWithoutCommand(command, command.exitCode === 0 ? command.output : '(empty)', command.exitCode === 0 ? '(empty)' : command.output)
+    expect(readCodeBuddyShellResult(request(text, command), command)).toMatchObject({ kind: 'output', outcome: { text, exitCode: command.exitCode, failed: command.exitCode !== 0 } })
+  })
+
+  it('reads the current record with its exact OpenAI native call', () => {
+    const text = 'Stdout: MARK42\nStderr: (empty)\nExit Code: 0\nSignal: (none)'
+    expect(readCodeBuddyShellResult(chatRequest(text), successful)).toMatchObject({ kind: 'output', outcome: { text, exitCode: 0 } })
+  })
+
+  it('preserves the exact empty failure record without synthesizing a command header', () => {
+    const text = recordWithoutCommand()
+    expect(readCodeBuddyShellResult(request(text), failed)).toStrictEqual({ kind: 'record', record: text, outcome: { text, exitCode: 7, failed: true } })
+  })
+
+  it('rejects malformed encoded native call arguments', () => {
+    expect(() => readCodeBuddyShellResult(chatRequest(recordWithoutCommand(successful, 'MARK42'), successful, '{broken'), successful)).toThrow('invalid JSON arguments')
+  })
+
+  it('rejects missing output in the current record instead of counting the command marker', () => {
+    const command = { ...successful, command: 'printf MARK42' }
+    expect(() => readCodeBuddyShellResult(request(recordWithoutCommand(command), command), command)).toThrow('required command output')
+  })
+
+  it('rejects repeated fields in the current record', () => {
+    const text = recordWithoutCommand().replace('\nStderr: (empty)', '\nStderr: (empty)\nStderr: MARK77')
+    expect(() => readCodeBuddyShellResult(request(text), failed)).toThrow('repeats or conflicts with a field')
+  })
+
+  it('checks metadata against the current four-field record', () => {
+    expect(() => readCodeBuddyShellResult(request(recordWithoutCommand(), failed, { _meta: { rawResponse: { exitCode: 0 } } }), failed)).toThrow('exit metadata conflicts')
+  })
+
+  it.each([
+    { name: 'Read', input: { command: failed.command } },
+    { name: 'Bash', input: { command: 'another command' } },
+    { name: 'Bash', input: null },
+    { name: 'Bash', input: {} },
+  ])('refuses a contradictory native call %#', (fields) => {
+    const native = request(record())
+    const body = native.body as { messages: Array<{ content: Record<string, unknown>[] }> }
+    Object.assign(body.messages[0]!.content[0]!, fields)
+    expect(() => readCodeBuddyShellResult(native, failed)).toThrow('expected CodeBuddy Bash command')
+  })
+
+  it.each(['missing', 'repeated'])('rejects a %s native call even when the result contains the expected command', (kind) => {
+    const native = request(record())
+    const body = native.body as { messages: Array<{ content: unknown[] }> }
+    if (kind === 'missing')
+      body.messages.shift()
+    else
+      body.messages[0]!.content.push(body.messages[0]!.content[0])
+    expect(() => readCodeBuddyShellResult(native, failed)).toThrow('Exactly one call')
+  })
   it('keeps the full stdout marker proof for a successful command', () => {
     const text = record(successful, 'MARK42\n')
     expect(readCodeBuddyShellResult(request(text, successful), successful))
@@ -111,7 +180,7 @@ describe('readCodeBuddyShellResult', () => {
     expect(() => readCodeBuddyShellResult(request(record(), failed, { _meta: { rawResponse: null } }), failed)).toThrow('raw response must be an object')
   })
 
-  it.each([{ output: '' }, { output: '\nMARK77' }, { command: 'exit 7\n' }, { command: '\0' }, { exitCode: Number.NaN }])('refuses an invalid generated command %#', (fields) => {
+  it.each([{ callId: '' }, { output: '' }, { output: '\nMARK77' }, { command: 'exit 7\n' }, { command: '\0' }, { exitCode: Number.NaN }])('refuses an invalid generated command %#', (fields) => {
     expect(() => readCodeBuddyShellResult(request(record()), { ...failed, ...fields })).toThrow('one command and one output marker')
   })
 
@@ -119,7 +188,7 @@ describe('readCodeBuddyShellResult', () => {
     expect(() => readCodeBuddyShellResult(request(record(), { ...failed, callId: 'another-call' }), failed)).toThrow('Exactly one result')
     const doubled = request(record())
     const body = doubled.body as { messages: Array<{ content: unknown[] }> }
-    body.messages[0]!.content.push(body.messages[0]!.content[0])
+    body.messages[1]!.content.push(body.messages[1]!.content[0])
     expect(() => readCodeBuddyShellResult(doubled, failed)).toThrow('Exactly one result')
   })
 })

@@ -50,7 +50,7 @@ type Registration struct {
 	// so a restarting agent's groups still carry every model's dependent groups.
 	ModelSubGroups ModelSubGroupsFunc
 	// NormalizeModelID canonicalizes a model id into the provider's alias space (e.g.
-	// Claude's "claude-opus-4-8" -> "opus[1m]", Cursor's "default[]" -> "auto"). nil leaves
+	// Claude's "claude-opus-4-8" -> "opus[1m]", Cursor's "default" -> "auto"). nil leaves
 	// the id unchanged. Registry.NormalizeModelID (the offline-label path) reads it, and the
 	// provider hands the same function to its live agent, so the two can't drift.
 	NormalizeModelID func(string) string
@@ -450,13 +450,10 @@ func (r *Registry) EffortEnvOverride(provider leapmuxv1.AgentProvider) string {
 
 // ManagesEffort reports whether leapmux owns a model-dependent effort
 // default for this provider -- i.e. its effort tiers belong to the model. A provider
-// with a STATIC catalog states them in DefaultModels (Claude, Codex, Pi). Seven
-// providers have no static entry that states them, so each sets Registration.ManagesEffort
-// instead. Native Copilot reads its catalog from the open session, Codewhale reads it from
-// the model provider that the user configured, Kimi Code and MiMo Code read each model's
-// thinking levels or reasoning variants from their servers, Cline reads a native table for
-// each provider, DeepSeek Harness reads the native model catalog, and Command Code reads a
-// gateway catalog that its local-only mode empties. For all of them,
+// with a STATIC catalog states them in DefaultModels (Claude, Codex, Pi).
+// Providers with dynamic catalogs set Registration.ManagesEffort instead. For example,
+// Copilot and Letta read their catalogs from the open session, while Codewhale reads
+// its catalog from the configured model provider. For these providers,
 // resolveProviderDefaults stamps an effort default into the launch options, and
 // providerHasModelDependentGroups rebuilds the effort tiers on a model change. A model
 // switch that sends no effort keeps the stored tier when the catalog offers it for the

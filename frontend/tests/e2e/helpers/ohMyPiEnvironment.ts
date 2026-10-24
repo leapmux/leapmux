@@ -16,6 +16,8 @@ export interface OhMyPiEnvironmentOptions {
   providerID: string
   modelID: string
   alternateModelID: string
+  modelName?: string
+  alternateModelName?: string
   mcpEchoServer: McpProbeServer
 }
 
@@ -74,7 +76,7 @@ export function createOhMyPiEnvironment(options: OhMyPiEnvironmentOptions): Reco
 function ohMyPiModels(options: OhMyPiEnvironmentOptions): Record<string, unknown> {
   const primary = {
     id: options.modelID,
-    name: 'GLM-5.3',
+    name: options.modelName ?? 'GLM-5.3',
     // A reasoning model, so the thinking-level axis exists.
     reasoning: true,
     input: ['text', 'image'],
@@ -90,7 +92,7 @@ function ohMyPiModels(options: OhMyPiEnvironmentOptions): Record<string, unknown
         // It uses the literal key only when that variable does not exist.
         apiKey: 'LEAPMUX_E2E_MODEL_API_KEY',
         api: 'openai-completions',
-        models: [primary, { ...primary, id: options.alternateModelID, name: 'GLM-5.3 Alternate' }],
+        models: [primary, { ...primary, id: options.alternateModelID, name: options.alternateModelName ?? 'GLM-5.3 Alternate' }],
       },
     },
   }

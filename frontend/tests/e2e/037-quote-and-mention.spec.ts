@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
 import { test } from './fixtures'
+import { captureClipboardText } from './helpers/clipboardCapture'
 import { selectedAgentTab } from './helpers/nativeScenario'
 import { QUICK_BROWN_FOX, sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'
@@ -64,9 +65,7 @@ test.describe('Quote and Mention', () => {
     expect(blockquoteText).not.toContain('my follow-up')
   })
 
-  test('text selection copy button copies to clipboard', async ({ page, context, authenticatedWorkspace, modelScript }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
+  test('text selection copy button copies to clipboard', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message and wait for the assistant to reply
     await sendScriptedTurn(page, modelScript, sayExactly(QUICK_BROWN_FOX))
 
@@ -76,7 +75,7 @@ test.describe('Quote and Mention', () => {
 
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
 
-    // Triple-click to select all text in the message (triggers mouseup → popover)
+    // Triple-click to select the message block and show its Copy control.
     await messageContent.click({ clickCount: 3 })
 
     // The copy button should appear
@@ -84,12 +83,11 @@ test.describe('Quote and Mention', () => {
     await expect(copyButton).toBeVisible()
 
     // Click the copy button
-    await copyButton.click()
+    const clipboardText = await captureClipboardText(page, () => copyButton.click())
 
     // Clipboard should contain the selected text
-    const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
-    expect(clipboardText).toBeTruthy()
-    expect(clipboardText.length).toBeGreaterThan(0)
+    // Chromium can include the adjacent duration in a block selection.
+    expect(clipboardText).toContain(QUICK_BROWN_FOX)
   })
 
   // A non-secure origin -- plain http:// on a LAN, which is how the app is read
@@ -97,21 +95,14 @@ test.describe('Quote and Mention', () => {
   // localhost, which is always secure, so the property is taken away here
   // instead. `~/lib/clipboard` then falls back to `execCommand`, which is the
   // only path that copies anything there.
-  test('text selection copy button copies with no Clipboard API', async ({ page, context, authenticatedWorkspace, modelScript }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
+  test('text selection copy button copies with no Clipboard API', async ({ page, authenticatedWorkspace, modelScript }) => {
     await sendScriptedTurn(page, modelScript, sayExactly(QUICK_BROWN_FOX))
 
     const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
     await expect(assistantBubble).toBeVisible()
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
 
-    // Park a known value on the clipboard FIRST. Without it a fallback that
-    // copied nothing would still pass, because the previous test left the same
-    // message text there.
-    await page.evaluate(() => navigator.clipboard.writeText('nothing was copied'))
-    // An OWN property shadowing the prototype getter, so deleting it below hands
-    // the real API back for the read.
+    // Hide the API so the application must use its native legacy copy path.
     await page.evaluate(() => {
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
     })
@@ -119,15 +110,13 @@ test.describe('Quote and Mention', () => {
     await messageContent.click({ clickCount: 3 })
     const copyButton = page.locator('[data-testid="copy-selection-button"]')
     await expect(copyButton).toBeVisible()
-    await copyButton.click()
+    const clipboardText = await captureClipboardText(page, () => copyButton.click())
 
     // The popover closes only on a write that landed, so its absence is the
     // app agreeing that something was copied.
     await expect(copyButton).toBeHidden()
 
-    await page.evaluate(() => Reflect.deleteProperty(navigator, 'clipboard'))
-    const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
-    expect(clipboardText).toContain('quick brown fox')
+    expect(clipboardText).toContain(QUICK_BROWN_FOX)
   })
 
   // Both paths gone. Clearing the highlight and closing the popover is what the

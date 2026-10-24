@@ -74,3 +74,43 @@ describe('lettaNotificationEntry', () => {
     expect(lettaNotificationEntry(other)).toEqual([])
   })
 })
+
+describe('lettaNotificationEntry native compaction', () => {
+  const completed = { message_type: 'slash_command_end', command_id: 'compact', input: '/compact all', success: true, output: 'Compaction completed. Message buffer length reduced from 20 to 2.\n\nSummary: Native summary.' }
+
+  it('reads a completed command without treating message counts as token counts', () => {
+    expect(lettaNotificationEntry(completed)).toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual' } }])
+  })
+
+  it('keeps a native failure separate from a successful boundary', () => {
+    expect(lettaNotificationEntry({ ...completed, success: false, output: 'Failed: native summarizer refused.' })).toEqual([
+      { kind: 'compaction', phase: 'end', detail: { trigger: 'manual' }, outcome: 'failed', error: 'Failed: native summarizer refused.' },
+    ])
+    expect(lettaNotificationEntry({ ...completed, success: false, output: '' })).toEqual([
+      { kind: 'compaction', phase: 'end', detail: { trigger: 'manual' }, outcome: 'failed' },
+    ])
+  })
+
+  it('draws native help and fallback replies as text without a compaction boundary', () => {
+    expect(lettaNotificationEntry({ ...completed, input: '/compact help', output: '/compact help\nSummarize conversation history.' })).toEqual([
+      { kind: 'text', text: '/compact help\nSummarize conversation history.' },
+    ])
+    expect(lettaNotificationEntry({ type: 'execute_command_response', request_id: 'command-1', success: false, output: 'Native command refused.' })).toEqual([
+      { kind: 'text', text: 'Native command refused.' },
+    ])
+    expect(lettaNotificationEntry({ type: 'execute_command_response', success: true, output: '' })).toEqual([])
+  })
+
+  it.each([
+    ['another command', { command_id: 'doctor' }],
+    ['another input word', { input: '/compactly' }],
+    ['missing input', { input: undefined }],
+    ['missing success', { success: undefined }],
+    ['null success', { success: null }],
+    ['string success', { success: 'true' }],
+    ['numeric success', { success: 0 }],
+    ['a start', { message_type: 'slash_command_start', success: undefined }],
+  ])('ignores an invalid or incomplete native end: %s', (_name, patch) => {
+    expect(lettaNotificationEntry({ ...completed, ...patch })).toEqual([])
+  })
+})

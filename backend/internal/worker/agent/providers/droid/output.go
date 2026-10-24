@@ -16,9 +16,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// droidAttachmentLabel identifies the provider in an attachment refusal.
-const droidAttachmentLabel = "Factory Droid"
-
 // isDroidRawInterrupt reports whether a raw frame is LeapMux's own interrupt
 // marker for Droid. The browser interrupts through the InterruptAgent call; the
 // frame is for a caller of SendAgentRawMessage.
@@ -417,17 +414,18 @@ func (a *Agent) onModelTextDelta(payload []byte, kind agent.AssembledMessageKind
 		return
 	}
 	message := droidMessageState(target.state, n.MessageID)
-	if message.finalized {
+	scope := modelTextScope(n.MessageID, n.BlockIndex, kind)
+	if message.finalized || message.scopes[scope] == droidModelScopeCompleted {
 		return
 	}
 	a.resolveModelRetry(target)
 	target.state.ended = false
-	scope := modelTextScope(n.MessageID, n.BlockIndex, kind)
 	if message.scopes == nil {
-		message.scopes = make(map[string]struct{})
+		message.scopes = make(map[string]droidModelScopeState)
 	}
-	message.scopes[scope] = struct{}{}
+	message.scopes[scope] = droidModelScopeStreaming
 	target.state.generation.Append(scope, kind, n.TextDelta, providerkit.JoinVerbatim)
+	target.sink.ReportProgress(agent.ModelTextProgress(scope, n.TextDelta))
 }
 
 // resolveModelRetry accepts output only from this process's main conversation.
@@ -502,12 +500,21 @@ func (a *Agent) onModelTextComplete(payload []byte, kind agent.AssembledMessageK
 	if json.Unmarshal(payload, &n) != nil || n.MessageID == "" || n.BlockIndex < 0 {
 		return
 	}
-	message := target.state.modelMessages[n.MessageID]
-	if message == nil || message.finalized {
+	message := droidMessageState(target.state, n.MessageID)
+	if message.finalized {
 		return
 	}
 	scope := modelTextScope(n.MessageID, n.BlockIndex, kind)
-	if _, exists := message.scopes[scope]; exists {
+	state, exists := message.scopes[scope]
+	if exists && state == droidModelScopeCompleted {
+		return
+	}
+	if message.scopes == nil {
+		message.scopes = make(map[string]droidModelScopeState)
+	}
+	// An empty completed block also needs a boundary, so a late delta cannot reopen it.
+	message.scopes[scope] = droidModelScopeCompleted
+	if exists {
 		target.sink.ReportProgress(agent.CompleteModelProgress(scope))
 	}
 }
@@ -671,9 +678,6 @@ func (a *Agent) flushPendingToolCalls(target droidOutputTarget) {
 	}
 }
 
-// Droid's ExecuteCli requests the last 8192 bytes through getOutput({tailBytes: 8192}).
-const droidToolOutputTailBytes = 8192
-
 func (a *Agent) onToolProgressUpdate(payload []byte, target droidOutputTarget) {
 	var notification struct {
 		ToolUseID string `json:"toolUseId"`
@@ -689,12 +693,17 @@ func (a *Agent) onToolProgressUpdate(payload []byte, target droidOutputTarget) {
 	if notification.ToolUseID == "" {
 		return
 	}
-	tail, truncated := notification.Update.Text, false
+	tail := notification.Update.Text
 	if notification.Update.FullOutput != nil {
 		tail = *notification.Update.FullOutput
-		truncated = len(tail) >= droidToolOutputTailBytes
 	}
-	target.sink.ReportProgress(agent.OutputTailProgress("droid-tool-"+notification.ToolUseID, tail, truncated))
+	scope := "droid-tool-" + notification.ToolUseID
+	// Droid forwards a preview but omits its native truncation flag. A short
+	// preview can have lost earlier lines, so neither length proves completeness.
+	target.sink.ReportProgress(agent.OutputTailProgress(scope, tail, false))
+	if notification.Update.FullOutput != nil && tail != "" {
+		target.sink.ReportProgress(agent.OutputTotalProgress(scope, int64(len(tail)), true))
+	}
 }
 
 // droidToolResult is the payload of tool_result.
@@ -847,18 +856,14 @@ func (a *Agent) adoptSessionID(env *droidEnvelope) error {
 	var result struct {
 		SessionID       string              `json:"sessionId"`
 		Settings        droidNativeSettings `json:"settings"`
-		AvailableModels []struct {
-			ID                        string   `json:"id"`
-			DisplayName               string   `json:"displayName"`
-			SupportedReasoningEfforts []string `json:"supportedReasoningEfforts"`
-		} `json:"availableModels"`
+		AvailableModels []droidCatalogModel `json:"availableModels"`
 	}
 	if err := json.Unmarshal(env.Result, &result); err != nil {
 		return fmt.Errorf("read droid startup result: %w", err)
 	}
 	models := make([]droidModel, 0, len(result.AvailableModels))
 	for _, m := range result.AvailableModels {
-		models = append(models, droidModel{id: m.ID, displayName: m.DisplayName, efforts: m.SupportedReasoningEfforts})
+		models = append(models, droidModelFromNative(m))
 	}
 	a.Mu.Lock()
 	if a.sessionID != "" && result.SessionID != "" && a.sessionID != result.SessionID {

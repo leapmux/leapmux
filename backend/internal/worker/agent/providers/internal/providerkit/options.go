@@ -121,8 +121,8 @@ func ReadOnlyModelAndEffortGroups(model, modelName, effort string) []*leapmuxv1.
 }
 
 // ModelAndEffortGroups returns the model group, then the effort group of the current model.
-// It omits a group when the catalog gives none. Every provider that shows model and effort
-// as its first two top-level groups calls it: Codex, Pi, and Claude.
+// It omits a group when the catalog gives none. Providers use this builder when
+// model and effort are their first two top-level groups.
 //
 // effortLabel is the label of the effort axis: EffortGroupLabel for Codex and Claude, and
 // pi.ThinkingLevelLabel for Pi. The top-level group takes it. The default modelSubGroups

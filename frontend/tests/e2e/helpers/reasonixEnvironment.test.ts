@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -24,6 +24,27 @@ beforeEach(() => {
 afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createReasonixEnvironment', () => {
+  it('uses the requested context window for all native providers', () => {
+    const configured = { ...options(), contextWindow: 50000 }
+    const env = createReasonixEnvironment(configured)
+    const config = readFileSync(join(env.REASONIX_HOME!, 'config.toml'), 'utf8')
+    for (const name of ['deepseek', 'unit-alt', 'unit-plain'])
+      expect(providerTable(config, name)).toContain('context_window = 50000')
+  })
+
+  it('retains the default context window when none is supplied', () => {
+    const env = createReasonixEnvironment(options())
+    const config = readFileSync(join(env.REASONIX_HOME!, 'config.toml'), 'utf8')
+    for (const name of ['deepseek', 'unit-alt', 'unit-plain'])
+      expect(providerTable(config, name)).toContain('context_window = 128000')
+  })
+
+  it.each([0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid context window %s before writing files', (contextWindow) => {
+    const configured = { ...options(), contextWindow }
+    expect(() => createReasonixEnvironment(configured)).toThrow('context window')
+    expect(existsSync(join(homeDir, '.reasonix'))).toBe(false)
+  })
+
   it('writes the default provider and the alternate provider of the given models', () => {
     const env = createReasonixEnvironment(options())
     expect(env).toEqual({ REASONIX_HOME: join(homeDir, '.reasonix') })

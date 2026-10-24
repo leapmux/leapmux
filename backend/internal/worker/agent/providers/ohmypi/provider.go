@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/jsonfield"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -13,6 +14,11 @@ import (
 // ompProvider is Oh My Pi's stateless plugin for its native protocol.
 type ompProvider struct {
 	agent.ProviderDefaults
+}
+
+// ChildCapabilities exposes the native child steering and cancellation commands.
+func (ompProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}
 }
 
 // ValidateAttachment accepts text and images. omp's prompt carries text and

@@ -14,14 +14,16 @@ import (
 
 // Cline's settings.
 //
-// Three axes:
+// Four axes:
 //
 //   - The model, within the provider that the user's Cline settings select.
 //     session.update_connection changes it between two model calls.
-//   - The reasoning effort. A level and Off change through
-//     session.update_connection. Auto sends no reasoning setting, so Cline
-//     uses the one that the user's Cline settings state; a return to Auto
-//     rebuilds the session, because an update cannot remove a setting.
+//   - The reasoning effort. Concrete levels change through
+//     session.update_connection. Auto reloads the user's configured defaults
+//     through a rebuild; a null update removes fields without reloading them.
+//   - Extended thinking. Off preserves the chosen effort locally while the
+//     native runtime clears it. On restores a concrete effort live, or reloads
+//     configured defaults when effort is Auto. Auto thinking also rebuilds.
 //   - The mode, on LeapMux's permission-mode axis. Plan and Act are Cline's own
 //     session modes, with Cline's own approval policy: Cline's interactive CLI
 //     runs the tools that only read without asking and asks before every other
@@ -53,9 +55,20 @@ func permissionGroup(current string) *leapmuxv1.AvailableOptionGroup {
 	return agent.SelectGroup(agent.OptionIDPermissionMode, modeLabel, agent.OptionOrderPermissionMode, current, permissionModes)
 }
 
-// staticOptionGroups are the axes that do not depend on a running agent. The
-// registration and OptionGroups both read them.
-var staticOptionGroups = []*leapmuxv1.AvailableOptionGroup{permissionGroup("")}
+func thinkingValue(value string) string {
+	if value == "" {
+		return thinkingAuto
+	}
+	return value
+}
+
+func validThinking(value string) bool {
+	return slices.ContainsFunc(thinkingModes, func(def agent.OptionDef) bool { return def.Id == value })
+}
+
+func thinkingGroup(current string) *leapmuxv1.AvailableOptionGroup {
+	return agent.SelectGroup(OptionThinking, "Extended Thinking", agent.OptionOrderProviderFirst, thinkingValue(current), thinkingModes)
+}
 
 // validPermissionMode reports whether mode is a value of the axis.
 func validPermissionMode(mode string) bool {
@@ -66,8 +79,10 @@ func validPermissionMode(mode string) bool {
 type clineSettings struct {
 	// model is Cline's model id within the session's provider.
 	model string
-	// effort is LeapMux's effort value: EffortAuto, effortOff, or a level.
+	// effort is the selected level or EffortAuto, retained while thinking is Off.
 	effort string
+	// thinking is the independent Auto, Off or On preference.
+	thinking string
 	// permissionMode is a value of the permission-mode axis.
 	permissionMode string
 }
@@ -92,7 +107,7 @@ func (s clineSettings) configExtensions() []string {
 }
 
 // needsRebuild reports whether moving the session from s to next needs a new
-// runtime: a change of Cline's session mode, a return to Auto effort, or
+// runtime: a change of Cline's session mode, a reset of reasoning defaults, or
 // extensions of next that differ from loaded, the ones that the runtime loaded
 // (Agent.loadedExtensions). The extensions are compared with the runtime's and
 // not with s's, because a move between Act and Auto-approve during a turn
@@ -101,7 +116,17 @@ func (s clineSettings) configExtensions() []string {
 func (s clineSettings) needsRebuild(next clineSettings, loaded []string) bool {
 	return s.sessionMode() != next.sessionMode() ||
 		!slices.Equal(loaded, next.configExtensions()) ||
-		(next.effort == agent.EffortAuto && s.effort != agent.EffortAuto)
+		s.needsReasoningRebuild(next)
+}
+
+// A reset reloads configured defaults. Clearing native fields does not reload them.
+func (s clineSettings) needsReasoningRebuild(next clineSettings) bool {
+	if next.effort == agent.EffortAuto && s.effort != agent.EffortAuto {
+		return true
+	}
+	currentThinking, nextThinking := thinkingValue(s.thinking), thinkingValue(next.thinking)
+	return currentThinking != nextThinking &&
+		(nextThinking == thinkingAuto || (nextThinking == thinkingOn && next.effort == agent.EffortAuto))
 }
 
 // connectionUpdates is the session.update_connection change from s to next,
@@ -111,26 +136,28 @@ func (s clineSettings) connectionUpdates(next clineSettings) map[string]any {
 	if next.model != s.model {
 		updates["modelId"] = next.model
 	}
-	if next.effort != s.effort && next.effort != agent.EffortAuto {
-		for key, value := range reasoningFields(next.effort) {
+	before, after := reasoningFields(s), reasoningFields(next)
+	if !maps.Equal(before, after) {
+		for key, value := range after {
 			updates[key] = value
 		}
 	}
 	return updates
 }
 
-// reasoningFields are the reasoning fields of Cline's runtime for effort. Off
-// turns the reasoning off, because Cline's reasoning-effort field refuses the
-// word; Auto states nothing.
-func reasoningFields(effort string) map[string]any {
-	switch effort {
-	case "", agent.EffortAuto:
-		return nil
-	case effortOff:
+// reasoningFields builds native configuration from the two local preferences.
+// All values are comparable booleans or strings, as connectionUpdates requires.
+func reasoningFields(settings clineSettings) map[string]any {
+	if thinkingValue(settings.thinking) == thinkingOff {
 		return map[string]any{"thinking": false}
-	default:
-		return map[string]any{"thinking": true, "reasoningEffort": effort}
 	}
+	if settings.effort != "" && settings.effort != agent.EffortAuto {
+		return map[string]any{"thinking": true, "reasoningEffort": settings.effort}
+	}
+	if thinkingValue(settings.thinking) == thinkingOn {
+		return map[string]any{"thinking": true}
+	}
+	return nil
 }
 
 // configuredModel is the model that the user's Cline settings select for the
@@ -186,7 +213,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	settings := a.settings
 	a.Mu.Unlock()
 	groups := providerkit.ModelAndEffortGroups(a.sessionModels(), settings.model, settings.effort, agent.EffortGroupLabel, nil)
-	return append(groups, permissionGroup(settings.permissionMode))
+	return append(groups, permissionGroup(settings.permissionMode), thinkingGroup(settings.thinking))
 }
 
 // SettingsSnapshot confirms every current value.
@@ -211,6 +238,9 @@ func (a *Agent) settingsFromOptions(base clineSettings, options optionmap.Map) c
 	}
 	if mode := options.Get(agent.OptionIDPermissionMode); validPermissionMode(mode) {
 		out.permissionMode = mode
+	}
+	if thinking := options.Get(OptionThinking); validThinking(thinking) {
+		out.thinking = thinking
 	}
 	return out
 }
@@ -309,18 +339,20 @@ func (a *Agent) pendingSets(key, value string) bool {
 		return pending.effort == value
 	case agent.OptionIDPermissionMode:
 		return pending.permissionMode == value
+	case OptionThinking:
+		return thinkingValue(pending.thinking) == value
 	default:
 		return false
 	}
 }
 
-// livePart is the part of the move from have to want that an update can make:
-// the model, a reasoning level or Off, and a move between Act and
-// Auto-approve.
+// livePart retains reasoning resets and native mode changes until the rebuild.
+// Other settings, including the worker's approval policy, can apply live.
 func livePart(have, want clineSettings) clineSettings {
 	live := want
-	if want.effort == agent.EffortAuto && have.effort != agent.EffortAuto {
+	if have.needsReasoningRebuild(want) {
 		live.effort = have.effort
+		live.thinking = have.thinking
 	}
 	if want.sessionMode() != have.sessionMode() {
 		live.permissionMode = have.permissionMode
@@ -344,8 +376,12 @@ func (a *Agent) applyLive(have, want clineSettings) {
 		if err != nil {
 			slog.Warn("cline update the session connection", "agent_id", a.AgentID(), "error", err)
 		} else {
-			applied.model, applied.effort = want.model, want.effort
+			applied.model, applied.effort, applied.thinking = want.model, want.effort, want.thinking
 		}
+	} else {
+		// The effective native configuration is unchanged. Retain local
+		// preferences, such as a different effort selected while thinking is Off.
+		applied = want
 	}
 	a.Mu.Lock()
 	a.settings = applied

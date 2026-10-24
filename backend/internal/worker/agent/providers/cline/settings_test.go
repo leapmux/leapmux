@@ -75,15 +75,17 @@ func TestTheSessionStartsWithTheLaunchSettings(t *testing.T) {
 	var config map[string]any
 	require.True(t, create.field("sessionConfig", &config))
 	assert.Equal(t, map[string]any{
-		"providerId": testProvider,
-		"modelId":    "gpt-5.5",
-		"compaction": map[string]any{"enabled": true, "strategy": "basic"},
+		"providerId":      testProvider,
+		"modelId":         "gpt-5.5",
+		"compaction":      map[string]any{"enabled": true, "strategy": "basic"},
+		"thinking":        true,
+		"reasoningEffort": "high",
 	}, config)
 	var runtime map[string]any
 	require.True(t, create.field("runtimeOptions", &runtime))
 	assert.Equal(t, sessionModePlan, runtime["mode"])
-	assert.Equal(t, "high", runtime["reasoningEffort"])
-	assert.Equal(t, true, runtime["thinking"])
+	assert.NotContains(t, runtime, "reasoningEffort")
+	assert.NotContains(t, runtime, "thinking")
 	assert.Equal(t, true, runtime["enableSpawn"])
 	assert.Equal(t, true, runtime["enableTeams"])
 	contributions := runtime["clientContributions"].([]any)
@@ -110,11 +112,11 @@ func TestAnEffortChangeAppliesAtOnce(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.agent.UpdateSettings(options(agent.OptionIDEffort, "high"))
-	r.agent.UpdateSettings(options(agent.OptionIDEffort, effortOff))
+	r.agent.UpdateSettings(options(agent.OptionIDEffort, "low"))
 	assert.Equal(t, []map[string]any{
 		{"reasoningEffort": "high", "thinking": true},
-		{"thinking": false},
-	}, updates(t, r.hub), "Off turns the reasoning off, which Cline's effort field refuses")
+		{"reasoningEffort": "low", "thinking": true},
+	}, updates(t, r.hub))
 }
 
 func TestAReturnToAutoEffortRebuildsTheSession(t *testing.T) {
@@ -130,6 +132,10 @@ func TestAReturnToAutoEffortRebuildsTheSession(t *testing.T) {
 	require.True(t, creates[1].field("runtimeOptions", &runtime))
 	assert.NotContains(t, runtime, "reasoningEffort", "Auto sends no reasoning setting")
 	assert.NotContains(t, runtime, "thinking")
+	var config map[string]any
+	require.True(t, creates[1].field("sessionConfig", &config))
+	assert.NotContains(t, config, "reasoningEffort")
+	assert.NotContains(t, config, "thinking")
 }
 
 func TestAModeChangeRebuildsTheSessionWithItsConversation(t *testing.T) {
@@ -334,14 +340,6 @@ func TestNeedsRebuild(t *testing.T) {
 	// once, and the runtime keeps the extensions of the mode that built it.
 	assert.True(t, act.needsRebuild(act, auto.configExtensions()), "the runtime still loads Auto-approve's extensions")
 	assert.False(t, act.needsRebuild(auto, auto.configExtensions()), "the runtime already loads Auto-approve's extensions")
-}
-
-func TestReasoningFields(t *testing.T) {
-	t.Parallel()
-	assert.Nil(t, reasoningFields(""))
-	assert.Nil(t, reasoningFields(agent.EffortAuto))
-	assert.Equal(t, map[string]any{"thinking": false}, reasoningFields(effortOff))
-	assert.Equal(t, map[string]any{"thinking": true, "reasoningEffort": "max"}, reasoningFields("max"))
 }
 
 // A move from Auto-approve to Act during a turn asks before the next call at

@@ -6,20 +6,194 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
+func TestCodebuddyControlResponseReadsStyleMetadata(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		payload    string
+		hasCatalog bool
+		failed     bool
+	}{
+		{name: "styles with other settings", payload: `{"output_style":"Concise","available_output_styles":["Default","Concise"],"model":"primary","mode":"plan","steered":false,"reason":"idle","availableModels":[{"modelId":"primary"}],"account":{"token":"PRIVATE_ACCOUNT_MARKER"}}`, hasCatalog: true},
+		{name: "absent", payload: `{}`},
+		{name: "null", payload: `{"available_output_styles":null}`},
+		{name: "empty", payload: `{"available_output_styles":[]}`, hasCatalog: true},
+		{name: "invalid entry", payload: `{"available_output_styles":[1]}`, failed: true},
+		{name: "invalid list", payload: `{"available_output_styles":{}}`, failed: true},
+		{name: "invalid current", payload: `{"output_style":false}`, failed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			reply := make(chan codebuddyControlResult, 1)
+			a.pendingControl["init-styles"] = reply
+			a.HandleOutput([]byte(codebuddyControlAnswer(tc.payload)("init-styles")))
+			select {
+			case result := <-reply:
+				assert.Equal(t, !tc.failed, result.Success)
+				assert.Equal(t, tc.hasCatalog, result.HasOutputStyleCatalog)
+				if tc.failed {
+					assert.Equal(t, "CodeBuddy sent an invalid control response.", result.Error)
+				}
+				if tc.name == "styles with other settings" {
+					assert.Equal(t, "Concise", result.OutputStyle)
+					assert.Equal(t, []string{"Default", "Concise"}, result.OutputStyles)
+					assert.Equal(t, "primary", result.Model)
+					assert.Equal(t, "plan", result.Mode)
+					require.NotNil(t, result.Steered)
+					assert.False(t, *result.Steered)
+					assert.Equal(t, "idle", result.SteerReason)
+					assert.True(t, result.HasModelCatalog)
+					assert.Equal(t, []codebuddyModelInfo{{ID: "primary"}}, result.Models)
+				}
+			default:
+				t.Fatal("the native control response was not routed")
+			}
+			assert.Empty(t, sink.Messages(), "native initialization and account metadata must not enter the transcript")
+		})
+	}
+}
+
+func TestCodebuddyControlResponsePreservesThinkingConfirmation(t *testing.T) {
+	t.Parallel()
+	for _, enabled := range []bool{false, true} {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		reply := make(chan codebuddyControlResult, 1)
+		a.pendingControl["config-1"] = reply
+		body, err := json.Marshal(map[string]any{"updated": map[string]bool{"alwaysThinkingEnabled": enabled}, "errors": map[string]string{"other": "Native configuration detail."}})
+		require.NoError(t, err)
+		a.HandleOutput([]byte(codebuddyControlAnswer(string(body))("config-1")))
+		select {
+		case result := <-reply:
+			require.True(t, result.Success, "outer success does not discard per-key errors")
+			require.NotNil(t, result.ConfigUpdated)
+			require.NotNil(t, result.ConfigUpdated.AlwaysThinkingEnabled)
+			assert.Equal(t, enabled, *result.ConfigUpdated.AlwaysThinkingEnabled)
+			assert.Equal(t, map[string]string{"other": "Native configuration detail."}, result.ConfigErrors)
+		default:
+			t.Fatal("the configuration response was not routed")
+		}
+		assert.Empty(t, sink.Messages())
+	}
+}
+
+func TestCodebuddyOnlyRootCompletionRefreshesOutputStyles(t *testing.T) {
+	t.Parallel()
+	a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{"output_style":"Default","available_output_styles":["Default","Concise","Custom"]}`))
+	sink := &agenttest.Sink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.outputStyles = []string{"Default", "Concise"}
+	a.outputStyle = "Concise"
+	openCodebuddyProgressChild(t, a)
+	a.HandleOutput([]byte(`{"type":"result","session_id":"session-1","parent_tool_use_id":"spawn-1","is_error":false}`))
+	a.resumeState = &codebuddyResumeState{done: make(chan error, 1)}
+	a.HandleOutput([]byte(codebuddyReplayInit))
+	a.HandleOutput([]byte(`{"type":"result","session_id":"session-1","is_error":false}`))
+	assert.Empty(t, peer.String(), "child completion and history replay do not refresh root settings")
+	a.HandleOutput([]byte(codebuddyResultFinished))
+	require.Eventually(t, func() bool { return a.catalogRefresh.Idle() && sink.SettingsRefreshCount() == 1 }, 30*time.Second, time.Millisecond)
+	assert.Equal(t, 1, strings.Count(peer.String(), `"subtype":"initialize"`))
+	assert.Equal(t, "Concise", a.SettingsSnapshot().SurfacedOptions[OptionOutputStyle])
+}
+
+func TestCodebuddyCoalescesOutputStyleDiscovery(t *testing.T) {
+	t.Parallel()
+	requests := make(chan string, 3)
+	a, peer := newCodebuddySteerAgent(t, nil, func(id string) string { requests <- id; return "" })
+	sink := &agenttest.Sink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.outputStyles = []string{"Default"}
+	a.outputStyle = "Default"
+	ctx := testutil.DeadlineContext(t)
+	nextRequest := func() string {
+		t.Helper()
+		select {
+		case id := <-requests:
+			return id
+		case <-ctx.Done():
+			t.Fatal("the catalog request did not arrive")
+			return ""
+		}
+	}
+	a.HandleOutput([]byte(codebuddyResultFinished))
+	first := nextRequest()
+	for range 4 {
+		require.NoError(t, a.SendInput("Another completed turn.", nil))
+		a.HandleOutput([]byte(codebuddyResultFinished))
+	}
+	answer := codebuddyControlAnswer(`{"output_style":"Default","available_output_styles":["Default","Custom"]}`)
+	a.HandleOutput([]byte(answer(first)))
+	second := nextRequest()
+	a.HandleOutput([]byte(answer(second)))
+	require.Eventually(t, a.catalogRefresh.Idle, 30*time.Second, time.Millisecond)
+	assert.Equal(t, 2, strings.Count(peer.String(), `"subtype":"initialize"`))
+	assert.Empty(t, requests)
+	assert.Equal(t, 1, sink.SettingsRefreshCount())
+}
+
 type codebuddyTurnReleaseSink struct {
 	*agenttest.Sink
 	messagesAtRelease []agenttest.Message
 	resetsAtRelease   int
+}
+
+func TestCodebuddyInitKeepsThePinnedRootSession(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		session  any
+		omit     bool
+		matching bool
+	}{
+		{name: "foreign child", session: "child-session"},
+		{name: "empty", session: ""},
+		{name: "blank", session: " "},
+		{name: "null", session: nil},
+		{name: "absent", omit: true},
+		{name: "matching root", session: "session-1", matching: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.model = "parent-model"
+			a.setTurnActive(true)
+			frame := map[string]any{"type": "system", "subtype": "init", "model": "reported-model", "permissionMode": "plan"}
+			if !tc.omit {
+				frame["session_id"] = tc.session
+			}
+			raw, err := json.Marshal(frame)
+			require.NoError(t, err)
+			a.HandleOutput(raw)
+			assert.Equal(t, "session-1", a.sessionID)
+			if tc.matching {
+				assert.Equal(t, "reported-model", a.model)
+				assert.Equal(t, "plan", a.permissionMode)
+				assert.True(t, a.active, "init does not end a turn")
+				assert.Equal(t, []string{"session-1"}, sink.SessionIDs())
+			} else {
+				assert.Equal(t, "parent-model", a.model)
+				assert.Equal(t, "default", a.permissionMode)
+				assert.True(t, a.active)
+				assert.Empty(t, sink.SessionIDs())
+			}
+			assert.Empty(t, sink.Messages())
+		})
+	}
 }
 
 func TestFrameDrops(t *testing.T) {
@@ -640,6 +814,10 @@ func TestCodebuddyNativePlanToolRequestsASessionPreservingRestart(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a := newOfflineAgent(t, &agenttest.Sink{})
+			if tc.name == "approved plan exit requires its new launch mode" {
+				a.permissionMode = contracts.CodebuddyModePlan
+				a.opts = agent.Options{Options: map[string]string{agent.OptionIDPermissionMode: contracts.CodebuddyModePlan}}
+			}
 			a.setTurnActive(true)
 			for _, frame := range tc.frames {
 				a.HandleOutput([]byte(frame))
@@ -651,7 +829,7 @@ func TestCodebuddyNativePlanToolRequestsASessionPreservingRestart(t *testing.T) 
 	}
 }
 
-func TestCodebuddyNativePlanToolDoesNotRestartWhenLaunchModeAlreadyMatches(t *testing.T) {
+func TestCodebuddyNativePlanToolRestartWithMatchingLaunchMode(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
@@ -683,7 +861,7 @@ func TestCodebuddyNativePlanToolDoesNotRestartWhenLaunchModeAlreadyMatches(t *te
 			for _, frame := range tc.frames {
 				a.HandleOutput([]byte(frame))
 			}
-			assert.False(t, a.NativeTurnRestartRequired(), "the launch mode already carries native Plan into the next prompt")
+			assert.Equal(t, tc.name == "rejected exit", a.NativeTurnRestartRequired(), "rejection requires restoring the native input loop even when launch mode matches")
 		})
 	}
 }
@@ -706,7 +884,7 @@ func TestCodebuddyInitPublishesNativePermissionMode(t *testing.T) {
 	assert.Equal(t, []string{contracts.CodebuddyModePlan, contracts.CodebuddyModeAcceptEdits}, sink.PermissionModes())
 }
 
-func TestCodebuddyRejectedPlanExitSettlesAtNextInit(t *testing.T) {
+func TestCodebuddyRejectedPlanExitSettlesAfterItsResult(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
@@ -746,14 +924,21 @@ func TestCodebuddyRejectedPlanExitSettlesAtNextInit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			sink := &agenttest.Sink{}
-			a := newOfflineAgent(t, sink)
+			sink := &codebuddyTurnReleaseSink{Sink: &agenttest.Sink{}}
+			a := newOfflineAgent(t, sink.Sink)
+			a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
 			use := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"plan-call","name":"` + tc.tool + `","input":{}}]}}`
 			a.HandleOutput([]byte(use))
 			a.HandleOutput([]byte(tc.result))
 			active, published := sink.LastTurnActive()
 			assert.True(t, published)
-			assert.True(t, active, "the native client has not stated a new input boundary yet")
+			assert.Equal(t, tc.wantActive, active)
+			if !tc.wantActive {
+				require.Len(t, sink.messagesAtRelease, 2)
+				assert.JSONEq(t, tc.result, string(sink.messagesAtRelease[1].Content))
+				assert.Equal(t, contracts.CodebuddyModePlan, sink.PermissionMode())
+				assert.True(t, a.NativeTurnRestartRequired())
+			}
 
 			a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"session-1","permissionMode":"plan"}`))
 			active, published = sink.LastTurnActive()
@@ -766,7 +951,7 @@ func TestCodebuddyRejectedPlanExitSettlesAtNextInit(t *testing.T) {
 	}
 }
 
-func TestCodebuddyResultClearsRejectedPlanExitBeforeNextInit(t *testing.T) {
+func TestCodebuddyInitDoesNotRepeatRejectedPlanCompletion(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
@@ -923,4 +1108,85 @@ func TestCodebuddyResultWithoutValidUsageDoesNotBroadcast(t *testing.T) {
 
 	_, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
 	assert.False(t, ok)
+}
+
+func TestCodebuddyRejectedPlanResultOwnershipAndReplay(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		field string
+		value string
+	}{
+		{name: "foreign session", field: "session_id", value: "other-session"},
+		{name: "child result", field: "parent_tool_use_id", value: "child-tool"},
+		{name: "unknown call", field: "tool_use_id", value: "other-call"},
+		{name: "matching root", field: "session_id", value: "session-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &codebuddyTurnReleaseSink{Sink: &agenttest.Sink{}}
+			a := newOfflineAgent(t, sink.Sink)
+			a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"plan-call","name":"ExitPlanMode","input":{}}]}}`))
+			block := map[string]any{"type": "tool_result", "tool_use_id": "plan-call", "is_error": true, "content": []any{map[string]any{"type": "text", "text": codebuddyPlanRejectionPrefix}}}
+			frame := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []any{block}}}
+			if tc.field == "tool_use_id" {
+				block[tc.field] = tc.value
+			} else {
+				frame[tc.field] = tc.value
+			}
+			raw, err := json.Marshal(frame)
+			require.NoError(t, err)
+			a.HandleOutput(raw)
+			if tc.name != "matching root" {
+				assert.True(t, a.active)
+				assert.False(t, a.NativeTurnRestartRequired())
+				assert.Empty(t, sink.PermissionModes())
+				return
+			}
+			assert.False(t, a.active)
+			assert.True(t, a.NativeTurnRestartRequired())
+			states := sink.TurnActives()
+			a.HandleOutput(raw)
+			assert.Equal(t, states, sink.TurnActives(), "a duplicate result does not publish another end")
+			require.NoError(t, a.SendInput("A new turn", nil))
+			a.HandleOutput(raw)
+			a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"session-1","permissionMode":"plan"}`))
+			assert.True(t, a.active, "old rejection and init frames cannot end the new turn")
+		})
+	}
+}
+
+func TestCodebuddyPlanExitRestoresNativeMode(t *testing.T) {
+	t.Parallel()
+	for _, initial := range []string{contracts.CodebuddyModeDefault, contracts.CodebuddyModeAcceptEdits, contracts.CodebuddyModeBypassPermissions, contracts.CodebuddyModePlan} {
+		t.Run(initial, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.permissionMode = initial
+			a.opts = agent.Options{Options: map[string]string{agent.OptionIDPermissionMode: initial}}
+			tool := func(id, name string, success bool) {
+				use, err := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}}}})
+				require.NoError(t, err)
+				a.HandleOutput(use)
+				result, err := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"content": []any{map[string]any{"type": "tool_result", "tool_use_id": id, "is_error": !success, "content": []any{map[string]any{"type": "text", "text": "Native tool result."}}}}}})
+				require.NoError(t, err)
+				a.HandleOutput(result)
+			}
+			tool("enter", "EnterPlanMode", true)
+			tool("enter-again", "EnterPlanMode", true)
+			tool("exit-failed", "ExitPlanMode", false)
+			assert.Equal(t, contracts.CodebuddyModePlan, a.permissionMode)
+			tool("exit", "ExitPlanMode", true)
+			want := initial
+			if initial == contracts.CodebuddyModePlan {
+				want = contracts.CodebuddyModeDefault
+			}
+			assert.Equal(t, want, a.permissionMode)
+			assert.Equal(t, want, sink.PermissionMode())
+			tool("exit-again", "ExitPlanMode", true)
+			assert.Equal(t, want, a.permissionMode, "an exit outside Plan preserves its current mode")
+		})
+	}
 }

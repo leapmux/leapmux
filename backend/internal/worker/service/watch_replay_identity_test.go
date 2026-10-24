@@ -447,7 +447,12 @@ func TestWatchReplayIdentityRejectsChangedRegisteredTuple(t *testing.T) {
 			if field == "zero versus absent" {
 				*first.Agents[0].WindowTailSeq = 0
 			}
-			writer := &replayIdentityWriter{testResponseWriter: base}
+			modesAtError := make(chan map[string]leapmuxv1.WatchMode, 1)
+			writer := &replayIdentityWriter{testResponseWriter: base, onSend: func(message *leapmuxv1.InnerStreamMessage) {
+				if message.GetIsError() {
+					modesAtError <- svc.Watchers.AgentModesForChannel(base.ChannelID())
+				}
+			}}
 			openReplayIdentityWatch(t, dispatcher, first, writer)
 			require.Eventually(t, func() bool { return countCatchUpCompletes(base) == 1 }, 30*time.Second, time.Millisecond)
 			next := proto.Clone(first).(*leapmuxv1.WatchEventsRequest)
@@ -469,6 +474,12 @@ func TestWatchReplayIdentityRejectsChangedRegisteredTuple(t *testing.T) {
 			require.Eventually(t, func() bool {
 				return streamEndedWithError(base) || (lastWatchUpdateAck(t, base) != nil && lastWatchUpdateAck(t, base).UpdateId == 2)
 			}, 30*time.Second, time.Millisecond)
+			select {
+			case modes := <-modesAtError:
+				assert.Empty(t, modes, "an invalid revision retires before its error is sent")
+			case <-time.After(30 * time.Second):
+				t.Fatal("the invalid watch revision did not report an error")
+			}
 			assert.True(t, streamEndedWithError(base))
 			if streamEndedWithError(base) {
 				for _, stream := range base.streamsSnapshot() {

@@ -9,18 +9,20 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
-// Agent manages one fast-agent ACP process. fast-agent speaks standard ACP
-// with no vendor extensions, so the embedded base is the whole runtime.
+// Agent manages one Fast Agent ACP process and its native launch policy.
+// The shared base owns transport; this provider owns its session and child state.
 type Agent struct {
 	acp.Base
-	home        string
-	clock       quartz.Clock
-	childMu     sync.Mutex
-	childState  map[string]*fastagentChildState
-	childDone   map[string]struct{}
-	childClaims map[string]*fastagentChildState
-	childStop   chan struct{}
-	archiveWG   sync.WaitGroup
+	// bypassPermissions is the immutable --no-permissions choice for this process.
+	bypassPermissions bool
+	home              string
+	clock             quartz.Clock
+	childMu           sync.Mutex
+	childState        map[string]*fastagentChildState
+	childDone         map[string]struct{}
+	childClaims       map[string]*fastagentChildState
+	childStop         chan struct{}
+	archiveWG         sync.WaitGroup
 }
 
 // This assertion makes a missing Agent method a compile error.

@@ -1,9 +1,11 @@
 import { expect } from '@playwright/test'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { cssAttributeValue } from '../helpers/cssAttribute'
+import { expandNativeResultView } from '../helpers/nativeResultView'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
+import { nativeToolCallArguments, nativeToolResultContent } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, railedRows } from '../helpers/ui'
+import { assistantBubbles, railedRows, toolCallRow } from '../helpers/ui'
 import { readCodeBuddyShellResult } from './shellResult'
 
 codebuddyTest.describe('CodeBuddy Code tool execution', () => {
@@ -31,4 +33,24 @@ codebuddyTest('runs successful and failed native commands with their actual outp
       return evidence
     },
   })
+})
+
+codebuddyTest('preserves the native empty failure record before and after reload', async ({ native }) => {
+  const call = bashToolCall(native.provider, 'empty-shell-failure', 'exit 7')
+  const { resultRequest } = await runNativeToolTurn(native, { toolCalls: [call], prompt: 'Run the empty failure command.', answer: 'The empty failure was recorded.' })
+  expect(nativeToolCallArguments(resultRequest, call.id)).toMatchObject({ name: 'Bash', arguments: { command: 'exit 7' } })
+  const record = nativeToolResultContent(resultRequest, call.id)
+  expect(record).toBe('Stdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)')
+  if (typeof record !== 'string')
+    throw new Error('The native empty failure result is not text.')
+  for (const reload of [false, true]) {
+    if (reload)
+      await native.page.reload()
+    const row = toolCallRow(native.page, call.id)
+    await expect(row).toHaveCount(1)
+    await expandNativeResultView(row)
+    const preview = row.locator('[data-tool-output-preview]')
+    await expect(preview).toHaveCount(1)
+    expect(await preview.textContent()).toBe(record)
+  }
 })

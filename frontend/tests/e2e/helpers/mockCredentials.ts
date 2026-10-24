@@ -1,8 +1,9 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import type { MockModelCredential } from './mockModelScript'
+import { LETTA_CHATGPT_ACCESS_TOKEN } from './lettaEnvironment'
 import { KIRO_E2E_API_KEY, MOCK_COPILOT_GITHUB_TOKEN, MOCK_IDENTITY_TOKEN, MOCK_SESSION_TOKEN, MODEL_KEY } from './mockAgentEnvironment'
 
-const MOCK_CREDENTIALS = new Set([MODEL_KEY, KIRO_E2E_API_KEY, MOCK_COPILOT_GITHUB_TOKEN, MOCK_IDENTITY_TOKEN, MOCK_SESSION_TOKEN])
+const MOCK_CREDENTIALS = new Set([MODEL_KEY, KIRO_E2E_API_KEY, MOCK_COPILOT_GITHUB_TOKEN, MOCK_IDENTITY_TOKEN, MOCK_SESSION_TOKEN, LETTA_CHATGPT_ACCESS_TOKEN])
 
 /** Read actual credential headers and retain only their kind and validation result. */
 export function mockCredentialReceipt(headers: IncomingHttpHeaders, queryKeys: readonly string[] = []): MockModelCredential {

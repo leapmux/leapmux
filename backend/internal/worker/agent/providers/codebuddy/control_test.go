@@ -277,6 +277,43 @@ func TestCodebuddyBypassApprovesPendingAndLaterTools(t *testing.T) {
 	a.HandleOutput(canUseTool("later"))
 	require.Eventually(t, func() bool { return strings.Contains(peer.String(), `"request_id":"later"`) }, 30*time.Second, time.Millisecond)
 	assert.Equal(t, 2, sink.PublishedControlCount())
+	a.HandleOutput(bytes.ReplaceAll(canUseTool("later-question"), []byte(`"tool_name":"Bash"`), []byte(`"tool_name":"AskUserQuestion"`)))
+	assert.Equal(t, 3, sink.PublishedControlCount())
+	for _, id := range []string{"question", "later-question"} {
+		assert.NotContains(t, peer.String(), `"request_id":"`+id+`"`, "Bypass must not answer a question")
+		answer := []byte(codebuddyControlAnswer(`{"allowed":true,"updatedInput":{"answers":{"Color":"Green"}}}`)(id))
+		require.NoError(t, a.SendRawInput(answer, agent.StopContext{}), "the question must remain answerable")
+		assert.Contains(t, peer.String(), string(answer))
+		require.ErrorContains(t, a.SendRawInput(answer, agent.StopContext{}), "no longer pending")
+	}
+}
+
+func TestCodebuddyInterruptRefusesAQuestionBeforeTheCompletedAssistantFrame(t *testing.T) {
+	t.Parallel()
+	controls := &agenttest.ControlSink{}
+	a := newOfflineAgent(t, &controls.Sink)
+	a.sink = agent.NewProviderServices(controls)
+	stdin := &bytes.Buffer{}
+	a.SetStdinForTest(agenttest.NopStdin(stdin))
+	require.NoError(t, a.SendInput("Ask the scripted question.", nil))
+	beginCodebuddyModelStream(t, a, nil)
+	a.HandleOutput(codebuddyProgressFrame(t, map[string]any{
+		"type": "content_block_start", "index": 0,
+		"content_block": map[string]any{"type": "tool_use", "id": "waiting-control", "name": "AskUserQuestion"},
+	}, nil))
+	a.HandleOutput(codebuddyProgressFrame(t, map[string]any{"type": "message_stop"}, nil))
+	a.HandleOutput(bytes.ReplaceAll(canUseTool("question"), []byte(`"tool_name":"Bash"`), []byte(`"tool_name":"AskUserQuestion"`)))
+	require.Equal(t, 1, controls.PublishedControlCount())
+	stdin.Reset()
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	assert.Equal(t, []string{"question"}, permissionRefusals(t, stdinFrames(t, stdin)))
+	assert.NotContains(t, stdin.String(), `"subtype":"interrupt"`, "the permission refusal must end the native run before the global stop")
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"waiting-control","name":"AskUserQuestion"}]}}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Permission denied for tool(s): AskUserQuestion"]}`))
+	rows := turnEnds(controls.Messages())
+	require.Len(t, rows, 1)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[0].Completion)
+	assert.Contains(t, stdin.String(), `"subtype":"interrupt"`)
 }
 
 func TestCodebuddyRefusesAnUnknownOrRepeatedPermissionAnswer(t *testing.T) {

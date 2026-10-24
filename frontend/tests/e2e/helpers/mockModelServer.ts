@@ -31,6 +31,7 @@ import { handleDroidHttp } from './droidSurface'
 import { createDualVersionListener } from './dualVersionListener'
 import { handleGoogleModelHttp } from './googleModelApi'
 import { handleKiroHttp, kiroRequestMetadata } from './kiroSurface'
+import { createLettaSurface } from './lettaSurface'
 import { MOCK_IDENTITY_TOKEN, MOCK_MODELS, MOCK_SESSION_TOKEN, MODEL_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, waitUnlessDisconnected, writeMockJSON, writeResponseHeaders } from './mockHttp'
@@ -287,6 +288,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   // The native services, in the order that the server offers them a request. A request
   // that no surface claims reaches the model routes below.
   const surfaces: readonly MockSurface[] = [
+    createLettaSurface(scriptHost),
     { handleHttp: (request, response, url) => handleDroidHttp(request, response, url, { modelKey: MODEL_KEY }) },
     { handleHttp: (request, response, url) => handleCopilotHttp(request, response, url, copilotOptions) },
     { handleHttp: (request, response, url) => handleQoderHttp(request, response, url, qoderOptions) },

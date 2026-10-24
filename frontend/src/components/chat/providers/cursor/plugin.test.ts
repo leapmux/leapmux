@@ -21,6 +21,11 @@ describe('cursor provider', () => {
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: '' } })).toBe('agent')
   })
 
+  it('maps bypass to the native launch flag without changing model or mode', () => {
+    expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+    expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
+  })
+
   it('recognizes cursor ask-question control payloads', () => {
     expect(plugin?.controls?.askUserQuestion?.isRequest({ method: 'cursor/ask_question' })).toBe(true)
     expect(plugin?.controls?.askUserQuestion?.isRequest({ method: 'cursor/create_plan' })).toBe(false)

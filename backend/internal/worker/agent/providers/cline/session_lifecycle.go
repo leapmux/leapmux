@@ -183,8 +183,8 @@ func (a *Agent) createPayload(settings clineSettings, spec sessionSpec) map[stri
 		"enableTeams":         true,
 		"clientContributions": contributions(settings.sessionMode()),
 	}
-	for key, value := range reasoningFields(settings.effort) {
-		runtimeOptions[key] = value
+	for key, value := range reasoningFields(settings) {
+		sessionConfig[key] = value
 	}
 	if extensions := settings.configExtensions(); extensions != nil {
 		runtimeOptions["configExtensions"] = extensions

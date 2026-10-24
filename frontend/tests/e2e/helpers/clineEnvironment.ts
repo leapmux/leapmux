@@ -14,7 +14,9 @@ export interface ClineEnvironmentOptions {
    */
   providerID: string
   modelID: string
-  mcpEchoServer: McpProbeServer
+  /** Optional private provider defaults for reasoning. */
+  reasoning?: { enabled?: boolean, effort?: string }
+  mcpEchoServer?: McpProbeServer
 }
 
 /**
@@ -50,8 +52,9 @@ export function createClineEnvironment(options: ClineEnvironmentOptions): Record
   const writtenAt = Date.now()
   writePrivateJSON(join(settingsDir, 'providers.json'), clineProviders(options, writtenAt))
   writePrivateJSON(join(settingsDir, 'global-settings.json'), { telemetryOptOut: true, autoUpdateEnabled: false })
+  const echoServer = options.mcpEchoServer
   writePrivateJSON(join(settingsDir, 'cline_mcp_settings.json'), {
-    mcpServers: { [options.mcpEchoServer.name]: { transport: { type: 'stdio', command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args] } } },
+    mcpServers: echoServer ? { [echoServer.name]: { transport: { type: 'stdio', command: echoServer.command, args: [...echoServer.args] } } } : {},
   })
   writePrivateJSON(join(cacheDir, 'feature-flags.json'), clineFeatureFlags(writtenAt))
   return {
@@ -96,14 +99,20 @@ export function createClineEnvironment(options: ClineEnvironmentOptions): Record
  * Cline treats a schema failure as absent settings.
  * An entry without updatedAt selects the built-in provider endpoint, which the private proxy refuses.
  */
-export function clineProviders(options: Pick<ClineEnvironmentOptions, 'providerID' | 'modelID' | 'modelKey' | 'baseURL'>, updatedAt: number): Record<string, unknown> {
+export function clineProviders(options: Pick<ClineEnvironmentOptions, 'providerID' | 'modelID' | 'modelKey' | 'baseURL' | 'reasoning'>, updatedAt: number): Record<string, unknown> {
   return {
     version: 1,
     lastUsedProvider: options.providerID,
     modes: {},
     providers: {
       [options.providerID]: {
-        settings: { provider: options.providerID, apiKey: options.modelKey, model: options.modelID, baseUrl: options.baseURL },
+        settings: {
+          provider: options.providerID,
+          apiKey: options.modelKey,
+          model: options.modelID,
+          baseUrl: options.baseURL,
+          ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
+        },
         updatedAt: new Date(updatedAt).toISOString(),
         tokenSource: 'manual',
       },

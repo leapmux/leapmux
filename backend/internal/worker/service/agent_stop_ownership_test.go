@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 )
 
 type heldStopCall struct {
@@ -328,4 +330,33 @@ func TestEscalationDoesNotShareAnOldTurnResultWithANewTurn(t *testing.T) {
 	require.NoError(t, <-oldDone, "an obsolete escalation changes no replacement turn")
 	require.ErrorIs(t, <-currentDone, launchFailure)
 	assert.Equal(t, int32(1), launches.Load())
+}
+
+func TestInterruptAgentPreservesProviderFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		failure error
+		code    codes.Code
+		message string
+	}{
+		{name: "provider failure", failure: errors.New("the native operation refused interruption"), code: codes.Internal, message: "the native operation refused interruption"},
+		{name: "native restriction", failure: &agent.InterruptUnavailableError{Message: "the native operation cannot be interrupted"}, code: codes.FailedPrecondition, message: "the native operation cannot be interrupted"},
+		{name: "deadline", failure: context.DeadlineExceeded, code: codes.DeadlineExceeded, message: "deadline exceeded"},
+		{name: "cancelled", failure: context.Canceled, code: codes.Canceled, message: "context canceled"},
+		{name: "missing agent", failure: agent.ErrAgentNotFound, code: codes.NotFound, message: "agent not found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, dispatcher, _, provider := stopOwnershipFixture(t)
+			writer, done := dispatchHeldStop(dispatcher, false)
+			call := receiveHeldStop(t, provider)
+			finishHeldStop(t, call, done, fmt.Errorf("provider stop: %w", tc.failure))
+			failures := writer.rejections()
+			require.Len(t, failures, 1)
+			assert.Equal(t, int32(tc.code), failures[0].code)
+			assert.Contains(t, failures[0].message, tc.message)
+			assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+		})
+	}
 }

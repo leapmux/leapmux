@@ -2,6 +2,7 @@ package codebuddy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -66,10 +67,17 @@ func codebuddySessionArgs(resumeSessionID string) ([]string, string, error) {
 
 // Start spawns one CodeBuddy process and begins reading its output.
 //
-// CodeBuddy emits no init frame before the first user prompt. Start reads its
-// model catalog through a control request and pins the session ID at launch.
+// Start declares host capabilities and reads the model catalog before publishing
+// the session. A resumed process first replays its history, which the Worker
+// consumes because it already owns the transcript.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	thinking := codebuddyThinkingValue(opts.Get(OptionThinking))
+	thinkingOverride, err := codebuddyThinkingOverride(thinking)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
 	registration := Registration()
 	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
@@ -89,6 +97,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		"-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
+		"--include-partial-messages",
 		"--setting-sources", "user",
 		"--permission-mode", permissionModeFlag(opts.PermissionMode()),
 	}
@@ -97,6 +106,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	if model := opts.Model(); model != "" {
 		baseArgs = append(baseArgs, "--model", model)
+	}
+	settings := codebuddyNativeSettings{OutputStyle: opts.Get(OptionOutputStyle), AlwaysThinkingEnabled: thinkingOverride}
+	if settings.OutputStyle != "" || settings.AlwaysThinkingEnabled != nil {
+		encodedSettings, err := json.Marshal(settings)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("encode CodeBuddy startup settings: %w", err)
+		}
+		baseArgs = append(baseArgs, "--settings", string(encodedSettings))
 	}
 	baseArgs = append(baseArgs, sessionArgs...)
 
@@ -119,14 +137,20 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
+	var resumeState *codebuddyResumeState
+	if opts.ResumeSessionID != "" {
+		resumeState = &codebuddyResumeState{done: make(chan error, 1)}
+	}
 
 	a := &Agent{
 		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codebuddy", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		sink:           agent.NewModelProgressResetSink(sink),
 		opts:           opts,
 		sessionID:      sessionID,
+		resumeState:    resumeState,
 		model:          opts.Model(),
 		effort:         effort,
+		thinkingChoice: thinking,
 		permissionMode: permissionModeWire(opts.PermissionMode()),
 		pendingControl: make(map[string]chan<- codebuddyControlResult),
 	}
@@ -137,6 +161,18 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.DrainStderr(stderrPipe)
 	scanner := agent.NewStdoutScanner(stdout)
 	go a.readOutputLoop(scanner)
+	initialization, err := a.initializeCapabilities(opts.EffectiveStartupTimeout())
+	if err != nil {
+		startupErr := a.FormatStartupError("initialization", err)
+		a.Stop()
+		return nil, startupErr
+	}
+	if initialization.HasOutputStyleCatalog {
+		a.mu.Lock()
+		a.outputStyles = normalizeCodebuddyOutputStyles(initialization.OutputStyles)
+		a.outputStyle = codebuddyOutputStyleName(a.outputStyles, initialization.OutputStyle)
+		a.mu.Unlock()
+	}
 	catalogErr := a.loadModelCatalog()
 	select {
 	case <-a.ProcessDone():
@@ -150,6 +186,17 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	if catalogErr != nil {
 		slog.Warn("codebuddy: model catalog unavailable", "agent_id", a.AgentID(), "error", catalogErr)
+	}
+	if resumeState != nil {
+		resumeErr, err := providerkit.AwaitReply(&a.Process, ctx, resumeState.done, "CodeBuddy history replay", opts.EffectiveStartupTimeout())
+		if err == nil {
+			err = resumeErr
+		}
+		if err != nil {
+			startupErr := a.FormatStartupError("session restore", err)
+			a.Stop()
+			return nil, startupErr
+		}
 	}
 
 	a.sink.UpdateSessionID(sessionID)

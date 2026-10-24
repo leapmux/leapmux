@@ -6,6 +6,15 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+// OptionOutputStyle selects Codewhale's native response verbosity for this process.
+const OptionOutputStyle = "outputStyle"
+
+var codewhaleOutputStyleGroup = agent.SelectGroup(OptionOutputStyle, "Output Style", agent.OptionOrderProviderSecond, "auto", []agent.OptionDef{
+	{Id: "auto", Name: "Auto", Description: "Use Codewhale's configured response style", Default: true},
+	{Id: "normal", Name: "Normal", Description: "Use the standard response style"},
+	{Id: "concise", Name: "Concise", Description: "Keep responses brief and direct"},
+})
+
 // Registration states everything the worker knows about Codewhale before any of
 // its agents runs.
 func Registration() agent.Registration {

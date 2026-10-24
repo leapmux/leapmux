@@ -40,7 +40,7 @@ func TestCodebuddyPlanModePermissionMode(t *testing.T) {
 
 	p := codebuddyProvider{}
 	assert.Equal(t, contracts.CodebuddyModePlan, p.PlanModePermissionMode(agent.PlanModeControlEnter))
-	assert.Equal(t, contracts.CodebuddyModeAcceptEdits, p.PlanModePermissionMode(agent.PlanModeControlExit))
+	assert.Empty(t, p.PlanModePermissionMode(agent.PlanModeControlExit), "the native result restores the runtime mode")
 	assert.Empty(t, p.PlanModePermissionMode(agent.PlanModeControlNone))
 }
 
@@ -82,6 +82,23 @@ func TestCodebuddyRegistration(t *testing.T) {
 	assert.Equal(t, "LEAPMUX_CODEBUDDY_DEFAULT_EFFORT", registration.EnvEffortKey)
 	assert.True(t, registration.FixedPermissionModes)
 	assert.Nil(t, registration.DefaultModels, "the catalog is read from the open session")
+	assert.Contains(t, registration.AdditionalOptionIDs, OptionOutputStyle)
+	foundThinking := false
+	for _, group := range registration.OptionGroups {
+		if group.GetId() == OptionThinking {
+			foundThinking = true
+			assert.Equal(t, codebuddyThinkingAuto, group.GetDefaultValue())
+			var choices []string
+			for _, option := range group.GetOptions() {
+				choices = append(choices, option.GetId())
+			}
+			assert.Equal(t, []string{codebuddyThinkingAuto, codebuddyThinkingOff, codebuddyThinkingOn}, choices)
+		}
+	}
+	assert.True(t, foundThinking, "the static registry must expose the thinking preference")
+	for _, group := range registration.OptionGroups {
+		assert.NotEqual(t, OptionOutputStyle, group.GetId(), "styles come from native discovery")
+	}
 }
 
 // TestCodebuddyReadsItsSessionStore seeds a transcript in CodeBuddy's store and
@@ -163,7 +180,9 @@ func TestCodebuddyTurnFrames(t *testing.T) {
 		{Name: "assistant arms the turn", Line: `{"type":"assistant","session_id":"s","message":{"content":[]}}`, Moves: true},
 		{Name: "result ends the turn", Line: `{"type":"result","num_tool_uses":0}`, Moves: true},
 		{Name: "system init is inert", Line: `{"type":"system","subtype":"init","session_id":"s"}`, Moves: false},
-		{Name: "unknown type is inert", Line: `{"type":"stream_event"}`, Moves: false},
+		{Name: "malformed stream event is inert", Line: `{"type":"stream_event"}`, Moves: false},
+		{Name: "native model start begins the turn", Line: `{"type":"stream_event","session_id":"session-1","_requestId":"request-1","_messageId":"model-1","event":{"type":"message_start","message":{"id":"model-1"}}}`, Moves: true},
+		{Name: "unknown type is inert", Line: `{"type":"future_native_event"}`, Moves: false},
 	}, func(t *testing.T, tc agenttest.TurnFrameCase) []bool {
 		sink := &agenttest.Sink{}
 		a := newOfflineAgent(t, sink)

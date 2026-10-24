@@ -33,10 +33,12 @@ type replaySink struct {
 	sender   channel.ResponseWriter
 	replayID uint64
 	dead     error
+	onRetire func()
 }
 
-func newReplaySink(sender channel.ResponseWriter, replayID uint64) *replaySink {
-	return &replaySink{sender: sender, replayID: replayID}
+// newReplaySink requires an explicit retirement callback. Only an ownerless replay passes nil.
+func newReplaySink(sender channel.ResponseWriter, replayID uint64, onRetire func()) *replaySink {
+	return &replaySink{sender: sender, replayID: replayID, onRetire: onRetire}
 }
 
 // send emits one event, or does nothing once the transport is known dead.
@@ -56,7 +58,7 @@ func (s *replaySink) send(resp *leapmuxv1.WatchEventsResponse) {
 		return
 	}
 	if transportDead(err) {
-		s.dead = err
+		s.retire(err)
 	}
 }
 
@@ -66,8 +68,19 @@ func (s *replaySink) fail(err error) {
 	if err == nil || s.dead != nil {
 		return
 	}
-	s.dead = err
+	s.retire(err)
 	sendStreamError(s.sender, codes.Internal, "failed to prepare transcript replay")
+}
+
+// retire removes live interest before a failed replay can expose its ending frame.
+func (s *replaySink) retire(err error) {
+	if err == nil || s.dead != nil {
+		return
+	}
+	s.dead = err
+	if s.onRetire != nil {
+		s.onRetire()
+	}
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.

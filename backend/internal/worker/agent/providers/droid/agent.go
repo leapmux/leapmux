@@ -1,11 +1,8 @@
 package droid
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -132,6 +129,7 @@ type droidModel struct {
 	id          string
 	displayName string
 	efforts     []string
+	supportsPDF bool
 }
 
 // droidTool is one open tool call.
@@ -145,10 +143,17 @@ type droidTool struct {
 	input      json.RawMessage
 }
 
+type droidModelScopeState uint8
+
+const (
+	droidModelScopeStreaming droidModelScopeState = iota
+	droidModelScopeCompleted
+)
+
 // droidModelMessage tracks uncommitted scopes and an accepted final boundary.
 // A finalized message cannot reopen when a late delta or commit arrives.
 type droidModelMessage struct {
-	scopes    map[string]struct{}
+	scopes    map[string]droidModelScopeState
 	finalized bool
 }
 
@@ -233,6 +238,9 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		return err
 	}
 
+	// Serialize model-setting changes with attachment validation and native admission.
+	a.settingsApplyMu.Lock()
+	defer a.settingsApplyMu.Unlock()
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 
@@ -248,6 +256,10 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	active := a.turnActive
 	compacting := a.compaction != nil
 	sessionID := a.sessionID
+	var modelErr error
+	if len(message.Files) > 0 {
+		modelErr = a.validatePDFModelLocked()
+	}
 	a.Mu.Unlock()
 
 	if compacting {
@@ -260,12 +272,16 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	} else if active {
 		return agent.ErrAgentBusy
 	}
+	if modelErr != nil {
+		return modelErr
+	}
 
 	params := addUserMessageParams{
 		SessionID:      sessionID,
 		MessageID:      uuid.NewString(),
 		Text:           message.Text,
 		Images:         message.Images,
+		Files:          message.Files,
 		QueuePlacement: droidQueueEndOfTurn,
 	}
 	if !steer {
@@ -303,38 +319,6 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		return err
 	}
 	return nil
-}
-
-// droidUserMessage holds the text and images of one native user message.
-type droidUserMessage struct {
-	Text   string
-	Images []droidInputImage
-}
-
-// buildUserMessage sends text inline and images as native base64 sources.
-func buildUserMessage(content string, attachments []*leapmuxv1.Attachment) (droidUserMessage, error) {
-	parts := []string{}
-	images := []droidInputImage{}
-	if text := strings.TrimSpace(content); text != "" {
-		parts = append(parts, text)
-	}
-	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if err := (droidProvider{}).ValidateAttachment(attachment); err != nil {
-			return droidUserMessage{}, err
-		}
-		switch attachment.Kind {
-		case agent.AttachmentKindImage:
-			images = append(images, droidInputImage{
-				Type: "base64", MediaType: attachment.MIMEType,
-				Data: base64.StdEncoding.EncodeToString(attachment.Data),
-			})
-		case agent.AttachmentKindText:
-			parts = append(parts, providerkit.BuildInlineTextAttachmentBlock(attachment))
-		default:
-			return droidUserMessage{}, fmt.Errorf("factory Droid cannot send the attachment %s", attachment.Filename)
-		}
-	}
-	return droidUserMessage{Text: strings.Join(parts, "\n\n"), Images: images}, nil
 }
 
 // startTurn marks a turn active and publishes the flag. A repeat of the current

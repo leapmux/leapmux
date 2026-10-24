@@ -112,9 +112,9 @@ type Provider interface {
 	// persist a mode the others reject, and the agent would then report a mode its
 	// session never entered.
 	//
-	// Returns "" for a provider whose PlanModeControl is always None; such a
-	// provider never reaches a plan-mode transition, and the caller leaves the
-	// mode alone.
+	// Returns "" when the provider has no plan-mode transition or when its
+	// native result handler publishes a runtime-dependent mode. The caller
+	// leaves the mode alone until the provider reports it.
 	PlanModePermissionMode(kind PlanModeControlKind) string
 	// IsSelfDisplayingControlTool reports whether a control response for the
 	// named control request (`toolName` is a Claude tool name; other providers

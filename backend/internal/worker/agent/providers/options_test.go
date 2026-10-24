@@ -16,10 +16,8 @@ import (
 // MODEL (effort default stamped by resolveProviderDefaults) from every other provider,
 // whose effort, if any, is server-driven and model-independent.
 //
-// Claude, Codex and Pi state their tiers in a static catalog. Native Copilot,
-// Codewhale, Kimi Code, MiMo Code, Cline and Muse Code have no static catalog -- the account or the
-// user's configuration decides which models exist -- so each raises
-// Registration.ManagesEffort instead; a model switch must still rebuild its tiers.
+// Claude, Codex and Pi state their tiers in a static catalog. Dynamic providers
+// set Registration.ManagesEffort instead, so a model switch rebuilds their tiers.
 //
 // The two sets are a PARTITION of the generated provider table, so the "false" side is
 // derived rather than retyped: a provider added later lands in it automatically, and a
@@ -44,6 +42,7 @@ func TestProviderManagesEffort(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:        true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:            true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE:        true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA:            true,
 	}
 	for _, p := range agentlabels.AllProviders() {
 		if managed[p] {

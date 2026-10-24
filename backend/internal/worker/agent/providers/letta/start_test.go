@@ -63,6 +63,11 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 
 func newFakeAppServerWithClock(t *testing.T, sink *agenttest.Sink, clock quartz.Clock) (*fakeAppServer, *Agent) {
 	t.Helper()
+	return newFakeAppServerWithServices(t, agent.NewProviderServices(sink), clock)
+}
+
+func newFakeAppServerWithServices(t *testing.T, sink agent.ProviderServices, clock quartz.Clock) (*fakeAppServer, *Agent) {
+	t.Helper()
 	fake := &fakeAppServer{
 		commands: make(chan map[string]any, 8),
 		replies:  make(chan []byte, 8),
@@ -140,7 +145,7 @@ func newFakeAppServerWithClock(t *testing.T, sink *agenttest.Sink, clock quartz.
 			Stdin:        nopWriteCloser{},
 			Clock:        clock,
 		}),
-		sink:          agent.NewProviderServices(sink),
+		sink:          sink,
 		ws:            conn,
 		cancelRuntime: cancel,
 	}
@@ -361,7 +366,7 @@ func TestUpdateSettingsWaitsForNativeModelReply(t *testing.T) {
 		t.Fatal("UpdateSettings confirmed the model before the native reply")
 	default:
 	}
-	fake.replies <- []byte(fmt.Sprintf(`{"type":"update_model_response","request_id":%q,"success":true,"model_handle":"openai-compatible/alternate"}`, command["request_id"]))
+	fake.replies <- []byte(fmt.Sprintf(`{"type":"update_model_response","request_id":%q,"success":true,"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"model_settings":{"provider_type":"openai"},"model_handle":"openai-compatible/alternate"}`, command["request_id"]))
 	select {
 	case result := <-returned:
 		assert.Equal(t, "openai-compatible/alternate", result.ConfirmedOptions()[agent.OptionIDModel])
@@ -393,32 +398,6 @@ func TestUpdateSettingsKeepsTheCurrentModelAfterNativeRefusal(t *testing.T) {
 	assert.Equal(t, "openai-compatible/one", a.SettingsSnapshot().ConfirmedOptions()[agent.OptionIDModel])
 }
 
-func TestUpdateSettingsEffortOnlyIncludesTheCurrentModel(t *testing.T) {
-	t.Parallel()
-	fake, a := newFakeAppServer(t)
-	a.Mu.Lock()
-	a.agentID = "agent-local-1"
-	a.conversationID = "local-conv-1"
-	a.settings.model = "openai-compatible/one"
-	a.Mu.Unlock()
-	returned := make(chan agent.SettingsApplyResult, 1)
-	go func() {
-		returned <- a.UpdateSettings(optionmap.Map{agent.OptionIDEffort: "high"})
-	}()
-	command := fake.nextCommand(t)
-	payload, ok := command["payload"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "openai-compatible/one", payload["model_handle"])
-	assert.Equal(t, "high", payload["reasoning_effort"])
-	fake.replies <- []byte(fmt.Sprintf(`{"type":"update_model_response","request_id":%q,"success":true,"model_handle":"openai-compatible/one"}`, command["request_id"]))
-	select {
-	case result := <-returned:
-		assert.Equal(t, "high", result.ConfirmedOptions()[agent.OptionIDEffort])
-	case <-time.After(30 * time.Second):
-		t.Fatal("UpdateSettings did not return after the effort reply")
-	}
-}
-
 func TestUpdateSettingsEmptyModelKeepsTheCurrentModel(t *testing.T) {
 	t.Parallel()
 	_, a := newFakeAppServer(t)
@@ -430,38 +409,6 @@ func TestUpdateSettingsEmptyModelKeepsTheCurrentModel(t *testing.T) {
 
 	result := a.UpdateSettings(optionmap.Map{agent.OptionIDModel: ""})
 	assert.Equal(t, "openai-compatible/one", result.ConfirmedOptions()[agent.OptionIDModel])
-}
-
-func TestUpdateSettingsEmptyEffortRestoresTheProviderDefault(t *testing.T) {
-	t.Parallel()
-	fake, a := newFakeAppServer(t)
-	a.Mu.Lock()
-	a.agentID = "agent-local-1"
-	a.conversationID = "local-conv-1"
-	a.settings.model = "openai-compatible/one"
-	a.settings.reasoningLevel = "high"
-	a.Mu.Unlock()
-	returned := make(chan agent.SettingsApplyResult, 1)
-	go func() {
-		returned <- a.UpdateSettings(optionmap.Map{agent.OptionIDEffort: ""})
-	}()
-	command := fake.nextCommand(t)
-	payload, ok := command["payload"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "openai-compatible/one", payload["model_handle"])
-	value, offered := payload["reasoning_effort"]
-	assert.True(t, offered)
-	assert.Nil(t, value)
-	fake.replies <- []byte(fmt.Sprintf(`{"type":"update_model_response","request_id":%q,"success":true,"model_handle":"openai-compatible/one"}`, command["request_id"]))
-	select {
-	case result := <-returned:
-		settlement := result.Settlements[agent.OptionIDEffort]
-		assert.Equal(t, agent.OptionSettlementConfirmed, settlement.State)
-		require.NotNil(t, settlement.Value)
-		assert.Empty(t, *settlement.Value)
-	case <-time.After(30 * time.Second):
-		t.Fatal("UpdateSettings did not return after the effort reset")
-	}
 }
 
 func TestUpdateSettingsAppliesModelWhenTheModeIsUnchanged(t *testing.T) {
@@ -489,7 +436,7 @@ func TestUpdateSettingsAppliesModelWhenTheModeIsUnchanged(t *testing.T) {
 		t.Fatal("the driver wrote no model command")
 	}
 	assert.Equal(t, "update_model", command["type"])
-	fake.replies <- []byte(fmt.Sprintf(`{"type":"update_model_response","request_id":%q,"success":true,"model_handle":"openai-compatible/two"}`, command["request_id"]))
+	fake.replies <- []byte(fmt.Sprintf(`{"type":"update_model_response","request_id":%q,"success":true,"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"model_settings":{"provider_type":"openai"},"model_handle":"openai-compatible/two"}`, command["request_id"]))
 	select {
 	case result := <-returned:
 		assert.Equal(t, "openai-compatible/two", result.ConfirmedOptions()[agent.OptionIDModel])

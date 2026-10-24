@@ -8,9 +8,10 @@ import { AgentProviderIcon, agentProviderLabel } from '~/components/common/Agent
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeBranchRowLabel, WorkingTreeIcon } from '~/components/common/WorkingTree'
+import { RATE_LIMIT_STATUS } from '~/generated/contracts/session-info'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
-import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, rateLimitPopoverLabel } from '~/lib/rateLimitUtils'
+import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, rateLimitPopoverLabel, rateLimitStatusLabel } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
@@ -335,16 +336,13 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
               ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
 
             const status = info.status
-            const exceeded = !!status && status !== 'allowed' && status !== 'allowed_warning'
+            const exceeded = !!status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning
             const resetsAt = getResetsAt(info)
 
             const statusParts: string[] = []
-            if (status === 'allowed')
-              statusParts.push('Allowed')
-            else if (status === 'allowed_warning')
-              statusParts.push('Warning')
-            else if (exceeded)
-              statusParts.push('Exceeded')
+            const statusLabel = rateLimitStatusLabel(status)
+            if (statusLabel)
+              statusParts.push(statusLabel)
             if (typeof info.utilization === 'number' && !exceeded)
               statusParts.push(`${Math.round(info.utilization * 100)}% used`)
             if (info.isUsingOverage)

@@ -413,16 +413,115 @@ describe('validateCodingAgentMatrix', () => {
         .toContain('cell claude-code/text-attachments is agent-limit but its detail note is not longer than its user note')
     })
 
+    it.each(['opencode', 'kilo'])('records native completed compaction support for %s', (provider) => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['compaction-notice'][provider]).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: `frontend/tests/e2e/${provider}/compaction-notice.spec.ts`,
+      })
+    })
+
     it('records the audited support totals and the native question and compaction corrections', () => {
       const { features, checklist, providerContract } = readCodingAgentMatrix()
       expect(validateCodingAgentMatrix(features, checklist, providerContract)).toEqual([])
+      expect(checklist.cells['extended-thinking'].cline).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/cline/extended-thinking.spec.ts',
+      })
+      expect(checklist.cells['extended-thinking']['codebuddy-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codebuddy-code/extended-thinking.spec.ts',
+      })
+      expect(checklist.cells['output-style']['codebuddy-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codebuddy-code/output-style.spec.ts',
+      })
       const counts = { 'supported': 0, 'agent-limit': 0, 'leapmux-limit': 0 }
       for (const row of Object.values(checklist.cells)) {
         for (const cell of Object.values(row))
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1093, 'agent-limit': 420, 'leapmux-limit': 77 })
+      expect(counts).toEqual({ 'supported': 1123, 'agent-limit': 419, 'leapmux-limit': 48 })
+      expect(checklist.cells['agent-questions']['codebuddy-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codebuddy-code/agent-questions.spec.ts',
+      })
+      expect(checklist.cells['rate-limit-state']['letta-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/letta-code/rate-limit-state.spec.ts',
+      })
+      expect(checklist.cells['reasoning-effort']['letta-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/letta-code/reasoning-effort.spec.ts',
+      })
+      expect(checklist.cells['compaction-notice'].reasonix).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/reasonix/compaction-notice.spec.ts',
+      })
+      expect(checklist.cells['bypass-permissions-shortcut']['fast-agent']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/fast-agent/bypass-permissions-shortcut.spec.ts',
+      })
+      expect(checklist.cells['bypass-permissions-shortcut'].dirac).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/dirac/bypass-permissions-shortcut.spec.ts',
+      })
+      expect(checklist.cells['fast-mode'].amp).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/amp/fast-mode.spec.ts',
+      })
+      for (const feature of ['extended-thinking', 'fast-mode']) {
+        expect(checklist.cells[feature].cursor).toMatchObject({
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: `frontend/tests/e2e/cursor/${feature}.spec.ts`,
+        })
+      }
+      for (const feature of ['session-goal-set-and-clear', 'session-goal-pause-and-resume', 'send-to-a-subagent', 'interrupt-a-subagent', 'output-style', 'fast-mode']) {
+        expect(checklist.cells[feature]['oh-my-pi']).toMatchObject({
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: `frontend/tests/e2e/oh-my-pi/${feature}.spec.ts`,
+        })
+      }
       for (const feature of ['smart-permissions-shortcut', 'bypass-permissions-shortcut']) {
         expect(checklist.cells[feature].junie).toMatchObject({
           support: 'supported',

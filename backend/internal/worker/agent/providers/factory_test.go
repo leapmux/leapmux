@@ -20,7 +20,7 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 	for _, provider := range agentlabels.AllProviders() {
 		t.Run(provider.String(), func(t *testing.T) {
 			groups := registry.StaticOptionGroups(provider)
-			if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_PI || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT {
+			if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_PI || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX {
 				assert.Empty(t, groups, "this provider discovers its groups at runtime")
 				return
 			}
@@ -57,7 +57,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:       {"gemini-2.5-pro", "gemini-2.5-pro"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:      {"opus", "opus[1m]"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:            {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:           {"default[]", "auto"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:           {"default", "auto"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:   {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:             {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:         {"model/alpha", "model/alpha"},
