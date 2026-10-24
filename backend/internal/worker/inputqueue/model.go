@@ -77,8 +77,10 @@ var (
 	ErrTurnEnded             = errors.New("active turn ended before steering")
 	ErrSteeringState         = errors.New("queue state does not permit steering")
 	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
-	// ErrPreemptionUnsupported is steering's counterpart for the interrupt-only
-	// route: the running provider cannot steer and Preempt refuses outright.
+	// ErrScheduleOrder refuses a move across reorder groups. An immediate item
+	// and a future one never share a segment, and two future items share one
+	// only at exactly the same scheduled instant.
+	ErrScheduleOrder         = errors.New("queued agent input cannot move across reorder groups")
 	ErrPreemptionUnsupported = errors.New("agent provider does not support preemption")
 	// ErrPreemptionState is ErrSteeringState's counterpart. It must not reuse
 	// ErrTurnEnded, whose text states STEERING and asserts that a turn ended: the
@@ -158,13 +160,18 @@ type StoredItem struct {
 	PrepareContext   bool
 	ReclassifyOnEdit bool
 	Order            int64
-	State            leapmuxv1.AgentInputState
-	Error            string
-	EditOwner        string
-	Version          uint64
-	ReservedSeq      int64
-	CreatedAt        string
-	UpdatedAt        string
+	// ScheduledAt is the durable send-not-before instant. Nil means immediate;
+	// a past value is immediate at read time. Priority derives from this field
+	// and the Worker's clock, never from Order.
+	ScheduledAt   *time.Time
+	SourcePayload []byte
+	State         leapmuxv1.AgentInputState
+	Error         string
+	EditOwner     string
+	Version       uint64
+	ReservedSeq   int64
+	CreatedAt     string
+	UpdatedAt     string
 }
 
 // requiresContextReplacement identifies a plan approval that replaces the blocked provider turn.
@@ -180,6 +187,11 @@ type DispatchItem struct {
 type SnapshotItem struct {
 	StoredItem
 	Metadata []AttachmentMetadata
+	// ReorderGroup is the Worker-derived reorder group at the snapshot's
+	// captured instant: empty for immediate/past-due items, the canonical
+	// scheduled_at for future ones. Clients compare it to decide which moves
+	// are legal; they never derive it themselves.
+	ReorderGroup string
 	// CanSteer uses the same predicate as the store's steering guard.
 	CanSteer bool
 	// CanPreempt uses the same predicate the manager's preemption guard applies:
@@ -222,6 +234,12 @@ type NewItem struct {
 	PrepareContext   bool
 	ReclassifyOnEdit bool
 	Attachments      []Attachment
+	// ScheduledAt schedules the item; nil means immediate. The Worker's
+	// automatic-retry kinds require it.
+	ScheduledAt *time.Time
+	// SourcePayload is the provider source an automatic retry carries into the
+	// accepted transcript's supplemental content. Empty for ordinary input.
+	SourcePayload []byte
 }
 
 type PreparedDispatch struct {

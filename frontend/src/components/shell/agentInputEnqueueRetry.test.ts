@@ -145,3 +145,19 @@ describe('agent input enqueue retry', () => {
     expect(retry.inputIdFor(second)).toBe(secondId)
   })
 })
+
+// The schedule is part of the payload identity: a resend that changes only the
+// schedule must not reuse the input ID the Worker already bound to the old
+// deadline.
+describe('agent input enqueue retry schedule', () => {
+  it('reuses the ID for an identical schedule and mints one for each change', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+
+    expect(retry.inputIdFor(scheduled)).toBe('input-1')
+    expect(retry.inputIdFor({ ...scheduled })).toBe('input-1')
+    expect(retry.inputIdFor({ ...message('later') })).toBe('input-2')
+    expect(retry.inputIdFor({ ...message('later'), scheduledAt: '2031-01-01T09:00:00.000Z' })).toBe('input-3')
+  })
+})

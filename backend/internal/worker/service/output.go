@@ -300,12 +300,13 @@ type OutputHandler struct {
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
 
-	// Auto-continue timers keyed by agent_id + reason.
-	autoContinue sync.Map // scheduleKey -> *autoContinueTimerState
-
-	// sendMessageFunc is called by auto-continue to inject a synthetic
-	// user message. Set via SetSendMessageFunc in service.New.
-	sendMessageFunc func(agentID, content string)
+	// Auto-retry wiring: providers ask for a scheduled retry through their
+	// service facet, and the input queue owns the item. Set via
+	// SetAutoRetryFuncs in service.New; nil in tests that build an
+	// OutputHandler directly, where a request is logged and dropped.
+	scheduleAutoRetry  func(agentID string, schedule agent.AutoRetrySchedule)
+	cancelAutoRetry    func(agentID string, kind leapmuxv1.AgentInputKind)
+	cancelAllAutoRetry func(agentID string)
 
 	// supportsSteering answers whether the running provider can add the queue
 	// head to an active turn. Set via SetSupportsSteeringFunc in service.New;
@@ -431,11 +432,45 @@ func (h *OutputHandler) ResetSpanTracker(agentID string) {
 	h.trackers.reset(agentID)
 }
 
-// SetSendMessageFunc sets the callback used by auto-continue to inject
-// a synthetic user message into an agent. Must be called before any
-// agent output is processed.
-func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
-	h.sendMessageFunc = fn
+// SetAutoRetryFuncs wires the automatic-retry callbacks the input queue owns:
+// one schedule request per provider report, one kind-scoped cancellation for a
+// provider's own cancel, and one both-kinds cancellation for lifecycle
+// cleanup. Call before any agent output is processed.
+func (h *OutputHandler) SetAutoRetryFuncs(
+	schedule func(agentID string, schedule agent.AutoRetrySchedule),
+	cancel func(agentID string, kind leapmuxv1.AgentInputKind),
+	cancelAll func(agentID string),
+) {
+	h.scheduleAutoRetry = schedule
+	h.cancelAutoRetry = cancel
+	h.cancelAllAutoRetry = cancelAll
+}
+
+// scheduleAutoRetryRequest forwards one provider schedule request to the
+// queue. A late request for a closed agent is refused by the queue itself.
+func (h *OutputHandler) scheduleAutoRetryRequest(agentID string, schedule agent.AutoRetrySchedule) {
+	if h.scheduleAutoRetry == nil {
+		slog.Warn("auto-retry request dropped: no queue wiring", "agent_id", agentID, "kind", schedule.Kind.String())
+		return
+	}
+	h.scheduleAutoRetry(agentID, schedule)
+}
+
+// cancelAutoRetryKind forwards one provider cancellation of its retry kind.
+func (h *OutputHandler) cancelAutoRetryKind(agentID string, kind leapmuxv1.AgentInputKind) {
+	if h.cancelAutoRetry == nil {
+		return
+	}
+	h.cancelAutoRetry(agentID, kind)
+}
+
+// cancelAutoRetryRequest removes every pending retry of one agent. Runtime
+// cleanup calls it after the transcript mutation lock is released.
+func (h *OutputHandler) cancelAutoRetryRequest(agentID string) {
+	if h.cancelAllAutoRetry == nil {
+		return
+	}
+	h.cancelAllAutoRetry(agentID)
 }
 
 // SetSupportsSteeringFunc wires the steering-capability answer that every
@@ -519,6 +554,9 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 		mutation.Unlock()
 		h.watcher.DrainAgentEvents(agentID)
 		h.drainProgressClears(retiredIDs)
+		// Retries die with the agent. The queue's own coordinator and observer
+		// work must not run beneath the transcript mutation lock.
+		h.cancelAutoRetryRequest(agentID)
 		return
 	}
 }
@@ -559,6 +597,9 @@ func (h *OutputHandler) cleanupChildMaps(childID string) {
 		}
 		mutation.Unlock()
 		h.watcher.DrainAgentEvents(childID)
+		// The child's retries die with its transcript, outside the
+		// transcript mutation lock like every queue operation here.
+		h.cancelAutoRetryRequest(childID)
 		return
 	}
 }
@@ -572,7 +613,6 @@ func (h *OutputHandler) cleanupChildMapsLocked(childID string, removal *activity
 	h.lastNotifThread.Delete(childID)
 	h.trackers.delete(childID)
 	h.todos.Delete(childID)
-	h.cleanupAutoContinue(childID)
 	return true
 }
 
@@ -1866,12 +1906,12 @@ func (s *agentOutputSink) UpdatePlan(content []byte, compression leapmuxv1.Conte
 	s.h.updatePlan(s.agentID, content, compression, title)
 }
 
-func (s *agentOutputSink) ScheduleAutoContinue(schedule agent.AutoContinueSchedule) {
-	s.h.scheduleAutoContinue(s.agentID, schedule)
+func (s *agentOutputSink) ScheduleAutoRetry(schedule agent.AutoRetrySchedule) {
+	s.h.scheduleAutoRetryRequest(s.agentID, schedule)
 }
 
-func (s *agentOutputSink) CancelAutoContinue(reason agent.AutoContinueReason) {
-	s.h.cancelAutoContinue(s.agentID, reason)
+func (s *agentOutputSink) CancelAutoRetry(kind leapmuxv1.AgentInputKind) {
+	s.h.cancelAutoRetryKind(s.agentID, kind)
 }
 
 // --- Internal helpers ---

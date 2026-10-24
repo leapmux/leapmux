@@ -877,7 +877,7 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 		// The root result ends this response. Native session state can keep the turn active for a queued steer.
 		// A build that forwards a child result routes it above, so that result cannot change the root turn.
 		// PersistTurnEnd already recorded the tool-call count. Interrupted and failed responses use this path also.
-		providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
+		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
 
 		// Reset all span tracking so the next turn starts clean.
 		a.sink.ResetSpans()
@@ -1538,7 +1538,7 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 	blocked, resumeAt := claudeRateLimitResume(
 		rlInfo.Status, rlInfo.ResetsAt, usingOverage, rlInfo.OverageStatus, rlInfo.OverageResetsAt)
 	if !blocked {
-		a.sink.CancelAutoContinue(agent.AutoContinueReasonRateLimit)
+		a.sink.CancelAutoRetry(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
 		return
 	}
 	// Blocked, but a resume can only be scheduled if the event says when the
@@ -1548,9 +1548,9 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 		return
 	}
 
-	a.sink.ScheduleAutoContinue(agent.AutoContinueSchedule{
-		Reason:        agent.AutoContinueReasonRateLimit,
-		DueAt:         time.Unix(*resumeAt, 0).UTC(),
+	a.sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
+		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+		ScheduledAt:   time.Unix(*resumeAt, 0).UTC(),
 		SourcePayload: append([]byte(nil), rle.RateLimitInfo...),
 	})
 }

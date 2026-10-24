@@ -68,7 +68,7 @@ export function createAgentInputQueueOperations(deps: {
       clientId: deps.clientId(),
       takeover,
     }))
-  const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[]) => {
+  const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[], scheduledAt?: string) => {
     await runQueueRpc('Failed to save queued input', () => workerRpc.updateQueuedAgentInput(queueWorkerID(item), {
       agentId: item.agentId,
       inputId: item.id,
@@ -80,6 +80,9 @@ export function createAgentInputQueueOperations(deps: {
         mimeType: attachment.mimeType,
         data: attachment.data,
       })),
+      // An explicit empty string clears the schedule; undefined leaves the
+      // request shape the caller built.
+      ...(scheduledAt !== undefined ? { scheduledAt } : {}),
     }))
   }
   const cancelQueueEdit = async (item: QueuedAgentInput) => {
@@ -119,7 +122,7 @@ export function createAgentInputQueueOperations(deps: {
     const initialAgentTab = deps.view.getAgentTab(initialAgentID)
     await runQueueRpc('Failed to change queue pause state', () => workerRpc.setAgentInputQueuePaused(initialAgentTab?.workerId ?? '', { agentId: initialAgentID, paused }))
   }
-  const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments?: FileAttachment[]) => {
+  const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments?: FileAttachment[], scheduledAt?: string) => {
     // One read of the focused agent, at send time. The RPC below must reach
     // the agent that the user typed into, never the one that a tab switch
     // focused while the enqueue was in flight.
@@ -132,7 +135,7 @@ export function createAgentInputQueueOperations(deps: {
     deps.forceScrollToBottom()
     const sendAgent = deps.view.getAgentTab(initialAgentID)
     const attachments = fileAttachments ?? []
-    const inputId = enqueueRetry.inputIdFor({ agentId: initialAgentID, kind, text: content, attachments })
+    const inputId = enqueueRetry.inputIdFor({ agentId: initialAgentID, kind, text: content, attachments, ...(scheduledAt !== undefined ? { scheduledAt } : {}) })
     await runQueueRpc('Failed to queue message', () => workerRpc.enqueueAgentInput(sendAgent?.workerId ?? '', {
       agentId: initialAgentID,
       inputId,
@@ -143,14 +146,15 @@ export function createAgentInputQueueOperations(deps: {
         mimeType: attachment.mimeType,
         data: attachment.data,
       })),
+      ...(scheduledAt !== undefined ? { scheduledAt } : {}),
     }))
     enqueueRetry.markAccepted(inputId)
   }
   // One command for each kind that the composer sends. The kind is a wire
   // value of this request, so `AgentInputKind` stays inside this module and no
   // caller selects the enum member.
-  const sendMessage = (content: string, fileAttachments?: FileAttachment[]) =>
-    enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments)
+  const sendMessage = (content: string, fileAttachments?: FileAttachment[], scheduledAt?: string) =>
+    enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments, scheduledAt)
   const sendControlFeedback = (content: string) =>
     enqueueComposerInput(AgentInputKind.CONTROL_FEEDBACK, content)
 

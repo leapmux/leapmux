@@ -6,7 +6,7 @@ import {
   AgentInputState,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isLockedInputState, queueHeadIndex, resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
+import { isLockedInputState, movableSegmentIds, queueHeadIndex, resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
 
 describe('queueHeadIndex', () => {
   it('skips awaiting-echo rows', () => {
@@ -158,5 +158,84 @@ describe('resolveQueueMove', () => {
 
   it('refuses an empty list', () => {
     expect(resolveQueueMove([], 0, 1)).toBeUndefined()
+  })
+})
+
+// Reorder groups: the Worker stamps each item with the group it belongs to,
+// and a legal move never leaves its group. The browser compares the stamped
+// values; it never re-derives them.
+describe('resolveQueueMove across reorder groups', () => {
+  const at = (iso: string) => ({ scheduledAt: iso, reorderGroup: iso })
+
+  it('moves freely inside the immediate group', () => {
+    const list = [item('one'), item('two'), item('three')]
+    expect(resolveQueueMove(list, 2, 0)?.beforeInputId).toBe('one')
+    expect(resolveQueueMove(list, 0, 2)?.beforeInputId).toBe('')
+  })
+
+  it('refuses a move between immediate and future items', () => {
+    const list = [item('now'), item('later', at('2030-01-01T09:00:00.000Z'))]
+    expect(resolveQueueMove(list, 1, 0)).toBeUndefined()
+    expect(resolveQueueMove(list, 0, 1)).toBeUndefined()
+  })
+
+  it('moves items that share one scheduled instant', () => {
+    const group = at('2030-01-01T09:00:00.000Z')
+    const list = [item('a', group), item('b', group)]
+    expect(resolveQueueMove(list, 1, 0)?.beforeInputId).toBe('a')
+  })
+
+  it('refuses a move between two different future instants', () => {
+    const list = [
+      item('soon', at('2030-01-01T09:00:00.000Z')),
+      item('late', at('2030-01-01T10:00:00.000Z')),
+    ]
+    expect(resolveQueueMove(list, 1, 0)).toBeUndefined()
+    expect(resolveQueueMove(list, 0, 1)).toBeUndefined()
+  })
+
+  it('takes the segment end when a downward move reaches a group boundary', () => {
+    const list = [
+      item('now-1'),
+      item('now-2'),
+      item('later', at('2030-01-01T09:00:00.000Z')),
+    ]
+    // Moving now-1 past now-2 lands at the end of the immediate segment, not
+    // before the future item.
+    expect(resolveQueueMove(list, 0, 1)?.beforeInputId).toBe('')
+  })
+
+  it('refuses a move whose span crosses a locked row', () => {
+    const list = [
+      item('one'),
+      item('dispatching', { state: AgentInputState.DISPATCHING }),
+      item('three'),
+    ]
+    expect(resolveQueueMove(list, 2, 0)).toBeUndefined()
+    expect(resolveQueueMove(list, 0, 2)).toBeUndefined()
+  })
+})
+
+describe('movableSegmentIds', () => {
+  it('marks rows whose same-group unlocked segment holds another row', () => {
+    const list = [
+      item('now-1'),
+      item('now-2'),
+      item('locked', { state: AgentInputState.AWAITING_ECHO }),
+      item('now-3'),
+      item('later-1', { scheduledAt: '2030-01-01T09:00:00.000Z', reorderGroup: '2030-01-01T09:00:00.000Z' }),
+      item('later-2', { scheduledAt: '2030-01-01T10:00:00.000Z', reorderGroup: '2030-01-01T10:00:00.000Z' }),
+    ]
+    // The locked row and each group change start a new segment, so only the
+    // first two rows share one with a neighbour.
+    expect([...movableSegmentIds(list)].sort()).toEqual(['now-1', 'now-2'])
+  })
+
+  it('marks nothing in a queue of one row per group', () => {
+    const list = [
+      item('now'),
+      item('later', { scheduledAt: '2030-01-01T09:00:00.000Z', reorderGroup: '2030-01-01T09:00:00.000Z' }),
+    ]
+    expect(movableSegmentIds(list)).toEqual(new Set())
   })
 })

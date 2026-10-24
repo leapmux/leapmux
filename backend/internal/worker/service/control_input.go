@@ -91,6 +91,16 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
 		resolved.text = "The user rejected the request. Their feedback follows:\n\n" + item.Text
 	}
+	// An automatic retry carries the provider bytes it was created from; the
+	// accepted transcript keeps them as supplemental content, so the browser
+	// can extract the provider's own view of the failure that caused the retry.
+	if (item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT ||
+		item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR) && len(item.SourcePayload) > 0 {
+		resolved.supplementalContent, err = agent.EncodeMessageSupplement(agent.MessageContent{Supplemental: item.SourcePayload})
+		if err != nil {
+			return controlInput{}, fmt.Errorf("encode the automatic retry source: %w", err)
+		}
+	}
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 		if resolved.source == nil {
 			return controlInput{}, errAnswerHasNoQuestion

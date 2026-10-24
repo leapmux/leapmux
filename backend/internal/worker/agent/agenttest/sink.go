@@ -97,8 +97,8 @@ type Sink struct {
 	// the whole distinction the flag exists to carry.
 	goalClearSnapshots      []bool
 	goalCapabilityPublishes int
-	autoSchedules           []agent.AutoContinueSchedule
-	autoCancels             []agent.AutoContinueReason
+	autoSchedules           []agent.AutoRetrySchedule
+	autoCancels             []leapmuxv1.AgentInputKind
 	planModeToolUses        sync.Map
 	// childSinkMu + children let Sink serve ChildSink as a per-child Sink
 	// so provider tests can assert what got routed into a subagent transcript.
@@ -982,15 +982,15 @@ func (s *Sink) GoalClears() int {
 	defer s.mu.Unlock()
 	return s.goalClears
 }
-func (s *Sink) ScheduleAutoContinue(schedule agent.AutoContinueSchedule) {
+func (s *Sink) ScheduleAutoRetry(schedule agent.AutoRetrySchedule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoSchedules = append(s.autoSchedules, schedule)
 }
-func (s *Sink) CancelAutoContinue(reason agent.AutoContinueReason) {
+func (s *Sink) CancelAutoRetry(kind leapmuxv1.AgentInputKind) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.autoCancels = append(s.autoCancels, reason)
+	s.autoCancels = append(s.autoCancels, kind)
 }
 
 // --- Subagent transcripts and the background-task registry (test recording) ---
@@ -1672,7 +1672,7 @@ func (s *Sink) AutoScheduleCount() int {
 	return len(s.autoSchedules)
 }
 
-func (s *Sink) LastAutoSchedule() agent.AutoContinueSchedule {
+func (s *Sink) LastAutoSchedule() agent.AutoRetrySchedule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.autoSchedules[len(s.autoSchedules)-1]
@@ -1684,7 +1684,7 @@ func (s *Sink) AutoCancelCount() int {
 	return len(s.autoCancels)
 }
 
-func (s *Sink) LastAutoCancel() agent.AutoContinueReason {
+func (s *Sink) LastAutoCancel() leapmuxv1.AgentInputKind {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.autoCancels[len(s.autoCancels)-1]
@@ -1759,8 +1759,8 @@ func (nop) PublishGoalCapabilities()                                            
 func (nop) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
 	return nil, errors.New("the nop sink captures no goal authority")
 }
-func (nop) ScheduleAutoContinue(agent.AutoContinueSchedule)       {}
-func (nop) CancelAutoContinue(agent.AutoContinueReason)           {}
+func (nop) ScheduleAutoRetry(agent.AutoRetrySchedule)             {}
+func (nop) CancelAutoRetry(leapmuxv1.AgentInputKind)              {}
 func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error) { return "", nil }
 func (nop) ChildSpawnSpan(string) (string, error)                 { return "", nil }
 func (nop) ChildSink(string) agent.ProviderServices               { return Nop() }

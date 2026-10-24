@@ -2,7 +2,6 @@ package providerkit
 
 import (
 	"log/slog"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -53,19 +52,18 @@ func OpenToolSpanWithParent(sink ToolSpanServices, content agent.MessageContent,
 	return err
 }
 
-// ScheduleOrCancelAPIErrorAutoContinue schedules an immediate API-error
-// auto-continue when retry is true, or cancels any pending API-error
-// schedule otherwise. The payload is defensively copied because the
-// caller's buffer may be reused by the stdout reader before the schedule
-// is consumed.
-func ScheduleOrCancelAPIErrorAutoContinue(sink agent.AutoContinueServices, retry bool, payload []byte) {
+// ScheduleOrCancelServerErrorAutoRetry schedules a server-error automatic
+// retry when retry is true, or cancels any pending one otherwise. The queue
+// derives the deadline from its durable backoff; the provider supplies no
+// instant of its own. The payload is defensively copied because the caller's
+// buffer may be reused by the stdout reader before the schedule is consumed.
+func ScheduleOrCancelServerErrorAutoRetry(sink agent.AutoRetryServices, retry bool, payload []byte) {
 	if !retry {
-		sink.CancelAutoContinue(agent.AutoContinueReasonAPIError)
+		sink.CancelAutoRetry(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
 		return
 	}
-	sink.ScheduleAutoContinue(agent.AutoContinueSchedule{
-		Reason:        agent.AutoContinueReasonAPIError,
-		DueAt:         time.Now().UTC(),
+	sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
+		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
 		SourcePayload: append([]byte(nil), payload...),
 	})
 }

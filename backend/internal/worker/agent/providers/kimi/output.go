@@ -351,7 +351,7 @@ func (a *Agent) handleTurnEnded(event kimiEvent) {
 	a.requestUsageRefresh()
 
 	retry := payload.Reason == contracts.KimiTurnEndFailed && payload.Error != nil && payload.Error.Retryable
-	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, retry, event.Raw)
+	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, retry, event.Raw)
 }
 
 // kimiWithContextUsage adds the last context readout to a turn end's metadata,

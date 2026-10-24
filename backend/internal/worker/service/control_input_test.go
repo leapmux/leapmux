@@ -246,3 +246,35 @@ func TestQuestionSteeringRequiresItsSessionCapabilityOnlyForAnswers(t *testing.T
 		})
 	}
 }
+
+// An automatic retry carries the provider bytes it was created from, and the
+// accepted transcript keeps them as supplemental content so the browser can
+// extract the provider's own view of what failed.
+func TestResolveControlInputEncodesTheAutomaticRetrySource(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	for _, kind := range []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	} {
+		item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+			ID: "retry-" + kind.String(), AgentID: "agent-1", Kind: kind, Text: "Continue.",
+			SourcePayload: []byte(`{"error":"overloaded"}`),
+		}}
+		resolved, resolveErr := svc.resolveControlInput(item, row)
+		require.NoError(t, resolveErr)
+		source, decodeErr := agent.DecodeMessageSupplement(nil, resolved.supplementalContent)
+		require.NoError(t, decodeErr)
+		assert.JSONEq(t, `{"error":"overloaded"}`, string(source.Supplemental), "%s keeps its source payload", kind.String())
+	}
+	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+		ID: "retry-empty", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, Text: "Continue.",
+	}}
+	resolved, err := svc.resolveControlInput(item, row)
+	require.NoError(t, err)
+	assert.Empty(t, resolved.supplementalContent, "no payload means no supplemental content")
+}

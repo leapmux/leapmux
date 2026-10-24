@@ -394,12 +394,12 @@ func (services *orderedProviderServices) ReportSteersUncertain(count int) {
 	}
 	services.submitEffect("report uncertain steer", services.CaptureSteerReport(count, SteerOutcomeUncertain))
 }
-func (services *orderedProviderServices) ScheduleAutoContinue(schedule AutoContinueSchedule) {
+func (services *orderedProviderServices) ScheduleAutoRetry(schedule AutoRetrySchedule) {
 	schedule.SourcePayload = slices.Clone(schedule.SourcePayload)
-	services.after("schedule automatic continuation", func() { services.ProviderServices.ScheduleAutoContinue(schedule) })
+	services.after("schedule automatic retry", func() { services.ProviderServices.ScheduleAutoRetry(schedule) })
 }
-func (services *orderedProviderServices) CancelAutoContinue(reason AutoContinueReason) {
-	services.after("cancel automatic continuation", func() { services.ProviderServices.CancelAutoContinue(reason) })
+func (services *orderedProviderServices) CancelAutoRetry(kind leapmuxv1.AgentInputKind) {
+	services.after("cancel automatic retry", func() { services.ProviderServices.CancelAutoRetry(kind) })
 }
 
 // ChildSink gives each child a stable queue and retains the child's original writer.

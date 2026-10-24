@@ -33,7 +33,7 @@ func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	return database, NewStore(database)
+	return database, NewStore(database, nil)
 }
 
 func TestStoreAcceptKeepsTheProviderSteeringStateReportedDuringDispatch(t *testing.T) {
@@ -834,9 +834,9 @@ func TestStoreEditBarrierTakeoverAndAtomicUpdate(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEditOwned)
 	snapshot, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "client-b", true)
 	require.NoError(t, err)
-	_, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version+1, "stale", nil)
+	_, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version+1, "stale", nil, nil)
 	assert.ErrorIs(t, err, ErrVersionConflict)
-	snapshot, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version, "/summarize", nil)
+	snapshot, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version, "/summarize", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, snapshot.Items[0].Kind)
 	assert.Empty(t, snapshot.Items[0].EditOwner)
@@ -883,7 +883,7 @@ func TestStoreEditPreservesGeneratedOperationKind(t *testing.T) {
 	require.NoError(t, err)
 	snapshot, _, _, err := store.BeginEdit(ctx, "agent-1", "generated", "client", false)
 	require.NoError(t, err)
-	snapshot, err = store.Update(ctx, "agent-1", "generated", "client", snapshot.Items[0].Version, "/compact", []Attachment{{Filename: "plan.txt", Data: []byte("changed")}})
+	snapshot, err = store.Update(ctx, "agent-1", "generated", "client", snapshot.Items[0].Version, "/compact", []Attachment{{Filename: "plan.txt", Data: []byte("changed")}}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, snapshot.Items[0].Kind)
 	require.Len(t, snapshot.Items[0].Metadata, 1)
@@ -1339,7 +1339,7 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
-	snapshots, err := NewStore(database).Recover(ctx)
+	snapshots, err := NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	require.Len(t, snapshots, 1)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshots[0].Items[0].State)
@@ -1352,7 +1352,7 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
-	snapshots, err = NewStore(database).Recover(ctx)
+	snapshots, err = NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshots[0].PauseReason)
 }
@@ -1372,7 +1372,7 @@ func TestStoreRecoveryIgnoresClosedAgents(t *testing.T) {
 	_, err = database.ExecContext(ctx, `UPDATE agents SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 'agent-1'`)
 	require.NoError(t, err)
 
-	snapshots, err := NewStore(database).Recover(ctx)
+	snapshots, err := NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, snapshots)
 }
@@ -1615,7 +1615,7 @@ func TestStoreRecoveryReleasesAnAbandonedEditLock(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, blocked, "an edited head blocks dispatch")
 
-	_, err = NewStore(database).Recover(ctx)
+	_, err = NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)

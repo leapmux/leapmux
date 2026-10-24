@@ -76,7 +76,7 @@ func TestOrderedTranscriptKeepsTheOldRowAndSkipsAnEffectAfterSessionReplacement(
 	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
 	services.SetTurnState(agent.TurnState{Active: true}, 1)
 	require.Error(t, services.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"text":"old"}`)}, agent.SpanInfo{}))
-	services.ScheduleAutoContinue(agent.AutoContinueSchedule{Reason: agent.AutoContinueReasonAPIError})
+	services.ScheduleAutoRetry(agent.AutoRetrySchedule{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR})
 	sink.UpdateSessionID("new")
 	sink.PersistErr = nil
 	require.NoError(t, queue.Flush())

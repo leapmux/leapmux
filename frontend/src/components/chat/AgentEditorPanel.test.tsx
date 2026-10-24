@@ -958,7 +958,7 @@ describe('agent editor panel composer emptiness', () => {
 
     expect(handle.hasPendingInput()).toBe(true)
     expect(
-      (getByRole('button', { name: /send/i }) as HTMLButtonElement).disabled,
+      (getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled,
       'the debounced signal has not caught up yet, which is the point',
     ).toBe(true)
   })
@@ -1491,7 +1491,7 @@ describe('agent editor panel', () => {
     ))
     await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('saved a1 edit'))
     send?.()
-    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [])
+    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [], '')
 
     setAgentId('a2')
     await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('full a2'))
@@ -1727,5 +1727,115 @@ describe('agent editor panel', () => {
     const tooltip = hoverForTooltip(screen.getByTestId('composer-branch-trigger'))
     expect(tooltip!.querySelector('[data-testid="working-tree-directory"]')!.textContent)
       .toBe(WORKTREE_DIR)
+  })
+})
+
+// The composer's schedule control: a draft keyed by agent, validated again at
+// send time, seeded from the edited item, and never part of a control answer.
+describe('agent editor panel schedule send', () => {
+  const futureField = () => {
+    const at = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+  }
+
+  /** Open the popover and apply one field value; the panel draft keeps it. */
+  const applySchedule = (field: string) => {
+    fireEvent.click(screen.getByTestId('schedule-send-trigger'))
+    const input = screen.getByTestId('schedule-send-field') as HTMLInputElement
+    fireEvent.input(input, { target: { value: field } })
+    fireEvent.click(screen.getByTestId('schedule-send-apply'))
+  }
+
+  it('renders an unmarked trigger by default and sends immediate input with no schedule', async () => {
+    vi.useRealTimers()
+    const onSendMessage = vi.fn()
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+    getEditorRef('a1')?.set('hello now')
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalled())
+    expect(onSendMessage.mock.calls[0]?.[2]).toBeUndefined()
+  })
+
+  it('sends the wire schedule the draft chose, and clears it after success', async () => {
+    vi.useRealTimers()
+    const onSendMessage = vi.fn()
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    getEditorRef('a1')?.set('hello later')
+    applySchedule(futureField())
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalled())
+    const scheduledAt = onSendMessage.mock.calls[0]?.[2] as string
+    expect(scheduledAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    // A successful send clears the draft: the trigger is immediate again.
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled'))
+  })
+
+  it('refuses an expired draft without losing the text or the schedule', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    const onSendMessage = vi.fn()
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    getEditorRef('a1')?.set('hello too late')
+    applySchedule(futureField())
+    // The deadline passes while the draft sits in the composer.
+    vi.setSystemTime(new Date(Date.now() + 48 * 60 * 60 * 1000))
+    fireEvent.click(screen.getByTestId('send-button'))
+    expect(onSendMessage).not.toHaveBeenCalled()
+    // Data loss guards: the editor text and the schedule draft both survive.
+    expect(getEditorRef('a1')?.get()).toBe('hello too late')
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+  })
+
+  it('keeps the schedule draft when the send itself fails', async () => {
+    vi.useRealTimers()
+    const onSendMessage = vi.fn(() => Promise.reject(new Error('worker unreachable')))
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    getEditorRef('a1')?.set('try me')
+    applySchedule(futureField())
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true'))
+  })
+
+  it('keeps one agent schedule out of another agent composer', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    applySchedule(futureField())
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+
+    setAgentId('a2')
+    await waitFor(() => expect(getEditorRef('a2')).toBeDefined())
+    expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+  })
+
+  it('offers no schedule control while a control request owns the composer', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, {
+      requestId: 'perm-1',
+      claimToken: 'claim-1',
+      payload: toolRequestPayload('Bash'),
+    })
+    renderPanel({ controlStore, onControlResponse: async () => {} })
+    await vi.waitFor(() => expect(screen.getByTestId('control-banner')).toBeInTheDocument())
+    // The control-response action cluster carries no schedule trigger: a reply
+    // the user owes NOW inherits no ordinary schedule.
+    expect(screen.queryByTestId('schedule-send-trigger')).not.toBeInTheDocument()
   })
 })

@@ -4,16 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 // eventuallyWait limits each wait for work that the manager does on a goroutine
@@ -1950,4 +1956,185 @@ func TestAutomaticQuestionSteeringDoesNotRepeatARefusedDelivery(t *testing.T) {
 			observer.mu.Unlock()
 		})
 	}
+}
+
+// Deadline maturity: one replaceable timer per agent on the queue's clock
+// drives every scheduled item. The timer records and publishes the reorder;
+// the ordinary drain, and nothing else, delivers. The schedules are pinned to
+// the mock clock, so each test advances the exact remaining offset -- never a
+// sleep, and never a wait that measures the delay it is asserting.
+
+func newDeadlineFixture(t *testing.T) (*quartz.Mock, *recordingDispatcher, *recordingObserver, *Manager, *Store) {
+	t.Helper()
+	database, err := workerdb.Open(filepath.Join(t.TempDir(), "queue.sqlite"), sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	require.NoError(t, workerdb.Migrate(context.Background(), database))
+	require.NoError(t, gendb.New(database).CreateAgent(context.Background(), gendb.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	clock.Set(priorityBaseTime())
+	store := NewStore(database, clock)
+	dispatcher := &recordingDispatcher{}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	return clock, dispatcher, observer, manager, store
+}
+
+func dispatchedIDs(d *recordingDispatcher) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.dispatched...)
+}
+
+func lastObservedRevision(o *recordingObserver) uint64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.snapshots) == 0 {
+		return 0
+	}
+	return o.snapshots[len(o.snapshots)-1].Revision
+}
+
+func enqueueScheduled(t *testing.T, manager *Manager, id string, offset time.Duration) {
+	t.Helper()
+	at := priorityBaseTime().Add(offset)
+	_, err := manager.Enqueue(t.Context(), NewItem{
+		ID: id, AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: id,
+		ScheduledAt: &at,
+	})
+	require.NoError(t, err)
+}
+
+func eventuallyDispatches(t *testing.T, dispatcher *recordingDispatcher, want []string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return slices.Equal(dispatchedIDs(dispatcher), want)
+	}, eventuallyWait, 10*time.Millisecond)
+}
+
+func TestManagerDeadlineDispatchesExactlyAtTheDueInstant(t *testing.T) {
+	t.Parallel()
+	clock, dispatcher, _, manager, _ := newDeadlineFixture(t)
+
+	enqueueScheduled(t, manager, "scheduled", time.Hour)
+	clock.Advance(59 * time.Minute)
+	assert.Empty(t, dispatchedIDs(dispatcher), "one minute short of the deadline, nothing dispatches")
+
+	clock.Advance(time.Minute)
+	eventuallyDispatches(t, dispatcher, []string{"scheduled"})
+
+	// The timer fired once: advancing far past the deadline adds no dispatch.
+	clock.Advance(time.Hour)
+	assert.Equal(t, []string{"scheduled"}, dispatchedIDs(dispatcher), "maturity delivers one dispatch")
+}
+
+func TestManagerDeadlineMaturityPublishesThroughAPause(t *testing.T) {
+	t.Parallel()
+	clock, dispatcher, observer, manager, _ := newDeadlineFixture(t)
+
+	_, err := manager.SetPaused(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	enqueueScheduled(t, manager, "held", 30*time.Minute)
+
+	before := lastObservedRevision(observer)
+	clock.Advance(30 * time.Minute)
+	require.Eventually(t, func() bool {
+		return lastObservedRevision(observer) > before
+	}, eventuallyWait, 10*time.Millisecond, "maturity publishes a new revision even while paused")
+	assert.Empty(t, dispatchedIDs(dispatcher), "a paused queue sends nothing at maturity")
+
+	observer.mu.Lock()
+	last := observer.snapshots[len(observer.snapshots)-1]
+	observer.mu.Unlock()
+	require.Len(t, last.Items, 1)
+	assert.Equal(t, "", last.Items[0].ReorderGroup, "the matured item joined the immediate group")
+
+	_, err = manager.SetPaused(t.Context(), "agent-1", false)
+	require.NoError(t, err)
+	eventuallyDispatches(t, dispatcher, []string{"held"})
+}
+
+func TestManagerDeadlineRescheduleStopsTheFirstTimer(t *testing.T) {
+	t.Parallel()
+	clock, dispatcher, _, manager, _ := newDeadlineFixture(t)
+
+	enqueueScheduled(t, manager, "moved", time.Hour)
+	snapshot, text, _, err := manager.BeginEdit(t.Context(), "agent-1", "moved", "client", false)
+	require.NoError(t, err)
+	require.Equal(t, "moved", text)
+	later := priorityBaseTime().Add(2 * time.Hour)
+	_, err = manager.Update(t.Context(), "agent-1", "moved", "client", snapshot.Items[0].Version, "moved", nil, &later)
+	require.NoError(t, err)
+
+	// The ORIGINAL deadline passes and delivers nothing.
+	clock.Advance(time.Hour)
+	assert.Empty(t, dispatchedIDs(dispatcher), "a rescheduled item does not dispatch at its old deadline")
+	clock.Advance(time.Hour)
+	eventuallyDispatches(t, dispatcher, []string{"moved"})
+}
+
+func TestManagerDeadlineStopPreventsLaterDelivery(t *testing.T) {
+	t.Parallel()
+	clock, dispatcher, _, manager, _ := newDeadlineFixture(t)
+
+	enqueueScheduled(t, manager, "late", time.Hour)
+	manager.StopAndWait()
+	clock.Advance(2 * time.Hour)
+	assert.Empty(t, dispatchedIDs(dispatcher), "no timer delivers after Stop")
+}
+
+func TestManagerDeadlineImmediateWorkRunsWhileAFutureItemWaits(t *testing.T) {
+	t.Parallel()
+	clock, dispatcher, _, manager, _ := newDeadlineFixture(t)
+
+	enqueueScheduled(t, manager, "future", time.Hour)
+	_, err := manager.Enqueue(t.Context(), NewItem{
+		ID: "now", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "now",
+	})
+	require.NoError(t, err)
+	eventuallyDispatches(t, dispatcher, []string{"now"})
+	// The dispatcher reports a turn in flight; the queue correctly holds the
+	// next item until the turn ends, so report its end before the deadline.
+	_, err = manager.TurnEnded(t.Context(), "agent-1")
+	require.NoError(t, err)
+
+	clock.Advance(time.Hour)
+	eventuallyDispatches(t, dispatcher, []string{"now", "future"})
+}
+
+func TestManagerDeadlineRecoveryRestoresTheTimer(t *testing.T) {
+	t.Parallel()
+	database, err := workerdb.Open(filepath.Join(t.TempDir(), "queue.sqlite"), sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	require.NoError(t, workerdb.Migrate(context.Background(), database))
+	require.NoError(t, gendb.New(database).CreateAgent(context.Background(), gendb.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	first := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	first.Set(priorityBaseTime())
+	managerOne := NewManager(NewStore(database, first), &recordingDispatcher{}, &recordingObserver{})
+	enqueueScheduled(t, managerOne, "across-restart", 45*time.Minute)
+	managerOne.StopAndWait()
+
+	// A second life over the same durable queue arms the timer at recovery.
+	second := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	second.Set(priorityBaseTime())
+	dispatcher := &recordingDispatcher{}
+	managerTwo := NewManager(NewStore(database, second), dispatcher, &recordingObserver{})
+	t.Cleanup(managerTwo.StopAndWait)
+	require.NoError(t, managerTwo.RecoverState(t.Context()))
+	require.NoError(t, managerTwo.DrainRecovered(t.Context()))
+	assert.Empty(t, dispatchedIDs(dispatcher), "a future head waits for its deadline after recovery")
+
+	second.Advance(45 * time.Minute)
+	eventuallyDispatches(t, dispatcher, []string{"across-restart"})
 }

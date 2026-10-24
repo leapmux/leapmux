@@ -327,7 +327,7 @@ func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
 	cancelled := a.takeStopCancelledRequest() || payload.ResultType == contracts.ZCodeResultCancelled
 	a.finishZCodeTurn(event, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: cancelled})
 	// A completed turn is not an error, so any pending auto-continue for one is stale.
-	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, false, event.persistBytes())
+	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, false, event.persistBytes())
 }
 
 func (a *Agent) takeStopCancelledRequest() bool {
@@ -368,7 +368,7 @@ func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
 	a.flushZCodeGeneration(completion)
 	closed := a.persistIncompleteZCodeTools(completion)
 	a.finishZCodeTurn(event, zcodeTurnEnd{closedCalls: closed})
-	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, zcodeFailureIsRetryable(payload), content)
+	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, zcodeFailureIsRetryable(payload), content)
 }
 
 // zcodeFailureIsRetryable reports whether a failed turn should be retried.

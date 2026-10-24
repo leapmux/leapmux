@@ -159,9 +159,9 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: agentID, RequestID: "control-1", Payload: []byte("pending"), ClaimToken: "claim-1",
 	})
-	require.NoError(t, svc.Queries.UpsertAutoContinueSchedule(ctx, db.UpsertAutoContinueScheduleParams{
-		AgentID: agentID, Reason: string(agent.AutoContinueReasonAPIError), Content: "Continue.",
-		DueAt: sqltime.NewSQLiteTime(time.Now().Add(time.Hour)), SourcePayload: []byte{},
+	require.NoError(t, svc.InputQueue.ScheduleAutoRetry(ctx, agentID, agent.AutoRetrySchedule{
+		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		SourcePayload: []byte(`{"error":"overloaded"}`),
 	}))
 	var agentCleanup, terminalCleanup atomic.Bool
 	svc.agentCleanups.register(agentID, func() { agentCleanup.Store(true) })
@@ -197,9 +197,17 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	controls, err := svc.Queries.ListControlRequestsByAgentID(ctx, agentID)
 	require.NoError(t, err)
 	assert.Empty(t, controls)
-	activeSchedules, err := svc.Queries.ListActiveAutoContinueSchedules(ctx)
+	// The archived agent's scheduled retry is gone, and unarchiving cannot
+	// resurrect it: the scheduler refuses a closed-or-archived agent, so the
+	// item exists nowhere to come back from.
+	queueSnapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
-	assert.Empty(t, activeSchedules)
+	assert.Empty(t, queueSnapshot.Items)
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
+		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
+	queueSnapshot, err = svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.Empty(t, queueSnapshot.Items, "unarchive does not resurrect a cancelled retry")
 	assert.True(t, agentCleanup.Load())
 	assert.True(t, terminalCleanup.Load())
 }

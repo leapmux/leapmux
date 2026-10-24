@@ -260,7 +260,7 @@ func TestHandleZCodeOutput_TurnCompleted_OfABackgroundTurnLeavesTheAgentIdle(t *
 	assert.False(t, turnActive, "nothing is running, so Interrupt must not send a session/stop")
 }
 
-func TestHandleZCodeOutput_TurnFailed_SchedulesAutoContinueOnlyWhenRetryable(t *testing.T) {
+func TestHandleZCodeOutput_TurnFailed_SchedulesAutoRetryOnlyWhenRetryable(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {

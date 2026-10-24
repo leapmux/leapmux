@@ -466,3 +466,84 @@ describe('AgentInputQueue', () => {
     expect(steer).toHaveTextContent('Steer')
   })
 })
+
+// Scheduled rows: each shows its own type and its full local timestamp, an
+// immediate row shows no schedule, and a row with no legal destination in its
+// reorder segment offers no drag grip or arrow.
+describe('AgentInputQueue scheduled rows', () => {
+  const group = '2030-01-01T09:00:00.000Z'
+
+  it('labels each automatic retry kind and its own scheduled timestamp', () => {
+    renderQueue({
+      items: [
+        item('usage', {
+          kind: AgentInputKind.AUTO_RETRY_USAGE_LIMIT,
+          scheduledAt: group,
+          reorderGroup: group,
+        }),
+        item('server', {
+          kind: AgentInputKind.AUTO_RETRY_SERVER_ERROR,
+          scheduledAt: '2030-01-01T10:30:00.000Z',
+          reorderGroup: '2030-01-01T10:30:00.000Z',
+        }),
+      ],
+    })
+    const usage = screen.getByTestId('queued-input-usage')
+    expect(usage).toHaveTextContent('Auto-retry (usage limit)')
+    expect(usage).toHaveTextContent('Scheduled for')
+    expect(usage.textContent).toMatch(/1\/1\/2030/)
+    const server = screen.getByTestId('queued-input-server')
+    expect(server).toHaveTextContent('Auto-retry (server error)')
+    expect(server.textContent).toMatch(/1\/1\/2030/)
+  })
+
+  it('shows no schedule text on an immediate row', () => {
+    renderQueue({ items: [item('now')] })
+    expect(screen.getByTestId('queued-input-now')).not.toHaveTextContent('Scheduled for')
+  })
+
+  it('renders an unreadable timestamp as no schedule rather than Invalid Date', () => {
+    renderQueue({ items: [item('broken', { scheduledAt: 'not-a-time', reorderGroup: 'not-a-time' })] })
+    const row = screen.getByTestId('queued-input-broken')
+    expect(row).not.toHaveTextContent('Scheduled for')
+    expect(row).not.toHaveTextContent('Invalid Date')
+  })
+
+  it('keeps the schedule text on a past-due row that still waits', () => {
+    const past = '2020-01-01T00:00:00.000Z'
+    renderQueue({ items: [item('waiting', { scheduledAt: past, reorderGroup: '' })] })
+    expect(screen.getByTestId('queued-input-waiting')).toHaveTextContent('Scheduled for')
+  })
+
+  it('hides the drag grip and disables the arrows of a row with no compatible destination', () => {
+    renderQueue({
+      items: [
+        item('only-immediate'),
+        item('future', { scheduledAt: group, reorderGroup: group }),
+      ],
+    })
+    const only = screen.getByTestId('queued-input-only-immediate')
+    // Two rows exist, but they belong to different reorder groups, so neither
+    // has a legal destination: no grip, and both arrows disabled.
+    expect(within(only).queryByTestId('queue-drag-handle-only-immediate')).toBeInTheDocument()
+    expect((within(only).getByRole('button', { name: 'Move Up' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(only).getByRole('button', { name: 'Move Down' }) as HTMLButtonElement).disabled).toBe(true)
+    const future = screen.getByTestId('queued-input-future')
+    expect((within(future).getByRole('button', { name: 'Move Up' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(future).getByRole('button', { name: 'Move Down' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('moves rows that share one scheduled instant', () => {
+    const handlers = renderQueue({
+      items: [
+        item('a', { scheduledAt: group, reorderGroup: group }),
+        item('b', { scheduledAt: group, reorderGroup: group }),
+      ],
+    })
+    fireEvent.click(within(screen.getByTestId('queued-input-b')).getByRole('button', { name: 'Move Up' }))
+    expect(handlers.onMove).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'b' }),
+      'a',
+    )
+  })
+})

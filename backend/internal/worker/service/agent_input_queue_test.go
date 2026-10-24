@@ -23,6 +23,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
@@ -1010,7 +1011,7 @@ func dispatchOutcomeOf(t *testing.T, err error) inputqueue.DispatchOutcome {
 	return deliveryErr.Outcome
 }
 
-func TestAutoContinueProducerUsesGeneratedQueueKind(t *testing.T) {
+func TestAutoRetryProducersUseGeneratedQueueKinds(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1021,13 +1022,29 @@ func TestAutoContinueProducerUsesGeneratedQueueKind(t *testing.T) {
 	}))
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
-	require.NotNil(t, svc.Output.sendMessageFunc)
-	svc.Output.sendMessageFunc("agent-1", "Continue")
+
+	// Through the sink facet, exactly as a provider asks.
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
+		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+		ScheduledAt:   time.Now().Add(time.Hour),
+		SourcePayload: []byte(`{"reset":"usage"}`),
+	})
+	sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
+		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		SourcePayload: []byte(`{"error":"overloaded"}`),
+	})
 
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Len(t, snapshot.Items, 1)
-	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE, snapshot.Items[0].Kind)
+	require.Len(t, snapshot.Items, 2)
+	kinds := []leapmuxv1.AgentInputKind{snapshot.Items[0].Kind, snapshot.Items[1].Kind}
+	assert.Contains(t, kinds, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+	assert.Contains(t, kinds, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+	for _, item := range snapshot.Items {
+		assert.NotEmpty(t, item.ScheduledAt, "a retry always carries its deadline")
+		assert.Equal(t, "Continue.", item.Text)
+	}
 }
 
 func TestControlFeedbackProducerUsesGeneratedQueueKind(t *testing.T) {
@@ -2225,4 +2242,166 @@ func TestOrderedUncertainSteerKeepsItsOriginalPublisher(t *testing.T) {
 			assert.Equal(t, expected, snapshot.Items[0].State)
 		})
 	}
+}
+
+// Scheduled input on the wire: enqueue and update carry RFC3339 schedules, the
+// snapshot answers with the canonical UTC timestamp and the derived reorder
+// group, and the order a client reads is the effective position, not the raw
+// storage slot.
+func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	pauseWriter := newTestWriter()
+	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
+
+	// Non-UTC input normalizes to UTC and floors to the millisecond.
+	zoned := time.Now().In(time.FixedZone("UTC+9", 9*60*60)).Add(2 * time.Hour)
+	floored := zoned.UTC().Truncate(time.Millisecond)
+	enqueueWriter := newTestWriter()
+	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "scheduled-1", Text: "later",
+		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ScheduledAt: zoned.Format(time.RFC3339Nano),
+	}, enqueueWriter)
+	enqueued := decodeQueueResponse(t, enqueueWriter, &leapmuxv1.EnqueueAgentInputResponse{})
+	require.Len(t, enqueued.GetSnapshot().GetItems(), 1)
+	assert.Equal(t, timefmt.Format(floored), enqueued.GetSnapshot().GetItems()[0].GetScheduledAt())
+	assert.Equal(t, timefmt.Format(floored), enqueued.GetSnapshot().GetItems()[0].GetReorderGroup())
+
+	// An immediate item enqueued later takes the effective first position.
+	enqueueWriter = newTestWriter()
+	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "immediate-1", Text: "now",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}, enqueueWriter)
+	enqueued = decodeQueueResponse(t, enqueueWriter, &leapmuxv1.EnqueueAgentInputResponse{})
+	items := enqueued.GetSnapshot().GetItems()
+	require.Len(t, items, 2)
+	assert.Equal(t, "immediate-1", items[0].GetId())
+	assert.Equal(t, int64(1), items[0].GetOrder())
+	assert.Empty(t, items[0].GetScheduledAt())
+	assert.Empty(t, items[0].GetReorderGroup())
+	assert.Equal(t, "scheduled-1", items[1].GetId())
+	assert.Equal(t, int64(2), items[1].GetOrder())
+	assert.NotEmpty(t, items[1].GetReorderGroup())
+
+	// A list replays the same derived fields.
+	listWriter := newTestWriter()
+	dispatch(dispatcher, "ListAgentInputQueue", &leapmuxv1.ListAgentInputQueueRequest{AgentId: "agent-1"}, listWriter)
+	listed := decodeQueueResponse(t, listWriter, &leapmuxv1.ListAgentInputQueueResponse{})
+	assert.Equal(t, items, listed.GetSnapshot().GetItems())
+
+	// Saving an edit can clear the schedule.
+	beginWriter := newTestWriter()
+	dispatch(dispatcher, "BeginQueuedAgentInputEdit", &leapmuxv1.BeginQueuedAgentInputEditRequest{
+		AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
+	}, beginWriter)
+	begun := decodeQueueResponse(t, beginWriter, &leapmuxv1.BeginQueuedAgentInputEditResponse{})
+	updateWriter := newTestWriter()
+	dispatch(dispatcher, "UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{
+		AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
+		ExpectedVersion: begun.GetSnapshot().GetItems()[0].GetVersion(), Text: "later, edited",
+	}, updateWriter)
+	updated := decodeQueueResponse(t, updateWriter, &leapmuxv1.UpdateQueuedAgentInputResponse{})
+	require.Len(t, updated.GetSnapshot().GetItems(), 2)
+	var edited *leapmuxv1.QueuedAgentInput
+	for _, item := range updated.GetSnapshot().GetItems() {
+		if item.GetId() == "scheduled-1" {
+			edited = item
+		}
+	}
+	require.NotNil(t, edited)
+	assert.Empty(t, edited.GetScheduledAt(), "an edit can clear the schedule")
+	assert.Empty(t, edited.GetReorderGroup())
+}
+
+func TestEnqueueAgentInputRefusesAMalformedSchedule(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	before, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "input-1", Text: "hello",
+		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ScheduledAt: "next tuesday",
+	}, writer)
+	require.Len(t, writer.errors, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), writer.errors[0].code)
+	after, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+}
+
+func TestEnqueueAgentInputRefusesTheAutomaticRetryKinds(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	for _, kind := range []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	} {
+		before, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		writer := newTestWriter()
+		dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			AgentId: "agent-1", InputId: "input-1", Text: "Continue.", Kind: kind,
+		}, writer)
+		require.Len(t, writer.errors, 1)
+		assert.Equal(t, int32(codes.InvalidArgument), writer.errors[0].code)
+		assert.Contains(t, writer.errors[0].message, "automatic retries")
+		after, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.Equal(t, before, after, "refusal must change no durable queue state")
+	}
+}
+
+func TestMoveQueuedAgentInputMapsAGroupViolationToFailedPrecondition(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	pauseWriter := newTestWriter()
+	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
+	enqueueWriter := newTestWriter()
+	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "future-1", Text: "later",
+		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ScheduledAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}, enqueueWriter)
+	enqueueWriter = newTestWriter()
+	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "now-1", Text: "now",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}, enqueueWriter)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "MoveQueuedAgentInput", &leapmuxv1.MoveQueuedAgentInputRequest{
+		AgentId: "agent-1", InputId: "future-1", BeforeInputId: "now-1",
+	}, writer)
+	require.Len(t, writer.errors, 1)
+	assert.Equal(t, int32(codes.FailedPrecondition), writer.errors[0].code)
+	assert.Contains(t, writer.errors[0].message, "reorder groups")
 }

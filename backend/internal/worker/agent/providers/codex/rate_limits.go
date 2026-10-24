@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -39,13 +40,13 @@ func (a *Agent) handleRateLimitsUpdated(content []byte, params json.RawMessage) 
 	})
 
 	if resumeReset := codexRateLimitResumeReset(reachedType, summary); resumeReset != nil {
-		a.sink.ScheduleAutoContinue(agent.AutoContinueSchedule{
-			Reason:        agent.AutoContinueReasonRateLimit,
-			DueAt:         *resumeReset,
+		a.sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
+			Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+			ScheduledAt:   *resumeReset,
 			SourcePayload: append([]byte(nil), content...),
 		})
 	} else {
-		a.sink.CancelAutoContinue(agent.AutoContinueReasonRateLimit)
+		a.sink.CancelAutoRetry(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
 	}
 }
 

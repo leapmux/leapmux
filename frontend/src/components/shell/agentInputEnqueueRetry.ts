@@ -9,6 +9,13 @@ export interface AgentInputEnqueuePayload {
   kind: AgentInputKind
   text: string
   attachments: readonly FileAttachment[]
+  /**
+   * The wire schedule (`ISO` UTC), or undefined for an immediate send. Part of
+   * the fingerprint on purpose: a resend that changes ONLY the schedule must
+   * mint a fresh input id, because the Worker refuses to reuse one queue id
+   * whose accepted content differs.
+   */
+  scheduledAt?: string
 }
 
 function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
@@ -23,6 +30,7 @@ function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
   update(encoder.encode(payload.agentId))
   update(Uint8Array.of(payload.kind))
   update(encoder.encode(payload.text))
+  update(encoder.encode(payload.scheduledAt ?? ''))
   for (const attachment of payload.attachments) {
     update(encoder.encode(attachment.filename))
     update(encoder.encode(attachment.mimeType))

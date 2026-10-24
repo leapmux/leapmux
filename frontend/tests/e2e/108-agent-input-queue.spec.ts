@@ -326,7 +326,7 @@ test.describe('agent input queue', () => {
     // Check the label visibility directly. toHaveText reads textContent and includes a span that uses display: none.
     // That assertion would still report Send when the button shows only its icon.
     await expect(page.getByTestId('send-button').locator('span')).toBeHidden()
-    await expect(page.getByRole('button', { name: 'Send' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible()
 
     // Removing the label must preserve the button height.
     // An inline-flex container without a line-box strut uses the height of its tallest item.
@@ -336,7 +336,7 @@ test.describe('agent input queue', () => {
       page.getByTestId(id).evaluate(el => el.getBoundingClientRect().height)
     const plusHeight = await heightOf('composer-plus-trigger')
     expect(plusHeight).toBeGreaterThan(0)
-    for (const id of ['queue-pause-button', 'send-button'])
+    for (const id of ['queue-pause-button', 'schedule-send-trigger', 'send-button'])
       expect(await heightOf(id), `${id} must match the [+] while icon-only`).toBe(plusHeight)
 
     // Measure the action cluster as well as its slot.
@@ -356,5 +356,130 @@ test.describe('agent input queue', () => {
     // Require the plus button to accept a click after the geometry check.
     await plus.click()
     await expect(page.getByTestId('composer-plus-popover')).toBeVisible()
+  })
+})
+
+/**
+ * A local datetime-local value the composer's schedule field accepts: one
+ * `step={0.001}` field wants seconds, and the queue's maturity must still be a
+ * few seconds out when the assertion runs.
+ */
+function localScheduleField(offsetMs: number): string {
+  const at = new Date(Date.now() + offsetMs)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+}
+
+/**
+ * Schedule the composer's next send through the real popover: open the
+ * trigger, fill the field, apply. The Worker owns the clock, so the value the
+ * browser computes only has to be far enough ahead for the row to render
+ * before its deadline passes.
+ */
+async function scheduleNextSend(page: Page, offsetMs: number) {
+  await page.getByTestId('schedule-send-trigger').click()
+  // Wait for the popover before filling: a click during its opening position
+  // lands outside it and dismisses it, losing the apply.
+  await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+  // Set the value programmatically: Playwright's fill on a millisecond-step
+  // datetime-local intermittently rejects a seconds-precision value as
+  // malformed, and the control's own onInput handler is what carries the
+  // value either way.
+  const value = localScheduleField(offsetMs)
+  await page.getByTestId('schedule-send-field').evaluate((element: HTMLElement, setValue: string) => {
+    ;(element as HTMLInputElement).value = setValue
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+  }, value)
+  await page.getByTestId('schedule-send-field').press('Enter')
+  await expect(page.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+}
+
+test.describe('scheduled input', () => {
+  test('schedules a message, delivers it after the deadline, and survives a reload until then', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    // Establish a live provider session first, as the file's first test does:
+    // the cleared-schedule delivery at the end dispatches into a process that
+    // is still answering, long after the fixture's idle auto-start would exit.
+    await sendScriptedTurn(page, modelScript)
+    // A far-enough deadline that the reload and the row assertions all happen
+    // while the item is still future.
+    await scheduleNextSend(page, 90_000)
+    await sendMessage(page, 'scheduled hello')
+
+    const row = page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello' })
+    await expect(row).toContainText('Message')
+    await expect(row).toContainText('Scheduled for')
+
+    await page.reload()
+    await expect(page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello' })).toContainText('Scheduled for')
+
+    // Editing the schedule through the real queue edit moves the deadline
+    // further out; clearing it delivers immediately through the ordinary drain.
+    const cleared = await modelScript.queue({ text: `DELIVERED_${Date.now()}` })
+    await row.getByRole('button', { name: 'Edit', exact: true }).click()
+    await expect(composerEditor(page)).toHaveText('scheduled hello')
+    // The edit changes the text and moves the schedule; both save together.
+    await composerEditor(page).fill('scheduled hello edited')
+    await scheduleNextSend(page, 150_000)
+    // The schedule popover held the focus; the save chord belongs to the
+    // editor, so hand the focus back before pressing it.
+    await composerEditor(page).click()
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    await expect(page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello edited' })).toContainText('Scheduled for')
+
+    const edited = page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello edited' })
+    await edited.getByRole('button', { name: 'Edit', exact: true }).click()
+    await expect(composerEditor(page)).toHaveText('scheduled hello edited')
+    await page.getByTestId('schedule-send-trigger').click()
+    await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+    await page.getByTestId('schedule-send-clear').click()
+    await composerEditor(page).click()
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    await modelScript.waitForSteps(cleared + 1)
+    await expect(page.getByTestId(/^queued-input-/)).toHaveCount(0)
+  })
+
+  test('holds a matured scheduled input while the queue is paused, then delivers it on resume', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    // Establish a live provider session first, as the file's first test does:
+    // the matured input dispatches into a process that is already answering.
+    await sendScriptedTurn(page, modelScript)
+    await pauseQueue(page)
+    await scheduleNextSend(page, 10_000)
+    await sendMessage(page, 'pause at maturity')
+    const row = page.getByTestId(/^queued-input-/).filter({ hasText: 'pause at maturity' })
+    await expect(row).toContainText('Scheduled for')
+
+    // Past the deadline the queue still holds the row: the label stays (a
+    // past-due row keeps stating its schedule) and nothing dispatches while
+    // paused. The default expect budget carries past the ten-second deadline
+    // before the presence assertion re-reads the row.
+    await expect(row).toHaveCount(1)
+    await expect(row).toContainText('Queued')
+
+    const resumed = await modelScript.queue({ text: `RESUMED_${Date.now()}` })
+    await resumePausedQueue(page)
+    await modelScript.waitForSteps(resumed + 1)
+    await expect(page.getByTestId(/^queued-input-/)).toHaveCount(0)
+  })
+
+  test('keeps a scheduled row reorderable only inside its own group', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await expect(composerEditor(page)).toBeVisible()
+    await pauseQueue(page)
+    // One future item, one immediate: neither has a compatible neighbour, so
+    // both arrow pairs refuse.
+    await scheduleNextSend(page, 120_000)
+    await sendMessage(page, 'the future one')
+    await sendMessage(page, 'the immediate one')
+    const future = page.getByTestId(/^queued-input-/).filter({ hasText: 'the future one' })
+    const immediate = page.getByTestId(/^queued-input-/).filter({ hasText: 'the immediate one' })
+    // The immediate row takes the effective first position although it was
+    // queued second.
+    await expect(page.getByTestId(/^queued-input-/).first()).toContainText('the immediate one')
+    for (const row of [future, immediate]) {
+      await expect(row.getByRole('button', { name: 'Move Up' })).toBeDisabled()
+      await expect(row.getByRole('button', { name: 'Move Down' })).toBeDisabled()
+    }
   })
 })

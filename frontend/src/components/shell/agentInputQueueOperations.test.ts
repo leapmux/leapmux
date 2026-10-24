@@ -18,11 +18,13 @@ import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 const enqueueAgentInput = vi.hoisted(() => vi.fn())
 const deleteQueuedAgentInput = vi.hoisted(() => vi.fn())
 const beginQueuedAgentInputEdit = vi.hoisted(() => vi.fn())
+const updateQueuedAgentInput = vi.hoisted(() => vi.fn())
 const setAgentInputQueuePaused = vi.hoisted(() => vi.fn())
 vi.mock('~/api/workerRpc', () => ({
   enqueueAgentInput,
   deleteQueuedAgentInput,
   beginQueuedAgentInputEdit,
+  updateQueuedAgentInput,
   setAgentInputQueuePaused,
 }))
 
@@ -238,5 +240,76 @@ describe('createAgentInputQueueOperations composer send', () => {
 
     expect(enqueueAgentInput).not.toHaveBeenCalled()
     expect(forceScrollToBottom).not.toHaveBeenCalled()
+  })
+})
+
+// The schedule rides the same enqueue and update requests the text does: an
+// explicit value on the wire, and an EXPLICIT EMPTY one when a save clears it,
+// because an absent field is not a cleared field.
+describe('agent input queue operations schedule', () => {
+  it('sends the schedule on enqueue', async () => {
+    const ops = createAgentInputQueueOperations({
+      view: stubView({ 'agent-1': 'w1' }),
+      store: createAgentInputQueueStore(),
+      clientId: () => 'client-a',
+      focusedAgentId: () => 'agent-1',
+      forceScrollToBottom: () => {},
+    })
+    enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
+    await ops.sendMessage('later', undefined, '2030-01-01T09:00:00.000Z')
+    expect(enqueueAgentInput).toHaveBeenCalledWith('w1', {
+      agentId: 'agent-1',
+      inputId: expect.any(String),
+      kind: AgentInputKind.USER_MESSAGE,
+      text: 'later',
+      attachments: [],
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+    })
+  })
+
+  it('sends no schedule field on an immediate enqueue', async () => {
+    const ops = createAgentInputQueueOperations({
+      view: stubView({ 'agent-1': 'w1' }),
+      store: createAgentInputQueueStore(),
+      clientId: () => 'client-a',
+      focusedAgentId: () => 'agent-1',
+      forceScrollToBottom: () => {},
+    })
+    enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
+    await ops.sendMessage('now')
+    const request = enqueueAgentInput.mock.calls[0]?.[1] as Record<string, unknown>
+    expect('scheduledAt' in request).toBe(false)
+  })
+
+  it('sends the schedule on update, and an explicit empty string when clearing', async () => {
+    const ops = createAgentInputQueueOperations({
+      view: stubView({ 'agent-1': 'w1' }),
+      store: createAgentInputQueueStore(),
+      clientId: () => 'client-a',
+      focusedAgentId: () => 'agent-1',
+      forceScrollToBottom: () => {},
+    })
+    updateQueuedAgentInput.mockResolvedValue(snapshotOf('agent-1', 2n, []))
+    const item = queuedItem('agent-1', 'input-1')
+    await ops.updateQueueItem(item, 'edited', [], '2030-01-01T09:00:00.000Z')
+    expect(updateQueuedAgentInput).toHaveBeenCalledWith('w1', {
+      agentId: 'agent-1',
+      inputId: 'input-1',
+      clientId: 'client-a',
+      expectedVersion: 7n,
+      text: 'edited',
+      attachments: [],
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+    })
+    await ops.updateQueueItem(item, 'edited now', [], '')
+    expect(updateQueuedAgentInput).toHaveBeenLastCalledWith('w1', {
+      agentId: 'agent-1',
+      inputId: 'input-1',
+      clientId: 'client-a',
+      expectedVersion: 7n,
+      text: 'edited now',
+      attachments: [],
+      scheduledAt: '',
+    })
   })
 })

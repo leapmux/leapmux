@@ -283,6 +283,13 @@ CREATE TABLE agent_input_queue_state (
     -- Recovery clears it, because a Worker restart ends every restart in
     -- flight.
     restarting      INTEGER NOT NULL DEFAULT 0 CHECK (restarting IN (0, 1)),
+    -- Backoff for the next AUTO_RETRY_SERVER_ERROR schedule. Durable state,
+    -- not item state: an accepted retry leaves the queue, so item-local
+    -- backoff would reset after every attempt. Doubles per consecutive
+    -- server-error retry and resets on success, cancellation, deletion, or
+    -- runtime cleanup.
+    auto_retry_server_error_delay_ms INTEGER NOT NULL DEFAULT 10000
+        CHECK (auto_retry_server_error_delay_ms BETWEEN 10000 AND 180000),
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
     active_turn_steerable INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_steerable IN (0, 1)),
     active_input_id TEXT NOT NULL DEFAULT '',
@@ -294,11 +301,18 @@ CREATE TABLE agent_input_queue_items (
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     order_index     INTEGER NOT NULL CHECK (order_index > 0),
     -- AgentInputKind ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 7),
+    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 8),
     text            TEXT NOT NULL DEFAULT '',
     target_mode     TEXT NOT NULL DEFAULT '',
     prepare_context INTEGER NOT NULL DEFAULT 0 CHECK (prepare_context IN (0, 1)),
     reclassify_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (reclassify_on_edit IN (0, 1)),
+    -- Canonical send-not-before instant. NULL means immediate; a past value is
+    -- immediate at read time. The Worker derives priority from this column and
+    -- its own clock, never from order_index.
+    scheduled_at    DATETIME,
+    -- The provider source bytes an automatic retry carries into the accepted
+    -- transcript's supplemental content. Empty for ordinary input.
+    source_payload  BLOB NOT NULL DEFAULT X'',
     -- AgentInputState ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     state           INTEGER NOT NULL DEFAULT 1 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 5),
     error           TEXT NOT NULL DEFAULT '',
@@ -311,6 +325,15 @@ CREATE TABLE agent_input_queue_items (
 );
 CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
     ON agent_input_queue_items(agent_id) WHERE edit_owner <> '';
+-- One pending automatic retry per kind and agent. The literals are ordinals:
+-- 1 is AGENT_INPUT_STATE_QUEUED (AGENT_INPUT_STATE_QUEUED), 5 is
+-- AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT and 8 is
+-- AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR. A partial-index predicate cannot
+-- bind a parameter -- SQLite matches it syntactically -- so the ordinals are
+-- spelled here and pinned by TestAutoRetryPartialIndexOrdinals.
+CREATE UNIQUE INDEX idx_agent_input_queue_one_auto_retry_kind
+    ON agent_input_queue_items(agent_id, kind)
+    WHERE state = 1 AND kind IN (5, 8);
 CREATE INDEX idx_agent_input_queue_pending
     ON agent_input_queue_items(agent_id, order_index, state);
 
@@ -431,22 +454,6 @@ CREATE VIEW auto_review_approvals AS
 SELECT d.id AS delivery_id, d.agent_id, d.instance_id AS agent_session_id,
     d.operation_id AS review_id, p.message_id, d.state
 FROM control_deliveries d JOIN auto_review_approval_payloads p ON p.delivery_id = d.id;
-
--- Scheduled synthetic auto-continue messages
-CREATE TABLE auto_continue_schedules (
-    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    reason          TEXT NOT NULL,
-    content         TEXT NOT NULL DEFAULT 'Continue.',
-    due_at          DATETIME NOT NULL,
-    jitter_ms       INTEGER NOT NULL DEFAULT 0,
-    next_backoff_ms INTEGER NOT NULL DEFAULT 0,
-    state           TEXT NOT NULL DEFAULT 'active',
-    source_payload  BLOB NOT NULL DEFAULT x'',
-    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY (agent_id, reason)
-);
-CREATE INDEX idx_auto_continue_schedules_state_due_at ON auto_continue_schedules(state, due_at);
 
 -- Worktrees created by LeapMux (for lifecycle tracking)
 CREATE TABLE worktrees (
@@ -739,7 +746,6 @@ DROP TABLE IF EXISTS terminals;
 DROP VIEW IF EXISTS worktree_tab_liveness;
 DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;
-DROP TABLE IF EXISTS auto_continue_schedules;
 DROP VIEW IF EXISTS auto_review_approvals;
 DROP TABLE IF EXISTS auto_review_approval_payloads;
 DROP TABLE IF EXISTS agent_input_queue_attachments;

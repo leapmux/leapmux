@@ -22,7 +22,7 @@ import (
 // be left untouched.
 //
 // RestoreState runs MarkAllActiveAgentBackgroundTasksInterrupted BEFORE
-// restoring auto-continue schedules, and the sweep is pure DB (caches do not
+// the queue's own scheduled-item recovery, and the sweep is pure DB (caches do not
 // exist yet at boot), so the rows read back after the call reflect the
 // persisted state the next boot -- and the live worker -- will see.
 func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {

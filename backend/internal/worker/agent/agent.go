@@ -30,16 +30,15 @@ type SpanInfo struct {
 	NoSpan bool
 }
 
-type AutoContinueReason string
-
-const (
-	AutoContinueReasonAPIError  AutoContinueReason = "api_error"
-	AutoContinueReasonRateLimit AutoContinueReason = "rate_limit"
-)
-
-type AutoContinueSchedule struct {
-	Reason        AutoContinueReason
-	DueAt         time.Time
+// AutoRetrySchedule asks the input queue to schedule one automatic retry.
+// The queue, not the provider, owns the retry deadline policy: it adds jitter
+// and, for a server error, applies the durable backoff.
+type AutoRetrySchedule struct {
+	// Kind is one of the two automatic-retry AgentInputKind values. For a
+	// usage limit, ScheduledAt is the provider's reset instant; for a server
+	// error it carries no meaning and the queue derives the deadline.
+	Kind          leapmuxv1.AgentInputKind
+	ScheduledAt   time.Time
 	SourcePayload []byte
 }
 
@@ -399,10 +398,10 @@ type CapturedGoalWriter interface {
 	ClearGoal() error
 }
 
-// AutoContinueServices schedules automatic continuation.
-type AutoContinueServices interface {
-	ScheduleAutoContinue(schedule AutoContinueSchedule)
-	CancelAutoContinue(reason AutoContinueReason)
+// AutoRetryServices schedules automatic retries through the input queue.
+type AutoRetryServices interface {
+	ScheduleAutoRetry(schedule AutoRetrySchedule)
+	CancelAutoRetry(kind leapmuxv1.AgentInputKind)
 }
 
 // ChildAgentSpec supplies a native child identity and its initial stored options.
@@ -626,7 +625,7 @@ type ServiceFacets interface {
 	SessionServices
 	PlanServices
 	GoalServices
-	AutoContinueServices
+	AutoRetryServices
 	ChildServices
 	BackgroundTaskServices
 }
@@ -649,7 +648,7 @@ type providerServices struct {
 	SessionServices
 	PlanServices
 	GoalServices
-	AutoContinueServices
+	AutoRetryServices
 	ChildServices
 	BackgroundTaskServices
 }
@@ -668,7 +667,7 @@ func NewProviderServices(services ServiceFacets) ProviderServices {
 		SessionServices:        services,
 		PlanServices:           services,
 		GoalServices:           services,
-		AutoContinueServices:   services,
+		AutoRetryServices:      services,
 		ChildServices:          services,
 		BackgroundTaskServices: services,
 	}

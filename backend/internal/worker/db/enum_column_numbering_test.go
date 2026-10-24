@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,7 +45,7 @@ func integerEnumColumns() []integerEnumColumn {
 		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2, nil},
 		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2, nil},
 		{"messages.agent_provider", "UPDATE messages SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM messages", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil},
-		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 7, nil},
+		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 8, nil},
 		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5, nil},
 		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4, nil},
 		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2, nil},
@@ -172,6 +173,50 @@ func TestEnumColumnIntegerChecksMatchTheirStorage(t *testing.T) {
 	}
 }
 
+// idx_agent_input_queue_one_auto_retry_kind pins one pending retry per kind and
+// agent. Its predicate spells three ordinals SQLite can only match
+// syntactically -- a partial index cannot bind a parameter -- so this test
+// keeps them tied to the proto enums a renumber would move.
+func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
+	t.Parallel()
+
+	queued := int64(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED)
+	usageLimit := int64(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+	serverError := int64(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+
+	sql := statementsOfMigration(t)
+	_, index, found := strings.Cut(sql, "CREATE UNIQUE INDEX idx_agent_input_queue_one_auto_retry_kind")
+	require.True(t, found, "the schema must keep the one-auto-retry-per-kind index")
+	index, _, found = strings.Cut(index, ";")
+	require.True(t, found)
+	assert.Contains(t, index, fmt.Sprintf("state = %d", queued),
+		"the index's state literal is the AGENT_INPUT_STATE_QUEUED ordinal")
+	assert.Contains(t, index, fmt.Sprintf("kind IN (%d, %d)", usageLimit, serverError),
+		"the index's kind literals are the two AUTO_RETRY ordinals")
+
+	connection, err := workerdb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, connection.Close()) })
+	require.NoError(t, workerdb.Migrate(t.Context(), connection))
+	_, err = connection.ExecContext(t.Context(), `INSERT INTO agents (id) VALUES ('retry-owner')`)
+	require.NoError(t, err)
+	insert := func(id string, order int64, kind int64, state int64) error {
+		_, err := connection.ExecContext(t.Context(),
+			`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, state) VALUES (?, 'retry-owner', ?, ?, 'Continue.', ?)`,
+			id, order, kind, state)
+		return err
+	}
+	require.NoError(t, insert("retry-usage", 1, usageLimit, queued))
+	require.NoError(t, insert("retry-server", 2, serverError, queued),
+		"the two retry kinds coexist for one agent")
+	assert.ErrorContains(t, insert("retry-usage-2", 3, usageLimit, queued),
+		"UNIQUE constraint failed", "a second queued retry of one kind is refused")
+	require.NoError(t, insert("retry-failed", 3, usageLimit, int64(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED)))
+	_, err = connection.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET state = ? WHERE id = 'retry-failed'`, queued)
+	assert.ErrorContains(t, err, "UNIQUE constraint failed",
+		"a queued retry conflicts with a FAILED row of the same kind, so cancellation must delete the row")
+}
+
 // The tie CHECK binds follow_up text to follow_up_kind: a queued kind without
 // its text, and a text without its kind, each fails at the storage boundary
 // instead of reaching finalization as a value nobody chose.
@@ -264,8 +309,8 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_items.kind",
-			check:        "CHECK (kind BETWEEN 1 AND 7)",
-			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER),
+			check:        "CHECK (kind BETWEEN 1 AND 8)",
+			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
 		},
 		{
