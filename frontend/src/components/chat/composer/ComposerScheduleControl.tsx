@@ -41,6 +41,8 @@ export interface ComposerScheduleControlProps {
  */
 export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = (props) => {
   const fieldId = createUniqueId()
+  const hintId = `${fieldId}-hint`
+  const errorId = `${fieldId}-error`
   const [field, setField] = createSignal(EMPTY_SCHEDULE)
   const [badInput, setBadInput] = createSignal(false)
   // The instant that the verdict compares the field against. It ticks only
@@ -133,16 +135,16 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
       )}
     >
       <div class={styles.scheduleBody}>
-        <div class={styles.scheduleField}>
+        <div data-field class={styles.scheduleField}>
           <label for={fieldId}>Send not earlier than</label>
           <input
             id={fieldId}
             type="datetime-local"
             step={0.001}
-            class={styles.scheduleInput}
             value={field()}
             data-testid="schedule-send-field"
             aria-invalid={refusal() !== undefined ? 'true' : undefined}
+            aria-describedby={refusal() !== undefined ? `${hintId} ${errorId}` : hintId}
             onInput={(e) => {
               // A partial native date has an empty value and badInput=true.
               // Capture validity before the controlled value resets the field.
@@ -156,23 +158,23 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
               }
             }}
           />
-          <div>Uses your local timezone.</div>
+          <small id={hintId} data-hint>Uses your local timezone.</small>
           <Show when={refusal()}>
             {message => (
-              <div class={styles.scheduleError} role="alert" data-testid="schedule-send-error">
+              <div id={errorId} class={`error ${styles.scheduleError}`} role="alert" data-testid="schedule-send-error">
                 {message()}
               </div>
             )}
           </Show>
         </div>
         <div class={styles.scheduleActions}>
-          <button type="button" class="ghost small" data-testid="schedule-send-clear" onClick={clear} disabled={!scheduled()}>
+          <button type="button" class="small outline" data-testid="schedule-send-clear" onClick={clear} disabled={!scheduled()}>
             Clear schedule
           </button>
-          <button type="button" class="ghost small" data-testid="schedule-send-cancel" onClick={close}>
+          <button type="button" class="small outline" data-testid="schedule-send-cancel" onClick={close}>
             Cancel
           </button>
-          <button type="button" class="ghost small" data-testid="schedule-send-apply" onClick={apply} disabled={refusal() !== undefined}>
+          <button type="button" class="small outline" data-testid="schedule-send-apply" onClick={apply} disabled={refusal() !== undefined}>
             Schedule
           </button>
         </div>

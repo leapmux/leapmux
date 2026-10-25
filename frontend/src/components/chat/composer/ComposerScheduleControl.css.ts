@@ -4,7 +4,8 @@ import { style } from '@vanilla-extract/css'
  * The schedule-send popover. The trigger reuses `actionButtonClass` from the
  * composer's action row, so it renders as one of Send's siblings. The popover
  * is a `DropdownMenu` card, which supplies the surface, the inset and the
- * viewport clamp, so this module holds only the body's own layout.
+ * viewport clamp. This module supplies the compact layout and keeps field
+ * errors inline.
  *
  * The popover element itself takes no `display`: an author `display` beats the
  * user agent's `display: none` for a closed popover, and keeps the closed
@@ -23,27 +24,15 @@ export const scheduleBody = style({
 })
 
 export const scheduleField = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--space-1)',
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-})
-
-export const scheduleInput = style({
-  width: '100%',
-  boxSizing: 'border-box',
-  padding: 'var(--space-1) var(--space-2)',
-  borderRadius: 'var(--radius-small)',
-  border: '1px solid var(--border)',
-  backgroundColor: 'var(--background)',
-  color: 'var(--foreground)',
-  fontSize: 'var(--text-8)',
+  // The body's gap replaces the space after an Oat form field.
+  marginBlockEnd: 0,
 })
 
 export const scheduleError = style({
-  color: 'var(--danger)',
-  fontSize: 'var(--text-8)',
+  // Oat's field error keeps its typography but does not need an alert card.
+  padding: 0,
+  border: 'none',
+  backgroundColor: 'transparent',
 })
 
 export const scheduleActions = style({

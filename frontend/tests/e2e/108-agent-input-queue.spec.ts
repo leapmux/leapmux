@@ -387,6 +387,32 @@ async function scheduleNextSend(page: Page, offsetMs: number) {
 }
 
 test.describe('scheduled input', () => {
+  test('styles the schedule card as an Oat form with outline actions', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await page.getByTestId('schedule-send-trigger').click()
+    const popover = page.getByTestId('schedule-send-popover')
+    await expect(popover).toBeVisible()
+    const outlineColor = await queuePauseButton(page).evaluate(button => getComputedStyle(button).borderTopColor)
+    for (const action of ['clear', 'cancel', 'apply'])
+      await expect(page.getByTestId(`schedule-send-${action}`)).toHaveCSS('border-top-color', outlineColor)
+    const foreground = await popover.evaluate(card => getComputedStyle(card).color)
+    await expect(popover.locator('label')).toHaveCSS('color', foreground)
+    await expect(page.getByTestId('schedule-send-field')).toHaveAccessibleDescription('Uses your local timezone.')
+    await expect(page.getByTestId('schedule-send-clear')).toBeDisabled()
+    await page.getByTestId('schedule-send-cancel').click()
+    await scheduleNextSend(page, 300_000)
+    await page.getByTestId('schedule-send-trigger').click()
+    await expect(page.getByTestId('schedule-send-clear')).toBeEnabled()
+    await expect(page.getByTestId('schedule-send-clear')).toHaveCSS('border-top-color', outlineColor)
+    await page.getByTestId('schedule-send-field').fill('2000-01-01T09:00')
+    await expect(page.getByTestId('schedule-send-apply')).toBeDisabled()
+    await expect(page.getByTestId('schedule-send-apply')).toHaveCSS('border-top-color', outlineColor)
+    await expect(page.getByTestId('schedule-send-error')).toHaveCSS('border-top-width', '0px')
+    await expect(page.getByTestId('schedule-send-error')).toHaveCSS('padding-top', '0px')
+    await expect(page.getByTestId('schedule-send-field')).toHaveAccessibleDescription('Uses your local timezone. Pick a time in the future.')
+    await page.getByTestId('schedule-send-cancel').click()
+  })
+
   test('restores the schedule of an unsent draft after a reload', async ({ page, authenticatedWorkspace, separateHubWorker }) => {
     void authenticatedWorkspace
     await scheduleNextSend(page, 300_000)

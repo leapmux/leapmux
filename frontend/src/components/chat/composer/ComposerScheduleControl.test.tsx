@@ -62,6 +62,7 @@ describe('ComposerScheduleControl', () => {
     const { onApply } = renderControl()
     open()
     expect(fieldInput().value).toBe('')
+    expect(fieldInput()).toHaveAccessibleDescription('Uses your local timezone.')
     fireEvent.input(fieldInput(), { target: { value: '2030-06-01T12:00:00.500' } })
     fireEvent.click(screen.getByTestId('schedule-send-apply'))
     expect(onApply).toHaveBeenCalledWith('2030-06-01T12:00:00.500')
@@ -141,6 +142,10 @@ describe('ComposerScheduleControl', () => {
     expect(error).toHaveTextContent('Pick a time in the future.')
     expect(screen.getByTestId('schedule-send-apply')).toBeDisabled()
     expect(fieldInput()).toHaveAttribute('aria-invalid', 'true')
+    expect(fieldInput()).toHaveAccessibleDescription('Uses your local timezone. Pick a time in the future.')
+    fireEvent.input(fieldInput(), { target: { value: later(60_000) } })
+    expect(screen.queryByTestId('schedule-send-error')).toBeNull()
+    expect(fieldInput()).toHaveAccessibleDescription('Uses your local timezone.')
   })
 
   it('states that a draft with no real local time is invalid', () => {
