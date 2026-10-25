@@ -2,9 +2,15 @@ package zcode
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -49,6 +55,9 @@ func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
 	var params zcodeAccountProviderPayload
 	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
 	assert.Contains(t, params.Providers, "account:zai-individual-coding-plan")
+	accountID, bridged := a.catalog.accountProviderID("builtin:zai-coding-plan")
+	assert.True(t, bridged, "an accepted snapshot records the bridge")
+	assert.Equal(t, "account:zai-individual-coding-plan", accountID)
 }
 
 func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
@@ -81,6 +90,148 @@ func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
 	accountConfig := a.accountProviderConfig
 	a.Mu.Unlock()
 	assert.False(t, accountConfig)
+	_, bridged := a.catalog.accountProviderID("builtin:zai-coding-plan")
+	assert.False(t, bridged, "a refused snapshot records no bridge")
+}
+
+// zcodeStartPlanTestAgent returns an agent whose configuration holds a Z.ai Coding Plan
+// and a Z.ai Start Plan, which config.json does not enable. The Start Plan's base URL
+// points at baseURL, and the agent checks it through client.
+func zcodeStartPlanTestAgent(t *testing.T, stdin *zcodeRecordedStdin, baseURL string, client *http.Client) *Agent {
+	t.Helper()
+	return zcodeStartPlanTestAgentWithClock(t, stdin, baseURL, client, nil)
+}
+
+// zcodeStartPlanTestAgentWithClock is zcodeStartPlanTestAgent with the agent's timers on
+// clock.
+func zcodeStartPlanTestAgentWithClock(t *testing.T, stdin *zcodeRecordedStdin, baseURL string, client *http.Client, clock quartz.Clock) *Agent {
+	t.Helper()
+	a := newZCodeTestAgentWithClock(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin, clock)
+	a.catalog = zcodeTestCatalog(t, fmt.Sprintf(`{
+      "provider": {
+        "builtin:zai-coding-plan": {"kind": "anthropic", "enabled": true, "options": {"apiKey": "plan-key"}, "models": {"GLM-5.3": {}}},
+        "builtin:zai-start-plan": {"kind": "anthropic", "enabled": false, "options": {"apiKey": "start-key", "baseURL": %q}, "models": {"GLM-5.3-Flash": {}}}
+      }
+    }`, baseURL+"/api/v1/zcode-plan/anthropic"))
+	a.catalog.accountSelection = zcodeAccountSelection{domain: "zai", planKinds: map[string]string{"zai": "individual-coding-plan"}}
+	a.registryRevision = "leapmux-test"
+	a.identity = zcodeClientIdentity{appVersion: "3.16.3", deviceMid: "11111111-2222-4333-8444-555555555555"}
+	a.startPlanHTTP = client
+	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
+	return a
+}
+
+// A Start Plan that config.json does not enable is still a plan the account holds. The
+// account snapshot reports the models that the billing API grants it.
+func TestZCodeProviderSetupReportsTheCheckedStartPlan(t *testing.T) {
+	t.Parallel()
+
+	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer start-key", r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, zcodeLiveBalanceReply)
+	})
+	stdin := &zcodeRecordedStdin{}
+	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
+	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
+	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
+		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
+
+	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 2)
+	var params zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
+	start := params.Providers["account:zai-start-plan"]
+	assert.True(t, start.Access.Entitled)
+	assert.Equal(t, []string{"GLM-5.3-Flash", "GLM-5.3"}, start.BuiltinModelIDs,
+		"the snapshot carries the models that the plan grants, in the release's spelling")
+	assert.Equal(t, zcodeAccountProviderState{Availability: zcodeAvailabilityAvailable, Entitled: true, Current: true},
+		params.States["account:zai-start-plan"])
+	assert.Equal(t, zcodeAccountProviderState{Availability: zcodeAvailabilityAvailable, Entitled: true, Current: true},
+		params.States["account:zai-individual-coding-plan"])
+}
+
+// A refused credential means that a model request with the same key fails too, so the
+// snapshot offers none of the plan's models.
+func TestZCodeProviderSetupReportsARefusedStartPlanCredential(t *testing.T) {
+	t.Parallel()
+
+	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	stdin := &zcodeRecordedStdin{}
+	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
+	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
+	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
+		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
+
+	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+	var params zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(stdin.Requests(t)[1].Params, &params))
+	assert.False(t, params.Providers["account:zai-start-plan"].Access.Entitled)
+	assert.Nil(t, params.Providers["account:zai-start-plan"].BuiltinModelIDs)
+	assert.Equal(t, zcodeAccountProviderState{
+		Availability: zcodeAvailabilityUnavailable, Current: true, UnavailableReason: zcodeUnavailableCredentialFailed,
+	}, params.States["account:zai-start-plan"])
+}
+
+// A legacy build takes the workspace registry and never reads the account snapshot, so
+// the Start Plan check that runs beside the legacy request must end.
+func TestZCodeProviderSetupLegacyBuildStopsTheStartPlanCheck(t *testing.T) {
+	t.Parallel()
+
+	reached := make(chan struct{}, 1)
+	ended := make(chan struct{}, 1)
+	server, client := zcodeTestStartPlanServer(t, func(_ http.ResponseWriter, r *http.Request) {
+		reached <- struct{}{}
+		<-r.Context().Done()
+		ended <- struct{}{}
+	})
+	stdin := &zcodeRecordedStdin{}
+	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
+	// The legacy reply waits until the check's request is in flight, so the test
+	// observes the stop end that request rather than a request that never started.
+	go func() {
+		<-reached
+		req := waitZCodeRequest(t, stdin, MethodUpdateProviderRegistry)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(`{"status":"applied","providerCount":2}`)))
+	}()
+
+	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+	select {
+	case <-ended:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the Start Plan check kept running after the legacy registry was applied")
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.False(t, a.accountProviderConfig)
+}
+
+// An installed release that LeapMux cannot read fails the account snapshot only, and
+// LeapMux sends no credential over the network for a start that must fail.
+func TestZCodeProviderSetupAnUnreadableReleaseFailsOnlyTheAccountPath(t *testing.T) {
+	t.Parallel()
+
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			t.Parallel()
+
+			stdin := &zcodeRecordedStdin{}
+			a := zcodeStartPlanTestAgent(t, stdin, "https://zcode.invalid", newZCodeStartPlanHTTPClient(zcodeOfflineTransport{t: t}))
+			a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "missing.json")
+			if legacy {
+				answerZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, `{"status":"applied","providerCount":2}`)
+				require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+				return
+			}
+			refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
+			err := a.pushProviderRegistry(zcodeTestRPCTimeout)
+			require.ErrorContains(t, err, "read ZCode built-in provider configuration")
+			assert.Len(t, stdin.Requests(t), 1, "no account snapshot is sent")
+		})
+	}
 }
 
 func TestZCodeLaunchEnvValueTakesTheFinalDuplicate(t *testing.T) {

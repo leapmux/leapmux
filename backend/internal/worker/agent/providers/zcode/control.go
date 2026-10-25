@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -445,14 +446,13 @@ func (a *Agent) replyZCodeUserInput(id json.RawMessage, behavior string, reply z
 //
 // Legacy builds already hold the inline key from workspace/updateProviderRegistry,
 // so their reply reports authorization only. ZCode 0.16.9 keeps account credentials
-// in the host and requires the key in `requestAuth` for each model request.
+// in the host and requires the key in `requestAuth` for each model request, which
+// accountRequestAuth resolves.
 func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 	a.Mu.Lock()
 	accountConfig := a.accountProviderConfig
 	a.Mu.Unlock()
-	var req struct {
-		ProviderID string `json:"providerId"`
-	}
+	var req zcodeRuntimeHeadersRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		// Do NOT fall through. An undecodable request leaves ProviderID empty, and
 		// hasInlineAPIKey reads an empty id as "any provider" -- so LeapMux would answer
@@ -476,16 +476,10 @@ func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 		return
 	}
 	if accountConfig {
-		apiKey, ok := a.catalog.inlineAPIKey(req.ProviderID)
-		result := map[string]any{"headersApplied": ok}
-		if ok {
-			result["requestAuth"] = map[string]string{"apiKey": apiKey}
-		} else {
-			result["errorMessage"] = fmt.Sprintf("leapmux holds no credential for provider %q; sign in with ZCode again", req.ProviderID)
-		}
-		if err := a.sendZCodeReply(id, result); err != nil {
-			slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
-		}
+		// The caller sits on the event goroutine, and a coding plan's credential can
+		// take a network call, so the answer goes on a goroutine of its own: the
+		// reader must keep reading frames while the call runs.
+		go a.answerAccountRuntimeHeaders(id, req)
 		return
 	}
 	authorized := a.catalog.hasInlineAPIKey(req.ProviderID)
@@ -495,6 +489,23 @@ func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 	}
 	if !authorized {
 		result["error"] = fmt.Sprintf("leapmux holds no credential for provider %q; add it to ZCode's configuration", req.ProviderID)
+	}
+	if err := a.sendZCodeReply(id, result); err != nil {
+		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+// answerAccountRuntimeHeaders answers a runtime headers request of an account
+// build with the credential that accountRequestAuth resolves, or with the reason
+// that it has none.
+func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, req zcodeRuntimeHeadersRequest) {
+	ctx, cancel := context.WithTimeout(a.Context(), zcodeProjectTokenTimeout)
+	auth, err := a.accountRequestAuth(ctx, req)
+	cancel()
+	var result any = map[string]any{"headersApplied": true, "requestAuth": auth}
+	if err != nil {
+		slog.Warn("zcode provider credential unavailable", "agent_id", a.AgentID(), "provider", req.ProviderID, "error", err)
+		result = map[string]any{"headersApplied": false, "errorMessage": err.Error()}
 	}
 	if err := a.sendZCodeReply(id, result); err != nil {
 		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)

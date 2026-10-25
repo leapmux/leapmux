@@ -229,3 +229,46 @@ func TestApplyStartupSettings_ALevelTheLaunchModelDoesNotOfferDoesNotBlockTheMod
 	assert.Equal(t, "account:p/narrow", a.model, "the app-server accepted the launch model")
 	assert.Equal(t, "high", a.thoughtLevel, "the session runs at the default level of the launch model")
 }
+
+// config.json lists only part of what a current app-server offers, such as the models
+// that a Start Plan grants. A launch model that the catalog cannot resolve reaches the
+// startup setter, which resolves it against the live list.
+func TestApplyStartupSettings_ResolvesALaunchModelAgainstTheLiveList(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "high")
+	// The session level stays pinned after the model switch, so a level setter follows.
+	answerZCodeRequest(t, a, stdin, MethodSetThoughtLevel,
+		`{"settings":{"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"low"},{"value":"high"}]}}}`)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.applyStartupSettings(zcodeSettingsRequest{Model: a.catalog.launchModel("narrow")}, 5*time.Second)
+	}()
+
+	answerZCodeNarrowSetModel(t, a, stdin)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("applyStartupSettings did not return")
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/narrow", a.model)
+}
+
+// A launch model that the app-server does not offer leaves the session on the model the
+// app-server chose, and the agent reports that model, not the refused request.
+func TestApplyStartupSettings_KeepsTheObservedModelWhenTheAppServerOffersNoSuchModel(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "high")
+	a.applyStartupSettings(zcodeSettingsRequest{Model: a.catalog.launchModel("GLM-9")}, 5*time.Second)
+
+	for _, req := range stdin.Requests(t) {
+		assert.NotEqual(t, MethodSetModel, req.Method, "a model that no list holds is never sent")
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/wide", a.model)
+}

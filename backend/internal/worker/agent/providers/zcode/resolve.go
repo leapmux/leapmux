@@ -2,15 +2,21 @@ package zcode
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
@@ -356,6 +362,137 @@ func zcodeBuiltinProviderConfigCandidates(script string) []string {
 	}
 }
 
+// zcodeInstalledScript returns the bundled zcode.cjs of the installation that a launch
+// spec runs, or "" when it finds none. A spec that runs the script carries it as its one
+// prefix argument (see zcodeInterpreterSearch.try). A `zcode` launcher on PATH carries
+// none, so the script comes from the install locations, as the launcher's provider
+// configuration does (resolveZCodeLaunchWith).
+func zcodeInstalledScript(spec launch.Spec, exists func(string) bool) string {
+	if len(spec.PrefixArgs) > 0 {
+		return spec.PrefixArgs[0]
+	}
+	script, _ := findZCodeScript(exists)
+	return script
+}
+
+// zcodeAppVersion returns the version of the ZCode application that a bundled script
+// belongs to, or zcodeUnknownAppVersion when it cannot tell.
+//
+// Every build keeps the version in the package.json of resources/app.asar, the archive
+// beside the glm directory, and the desktop inlines the same value at build time. A
+// relative script path identifies no installation that LeapMux can locate. The archive
+// header is large, so the result is kept for each archive path, size, and modification
+// time: an update of the application changes the last two.
+func zcodeAppVersion(script string) string {
+	if script == "" || !filepath.IsAbs(script) {
+		return zcodeUnknownAppVersion
+	}
+	archive := filepath.Join(filepath.Dir(filepath.Dir(script)), "app.asar")
+	info, err := os.Stat(archive)
+	if err != nil || !info.Mode().IsRegular() {
+		return zcodeUnknownAppVersion
+	}
+	key := zcodeAppVersionKey{path: archive, size: info.Size(), modTime: info.ModTime().UnixNano()}
+	if version, ok := zcodeAppVersions.Load(key); ok {
+		return version.(string)
+	}
+	version, err := readZCodeAsarPackageVersion(archive, info.Size())
+	if err != nil || !zcodeAppVersionPattern.MatchString(version) {
+		version = zcodeUnknownAppVersion
+	}
+	zcodeAppVersions.Store(key, version)
+	return version
+}
+
+// zcodeAppVersionPattern accepts a dotted version with an optional suffix. A value
+// outside it, such as an unexpanded build variable, would misstate the version, and a
+// control byte would make a header that the HTTP client refuses.
+var zcodeAppVersionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,3}([-+][0-9A-Za-z.-]+)?$`)
+
+type zcodeAppVersionKey struct {
+	path    string
+	size    int64
+	modTime int64
+}
+
+// zcodeAppVersions memoizes zcodeAppVersion. It holds one entry for each installed
+// version that the Worker process has seen.
+var zcodeAppVersions sync.Map // zcodeAppVersionKey -> string
+
+// zcodeAsarHeaderMaxBytes limits the JSON header of an asar archive. The header of
+// ZCode 3.16 is about 7 MiB.
+const zcodeAsarHeaderMaxBytes = 64 << 20
+
+// readZCodeAsarPackageVersion reads the version of the package.json at the root of an
+// asar archive of size bytes. The archive starts with two Chromium pickles: the first
+// holds the size of the second, and the second holds the length of the JSON header and
+// the header itself. File data starts after the second pickle, and the header states
+// the offset of each file in that data.
+func readZCodeAsarPackageVersion(archive string, size int64) (string, error) {
+	f, err := os.Open(archive)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	var prefix [16]byte
+	if _, err := io.ReadFull(f, prefix[:]); err != nil {
+		return "", errors.New("the archive is shorter than its header")
+	}
+	sizePickle := int64(binary.LittleEndian.Uint32(prefix[0:4]))
+	headerPickle := int64(binary.LittleEndian.Uint32(prefix[4:8]))
+	payload := int64(binary.LittleEndian.Uint32(prefix[8:12]))
+	headerLength := int64(binary.LittleEndian.Uint32(prefix[12:16]))
+	dataStart := 8 + headerPickle
+	if sizePickle != 4 || payload+4 != headerPickle || payload < headerLength+4 ||
+		headerLength > zcodeAsarHeaderMaxBytes || 16+headerLength > size || dataStart > size {
+		return "", errors.New("the file is not an asar archive")
+	}
+	header := make([]byte, headerLength)
+	if _, err := io.ReadFull(f, header); err != nil {
+		return "", errors.New("the archive is shorter than its header")
+	}
+	var index struct {
+		Files struct {
+			PackageJSON *struct {
+				Size     int64  `json:"size"`
+				Offset   string `json:"offset"`
+				Unpacked bool   `json:"unpacked"`
+			} `json:"package.json"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(header, &index); err != nil || index.Files.PackageJSON == nil {
+		return "", errors.New("the archive holds no package.json")
+	}
+	entry := index.Files.PackageJSON
+	var data []byte
+	if entry.Unpacked {
+		err := sessionstore.ReadSidecarFile(filepath.Join(archive+".unpacked", "package.json"), sessionstore.MaxSidecarBytes,
+			func(contents []byte) error {
+				data = contents
+				return nil
+			})
+		if err != nil {
+			return "", err
+		}
+	} else {
+		offset, err := strconv.ParseInt(entry.Offset, 10, 64)
+		if err != nil || offset < 0 || entry.Size <= 0 || entry.Size > sessionstore.MaxSidecarBytes || dataStart+offset+entry.Size > size {
+			return "", errors.New("the archive states no readable package.json")
+		}
+		data = make([]byte, entry.Size)
+		if _, err := f.ReadAt(data, dataStart+offset); err != nil {
+			return "", err
+		}
+	}
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(pkg.Version), nil
+}
+
 // result is the verdict once no candidate worked. An inconclusive probe anywhere makes the
 // search retryable; otherwise every candidate ran and rejected the script, which is an
 // established absence (the installation has no usable interpreter).
@@ -434,11 +571,17 @@ func nodeInterpreterNames() []string {
 	return []string{"node"}
 }
 
+// zcodeInstallRoot returns the installation root of a bundled script. The script
+// always sits at <root>/<resources>/glm/zcode.cjs, so the root is three levels up:
+// Contents on macOS, and the install directory elsewhere.
+func zcodeInstallRoot(script string) string {
+	return filepath.Dir(filepath.Dir(filepath.Dir(script)))
+}
+
 // bundledRuntimeCandidates derives the installation's own Electron binary from the script
-// path. The script always sits at <root>/<resources>/glm/zcode.cjs, so the installation
-// root is three levels up, and each OS puts its executable in a known place under it.
+// path. Each OS puts its executable in a known place under the installation root.
 func bundledRuntimeCandidates(script string) []string {
-	root := filepath.Dir(filepath.Dir(filepath.Dir(script))) // .../Contents (macOS), else the install root
+	root := zcodeInstallRoot(script)
 	switch runtime.GOOS {
 	case "darwin":
 		return bundledDarwinRuntimeCandidates(root)

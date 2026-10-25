@@ -2,226 +2,629 @@ package zcode
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math"
 	"net/http"
-	"os"
+	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// zcodePlanBalanceTimeout bounds one entitlement fetch. The desktop uses 15s
-// for the same call; a Start Plan agent launch must not block longer.
-const zcodePlanBalanceTimeout = 15 * time.Second
+// zcodeStartPlanBalancePath is the path of ZCode's billing endpoint on the origin
+// of a Start Plan provider. The ZCode desktop builds the same URL from its own
+// origin (buildZaiStartPlanBalanceUrl).
+const zcodeStartPlanBalancePath = "/api/v1/zcode-plan/billing/balance"
 
-// zcodeStartPlanEntitlement is one model_usage entitlement from the
-// billing/balance response.
-type zcodeStartPlanEntitlement struct {
-	ShowName string `json:"show_name"`
-	Meter    string `json:"meter"`
+// zcodeStartPlanCheckTimeout limits the whole entitlement check of one agent
+// start, for every Start Plan together. The desktop gives the same request 15
+// seconds.
+const zcodeStartPlanCheckTimeout = 15 * time.Second
+
+// zcodeStartPlanBalanceMaxBytes limits a successful billing reply. A plan list is
+// a few kilobytes.
+const zcodeStartPlanBalanceMaxBytes = 1 << 20
+
+// zcodeStartPlanErrorExcerptBytes limits the part of a failed reply that an error
+// quotes. A log line has no use for the rest.
+const zcodeStartPlanErrorExcerptBytes = 4 << 10
+
+// zcodeUnknownAppVersion is the version that a billing request states when
+// LeapMux cannot find the version of the installed application.
+const zcodeUnknownAppVersion = "unknown"
+
+// zcodeStartPlanBalanceReply is the billing/balance reply. Each field keeps the
+// JSON form that the desktop's interpretation reads.
+type zcodeStartPlanBalanceReply struct {
+	// Success and Code stay raw, because the desktop tests them for exact JSON
+	// values: an absent code passes, and a null code fails.
+	Success json.RawMessage            `json:"success"`
+	Code    json.RawMessage            `json:"code"`
+	Data    *zcodeStartPlanBalanceData `json:"data"`
 }
 
-// zcodeStartPlanPlan is one plan entry from the billing/balance response.
-type zcodeStartPlanPlan struct {
-	Status       string                      `json:"status"`
-	Entitlements []zcodeStartPlanEntitlement `json:"entitlements"`
-}
-
-// zcodeStartPlanBalanceData is the `data` object of the billing/balance response.
 type zcodeStartPlanBalanceData struct {
-	Plans []zcodeStartPlanPlan `json:"plans"`
+	// ServerTime is the server's clock in seconds since the epoch.
+	ServerTime json.RawMessage         `json:"server_time"`
+	Plans      []zcodeStartPlanPlan    `json:"plans"`
+	Balances   []zcodeStartPlanBalance `json:"balances"`
 }
 
-// zcodeStartPlanBalanceResponse is the full billing/balance response envelope.
-type zcodeStartPlanBalanceResponse struct {
-	Code int                        `json:"code"`
-	Data *zcodeStartPlanBalanceData `json:"data"`
+// zcodeStartPlanPlan is one plan that the account bought. The times stay raw,
+// because the desktop converts them with JavaScript's Number(), which accepts a
+// number and a numeric string alike.
+type zcodeStartPlanPlan struct {
+	PlanID       string          `json:"plan_id"`
+	UserPlanID   string          `json:"user_plan_id"`
+	Name         string          `json:"name"`
+	Status       string          `json:"status"`
+	StartsAt     json.RawMessage `json:"starts_at"`
+	EndsAt       json.RawMessage `json:"ends_at"`
+	Entitlements []struct {
+		EffectiveAt json.RawMessage `json:"effective_at"`
+	} `json:"entitlements"`
 }
 
-// fetchStartPlanEntitlementModels calls ZCode's billing/balance API and returns
-// the model display names the purchased Start Plan grants.
+// zcodeStartPlanBalance is the remaining usage of one plan. Its capabilities
+// state the models that the plan grants, as "model:<id>" entries.
+type zcodeStartPlanBalance struct {
+	PlanID       string   `json:"plan_id"`
+	UserPlanID   string   `json:"user_plan_id"`
+	ShowName     string   `json:"show_name"`
+	Capabilities []string `json:"capabilities"`
+}
+
+// zcodeCredentialFailedEntitlement is the entitlement of a plan whose credential
+// the billing API refused.
+var zcodeCredentialFailedEntitlement = zcodeAccountEntitlement{
+	Availability:      zcodeAvailabilityUnavailable,
+	UnavailableReason: zcodeUnavailableCredentialFailed,
+}
+
+// interpretZCodeStartPlanBalance reads a billing/balance reply as the ZCode
+// desktop does (resolveStartPlanBalanceAvailability), in this order:
 //
-// The endpoint is the start-plan provider's baseURL with the trailing path
-// replaced by `/billing/balance`. Authentication is the provider's inline JWT.
-// The request carries the same headers the ZCode desktop sends (User-Agent,
-// X-ZCode-App-Version, X-Title, X-Platform, X-Device-Mid, X-Client-Language);
-// the API returns 400 "parameter error" without X-Device-Mid and
-// X-Client-Language (verified against the live endpoint).
+//  1. An active plan whose ends_at has passed is expired, and the balances of
+//     plans that all expired are dropped.
+//  2. A reply that reports a failure means that the credential failed.
+//  3. A reply with no active Start Plan means that the account holds none.
+//  4. The models are the "model:" capabilities of the remaining balances, or the
+//     show_name of a balance that states none, in the release's spelling.
+//  5. A plan with no model, whose every entitlement takes effect later, is
+//     pending.
 //
-// Only entitlements with meter "model_usage" on an active plan are returned.
-// The caller falls back to the static builtin list when this returns an error.
-func fetchStartPlanEntitlementModels(ctx context.Context, baseURL, apiKey, version string) ([]string, error) {
-	url := zcodeStartPlanBalanceURL(baseURL)
-	if url == "" {
-		return nil, fmt.Errorf("start-plan provider has no baseURL to derive the billing/balance URL from")
+// dateSeconds is the reply's Date header in seconds since the epoch, or NaN when
+// the reply has none. now is the current time in seconds since the epoch.
+// canonical maps the lowercase form of a model id to the release's spelling. The
+// result is always valid. The error explains an outcome that a failure decided.
+func interpretZCodeStartPlanBalance(body []byte, dateSeconds, now float64, canonical map[string]string) (zcodeAccountEntitlement, error) {
+	var reply zcodeStartPlanBalanceReply
+	if err := json.Unmarshal(body, &reply); err != nil {
+		return zcodeUnknownEntitlement, fmt.Errorf("parse the billing/balance reply: %w", err)
 	}
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return nil, fmt.Errorf("start-plan provider carries no API key for the billing/balance request")
+	data := reply.Data
+	if data == nil {
+		data = &zcodeStartPlanBalanceData{}
 	}
+	data.expirePlans(dateSeconds, now)
+	if !reply.succeeded() {
+		return zcodeCredentialFailedEntitlement, fmt.Errorf("billing/balance reported a failure: success=%s code=%s",
+			zcodeRawOrAbsent(reply.Success), zcodeRawOrAbsent(reply.Code))
+	}
+	if !data.hasActiveStartPlan() {
+		return zcodeAccountEntitlement{
+			Availability:      zcodeAvailabilityUnavailable,
+			UnavailableReason: zcodeUnavailableNotEntitled,
+		}, nil
+	}
+	models := data.modelIDs(canonical)
+	if len(models) == 0 {
+		if effectiveAt, pending := data.pendingSince(now); pending {
+			return zcodeAccountEntitlement{
+				Availability: zcodeAvailabilityPending,
+				EffectiveAt:  &effectiveAt,
+				Models:       []string{},
+			}, nil
+		}
+	}
+	// An available plan with no model offers none, as in the desktop: the list is
+	// empty, not absent, so the installed rule's list does not take its place.
+	return zcodeAccountEntitlement{Availability: zcodeAvailabilityAvailable, Models: models}, nil
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
+// succeeded mirrors the desktop's isSuccessfulBusinessEnvelope: success must not
+// be false, and code must be absent, 0, or 200.
+func (r zcodeStartPlanBalanceReply) succeeded() bool {
+	if strings.TrimSpace(string(r.Success)) == "false" {
+		return false
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("User-Agent", "ZCode/"+version)
-	req.Header.Set("X-ZCode-App-Version", version)
-	req.Header.Set("X-Title", "Z Code@electron")
-	req.Header.Set("X-Platform", runtime.GOOS+"-"+runtime.GOARCH)
-	req.Header.Set("X-Device-Mid", "leapmux")
-	req.Header.Set("X-Client-Language", "en-US")
+	if r.Code == nil {
+		return true
+	}
+	code, ok := zcodeJSONNumberLiteral(r.Code)
+	return ok && (code == 0 || code == 200)
+}
 
-	client := &http.Client{Timeout: zcodePlanBalanceTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("billing/balance request: %w", err)
+// expirePlans marks an active plan whose end has passed as expired, and drops each
+// balance whose matching plans all expired, as the desktop's
+// normalizeStartPlanExpiry does. The clock is the reply's Date header, then the
+// server's clock, then the local clock.
+func (d *zcodeStartPlanBalanceData) expirePlans(dateSeconds, now float64) {
+	at := dateSeconds
+	if math.IsNaN(at) {
+		at = now
+		if serverTime, ok := zcodeServerTime(d.ServerTime); ok {
+			at = serverTime
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read billing/balance response: %w", err)
+	for i := range d.Plans {
+		plan := &d.Plans[i]
+		end, ok := zcodeJSNumber(plan.EndsAt)
+		if zcodeTrimLower(plan.Status) == "active" && ok && !math.IsInf(end, 0) && end > 0 && end <= at {
+			plan.Status = "expired"
+		}
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("billing/balance returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	if d.Balances == nil {
+		return
 	}
+	kept := make([]zcodeStartPlanBalance, 0, len(d.Balances))
+	for _, balance := range d.Balances {
+		matched, live := false, false
+		for _, plan := range d.Plans {
+			if balance.UserPlanID != "" && plan.UserPlanID != "" {
+				if plan.UserPlanID != balance.UserPlanID {
+					continue
+				}
+			} else if plan.PlanID != balance.PlanID {
+				continue
+			}
+			matched = true
+			if zcodeTrimLower(plan.Status) != "expired" {
+				live = true
+			}
+		}
+		if !matched || live {
+			kept = append(kept, balance)
+		}
+	}
+	d.Balances = kept
+}
 
-	var envelope zcodeStartPlanBalanceResponse
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("parse billing/balance response: %w", err)
+// hasActiveStartPlan mirrors the desktop's hasActiveStartPlan: some plan is active,
+// and its id or its name identifies a Start Plan, or it states neither.
+func (d *zcodeStartPlanBalanceData) hasActiveStartPlan() bool {
+	for _, plan := range d.Plans {
+		id := zcodeTrimLower(plan.PlanID)
+		name := zcodeTrimLower(plan.Name)
+		identified := (id == "" && name == "") || zcodeIsStartPlanIdentity(id) || zcodeIsStartPlanIdentity(name)
+		if zcodeTrimLower(plan.Status) == "active" && identified {
+			return true
+		}
 	}
-	if envelope.Code != 0 {
-		return nil, fmt.Errorf("billing/balance returned code %d", envelope.Code)
-	}
-	if envelope.Data == nil {
-		return nil, fmt.Errorf("billing/balance response carries no data")
-	}
+	return false
+}
 
-	seen := make(map[string]bool)
-	var models []string
-	for _, plan := range envelope.Data.Plans {
-		if !strings.EqualFold(strings.TrimSpace(plan.Status), "active") {
+func zcodeIsStartPlanIdentity(value string) bool {
+	return strings.Contains(value, "start-plan") || strings.Contains(value, "start plan")
+}
+
+// modelIDs mirrors the desktop's resolveZaiStartPlanBalanceModelIds: the
+// "model:" capabilities of each balance, or its show_name when it states none, in
+// the release's spelling, without a duplicate that differs only by case. The
+// result is never nil.
+func (d *zcodeStartPlanBalanceData) modelIDs(canonical map[string]string) []string {
+	models := []string{}
+	seen := map[string]bool{}
+	for _, balance := range d.Balances {
+		var ids []string
+		for _, capability := range balance.Capabilities {
+			capability = strings.TrimSpace(capability)
+			if len(capability) < len("model:") || !strings.EqualFold(capability[:len("model:")], "model:") {
+				continue
+			}
+			if id := strings.TrimSpace(capability[len("model:"):]); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			ids = []string{balance.ShowName}
+		}
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if spelled, ok := canonical[strings.ToLower(id)]; ok {
+				id = spelled
+			}
+			key := strings.ToLower(id)
+			if id == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			models = append(models, id)
+		}
+	}
+	return models
+}
+
+// pendingSince mirrors the desktop's pending test: every active plan's
+// entitlements (or its start when it lists none) take effect after the server's
+// clock. It returns the earliest of those times.
+func (d *zcodeStartPlanBalanceData) pendingSince(now float64) (float64, bool) {
+	serverNow := now
+	if serverTime, ok := zcodeServerTime(d.ServerTime); ok {
+		serverNow = serverTime
+	}
+	earliest := math.Inf(1)
+	count := 0
+	for _, plan := range d.Plans {
+		// The desktop compares this status without trimming it.
+		if strings.ToLower(plan.Status) != "active" {
 			continue
 		}
-		for _, ent := range plan.Entitlements {
-			if !strings.EqualFold(strings.TrimSpace(ent.Meter), "model_usage") {
-				continue
+		times := []json.RawMessage{plan.StartsAt}
+		if len(plan.Entitlements) > 0 {
+			times = times[:0]
+			for _, entitlement := range plan.Entitlements {
+				times = append(times, entitlement.EffectiveAt)
 			}
-			name := strings.TrimSpace(ent.ShowName)
-			if name == "" || seen[name] {
-				continue
+		}
+		for _, raw := range times {
+			count++
+			effective, ok := zcodeOptionalJSNumber(raw)
+			if !ok || math.IsInf(effective, 0) || effective <= serverNow {
+				return 0, false
 			}
-			seen[name] = true
-			models = append(models, name)
+			earliest = math.Min(earliest, effective)
 		}
 	}
-	return models, nil
+	return earliest, count > 0
 }
 
-// zcodeStartPlanBalanceURL derives the billing/balance URL from a start-plan
-// provider's baseURL. The provider's baseURL ends in `/anthropic` (the
-// messages endpoint); the balance endpoint replaces that path segment.
-func zcodeStartPlanBalanceURL(baseURL string) string {
-	u := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if u == "" {
-		return ""
-	}
-	// Replace the trailing path segment (typically "anthropic") with the
-	// billing/balance path. The base is https://zcode.z.ai/api/v1/zcode-plan.
-	if i := strings.LastIndex(u, "/"); i > 0 {
-		u = u[:i]
-	}
-	return u + "/billing/balance"
+// zcodeTrimLower trims and lowercases a value, as the desktop's
+// `value?.trim().toLowerCase()` does for a status, a plan id, and a plan name.
+func zcodeTrimLower(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// zcodeAppVersion discovers the ZCode application version from the installation
-// so the billing/balance request carries the same X-ZCode-App-Version the
-// desktop sends. The desktop embeds it in its Electron host bundle; the app
-// bundle's Info.plist (macOS) or package.json (Windows/Linux) carries the same
-// value.
+// zcodeServerTime reads server_time as the desktop does: only a finite,
+// non-negative JSON number counts.
+func zcodeServerTime(raw json.RawMessage) (float64, bool) {
+	value, ok := zcodeJSONNumberLiteral(raw)
+	if !ok || math.IsInf(value, 0) || value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+// zcodeJSONNumberLiteral reads raw only when it is a JSON number literal. A
+// string, a null, or an absent value is not a number.
+func zcodeJSONNumberLiteral(raw json.RawMessage) (float64, bool) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || (text[0] != '-' && (text[0] < '0' || text[0] > '9')) {
+		return 0, false
+	}
+	var value float64
+	if json.Unmarshal([]byte(text), &value) != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+// zcodeJSNumber converts a JSON value as JavaScript's Number() does for the values
+// a billing reply carries. ok is false where Number() returns NaN: an absent
+// value, a string that is not numeric, an array, or an object.
+func zcodeJSNumber(raw json.RawMessage) (float64, bool) {
+	text := strings.TrimSpace(string(raw))
+	switch {
+	case text == "":
+		return 0, false
+	case text == "null", text == "false":
+		return 0, true
+	case text == "true":
+		return 1, true
+	case text[0] == '"':
+		var value string
+		if json.Unmarshal([]byte(text), &value) != nil {
+			return 0, false
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return 0, true
+		}
+		number, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(number) {
+			return 0, false
+		}
+		return number, true
+	default:
+		return zcodeJSONNumberLiteral(raw)
+	}
+}
+
+// zcodeOptionalJSNumber converts a time as the desktop's pending test does: an
+// absent, null, or empty value is undefined, and any other value goes through
+// Number().
+func zcodeOptionalJSNumber(raw json.RawMessage) (float64, bool) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" || text == `""` {
+		return 0, false
+	}
+	return zcodeJSNumber(raw)
+}
+
+// zcodeRawOrAbsent renders a raw JSON value for a log line.
+func zcodeRawOrAbsent(raw json.RawMessage) string {
+	if raw == nil {
+		return "absent"
+	}
+	return string(raw)
+}
+
+// zcodeStartPlanBalanceURL builds the billing URL on the origin of a Start Plan
+// provider's base URL. It refuses a base URL that is not https or that has no host,
+// so the credential never travels in clear text or to a host that the provider
+// does not state. It adds the application version as the desktop does, when
+// LeapMux knows it.
+func zcodeStartPlanBalanceURL(baseURL, version string) (string, error) {
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", errors.New("the Start Plan provider's base URL is not a valid URL")
+	}
+	if base.Scheme != "https" || base.Host == "" {
+		return "", fmt.Errorf("the Start Plan provider's base URL %q is not an https URL with a host", base.Redacted())
+	}
+	balance := url.URL{Scheme: base.Scheme, Host: base.Host, Path: zcodeStartPlanBalancePath}
+	if version != "" && version != zcodeUnknownAppVersion {
+		balance.RawQuery = url.Values{"app_version": {version}}.Encode()
+	}
+	return balance.String(), nil
+}
+
+// newZCodeStartPlanHTTPClient returns the client that sends the billing request. It
+// refuses to follow a redirect, so the credential reaches only the origin that the
+// provider states, and a 3xx reply reads as a failure. The request inherits the
+// proxy settings of the Worker process, not those of the user's shell profile.
+func newZCodeStartPlanHTTPClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// zcodeStartPlanHTTPClient is the client that production agents use.
+var zcodeStartPlanHTTPClient = newZCodeStartPlanHTTPClient(nil)
+
+// zcodeNodeOS spells an operating system as Node.js's process.platform does.
+func zcodeNodeOS(goos string) string {
+	switch goos {
+	case "windows":
+		return "win32"
+	case "solaris", "illumos":
+		return "sunos"
+	}
+	return goos
+}
+
+// zcodeNodePlatform spells a platform as Node.js does (process.platform and
+// process.arch), which is the X-Platform value that the ZCode desktop sends.
+func zcodeNodePlatform(goos, goarch string) string {
+	switch goarch {
+	case "amd64":
+		goarch = "x64"
+	case "386":
+		goarch = "ia32"
+	case "mipsle":
+		goarch = "mipsel"
+	case "ppc64le":
+		goarch = "ppc64"
+	}
+	return zcodeNodeOS(goos) + "-" + goarch
+}
+
+// zcodeClientIdentity is how a billing request identifies its client, as the
+// desktop identifies itself.
+type zcodeClientIdentity struct {
+	// appVersion is the version of the installed ZCode application.
+	appVersion string
+	// deviceMid is the desktop's device id of this machine (loadZCodeDeviceMid).
+	deviceMid string
+}
+
+// setZCodeStartPlanHeaders sets the identifying headers that the desktop sends with
+// the billing request. The desktop also sends headers that the billing API does not
+// require, such as its time zone and release channel, and LeapMux leaves those out.
+// The API refuses a request without X-Device-Mid or X-Client-Language with HTTP 400
+// "parameter error".
+func setZCodeStartPlanHeaders(header http.Header, credential string, identity zcodeClientIdentity) {
+	header.Set("Authorization", "Bearer "+credential)
+	header.Set("User-Agent", "ZCode/"+identity.appVersion)
+	header.Set("X-ZCode-App-Version", identity.appVersion)
+	header.Set("X-Title", "Z Code@electron")
+	header.Set("X-Platform", zcodeNodePlatform(runtime.GOOS, runtime.GOARCH))
+	header.Set("X-Device-Mid", identity.deviceMid)
+	header.Set("X-Client-Language", "en-US")
+}
+
+// zcodeBalanceReply is a billing/balance reply that several checks can read.
+type zcodeBalanceReply struct {
+	status int
+	// body is the reply, or an excerpt of a failed one.
+	body        []byte
+	dateSeconds float64
+}
+
+// zcodeBalanceRequestKey identifies one billing request. The credential appears as
+// its hash, so the map never holds it.
+type zcodeBalanceRequestKey struct {
+	client     *http.Client
+	url        string
+	credential [sha256.Size]byte
+	identity   zcodeClientIdentity
+}
+
+// zcodeBalanceRequests shares one billing request among the agents of the Worker
+// that ask for the same plan at once, as the resume sweep does at Worker boot. The
+// desktop shares a request the same way (fetchZaiStartPlanBalanceEnvelope).
+var zcodeBalanceRequests zcodeSharedCalls[zcodeBalanceRequestKey, zcodeBalanceReply]
+
+// fetchZCodeStartPlanEntitlement asks ZCode's billing API whether the account holds
+// the Start Plan that baseURL serves. The result is always valid: a refused
+// credential is unavailable, and any other failure is unknown, as in the desktop's
+// classifyAvailabilityError. The error explains an outcome that a failure decided.
 //
-// scriptPath is the resolved zcode.cjs path (see resolve.go). The function
-// walks up from the script to the app bundle root. When no version can be
-// found it returns "unknown", which the API accepts (verified).
-func zcodeAppVersion(scriptPath string) string {
-	if scriptPath == "" {
-		return "unknown"
+// The credential is the one that also authorizes the plan's model requests
+// (zcodeAccountBinding.startPlanCredential), so the check states what those
+// requests meet.
+func fetchZCodeStartPlanEntitlement(ctx context.Context, client *http.Client, baseURL, credential string, identity zcodeClientIdentity, canonical map[string]string) (zcodeAccountEntitlement, error) {
+	credential = strings.TrimSpace(credential)
+	if credential == "" {
+		return zcodeUnknownEntitlement, errors.New("the Start Plan holds no credential")
 	}
-	// macOS: <root>/Contents/Resources/glm/zcode.cjs -> <root>/Contents/Info.plist
-	// Other: <root>/resources/glm/zcode.cjs -> <root>/resources/../package.json
-	// Walk up at most 6 levels looking for Info.plist or package.json.
-	dir := strings.TrimRight(scriptPath, "/")
-	for i := 0; i < 6; i++ {
-		idx := strings.LastIndex(dir, "/")
-		if idx <= 0 {
-			break
-		}
-		dir = dir[:idx]
-		if v := readBundleVersion(dir + "/Info.plist"); v != "" {
-			return v
-		}
-		if v := readBundleVersion(dir + "/package.json"); v != "" {
-			return v
-		}
-	}
-	return "unknown"
-}
-
-// readBundleVersion extracts a version string from an Info.plist or
-// package.json file. Returns "" when the file is missing or carries no
-// version.
-func readBundleVersion(path string) string {
-	data, err := readFileLimited(path, 1<<20)
+	balanceURL, err := zcodeStartPlanBalanceURL(baseURL, identity.appVersion)
 	if err != nil {
-		return ""
+		return zcodeUnknownEntitlement, err
 	}
-	if strings.HasSuffix(path, ".plist") {
-		return plistVersion(data)
-	}
-	return jsonVersion(data)
-}
-
-// readFileLimited reads up to limit bytes from path.
-func readFileLimited(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
+	key := zcodeBalanceRequestKey{client: client, url: balanceURL, credential: sha256.Sum256([]byte(credential)), identity: identity}
+	reply, err := zcodeBalanceRequests.do(ctx, key, zcodeStartPlanCheckTimeout, func(ctx context.Context) (zcodeBalanceReply, error) {
+		return sendZCodeBalanceRequest(ctx, client, balanceURL, credential, identity)
+	})
 	if err != nil {
-		return nil, err
+		return zcodeUnknownEntitlement, err
 	}
-	defer func() { _ = f.Close() }()
-	return io.ReadAll(io.LimitReader(f, limit))
+	if reply.status < 200 || reply.status > 299 {
+		err := fmt.Errorf("billing/balance returned HTTP %d: %s", reply.status, strings.TrimSpace(string(reply.body)))
+		if reply.status == http.StatusUnauthorized || reply.status == http.StatusForbidden {
+			return zcodeCredentialFailedEntitlement, err
+		}
+		return zcodeUnknownEntitlement, err
+	}
+	return interpretZCodeStartPlanBalance(reply.body, reply.dateSeconds, float64(time.Now().UnixMilli())/1000, canonical)
 }
 
-// plistVersion extracts CFBundleShortVersionString from an XML plist.
-func plistVersion(data []byte) string {
-	s := string(data)
-	const key = "CFBundleShortVersionString"
-	i := strings.Index(s, key)
-	if i < 0 {
-		return ""
+// sendZCodeBalanceRequest sends one billing request and reads its reply.
+func sendZCodeBalanceRequest(ctx context.Context, client *http.Client, balanceURL, credential string, identity zcodeClientIdentity) (zcodeBalanceReply, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, balanceURL, nil)
+	if err != nil {
+		return zcodeBalanceReply{}, fmt.Errorf("build the billing/balance request: %w", err)
 	}
-	// The value is the next <string>...</string> after the key.
-	rest := s[i+len(key):]
-	start := strings.Index(rest, "<string>")
-	if start < 0 {
-		return ""
+	setZCodeStartPlanHeaders(req.Header, credential, identity)
+	resp, err := client.Do(req)
+	if err != nil {
+		return zcodeBalanceReply{}, fmt.Errorf("billing/balance request: %w", err)
 	}
-	rest = rest[start+len("<string>"):]
-	end := strings.Index(rest, "</string>")
-	if end < 0 {
-		return ""
+	defer func() { _ = resp.Body.Close() }()
+	reply := zcodeBalanceReply{status: resp.StatusCode, dateSeconds: math.NaN()}
+	if date, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
+		reply.dateSeconds = float64(date.UnixMilli()) / 1000
 	}
-	return strings.TrimSpace(rest[:end])
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		reply.body, _ = io.ReadAll(io.LimitReader(resp.Body, zcodeStartPlanErrorExcerptBytes))
+		return reply, nil
+	}
+	reply.body, err = io.ReadAll(io.LimitReader(resp.Body, zcodeStartPlanBalanceMaxBytes+1))
+	if err != nil {
+		return zcodeBalanceReply{}, fmt.Errorf("read the billing/balance reply: %w", err)
+	}
+	if len(reply.body) > zcodeStartPlanBalanceMaxBytes {
+		return zcodeBalanceReply{}, fmt.Errorf("the billing/balance reply exceeds %d bytes", zcodeStartPlanBalanceMaxBytes)
+	}
+	return reply, nil
 }
 
-// jsonVersion extracts the "version" field from a package.json fragment.
-func jsonVersion(data []byte) string {
-	var pkg struct {
-		Version string `json:"version"`
+// zcodeStartPlanTarget is one Start Plan that a check asks about.
+type zcodeStartPlanTarget struct {
+	legacyID   string
+	baseURL    string
+	credential string
+}
+
+// zcodeStartPlanTargets returns the Start Plans among bindings.
+func zcodeStartPlanTargets(bindings []zcodeAccountBinding) []zcodeStartPlanTarget {
+	var targets []zcodeStartPlanTarget
+	for _, binding := range bindings {
+		if binding.rule.isStartPlan() {
+			targets = append(targets, zcodeStartPlanTarget{
+				legacyID: binding.legacyID, baseURL: binding.baseURL(), credential: binding.startPlanCredential(),
+			})
+		}
 	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return ""
+	return targets
+}
+
+// zcodeStartPlanCheck is the entitlement check of a set of Start Plans. The first
+// check runs while the app-server boots, because it needs nothing from the
+// app-server.
+type zcodeStartPlanCheck struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	// results maps a legacy provider id to its entitlement. The goroutines write it
+	// before done closes, and wait reads it after.
+	results map[string]zcodeAccountEntitlement
+}
+
+// zcodeStartPlanChecker sends the checks of one agent.
+type zcodeStartPlanChecker struct {
+	client    *http.Client
+	identity  zcodeClientIdentity
+	canonical map[string]string
+	agentID   string
+}
+
+// start starts one request for each target. The requests run concurrently and
+// share one deadline, so the check takes no longer than timeout however many plans
+// it checks.
+func (c zcodeStartPlanChecker) start(ctx context.Context, targets []zcodeStartPlanTarget, timeout time.Duration) *zcodeStartPlanCheck {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	check := &zcodeStartPlanCheck{
+		done:    make(chan struct{}),
+		cancel:  cancel,
+		results: map[string]zcodeAccountEntitlement{},
 	}
-	return strings.TrimSpace(pkg.Version)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, target := range targets {
+		wg.Go(func() {
+			entitlement, err := fetchZCodeStartPlanEntitlement(ctx, c.client, target.baseURL, target.credential, c.identity, c.canonical)
+			if err != nil {
+				slog.Warn("zcode start-plan entitlement check failed",
+					"agent_id", c.agentID, "provider", target.legacyID,
+					"availability", entitlement.Availability, "error", err)
+			} else {
+				slog.Debug("zcode start-plan entitlement checked",
+					"agent_id", c.agentID, "provider", target.legacyID,
+					"availability", entitlement.Availability, "reason", entitlement.UnavailableReason,
+					"models", entitlement.Models)
+			}
+			mu.Lock()
+			check.results[target.legacyID] = entitlement
+			mu.Unlock()
+		})
+	}
+	go func() {
+		wg.Wait()
+		cancel()
+		close(check.done)
+	}()
+	return check
+}
+
+// wait returns the entitlement of each Start Plan, keyed by its legacy provider id.
+// The check's deadline limits the wait.
+func (c *zcodeStartPlanCheck) wait() map[string]zcodeAccountEntitlement {
+	<-c.done
+	return c.results
+}
+
+// stop ends the requests that are still running. Their plans then report an
+// unknown entitlement.
+func (c *zcodeStartPlanCheck) stop() {
+	c.cancel()
 }

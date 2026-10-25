@@ -146,6 +146,9 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 	// (modeObserved), and the create request or a mode event gives the plan flag
 	// (planObserved).
 	observedMode, observedBoth := a.permissionModeLocked(), a.modeObserved && a.planObserved
+	// The model the opened session RUNS on, which stays the truth when the app-server
+	// refuses the requested one.
+	observedModel := a.model
 	if req.Model != "" {
 		a.model = req.Model
 	}
@@ -165,6 +168,13 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 	if model != "" {
 		if err := a.applyZCodeModel(model, timeout); err != nil {
 			slog.Warn("zcode setModel on startup failed", "agent_id", a.AgentID(), "model", model, "error", err)
+			// The session still runs on the model that the app-server chose, so report
+			// that one rather than the request that it refused.
+			a.Mu.Lock()
+			if a.model == model {
+				a.model = observedModel
+			}
+			a.Mu.Unlock()
 		}
 	}
 	// EffortAuto is LeapMux's sentinel for "send no thought level at all", so the

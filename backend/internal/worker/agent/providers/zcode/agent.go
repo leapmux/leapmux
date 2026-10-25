@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,26 +43,48 @@ type Agent struct {
 	workspace  zcodeWorkspace
 
 	// catalog is the translated view of ZCode's own configuration: the provider
-	// registry payload (with inline API keys) and the per-model capabilities. Read
-	// once at startup and never mutated, so it needs no lock.
+	// registry payload (with inline API keys), the per-model capabilities, and the
+	// account bridge. loadZCodeCatalog builds it before the process starts. The
+	// one later write is the account bridge, which pushAccountProviderConfig
+	// records on the Start goroutine before the session opens. Its readers run
+	// only after that: the app-server asks for credentials only during a model
+	// request of an open session, and the model setters check
+	// accountProviderConfig under Mu first. So the catalog needs no lock.
 	catalog zcodeCatalog
 	// registryRevision identifies this agent's provider configuration. Legacy
 	// builds use it on the workspace registry, and current builds use it on the
 	// account snapshot.
 	registryRevision string
 	// builtinProviderConfigPath identifies the installed release that the account
-	// provider snapshot overlays. Empty for a PATH launcher that owns its setup.
+	// provider snapshot overlays. Launch resolution sets it whenever it finds an
+	// installed release, also for a `zcode` launcher on PATH beside an installed
+	// application, and the environment can set it too. Empty otherwise, and the
+	// account snapshot then fails.
 	builtinProviderConfigPath string
-	// scriptPath is the resolved zcode.cjs path, used to discover the ZCode
-	// application version for the entitlement API. Empty for a PATH launcher.
-	scriptPath string
+	// credentials reads the credential store that the desktop and its app-server
+	// share. LeapMux reads it again for each model request, so a new sign-in
+	// serves at once.
+	credentials zcodeCredentialStore
+	// identity is how the Start Plan entitlement check identifies its client, as
+	// the desktop does.
+	identity zcodeClientIdentity
+	// startPlanHTTP sends the Start Plan entitlement check. A test replaces it, so
+	// no test reaches ZCode's billing API.
+	startPlanHTTP *http.Client
+	// projectTokens mints the project tokens of coding plans. Production agents
+	// share zcodeProjectTokens; a test replaces it, so no test reaches the project
+	// API.
+	projectTokens *zcodeProjectTokenClient
 
 	// --- guarded by Mu ---
 
 	// accountProviderConfig is true when the legacy registry method is absent and
 	// provider/updateAccountConfig completed. It selects the current request shapes.
 	accountProviderConfig bool
-	sessionID             string
+	// account is the account snapshot that the app-server accepted, or nil before
+	// it accepts one and on a legacy build.
+	account   *zcodeAccountState
+	sessionID string
 	// stateRevision is the app-server's optimistic-concurrency counter, taken
 	// from the last runtime state observed. session/goal sends it as
 	// expectedRevision so a goal write that races a change the agent just made

@@ -3,8 +3,10 @@ package zcode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -34,10 +36,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// ZCode's credentials are read BEFORE the process starts. Without a provider
 	// registry every turn fails with a message that identifies the app-server rather
 	// than the missing configuration, so the real cause is reported here instead.
+	// The current desktop no longer writes config.json, so a sign-in in the
+	// credential store serves without it.
+	credentials := newZCodeCredentialStore(opts.HomeDir, os.Getenv)
 	catalog, err := loadZCodeCatalog(opts.HomeDir)
 	if err != nil {
-		cancel()
-		return nil, err
+		if err = zcodeConfigurationError(err, opts.HomeDir, credentials); err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 
 	// The app-server has no working-directory flag: it takes the workspace path in
@@ -68,13 +75,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
-	// The script path is the first prefix arg when the launch spec runs the
-	// bundled zcode.cjs; empty for a PATH launcher that owns its own setup.
-	scriptPath := ""
-	if len(spec.PrefixArgs) > 0 {
-		scriptPath = spec.PrefixArgs[0]
-	}
-
 	a := &Agent{
 		Process:                   providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "zcode", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		sink:                      sink,
@@ -83,10 +83,16 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		catalog:                   catalog,
 		registryRevision:          "leapmux-" + opts.AgentID,
 		builtinProviderConfigPath: zcodeLaunchEnvValue(cmd.Env, zcodeBuiltinProviderConfigEnv),
-		scriptPath:                scriptPath,
-		mode:                      contracts.ZCodeDefaultMode,
-		toolCalls:                 map[string]*zcodeToolCall{},
-		pendingControls:           map[string]*pendingControl{},
+		credentials:               credentials,
+		identity: zcodeClientIdentity{
+			appVersion: zcodeAppVersion(zcodeInstalledScript(spec, fileExists)),
+			deviceMid:  loadZCodeDeviceMid(opts.HomeDir),
+		},
+		startPlanHTTP:   zcodeStartPlanHTTPClient,
+		projectTokens:   zcodeProjectTokens,
+		mode:            contracts.ZCodeDefaultMode,
+		toolCalls:       map[string]*zcodeToolCall{},
+		pendingControls: map[string]*pendingControl{},
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
@@ -96,13 +102,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		location.sessionID = a.sessionID
 		return location
 	})
-	// A requested model may be spelled bare ("GLM-5.3"); the catalog resolves it to
-	// the composite id the option groups carry. An unresolvable request leaves the
-	// model empty, and the app-server then picks the registry default -- which the
-	// settings snapshot reports back, so the user still sees the truth.
-	if model, ok := catalog.resolveModelID(opts.Model()); ok {
-		a.model = model
-	}
+	a.model = catalog.launchModel(opts.Model())
 	a.thoughtLevel = opts.Effort()
 	// No goroutine reads the agent yet. The lock is the contract of the two helpers.
 	a.Mu.Lock()
@@ -162,6 +162,53 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	return a, nil
 }
 
+// zcodeConfigurationError decides whether a config.json that is missing or lists no
+// usable provider stops the start. It does not when the credential store holds a
+// sign-in, because the account plans then serve without config.json. It returns
+// nil when the start continues. A store that LeapMux cannot read is reported as
+// such, never as a store without a sign-in.
+func zcodeConfigurationError(err error, homeDir string, credentials zcodeCredentialStore) error {
+	missing, unusable := errors.Is(err, errZCodeConfigMissing), errors.Is(err, errZCodeConfigUnusable)
+	if !missing && !unusable {
+		return err
+	}
+	signedIn, storeErr := zcodeStoreHoldsSignIn(credentials)
+	switch {
+	case signedIn:
+		return nil
+	case missing && storeErr != nil:
+		return fmt.Errorf("ZCode is not configured: %s does not exist, and LeapMux could not read a sign-in from the ZCode credential store: %w",
+			zcodeConfigPath(homeDir), storeErr)
+	case missing:
+		return fmt.Errorf("ZCode is not configured: %s does not exist and the ZCode credential store holds no sign-in (sign in with the ZCode application once)",
+			zcodeConfigPath(homeDir))
+	case storeErr != nil:
+		return fmt.Errorf("%w, and LeapMux could not read a sign-in from the ZCode credential store: %w", err, storeErr)
+	default:
+		return err
+	}
+}
+
+// zcodeStoreHoldsSignIn reports whether the credential store holds a sign-in of
+// either family. The error reports what kept LeapMux from reading one.
+func zcodeStoreHoldsSignIn(credentials zcodeCredentialStore) (bool, error) {
+	stored, err := credentials.read()
+	if err != nil {
+		return false, err
+	}
+	var errs []error
+	for _, family := range []string{zcodeFamilyZAI, zcodeFamilyBigModel} {
+		_, signedIn, err := stored.session(family)
+		if signedIn {
+			return true, nil
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return false, errors.Join(errs...)
+}
+
 // zcodeLaunchEnvValue reads the final value of one launch variable. The final
 // duplicate is the value that an exec environment applies.
 func zcodeLaunchEnvValue(env []string, key string) string {
@@ -177,13 +224,19 @@ func zcodeLaunchEnvValue(env []string, key string) string {
 
 // pushProviderRegistry hands the app-server the model providers it may use.
 func (a *Agent) pushProviderRegistry(timeout time.Duration) error {
+	// The account snapshot's inputs need nothing from the app-server, so LeapMux
+	// gathers them while the app-server boots and answers the legacy request
+	// below. A legacy build never reads them, and stop ends a Start Plan check
+	// that nothing waits for.
+	account := a.prepareAccountSnapshot(timeout)
+	defer account.stop()
 	params := a.catalog.registryPayload(a.workspace, a.registryRevision, time.Now().UnixMilli())
 	raw, err := a.sendZCodeRequest(MethodUpdateProviderRegistry, params, timeout)
 	if err != nil {
 		if !zcodeIsMethodNotFound(err) {
 			return err
 		}
-		return a.pushAccountProviderConfig(timeout)
+		return a.pushAccountProviderConfig(account, timeout)
 	}
 	var resp struct {
 		Status        string `json:"status"`
@@ -200,77 +253,4 @@ func (a *Agent) pushProviderRegistry(timeout time.Duration) error {
 	}
 	slog.Debug("zcode provider registry applied", "agent_id", a.AgentID(), "status", resp.Status, "providers", resp.ProviderCount)
 	return nil
-}
-
-// pushAccountProviderConfig applies the host-owned account snapshot that replaced
-// workspace/updateProviderRegistry in ZCode 0.16.9.
-func (a *Agent) pushAccountProviderConfig(timeout time.Duration) error {
-	a.fetchStartPlanEntitlements(timeout)
-	params, err := a.catalog.accountProviderPayload(a.builtinProviderConfigPath, a.registryRevision)
-	if err != nil {
-		return err
-	}
-	raw, err := a.sendZCodeRequest(MethodUpdateAccountConfig, params, timeout)
-	if err != nil {
-		return err
-	}
-	var response struct {
-		ReceivedRevision string `json:"receivedRevision"`
-		ProviderCount    int    `json:"providerCount"`
-		Status           string `json:"status"`
-	}
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return fmt.Errorf("decode ZCode account provider acknowledgement: %w", err)
-	}
-	if response.ReceivedRevision != params.Revision {
-		return fmt.Errorf("ZCode account provider acknowledgement returned revision %q, expected %q",
-			response.ReceivedRevision, params.Revision)
-	}
-	if response.Status != "received" && response.Status != "unchanged" {
-		return fmt.Errorf("ZCode account provider acknowledgement returned status %q", response.Status)
-	}
-	a.Mu.Lock()
-	a.accountProviderConfig = true
-	a.Mu.Unlock()
-	slog.Debug("zcode account provider configuration applied", "agent_id", a.AgentID(),
-		"status", response.Status, "providers", response.ProviderCount)
-	return nil
-}
-
-// fetchStartPlanEntitlements queries ZCode's billing/balance API for every
-// start-plan provider and caches the model display names the purchased plan
-// grants. The catalog then pushes those names as builtinModelIds so the
-// app-server's registry matches the plan, not the generic static list.
-//
-// A failure is non-fatal: the catalog leaves startPlanModels empty and
-// accountProviderPayload omits builtinModelIds, so the app-server falls back
-// to its own builtinModelIds.
-func (a *Agent) fetchStartPlanEntitlements(timeout time.Duration) {
-	ctx, cancel := context.WithTimeout(a.Context(), timeout)
-	defer cancel()
-	version := zcodeAppVersion(a.scriptPath)
-	a.Mu.Lock()
-	if a.catalog.startPlanModels == nil {
-		a.catalog.startPlanModels = map[string][]string{}
-	}
-	a.Mu.Unlock()
-	for _, provider := range a.catalog.Providers {
-		if !strings.HasSuffix(provider.ProviderID, "-start-plan") {
-			continue
-		}
-		if provider.APIKey == nil || provider.APIKey.Value == "" {
-			continue
-		}
-		models, err := fetchStartPlanEntitlementModels(ctx, provider.BaseURL, provider.APIKey.Value, version)
-		if err != nil {
-			slog.Warn("zcode start-plan entitlement fetch failed; falling back to builtin list",
-				"agent_id", a.AgentID(), "provider", provider.ProviderID, "error", err)
-			continue
-		}
-		a.Mu.Lock()
-		a.catalog.startPlanModels[provider.ProviderID] = models
-		a.Mu.Unlock()
-		slog.Debug("zcode start-plan entitlement models fetched",
-			"agent_id", a.AgentID(), "provider", provider.ProviderID, "models", models)
-	}
 }
