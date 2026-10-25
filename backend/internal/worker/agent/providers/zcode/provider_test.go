@@ -38,7 +38,6 @@ func TestZCodeClassifiesConsolidatableNotifications(t *testing.T) {
 		{"a failed compaction", `{"operationId":"c1","status":"failed","trigger":"auto"}`, agent.CompactionBoundaryNotification()},
 		{"an interrupted compaction", `{"operationId":"c1","status":"interrupted","trigger":"auto"}`, agent.CompactionBoundaryNotification()},
 		{"a scheduled retry", `{"type":"model_retry_scheduled","requestId":"q1","_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2}}}}`, agent.APIRetryNotification()},
-		{"a workspace hook admission", `{"pendingCount":2,"bundleDigest":"abc"}`, agent.ProviderScopedNotification("zcode:hook_admission")},
 		{"a discarded steer input", `{"pendingInputIds":["p1"],"reason":"user_removed","targetTurnId":"turn_1"}`, agent.ProviderScopedNotification("zcode:steer")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,6 +48,7 @@ func TestZCodeClassifiesConsolidatableNotifications(t *testing.T) {
 	}
 	for name, raw := range map[string]json.RawMessage{
 		"a goal verification":                        sessionUpdated(`{"verificationId":"v1","targetId":"g1","status":"completed"}`),
+		"a workspace hook admission":                 sessionUpdated(`{"pendingCount":2,"bundleDigest":"abc"}`),
 		"a goal change":                              sessionUpdated(`{"action":"set","source":"command","target":{"targetID":"g1"}}`),
 		"a model response":                           sessionUpdated(`{"content":"Hi","querySource":"main_turn","stopReason":"stop"}`),
 		"a compaction boundary":                      sessionUpdated(`{"boundaryId":"b1","trigger":"auto","phase":"pre_request"}`),

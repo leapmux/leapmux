@@ -36,7 +36,7 @@ func copilotQuotaInfo(resource string, raw json.RawMessage) map[string]interface
 	}
 	info := map[string]interface{}{
 		contracts.RateLimitFieldRateLimitType: resource,
-		contracts.RateLimitFieldStatus:        "allowed",
+		contracts.RateLimitFieldStatus:        contracts.RateLimitStatusAllowed,
 	}
 	if snapshot.IsUnlimitedEntitlement {
 		return info
@@ -50,15 +50,15 @@ func copilotQuotaInfo(resource string, raw json.RawMessage) map[string]interface
 	blocked := *remaining == 0 || (snapshot.HasQuota != nil && !*snapshot.HasQuota)
 	switch {
 	case blocked && !snapshot.UsageAllowedWithExhaustedQuota:
-		info[contracts.RateLimitFieldStatus] = "exceeded"
+		info[contracts.RateLimitFieldStatus] = contracts.RateLimitStatusExceeded
 	case blocked || *remaining <= 20:
-		info[contracts.RateLimitFieldStatus] = "allowed_warning"
+		info[contracts.RateLimitFieldStatus] = contracts.RateLimitStatusAllowedWarning
 	}
 	if snapshot.Overage != nil {
 		info[contracts.RateLimitFieldIsUsingOverage] = *snapshot.Overage > 0
 	}
 	if snapshot.OverageAllowedWithExhaustedQuota != nil && *snapshot.OverageAllowedWithExhaustedQuota {
-		info[contracts.RateLimitFieldOverageStatus] = "allowed"
+		info[contracts.RateLimitFieldOverageStatus] = contracts.RateLimitStatusAllowed
 	}
 	if reset, err := time.Parse(time.RFC3339Nano, snapshot.ResetDate); err == nil {
 		info[contracts.RateLimitFieldResetsAt] = reset.Unix()

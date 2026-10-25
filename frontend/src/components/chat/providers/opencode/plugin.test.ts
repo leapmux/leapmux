@@ -1,6 +1,6 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
-import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { OPENCODE_EVENT, OPENCODE_OPTION } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { providerQuotableText, providerToolCall } from '~/test-support/toolCallFixture'
@@ -44,6 +44,11 @@ describe('opencode classify', () => {
   // Attachment caps, assembled-text handling and config_option_update hiding are the
   // standard Agent Client Protocol behaviours; the cases below are OpenCode's own.
   describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: false })
+
+  it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
+    expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })
+    expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
+  })
 
   it('reports its reasoning axis under the well-known effort id', () => {
     // OpenCode's daemon gives the axis the id `effort`, so the plugin states no id of its own.

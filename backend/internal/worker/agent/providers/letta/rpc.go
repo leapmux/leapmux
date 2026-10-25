@@ -55,15 +55,56 @@ func (w *wsConn) close() {
 
 // sendCommand writes one protocol_v2 command.
 func (a *Agent) sendCommand(command any) error {
+	return a.sendCommandContext(a.Context(), command)
+}
+
+func (a *Agent) sendCommandContext(ctx context.Context, command any) error {
 	a.Mu.Lock()
 	conn := a.ws
 	a.Mu.Unlock()
 	if conn == nil {
 		return errAgentStopped
 	}
-	ctx, cancel := context.WithTimeout(a.Context(), lettaSendWait)
+	if ctx == nil {
+		return errAgentStopped
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, lettaSendWait)
 	defer cancel()
-	return conn.writeJSON(ctx, command)
+	return conn.writeJSON(writeCtx, command)
+}
+
+// awaitNativeReply correlates metadata without blocking the output dispatcher.
+func (a *Agent) awaitNativeReply(ctx context.Context, command lettaRequest, response lettaReply) error {
+	if ctx == nil {
+		return errAgentStopped
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	header := command.requestEnvelope()
+	replies, cleanup, err := a.rpcReplies.Register(header.RequestID)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := a.sendCommandContext(ctx, command); err != nil {
+		return err
+	}
+	raw, err := providerkit.AwaitReply(&a.Process, ctx, replies, header.Type, lettaSendWait)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, response); err != nil {
+		return fmt.Errorf("the Letta %s reply is invalid: %w", header.Type, err)
+	}
+	result := response.replyEnvelope()
+	if result.Type != header.Type+"_response" {
+		return fmt.Errorf("the Letta %s reply has type %q", header.Type, result.Type)
+	}
+	if result.Success == nil {
+		return fmt.Errorf("the Letta %s reply contains no success result", header.Type)
+	}
+	return nil
 }
 
 // readLoop reads inbound frames until the socket or process ends.
@@ -185,6 +226,8 @@ func (a *Agent) handleFrame(line []byte) {
 	switch typ {
 	case contracts.LettaMessageStreamDelta:
 		a.onStreamDelta(head.Delta, head.SubagentID, head.Runtime)
+	case contracts.LettaMessageExecuteCommandResponse:
+		a.handleManualCompactionResponse(line)
 	case contracts.LettaMessageTurnFinished:
 		a.onTurnFinished(line)
 	case contracts.LettaMessageUpdateSubagentState:
@@ -197,8 +240,6 @@ func (a *Agent) handleFrame(line []byte) {
 		a.adoptRuntime(line)
 	case "list_models_response":
 		a.handleListModelsResponse(line)
-	case "update_model_response":
-		a.handleUpdateModelResponse(line)
 	case "update_device_status":
 		a.handleDeviceStatus(line)
 	case "sync_response":
@@ -207,7 +248,9 @@ func (a *Agent) handleFrame(line []byte) {
 		a.handlePermissionReceipt(line, head.RequestID)
 	case contracts.LettaMessageAbortMessageResponse:
 		// The native turn events report the result of an interrupt.
-	case contracts.LettaMessageUpdateQueue, contracts.LettaMessageAppServerInfoResponse:
+	case contracts.LettaMessageAppServerInfoResponse, "agent_retrieve_response", "agent_update_response", "conversation_retrieve_response", "conversation_update_response", "update_model_response", lettaChatGPTUsageRead + "_response", lettaListConnectProviders + "_response":
+		a.rpcReplies.Deliver(head.RequestID, line)
+	case contracts.LettaMessageUpdateQueue:
 		// These frames contain protocol state, not transcript content.
 	case "file_ops":
 		// Letta synchronizes its editor here. The native tool result already records the file write.
@@ -221,9 +264,6 @@ func (a *Agent) failPendingRequests(err error) {
 	var waiters []*runtimeWaiter
 	if a.catalogPending != nil {
 		waiters = append(waiters, a.catalogPending.waiter)
-	}
-	if a.modelPending != nil {
-		waiters = append(waiters, a.modelPending.waiter)
 	}
 	if a.modePending != nil {
 		waiters = append(waiters, a.modePending.waiter)
@@ -268,8 +308,10 @@ func dial(ctx context.Context, url string) (*wsConn, error) {
 // error: an agent that never learned its runtime identity cannot take input.
 func (a *Agent) adoptRuntime(payload []byte) {
 	var result struct {
-		Success bool `json:"success"`
-		Runtime *struct {
+		Success      bool                 `json:"success"`
+		Agent        *lettaSettingsRecord `json:"agent"`
+		Conversation *lettaSettingsRecord `json:"conversation"`
+		Runtime      *struct {
 			AgentID        string `json:"agent_id"`
 			ConversationID string `json:"conversation_id"`
 		} `json:"runtime"`
@@ -287,6 +329,18 @@ func (a *Agent) adoptRuntime(payload []byte) {
 	}
 	if result.Runtime == nil {
 		a.settleRuntime(errors.New("runtime_start response states no runtime"))
+		return
+	}
+	if result.Agent != nil && result.Agent.ID != result.Runtime.AgentID {
+		a.settleRuntime(errors.New("runtime_start returned settings for another agent"))
+		return
+	}
+	if result.Conversation != nil && (result.Conversation.ID != result.Runtime.ConversationID || result.Conversation.AgentID != "" && result.Conversation.AgentID != result.Runtime.AgentID) {
+		a.settleRuntime(errors.New("runtime_start returned settings for another conversation"))
+		return
+	}
+	if err := a.recordNativeModelSettings(result.Agent, result.Conversation); err != nil {
+		a.settleRuntime(err)
 		return
 	}
 	a.Mu.Lock()

@@ -107,6 +107,23 @@ func TestKimiStartLaunchesTheServer(t *testing.T) {
 	}
 }
 
+// A session that opens on a model of the Kimi Code account shows the windows
+// of the plan before its first turn. A session on a model of another provider
+// shows none.
+func TestKimiStartReadsThePlanUsage(t *testing.T) {
+	for scenario, want := range map[string]string{"account-plan": kimiTestPlanWindows, "": `{}`} {
+		installFakeKimi(t, kimiHelperScenarioEnv+"="+scenario)
+		started, sink, err := startKimiForTest(t, agent.Options{})
+		require.NoError(t, err)
+		kimi, ok := started.(*Agent)
+		require.True(t, ok)
+		waitFor(t, kimi.usageWork.Idle, "the plan usage read finishes")
+		assert.JSONEq(t, want, lastKimiRateLimitState(t, sink), "scenario %q", scenario)
+		started.Stop()
+		_ = started.Wait()
+	}
+}
+
 // The two tests below count the event stream's goroutines in the whole process.
 // They are serial, as every launch test in this file is, so no other stream
 // changes the count.
@@ -299,6 +316,10 @@ func runFakeKimi(args []string) int {
 		fake.sessions["session_stored"] = &fakeKapSession{Model: "kimi-text", Permission: "manual"}
 	case "legacy-server":
 		fake.version = ""
+	case "account-plan":
+		fake.models = append(fake.models, kimiTestManagedModel())
+		fake.config["default_model"] = kimiTestManagedModelID
+		fake.usage = kimiTestPlanUsage()
 	}
 	shutdown := make(chan struct{})
 	fake.onShutdown = func() { close(shutdown) }

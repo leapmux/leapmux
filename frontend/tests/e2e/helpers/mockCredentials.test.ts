@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { LETTA_CHATGPT_ACCESS_TOKEN } from './lettaEnvironment'
 import { KIRO_E2E_API_KEY, MOCK_COPILOT_GITHUB_TOKEN, MOCK_IDENTITY_TOKEN, MOCK_SESSION_TOKEN, MODEL_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 
 describe('mockCredentialReceipt', () => {
+  it('accepts only the exact private Letta subscription token and never retains it', () => {
+    const receipt = mockCredentialReceipt({ authorization: `Bearer ${LETTA_CHATGPT_ACCESS_TOKEN}` })
+    expect(receipt).toEqual({ kind: 'bearer', accepted: true })
+    expect(JSON.stringify(receipt)).not.toContain(LETTA_CHATGPT_ACCESS_TOKEN)
+    expect(mockCredentialReceipt({ authorization: `Bearer ${LETTA_CHATGPT_ACCESS_TOKEN}changed` })).toEqual({ kind: 'bearer', accepted: false })
+  })
   it('validates the native Google key without retaining its value', () => {
     expect(mockCredentialReceipt({ 'x-goog-api-key': MODEL_KEY })).toEqual({ kind: 'api-key', accepted: true })
     expect(mockCredentialReceipt({ 'x-goog-api-key': 'private-google-value' })).toEqual({ kind: 'api-key', accepted: false })

@@ -26,6 +26,38 @@ const (
 	qoderSubtypeTaskProgress           = "task_progress"
 )
 
+// These words of an mcp_status reply select the MCP servers that
+// registerMcpServersForForms registers again. A configured scope identifies
+// the source of a server: user, project and local settings, and --mcp-config
+// (`flag`). Qoder marks each server of mcp_set_servers as `dynamic`.
+const (
+	qoderMcpScopeUser       = "user"
+	qoderMcpScopeProject    = "project"
+	qoderMcpScopeLocal      = "local"
+	qoderMcpScopeFlag       = "flag"
+	qoderMcpScopeDynamic    = "dynamic"
+	qoderMcpStatusConnected = "connected"
+	qoderMcpTypeSDK         = "sdk"
+)
+
+// The child option that states the kind of native work behind a child agent.
+// LeapMux owns these words. Qoder's stop_task stops a child that an Agent tool
+// call started (a task of the session), but not a child of a Workflow script,
+// so ChildCapabilities offers an interrupt for a task child only.
+const (
+	qoderOptionChildKind = "child-kind"
+	qoderChildKindTask   = "task"
+)
+
+// These are Qoder's built-in output styles, as `--output-style` and the
+// initialize reply spell them. The output-style group offers them before a
+// session reports its own list, which also holds the user's styles.
+const (
+	qoderOutputStyleDefault     = "default"
+	qoderOutputStyleExplanatory = "Explanatory"
+	qoderOutputStyleLearning    = "Learning"
+)
+
 // MessageEnvelope extracts the `type` field for lifecycle management.
 type MessageEnvelope struct {
 	Type string `json:"type"`

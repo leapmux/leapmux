@@ -15,6 +15,7 @@ package optionmap
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 )
@@ -27,6 +28,19 @@ type Map map[string]string
 
 // Get returns the value for id, or "" when absent. nil-safe.
 func (m Map) Get(id string) string { return m[id] }
+
+// Bool reads a strict true/false option. Missing and empty values use false.
+// Other spellings return an error, including numeric and case-insensitive forms.
+func (m Map) Bool(id string) (bool, error) {
+	switch value := m.Get(id); value {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("option %q must be true or false, got %q", id, value)
+	}
+}
 
 // Clone returns an independent copy (never nil), so the caller can mutate it without touching a
 // launch/DB-loaded map that may still be in use elsewhere.

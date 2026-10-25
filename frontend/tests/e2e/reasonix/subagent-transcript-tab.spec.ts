@@ -1,4 +1,5 @@
 import { expect } from '@playwright/test'
+import { captureClipboardText } from '../helpers/clipboardCapture'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { chatScrollContainer, openWorkspace, sendMessage } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
@@ -6,8 +7,7 @@ import { reasonixTest } from '../reasonix-fixtures'
 import { exerciseReasonixSpawnTranscript, REASONIX_CHILD } from './childScenario'
 import { REASONIX_AGENT } from './scenarios'
 
-reasonixTest('renders Reasonix read-only reports without interpreting quoted status text', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+reasonixTest('renders Reasonix read-only reports without interpreting quoted status text', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const { provider } = REASONIX_AGENT
   await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, REASONIX_AGENT, { directoryPrefix: 'renderer-readonly-agent-' })
   // The quoted status is the point of the test: a report that only talks about
@@ -39,8 +39,8 @@ reasonixTest('renders Reasonix read-only reports without interpreting quoted sta
   await expect(body.getByText('Agent "Read a protocol example" completed', { exact: true })).toBeVisible()
   await expect(body).toContainText('Subagent outcome: status=failed retryable=false')
   await body.locator('..').hover()
-  await body.locator('..').getByRole('button', { name: 'Copy', exact: true }).click()
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(report)
+  const copied = await captureClipboardText(page, () => body.locator('..').getByRole('button', { name: 'Copy', exact: true }).click())
+  expect(copied).toBe(report)
   await chat.getByRole('button', { name: 'Show prompt', exact: true }).click()
   await expect(chat.locator('strong').filter({ hasText: 'the example' })).toBeVisible()
 })

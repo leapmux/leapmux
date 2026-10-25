@@ -1,7 +1,8 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { withCleanup } from '../helpers/cleanup'
+import { finishCleanup, withCleanup } from '../helpers/cleanup'
+import { installGenerationObservation, parseGenerationCounters, waitForIncreasingCounter } from '../helpers/generationProgress'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -15,6 +16,8 @@ lettaTest.describe('Letta Code subagents', () => {
   const CHILD_READ_MARKER = 'LETTA_CHILD_READ_MARKER'
 
   const CHILD_GATE = 'letta-child-final'
+  const FIRST_PROGRESS_GATE = 'letta-child-progress-first'
+  const SECOND_PROGRESS_GATE = 'letta-child-progress-second'
 
   lettaTest('shows the child Read result before its final model answer', async ({ native, authenticatedLettaWorkspace }) => {
     const { page, modelScript } = native
@@ -39,7 +42,7 @@ lettaTest.describe('Letta Code subagents', () => {
         {
           name: 'the Letta child reports the marker',
           when: { user: CHILD_READ_TASK, lastMessage: { role: 'tool', text: CHILD_READ_MARKER } },
-          respond: { gate: CHILD_GATE, text: 'LETTA_CHILD_FINAL' },
+          respond: { gate: CHILD_GATE, text: 'LETTA_CHILD_FINAL', stream: { chunkChars: 4, delayMs: 0, gates: [{ afterChunk: 1, name: FIRST_PROGRESS_GATE }, { afterChunk: 2, name: SECOND_PROGRESS_GATE }] } },
           once: true,
         },
       )
@@ -62,7 +65,21 @@ lettaTest.describe('Letta Code subagents', () => {
       await tabById(page, rootTabId).click()
       await expect(messageContents(page).filter({ hasText: CHILD_READ_MARKER })).toHaveCount(0)
       await tabById(page, childTabId).click()
+      await page.evaluate(installGenerationObservation)
       await modelScript.releaseGate(CHILD_GATE)
+      await modelScript.waitForGate(FIRST_PROGRESS_GATE)
+      const first = await waitForIncreasingCounter(native, 'tokens')
+      await tabById(page, rootTabId).click()
+      await expect.poll(async () => {
+        const indicators = await page.locator('[data-testid="thinking-indicator"]:visible').allTextContents()
+        return indicators.reduce((tokens, text) => tokens + (parseGenerationCounters(text).tokens ?? 0), 0)
+      }, 'child model tokens stay out of the root indicator').toBe(0)
+      await tabById(page, childTabId).click()
+      await page.evaluate(installGenerationObservation)
+      await modelScript.releaseGate(FIRST_PROGRESS_GATE)
+      await modelScript.waitForGate(SECOND_PROGRESS_GATE)
+      await waitForIncreasingCounter(native, 'tokens', first)
+      await modelScript.releaseGate(SECOND_PROGRESS_GATE)
       await modelScript.waitForSteps(start + 2)
       await expect.poll(async () => (await modelScript.status()).ruleMatches['the Letta root handles the marker child completion notice'] ?? 0).toBe(1)
       await waitForAgentIdle(page)
@@ -71,8 +88,11 @@ lettaTest.describe('Letta Code subagents', () => {
       await tabById(page, rootTabId).click()
       await expect(assistantBubbles(page).filter({ hasText: 'LETTA_LIVE_ROOT_DONE' })).toHaveCount(1)
       await expectRowBecomesFinal(page, await requireRegistryRow(page))
-    }, async () => {
-      await modelScript.releaseGateIfHeld(CHILD_GATE)
-    })
+    }, () => finishCleanup([
+      modelScript.releaseGateIfHeld(CHILD_GATE),
+      modelScript.releaseGateIfHeld(FIRST_PROGRESS_GATE),
+      modelScript.releaseGateIfHeld(SECOND_PROGRESS_GATE),
+      page.evaluate(() => window.__nativeGenerationProbe?.stop()),
+    ]))
   })
 })

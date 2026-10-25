@@ -465,7 +465,7 @@ func zcodeRegistryModelFor(modelID string, model zcodeConfigModel) zcodeRegistry
 	}
 	// The support flags are what the app-server's own attachment gate reads, so
 	// declaring them from the configured modalities keeps its refusal and LeapMux's
-	// refusal (zcodeModelAcceptsAttachment) in agreement.
+	// refusal (checkZCodeModelInput) in agreement.
 	if model.Modalities != nil {
 		for _, m := range model.Modalities.Input {
 			switch strings.ToLower(strings.TrimSpace(m)) {

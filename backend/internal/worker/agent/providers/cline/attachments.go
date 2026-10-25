@@ -29,7 +29,8 @@ import (
 const maxTextAttachmentBytes = 20 * 1000 * 1024
 
 // validateAttachment accepts text and the four image formats that the model
-// providers take, and refuses the rest with the reason.
+// providers take, and refuses the rest with the reason. A shared handoff of a
+// PDF as a file path: https://github.com/leapmux/leapmux/issues/537.
 func validateAttachment(attachment agent.ClassifiedAttachment) error {
 	switch attachment.Kind {
 	case agent.AttachmentKindText:

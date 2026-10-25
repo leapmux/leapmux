@@ -42,6 +42,7 @@ const (
 	frameTypeFileHistorySnapshot = "file-history-snapshot"
 	frameTypeAiTitle             = "ai-title"
 	frameTypeTopic               = "topic"
+	frameTypeStreamEvent         = "stream_event"
 	mcpStatusFinishEvent         = "finish"
 )
 
@@ -94,6 +95,13 @@ type controlResponseEnvelope struct {
 	} `json:"response"`
 }
 
+// codebuddyNativeSettings is shared by launch overrides and set_config.
+// A nil thinking pointer omits the override; false remains an explicit value.
+type codebuddyNativeSettings struct {
+	OutputStyle           string `json:"outputStyle,omitempty"`
+	AlwaysThinkingEnabled *bool  `json:"alwaysThinkingEnabled,omitempty"`
+}
+
 // The reasons that CodeBuddy gives when its steer handler does not take a steer
 // into the running turn (q4 in 2.160.0). A refusal of the content carries no
 // reason.
@@ -111,8 +119,6 @@ type controlRequestEnvelope struct {
 	RequestID string          `json:"request_id"`
 	Request   json.RawMessage `json:"request"`
 }
-
-// canUseToolRequest is the payload of an outbound can_use_tool control request.
 
 // systemInitMessage is the part of a `system`/`init` line the worker reads.
 // CodeBuddy adds apiKeySource and output_style and drops `agents`.

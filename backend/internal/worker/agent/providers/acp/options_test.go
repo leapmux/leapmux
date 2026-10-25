@@ -380,3 +380,59 @@ func TestBoundedIDSet_Remove(t *testing.T) {
 	s.add("a", nil)
 	assert.Equal(t, []string{"b", "a"}, s.keys(), "a removed id can be added again as the newest")
 }
+
+func TestTypedBooleanConfigOptionsSurfaceAndReconcile(t *testing.T) {
+	t.Parallel()
+	for _, category := range []string{"", acpConfigOptionCategoryMode, acpConfigOptionCategoryModel, acpConfigOptionCategoryThoughtLevel} {
+		t.Run(category, func(t *testing.T) {
+			g := &optionState{}
+			option := ConfigOption{ID: "feature_flag", Name: "Feature", Type: "boolean", Category: category, CurrentValue: "false"}
+			g.apply([]ConfigOption{option}, authoritativePayload, ModeChannelPermissionMode, "")
+			group := optionids.GroupByID(g.groups, option.ID)
+			require.NotNil(t, group)
+			assert.Equal(t, "false", group.CurrentValue)
+			assert.True(t, group.Mutable)
+			require.Len(t, group.Options, 2)
+			assert.Equal(t, "Off", group.Options[0].Name)
+			assert.Equal(t, "false", group.Options[0].Id)
+			assert.Equal(t, "On", group.Options[1].Name)
+			assert.Equal(t, "true", group.Options[1].Id)
+			assert.True(t, g.offersValue(option.ID, "false"))
+			assert.True(t, g.offersValue(option.ID, "true"))
+			assert.False(t, g.offersValue(option.ID, "enabled"))
+			option.CurrentValue = "true"
+			g.apply([]ConfigOption{option}, authoritativePayload, ModeChannelPermissionMode, "")
+			assert.Equal(t, "true", g.values[option.ID])
+			option.CurrentValue = "false"
+			g.apply([]ConfigOption{option}, preferStoredValue, ModeChannelPermissionMode, "")
+			assert.Equal(t, "true", g.values[option.ID], "a stale context-clear snapshot cannot revert the applied choice")
+			g.apply([]ConfigOption{{ID: "other", Type: "text"}}, authoritativePayload, ModeChannelPermissionMode, "")
+			assert.Empty(t, g.groups)
+			assert.False(t, g.known.has(option.ID))
+		})
+	}
+}
+
+func TestTypedBooleanConfigOptionsKeepAbsentValuesUnknown(t *testing.T) {
+	t.Parallel()
+	g := &optionState{}
+	option := ConfigOption{ID: "feature_flag", Type: "boolean"}
+	g.apply([]ConfigOption{option}, authoritativePayload, ModeChannelUnmapped, "")
+	assert.Empty(t, g.groups)
+	assert.True(t, g.known.has(option.ID), "startup may apply a stored preference before the first concrete native value")
+	g.recordOptimistic(option.ID, "false", "")
+	group := optionids.GroupByID(g.groups, option.ID)
+	require.NotNil(t, group)
+	assert.Equal(t, "false", group.CurrentValue)
+	assert.Len(t, group.Options, 2)
+}
+
+func TestTypedBooleanConfigOptionsRefuseMalformedValues(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"0", "1", "-1", "99999999999999999999999999", "null", "[]", "{}", "TRUE", "enabled"} {
+		g := &optionState{}
+		g.apply([]ConfigOption{{ID: "feature_flag", Type: "boolean", CurrentValue: value}}, authoritativePayload, ModeChannelUnmapped, "")
+		assert.Empty(t, g.groups, value)
+		assert.False(t, g.known.has("feature_flag"), value)
+	}
+}

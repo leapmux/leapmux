@@ -134,3 +134,19 @@ func TestStopTargetRefusesAnExitingProvider(t *testing.T) {
 	close(release)
 	m.StopAndWaitAgent("exiting")
 }
+
+func TestInterruptUnavailableErrorMessage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		value *agent.InterruptUnavailableError
+		want  string
+	}{
+		{name: "native reason", value: &agent.InterruptUnavailableError{Message: "wait for the native operation to finish"}, want: "wait for the native operation to finish"},
+		{name: "empty reason", value: &agent.InterruptUnavailableError{}, want: "the current operation cannot be interrupted"},
+		{name: "blank reason", value: &agent.InterruptUnavailableError{Message: " \n\t"}, want: "the current operation cannot be interrupted"},
+		{name: "nil receiver", want: "the current operation cannot be interrupted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { t.Parallel(); assert.Equal(t, tc.want, tc.value.Error()) })
+	}
+}

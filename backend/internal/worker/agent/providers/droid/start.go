@@ -49,16 +49,9 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
 	}
-	// E2E and a bypass preset run without permission prompts. It cannot combine
-	// with `--auto`.
-	// `default` states no --auto flag at all: Droid's own autonomy default is
-	// `normal`, which asks before a tool that changes something. Passing
-	// `--auto low` would auto-approve low-risk tools and no banner is raised.
-	if opts.PermissionMode() == "auto-high" {
-		args = append(args, "--skip-permissions-unsafe")
-	} else if mode := opts.PermissionMode(); mode != "" && mode != "default" {
-		args = append(args, "--auto", droidAutonomyFlag(mode))
-	}
+	// The session API controls autonomy at startup and during live changes.
+	// --auto is ignored by stream-jsonrpc, while --skip-permissions-unsafe
+	// overrides later autonomy changes for the lifetime of the process.
 	if opts.Model() != "" {
 		args = append(args, "--model", opts.Model())
 	}
@@ -178,20 +171,6 @@ func (a *Agent) handshake(opts agent.Options) error {
 		return errAgentStopped
 	case <-ctx.Done():
 		return ctx.Err()
-	}
-}
-
-// droidAutonomyFlag maps a LeapMux permission mode onto a `--auto` flag value.
-func droidAutonomyFlag(mode string) string {
-	switch mode {
-	case "auto-low":
-		return "low"
-	case "auto-medium":
-		return "medium"
-	case "auto-high":
-		return "high"
-	default:
-		return "low"
 	}
 }
 

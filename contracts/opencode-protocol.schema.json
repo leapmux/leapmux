@@ -132,6 +132,9 @@
     },
     "statusTypes": {
       "$ref": "#/$defs/table"
+    },
+    "options": {
+      "$ref": "#/$defs/table"
     }
   }
 }

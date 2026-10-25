@@ -87,8 +87,8 @@ export function acpPermissionPrompt(input: ControlExtractionInput): PermissionPr
 /**
  * `Provider.extractControl` for every Agent Client Protocol provider.
  *
- * OpenCode, Kilo, Goose and Reasonix share it whole. Cursor delegates to it for the
- * requests it does not answer itself, exactly as its control component did.
+ * OpenCode, Kilo and Goose share it whole. Cursor and Reasonix delegate to it
+ * for the requests they do not answer themselves.
  */
 export function acpExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const permission = acpPermissionPrompt(input)

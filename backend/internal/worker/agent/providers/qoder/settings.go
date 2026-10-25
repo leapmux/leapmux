@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -21,6 +23,8 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	models := a.models
 	modelsReported := a.modelsReported
 	effort := a.runningEffortLocked()
+	thinking := qoderThinkingValue(a.thinking)
+	outputStyleGroup := a.outputStyleGroupLocked()
 	mode := a.displayedModeLocked()
 	a.mu.Unlock()
 	if !modelsReported {
@@ -36,6 +40,8 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	}
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		qoderEffortGroup(effort),
+		qoderThinkingGroup(thinking),
+		outputStyleGroup,
 		qoderPermissionModeGroup(mode),
 	}
 	if modelGroup := qoderModelGroup(models, model, !modelsReported); modelGroup != nil {
@@ -50,6 +56,8 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	defer a.mu.Unlock()
 	values := map[string]string{
 		agent.OptionIDEffort:         a.runningEffortLocked(),
+		OptionThinking:               qoderThinkingValue(a.thinking),
+		OptionOutputStyle:            a.displayedOutputStyleLocked(),
 		agent.OptionIDPermissionMode: a.displayedModeLocked(),
 	}
 	if a.model != "" {
@@ -58,11 +66,40 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(values)
 }
 
+// displayedOutputStyleLocked shows Auto for an agent that launched with Auto.
+// Otherwise it shows the style that the initialize reply reports, so a name
+// that Qoder does not know shows `default`, the style that runs. Before the
+// reply, it shows the launch value.
+func (a *Agent) displayedOutputStyleLocked() string {
+	if strings.TrimSpace(a.outputStyle) == "" || a.outputStyle == qoderOutputStyleAuto {
+		return qoderOutputStyleAuto
+	}
+	if a.runningOutputStyle != "" {
+		return a.runningOutputStyle
+	}
+	return a.outputStyle
+}
+
+// outputStyleGroupLocked lists the styles that the session reports, or the
+// built-in styles before a report. It keeps the current style visible when the
+// list lacks it.
+func (a *Agent) outputStyleGroupLocked() *leapmuxv1.AvailableOptionGroup {
+	current := a.displayedOutputStyleLocked()
+	styles := qoderBuiltinOutputStyles
+	if a.outputStyles != nil {
+		styles = a.outputStyles
+	}
+	if current != qoderOutputStyleAuto && !slices.Contains(styles, current) {
+		styles = append(slices.Clone(styles), current)
+	}
+	return qoderOutputStyleGroup(current, styles)
+}
+
 // runningEffortLocked reports the effort that the process runs at. An agent
-// that opened without an effort runs at Auto, because the launch then sends no
-// --reasoning-effort flag (see qoderEffortArgs). An empty value would tell the
-// picker that the catalog is absent. Qoder reads the level only at launch, so
-// the value never changes while the process runs.
+// that opened without an effort runs at Auto, because the launch then sends
+// Qoder's own `--reasoning-effort auto` (see qoderReasoningArgs). An empty
+// value would tell the picker that the catalog is absent. Qoder reads the level
+// only at launch, so the value never changes while the process runs.
 func (a *Agent) runningEffortLocked() string {
 	if a.effort == "" {
 		return agent.EffortAuto
@@ -79,14 +116,20 @@ func (a *Agent) displayedModeLocked() string {
 }
 
 // UpdateSettings sends model and mode choices to Qoder's control channel.
-// A changed effort needs a restart because Qoder takes it at launch. A choice
-// of the running effort needs none.
+// A changed effort, Extended Thinking or Output Style value needs a restart
+// because Qoder takes each at launch. A choice of the running value needs none.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.mu.Lock()
-	runningEffort := a.runningEffortLocked()
+	running := map[string]string{
+		agent.OptionIDEffort: a.runningEffortLocked(),
+		OptionThinking:       qoderThinkingValue(a.thinking),
+		OptionOutputStyle:    a.displayedOutputStyleLocked(),
+	}
 	a.mu.Unlock()
-	if effort, ok := options[agent.OptionIDEffort]; ok && effort != runningEffort {
-		return agent.RestartRequiredSettings(options)
+	for id, value := range running {
+		if requested, ok := options[id]; ok && requested != value {
+			return agent.RestartRequiredSettings(options)
+		}
 	}
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: agent.OptionSettlements{}}
 	if value, ok := options[agent.OptionIDModel]; ok {
@@ -107,7 +150,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	}
 	for id, value := range options {
 		switch id {
-		case agent.OptionIDEffort:
+		case agent.OptionIDEffort, OptionThinking, OptionOutputStyle:
 			result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &value}
 		case agent.OptionIDModel, agent.OptionIDPermissionMode:
 		default:
@@ -118,6 +161,8 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	a.mu.Lock()
 	surfaced := optionmap.Map{
 		agent.OptionIDEffort:         a.runningEffortLocked(),
+		OptionThinking:               qoderThinkingValue(a.thinking),
+		OptionOutputStyle:            a.displayedOutputStyleLocked(),
 		agent.OptionIDPermissionMode: a.displayedModeLocked(),
 	}
 	if a.model != "" {

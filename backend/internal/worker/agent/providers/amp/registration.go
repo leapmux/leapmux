@@ -59,9 +59,24 @@ var permissionModeGroup = &leapmuxv1.AvailableOptionGroup{
 	},
 }
 
+// OptionFastMode selects Amp's native fast feature for a new thread.
+const OptionFastMode = "fastMode"
+
+var fastModeGroup = &leapmuxv1.AvailableOptionGroup{
+	Id:           OptionFastMode,
+	Label:        "Fast Mode",
+	DefaultValue: "false",
+	Mutable:      true,
+	Order:        agent.OptionOrderProviderFirst + 1,
+	Options: []*leapmuxv1.AvailableOption{
+		{Id: "false", Name: "Off"},
+		{Id: "true", Name: "On"},
+	},
+}
+
 // staticOptionGroups holds the option groups that do not depend on a running
-// agent. Amp reports no model catalog, so these two are its whole settings.
-var staticOptionGroups = []*leapmuxv1.AvailableOptionGroup{agentModeGroup, permissionModeGroup}
+// agent. Amp reports no model catalog, so these groups are its whole settings.
+var staticOptionGroups = []*leapmuxv1.AvailableOptionGroup{agentModeGroup, permissionModeGroup, fastModeGroup}
 
 // agentDirSpec states the private directory of each Amp agent. It holds three
 // files:

@@ -21,19 +21,21 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 )
 
-// startAgent runs the real Start. It starts no `amp` process: the first message
-// would, and these tests send none.
+// startAgent runs startup with native export data supplied by the test.
+// It starts no conversation process because these tests send no message.
 func startAgent(t *testing.T, resume string) (*Agent, *agenttest.ControlSink) {
 	t.Helper()
 	sink := &agenttest.ControlSink{}
-	started, err := Start(context.Background(), agent.Options{
+	started, err := startWithThreadExporter(context.Background(), agent.Options{
 		AgentID:         "agent-start",
 		WorkingDir:      t.TempDir(),
 		HomeDir:         t.TempDir(),
 		Shell:           "/bin/sh",
 		ResumeSessionID: resume,
 		AgentDirs:       agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}),
-	}, agent.NewProviderServices(sink))
+	}, agent.NewProviderServices(sink), func(_ context.Context, id string) ([]byte, error) {
+		return json.Marshal(map[string]any{"id": id, "agentMode": "high", "meta": map[string]any{"features": []string{"fast"}}, "messages": []any{}})
+	})
 	require.NoError(t, err)
 	a, ok := started.(*Agent)
 	require.True(t, ok)
@@ -119,4 +121,98 @@ func TestCheckHelperProgram(t *testing.T) {
 		assert.ErrorContainsf(t, err, "which Amp's permission rule expands", "%s", path)
 		assert.Truef(t, strings.Contains(err.Error(), path), "the error states the path %s", path)
 	}
+}
+
+func TestStartReadsNativeThreadSettings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		raw     string
+		readErr error
+		mode    string
+		fast    string
+	}{
+		{name: "fast", raw: `{"id":"T-native","agentMode":"high","meta":{"features":["fast"]},"messages":[]}`, mode: "high", fast: "true"},
+		{name: "standard", raw: `{"id":"T-native","agentMode":"ultra","meta":{"features":[]},"messages":[]}`, mode: "ultra", fast: "false"},
+		{name: "plaid", raw: `{"id":"T-native","agentMode":"custom","meta":{"features":["plaid"]},"messages":[]}`, mode: "custom", fast: "true"},
+		{name: "unrelated feature", raw: `{"id":"T-native","agentMode":"low","meta":{"features":["other"]},"messages":[]}`, mode: "low", fast: "false"},
+		{name: "absent features", raw: `{"id":"T-native","agentMode":"high","messages":[]}`, mode: "high"},
+		{name: "null features", raw: `{"id":"T-native","meta":{"features":null},"messages":[]}`},
+		{name: "absent metadata", raw: `{"id":"T-native","messages":[]}`},
+		{name: "wrong thread", raw: `{"id":"T-other","agentMode":"high","meta":{"features":["fast"]},"messages":[]}`},
+		{name: "malformed metadata", raw: `{"id":"T-native","agentMode":"high","meta":{"features":false},"messages":[]}`},
+		{name: "null feature entry", raw: `{"id":"T-native","agentMode":"high","meta":{"features":[null]},"messages":[]}`},
+		{name: "empty feature entry", raw: `{"id":"T-native","agentMode":"high","meta":{"features":[""]},"messages":[]}`},
+		{name: "malformed JSON", raw: `{`},
+		{name: "failed read", readErr: assert.AnError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			reads := 0
+			started, err := startWithThreadExporter(context.Background(), agent.Options{
+				AgentID: "native-settings", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Shell: "/bin/sh",
+				ResumeSessionID: "T-native", AgentDirs: agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}),
+			}, agent.NewProviderServices(sink), func(_ context.Context, id string) ([]byte, error) {
+				assert.Equal(t, "T-native", id)
+				reads++
+				return []byte(tc.raw), tc.readErr
+			})
+			require.NoError(t, err)
+			t.Cleanup(started.Stop)
+			assert.Equal(t, 1, reads)
+			for key, expected := range map[string]string{contracts.AmpOptionAgentMode: tc.mode, OptionFastMode: tc.fast} {
+				group := groupByID(t, started.OptionGroups(), key)
+				assert.Equal(t, expected, group.CurrentValue, key)
+				assert.Equal(t, expected, group.DefaultValue, key)
+				assert.False(t, group.Mutable)
+				if expected == "" {
+					assert.Empty(t, group.Options)
+					assert.Contains(t, group.ReadOnlyReason, "did not report")
+				}
+			}
+			assert.Equal(t, 1, sink.StatusActiveCount())
+		})
+	}
+}
+
+func TestStartSkipsExportForANewThread(t *testing.T) {
+	t.Parallel()
+	started, err := startWithThreadExporter(context.Background(), agent.Options{
+		AgentID: "new-thread", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Shell: "/bin/sh",
+		AgentDirs: agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}),
+	}, agent.NewProviderServices(&agenttest.ControlSink{}), func(context.Context, string) ([]byte, error) {
+		t.Error("a new thread must not read a native export")
+		return nil, assert.AnError
+	})
+	require.NoError(t, err)
+	t.Cleanup(started.Stop)
+	assert.Equal(t, "false", groupByID(t, started.OptionGroups(), OptionFastMode).CurrentValue)
+}
+
+func TestStartCancelsAnExportAndRemovesTheAgentDirectory(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := agentdirtest.ShortBase(t)
+	dirs := agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}, base)
+	var privateDirectory string
+	sink := &agenttest.ControlSink{}
+	started, err := startWithThreadExporter(ctx, agent.Options{
+		AgentID: "cancelled-export", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Shell: "/bin/sh",
+		ResumeSessionID: "T-native", AgentDirs: dirs,
+	}, agent.NewProviderServices(sink), func(ctx context.Context, _ string) ([]byte, error) {
+		matches, err := filepath.Glob(filepath.Join(base, "*", "amp-*", helperSpecFileName))
+		require.NoError(t, err)
+		require.Len(t, matches, 1)
+		privateDirectory = filepath.Dir(matches[0])
+		cancel()
+		return nil, ctx.Err()
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, started)
+	_, statErr := os.Stat(privateDirectory)
+	assert.True(t, os.IsNotExist(statErr), "cancelled startup removes its prepared directory")
+	assert.Zero(t, sink.StatusActiveCount())
+	assert.Zero(t, sink.SessionIDCount())
 }

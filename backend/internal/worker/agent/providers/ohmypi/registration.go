@@ -5,6 +5,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -19,6 +20,25 @@ const ThinkingLevelLabel = "Thinking Level"
 // ApprovalModeLabel is the label of omp's permission-mode axis, which carries the
 // tool approval mode.
 const ApprovalModeLabel = "Approval Mode"
+
+// OptionOutputStyle selects the native personality through the private launch configuration.
+const OptionOutputStyle = "outputStyle"
+
+// OptionFastMode selects the native priority service tier for supported models.
+const OptionFastMode = "fastMode"
+
+var fastModeGroup = agent.SelectGroup(OptionFastMode, "Fast Mode", agent.OptionOrderProviderSecond, "false", []agent.OptionDef{
+	{Id: "false", Name: "Off", Description: "Use the model's standard service tier", Default: true},
+	{Id: "true", Name: "On", Description: "Use native fast serving when the selected model supports it"},
+})
+
+var outputStyleGroup = agent.SelectGroup(OptionOutputStyle, "Output Style", agent.OptionOrderProviderFirst, "auto", []agent.OptionDef{
+	{Id: "auto", Name: "Auto", Description: "Use the native personality configuration", Default: true},
+	{Id: "default", Name: "Default", Description: "Use concise, evidence-focused responses"},
+	{Id: "friendly", Name: "Friendly", Description: "Use a warm, supportive style"},
+	{Id: "pragmatic", Name: "Pragmatic", Description: "Use direct, practical responses"},
+	{Id: "none", Name: "None", Description: "Omit the native personality instructions"},
+})
 
 // approvalModeGroup is the static option group of omp's tool approval mode.
 //
@@ -43,8 +63,8 @@ var approvalModeGroup = &leapmuxv1.AvailableOptionGroup{
 
 // staticOptionGroups holds the option groups that do not depend on a running
 // agent. omp reports its models and their thinking levels only at runtime, so
-// the approval mode is the one static axis.
-var staticOptionGroups = []*leapmuxv1.AvailableOptionGroup{approvalModeGroup}
+// approval mode, output style, and fast mode are static axes.
+var staticOptionGroups = []*leapmuxv1.AvailableOptionGroup{approvalModeGroup, outputStyleGroup, fastModeGroup}
 
 // Registration states everything the worker knows about Oh My Pi before any of
 // its agents runs.
@@ -54,14 +74,14 @@ func Registration() agent.Registration {
 		Plugin:   ompProvider{},
 		Start:    Start,
 		Locator:  ompLocator,
+		AgentDir: &agentdir.Spec{Prefix: "ohmypi"},
 		// No static catalog. omp's models come from its own configuration and its
 		// provider discovery, so a hard-coded entry could identify a model that this
 		// installation does not have. The catalog appears once the agent reports it.
 		DefaultModels:  nil,
 		OptionGroups:   staticOptionGroups,
 		ModelSubGroups: agent.EffortSubGroupsLabeled(ThinkingLevelLabel),
-		// model + effort (the "Thinking Level" axis) + permissionMode (the approval
-		// mode, a static group).
+		// Model and the static groups register their own IDs. Effort is supplied by the live catalog.
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},
 		// A session with no stored mode takes Write, which asks before a command
 		// runs. omp's own default is Yolo, which is the mode the bypass preset

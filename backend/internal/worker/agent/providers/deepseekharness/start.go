@@ -38,8 +38,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, errors.Join(err, directory.Close())
 	}
+	autoReviewOverlay, err := prepareAutoReviewOverlay(directory.Path())
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, directory.Close())
+	}
 	pinnedEnv := []string{"TMPDIR=" + imageReceipts.Temporary, "TMP=" + imageReceipts.Temporary, "TEMP=" + imageReceipts.Temporary}
-	cmd, delimiter, meta := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: []string{"--profile", "web", "--patch", imageReceipts.Overlay, "--host", "127.0.0.1", "--port", "0", "--no-open"}, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	cmd, delimiter, meta := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: []string{"--profile", "web", "--patch", imageReceipts.Overlay, "--patch", autoReviewOverlay, "--host", "127.0.0.1", "--port", "0", "--no-open"}, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinnedEnv...)
 	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -87,6 +92,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return fail("model catalog", err)
 	}
 	a.selection = a.catalog.defaultSelection
+	autoReview := a.loadAutoReview(startup)
+	a.Mu.Lock()
+	a.autoReview = autoReview
+	a.Mu.Unlock()
 	if err := a.openConnection(startup); err != nil {
 		return fail("Remote stream", err)
 	}
@@ -140,6 +149,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if value := opts.Get(contracts.DeepseekHarnessOptionPermissions); value != "" {
 		permissions = value
 	}
+	permissions = startupPermissions(a.AgentID(), permissions, autoReview)
 	if err := a.applySessionSettings(sessionID, selection, mode, permissions); err != nil {
 		return fail("settings", err)
 	}

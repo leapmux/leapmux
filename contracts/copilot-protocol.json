@@ -183,7 +183,8 @@
     "Lsp": "lsp"
   },
   "options": {
-    "SessionMode": "session_mode"
+    "SessionMode": "session_mode",
+    "Fleet": "fleet"
   },
   "modes": {
     "Interactive": "interactive",

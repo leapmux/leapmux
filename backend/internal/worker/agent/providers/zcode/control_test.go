@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -1212,8 +1213,8 @@ func TestZCodeProvider_ResolveResumeHandleTakesATokenNotAPath(t *testing.T) {
 	assert.Error(t, agenttest.ResumeHandleErr(provider, strings.Repeat("x", 4096), "/tmp/work"))
 }
 
-// A PDF reaches the model as binary garbage or is dropped with no message at all.
-// Both are worse than a refusal that says so.
+// A binary file has no kind that keeps its bytes, so a refusal that says so is
+// better than a send that loses it.
 func TestZCodeProvider_ValidateAttachmentRefusesWhatTheAppServerCannotCarry(t *testing.T) {
 	t.Parallel()
 
@@ -1221,14 +1222,12 @@ func TestZCodeProvider_ValidateAttachmentRefusesWhatTheAppServerCannotCarry(t *t
 	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindText, Filename: "a.txt"}))
 	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindImage, Filename: "a.png"}),
 		"the image gate depends on the running model, so it is not enforced here")
+	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindPDF, Filename: "spec.pdf"}),
+		"the PDF gate depends on the running model, so it is not enforced here")
 
-	err := provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindPDF, Filename: "spec.pdf"})
+	err := provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "a.bin"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "spec.pdf", "the message must name the file the user attached")
-
-	err = provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "a.bin"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "a.bin")
+	assert.Contains(t, err.Error(), "a.bin", "the message must name the file the user attached")
 }
 
 func TestZCodeProvider_TheFalseCapabilitiesAreDeliberate(t *testing.T) {
@@ -1480,4 +1479,200 @@ func TestZCodeExtractTodoEvent_AnEmptyListIsASnapshot(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, todoevents.KindSnapshot, ev.Kind)
 	assert.Empty(t, ev.Snapshot)
+}
+
+// --- MCP input forms ---
+
+// zcodeMCPFormSchema is an MCP server's form. The array `tags` sits between two
+// fields that ZCode carries, and ZCode skips it.
+const zcodeMCPFormSchema = `{"type":"object","properties":{
+  "count":{"type":"integer","title":"Count","minimum":0,"maximum":3},
+  "tags":{"type":"array","items":{"type":"string"}},
+  "enabled":{"type":"boolean","title":"Enabled"},
+  "color":{"type":"string","title":"Color","oneOf":[{"const":"b","title":"Blue"},{"const":"r","title":"Red"}]}
+},"required":["count","enabled","color"]}`
+
+// zcodeMCPFormParams is the user-input request in which ZCode 3.16.3 forwards that
+// form, in the shape the live probe recorded: the schema, and the questions that
+// ZCode flattens it to.
+var zcodeMCPFormParams = `{
+  "requestId": "mcp-elicit-1",
+  "sessionId": "sess-1",
+  "toolCallId": "mcp-elicit-1",
+  "toolName": "McpElicitation",
+  "prompt": "Choose the probe settings.",
+  "input": {"serverName": "form_probe", "message": "Choose the probe settings.", "requestedSchema": ` + zcodeMCPFormSchema + `},
+  "schema": {"interaction": "mcp_elicitation", "serverName": "form_probe", "requestedSchema": ` + zcodeMCPFormSchema + `},
+  "questions": [
+    {"header": "Count", "question": "Choose the probe settings.\n\nCount", "options": [{"value": "__zcode_free_text__", "label": "Type your answer"}]},
+    {"header": "Enabled", "question": "Choose the probe settings.\n\nEnabled", "options": [{"value": "true", "label": "Yes"}, {"value": "false", "label": "No"}]},
+    {"header": "Color", "question": "Choose the probe settings.\n\nColor", "options": [{"value": "__zcode_free_text__", "label": "Type your answer"}]}
+  ]
+}`
+
+// zcodeMCPFormAnswer is the browser's answer to an MCP form.
+func zcodeMCPFormAnswer(t *testing.T, requestID string, answer map[string]any) []byte {
+	t.Helper()
+	content, err := json.Marshal(map[string]any{
+		"type":     "control_response",
+		"response": map[string]any{"request_id": requestID, "response": answer},
+	})
+	require.NoError(t, err)
+	return content
+}
+
+// storeZCodeMCPForm feeds the form request and returns the stored control payload.
+func storeZCodeMCPForm(t *testing.T, params string) []byte {
+	t.Helper()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeRequestLine(t, 21, contracts.ZCodeMethodRequestUserInput, params))
+	return zcodeStoredPayload(t, sink)
+}
+
+func TestHandleUserInputRequest_MCPFormIsStoredAsAForm(t *testing.T) {
+	t.Parallel()
+	var stored zcodeControlRequestPayload
+	require.NoError(t, json.Unmarshal(storeZCodeMCPForm(t, zcodeMCPFormParams), &stored))
+	assert.Equal(t, zcodeControlMCPElicitation, stored.Request.ToolName, "the form stays off the question surface")
+	assert.Equal(t, "mcp-elicit-1", stored.RequestID)
+	assert.JSONEq(t, `21`, string(stored.WireID))
+	var params struct {
+		Schema struct {
+			Interaction     string          `json:"interaction"`
+			ServerName      string          `json:"serverName"`
+			RequestedSchema json.RawMessage `json:"requestedSchema"`
+		} `json:"schema"`
+	}
+	require.NoError(t, json.Unmarshal(stored.Params, &params))
+	assert.Equal(t, contracts.ZCodeInteractionMcpElicitation, params.Schema.Interaction)
+	assert.Equal(t, "form_probe", params.Schema.ServerName)
+	assert.JSONEq(t, zcodeMCPFormSchema, string(params.Schema.RequestedSchema), "the browser draws the form from the native schema")
+	assert.False(t, zcodeProvider{}.IsSelfDisplayingControlTool(stored.Request.ToolName))
+}
+
+// An accepted form sends each value as the text that ZCode reads back, at the
+// place of its field among the fields that ZCode carries.
+func TestResolveMCPForm_AcceptSendsTypedAnswersPositionally(t *testing.T) {
+	t.Parallel()
+	stored := storeZCodeMCPForm(t, zcodeMCPFormParams)
+	frame, res := zcodeResolve(t, stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{
+		"action":  contracts.MCPElicitationActionAccept,
+		"content": map[string]any{"count": 0, "tags": []string{"left out"}, "enabled": false, "color": "b"},
+	}))
+	assert.NoError(t, res.Refusal())
+	assert.JSONEq(t, `21`, string(frame.ID), "the reply answers the request's own wire id")
+	assert.JSONEq(t, `{"action":"accept","content":{"answer_0":"0","answer_1":"false","answer_2":"b"}}`, string(frame.Result))
+
+	frame, _ = zcodeResolve(t, stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{
+		"action":  contracts.MCPElicitationActionAccept,
+		"content": map[string]any{"count": 2.5e0, "enabled": true, "color": ""},
+	}))
+	assert.JSONEq(t, `{"action":"accept","content":{"answer_0":"2.5","answer_1":"true","answer_2":""}}`, string(frame.Result))
+
+	frame, _ = zcodeResolve(t, stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept}))
+	assert.JSONEq(t, `{"action":"accept","content":{}}`, string(frame.Result), "an empty form answers nothing")
+}
+
+// A request that states its schema only in the input reads it from there.
+func TestResolveMCPForm_ReadsTheSchemaOfTheInput(t *testing.T) {
+	t.Parallel()
+	params := `{"requestId":"mcp-elicit-2","sessionId":"sess-1","toolName":"McpElicitation",
+	  "input":{"requestedSchema":{"type":"object","properties":{"note":{"type":"string"},"level":{"enum":["low","high"]}}}},
+	  "schema":{"interaction":"mcp_elicitation"}}`
+	frame, _ := zcodeResolve(t, storeZCodeMCPForm(t, params), zcodeMCPFormAnswer(t, "mcp-elicit-2", map[string]any{
+		"action": contracts.MCPElicitationActionAccept, "content": map[string]any{"level": "high", "note": "n"},
+	}))
+	assert.JSONEq(t, `{"action":"accept","content":{"answer_0":"n","answer_1":"high"}}`, string(frame.Result))
+}
+
+func TestResolveMCPForm_DeclineAndCancelCarryNoContent(t *testing.T) {
+	t.Parallel()
+	stored := storeZCodeMCPForm(t, zcodeMCPFormParams)
+	for action, want := range map[string]string{
+		contracts.MCPElicitationActionDecline: contracts.ZCodeActionDecline,
+		contracts.MCPElicitationActionCancel:  contracts.ZCodeActionCancel,
+	} {
+		frame, res := zcodeResolve(t, stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{
+			"action": action, "content": map[string]any{"count": 1},
+		}))
+		assert.NoError(t, res.Refusal(), action)
+		assert.JSONEq(t, fmt.Sprintf(`{"action":%q}`, want), string(frame.Result), action)
+	}
+}
+
+// An answer that the form cannot take sends nothing, so ZCode keeps waiting and
+// the reader can answer again.
+func TestResolveMCPForm_RefusesAnAnswerTheFormCannotTake(t *testing.T) {
+	t.Parallel()
+	stored := storeZCodeMCPForm(t, zcodeMCPFormParams)
+	var withoutWireID map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(stored, &withoutWireID))
+	delete(withoutWireID, "id")
+	storedWithoutWireID, err := json.Marshal(withoutWireID)
+	require.NoError(t, err)
+	accept := map[string]any{"action": contracts.MCPElicitationActionAccept, "content": map[string]any{"count": 1}}
+	for name, tc := range map[string]struct {
+		stored []byte
+		answer []byte
+	}{
+		"another request":         {stored, zcodeMCPFormAnswer(t, "mcp-elicit-other", accept)},
+		"an unreadable answer":    {stored, []byte(`{"response":`)},
+		"an allow decision":       {stored, zcodeAnswer(t, "mcp-elicit-1", agent.ControlBehaviorAllow, "", nil)},
+		"an unknown action":       {stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": "maybe"})},
+		"content that is no form": {stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "content": []int{1}})},
+		"a persisted choice":      {stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "_meta": map[string]string{"persist": "always"}})},
+		"no wire id":              {storedWithoutWireID, zcodeMCPFormAnswer(t, "mcp-elicit-1", accept)},
+	} {
+		res := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: tc.stored, ResponseContent: tc.answer})
+		assert.True(t, res.Withhold, name)
+		assert.Error(t, res.Refusal(), name)
+	}
+}
+
+// ZCode carries a property with an `enum` array or of a scalar type, in the
+// order of `properties`, and counts its positional answers over those alone.
+func TestZCodeElicitationFields(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		schema string
+		want   []string
+	}{
+		"each carried type": {
+			`{"properties":{"a":{"type":"string"},"b":{"type":"number"},"c":{"type":"integer"},"d":{"type":"boolean"},"e":{"enum":["x",1]}}}`,
+			[]string{"a", "b", "c", "d", "e"},
+		},
+		"skipped properties keep the order of the rest": {
+			`{"properties":{"z":{"type":"string"},"arr":{"type":"array"},"obj":{"type":"object"},"none":{},"null":null,"text":"string","y":{"type":"boolean"}}}`,
+			[]string{"z", "y"},
+		},
+		"an enum that is no array": {`{"properties":{"e":{"enum":"x"}}}`, nil},
+		"a type that is no string": {`{"properties":{"t":{"type":["string","null"]}}}`, nil},
+		"a property stated twice keeps its first place and its last definition": {
+			`{"properties":{"a":{"type":"array"},"b":{"type":"string"},"a":{"type":"string"}}}`,
+			[]string{"a", "b"},
+		},
+		"properties that are no object": {`{"properties":["a"]}`, nil},
+		"no properties":                 {`{"type":"object"}`, nil},
+		"no schema":                     {``, nil},
+		"a schema that is no object":    {`"form"`, nil},
+	} {
+		assert.Equal(t, tc.want, zcodeElicitationFields(json.RawMessage(tc.schema)), name)
+	}
+}
+
+func TestZCodeElicitationAnswerText(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]string{
+		`"blue"`: "blue", `""`: "", `0`: "0", `-1.25`: "-1.25", `1e2`: "1e2",
+		`12345678901234567890`: "12345678901234567890", `true`: "true", `false`: "false",
+	} {
+		text, ok := zcodeElicitationAnswerText(json.RawMessage(raw))
+		assert.True(t, ok, raw)
+		assert.Equal(t, want, text, raw)
+	}
+	for _, raw := range []string{``, ` `, `null`, `[1]`, `{"a":1}`, `{`} {
+		_, ok := zcodeElicitationAnswerText(json.RawMessage(raw))
+		assert.False(t, ok, raw)
+	}
 }

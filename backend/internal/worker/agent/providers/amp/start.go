@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,8 +23,8 @@ var _ agent.StartFunc = Start
 // helperSpecFileName is the helper spec inside the agent's directory.
 const helperSpecFileName = "helper.json"
 
-// Start prepares an Amp agent. It starts no `amp` process: the first message
-// starts one (see Agent).
+// Start prepares an Amp agent. The first message starts its conversation process.
+// A resumed agent first exports its native thread settings.
 //
 // What it does set up is what every process of the agent shares: the program
 // Amp's delegate rule runs, a directory that the worker owns for this agent,
@@ -32,6 +33,10 @@ const helperSpecFileName = "helper.json"
 // the thread when the first process starts, and a thread that it cannot find
 // fails that turn with the reason.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	return startWithThreadExporter(ctx, opts, sink, nil)
+}
+
+func startWithThreadExporter(ctx context.Context, opts agent.Options, sink agent.ProviderServices, exporter func(context.Context, string) ([]byte, error)) (agent.Agent, error) {
 	spec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
 	if err != nil {
 		return nil, err
@@ -83,7 +88,16 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		shellEnv:      shellEnvOf(opts),
 	}, bridge, dir, clock)
 
+	a.exportFn = exporter
 	if opts.ResumeSessionID != "" {
+		if err := a.refreshThreadSettings(ctx, opts.ResumeSessionID); err != nil {
+			slog.Warn("could not read the Amp thread settings", "agent_id", opts.AgentID, "error", err)
+		}
+		if err := ctx.Err(); err != nil {
+			a.Stop()
+			return nil, err
+		}
+		a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
 		a.sink.UpdateSessionID(opts.ResumeSessionID)
 	}
 	a.sink.BroadcastStatusActive(opts.ResumeSessionID)
@@ -118,11 +132,16 @@ func newAgent(opts agent.Options, sink agent.ProviderServices, config launchConf
 		cancel:         cancel,
 		threadID:       opts.ResumeSessionID,
 		agentMode:      launchAgentMode(opts),
+		fastMode:       launchFastMode(opts),
 		modeLocked:     opts.ResumeSessionID != "",
 		permissionMode: launchPermissionMode(opts),
 		tools:          make(map[string]*openTool),
 		shells:         make(map[int]string),
 		done:           make(chan struct{}),
+	}
+	if opts.ResumeSessionID != "" {
+		// Stored launch options cannot establish a native thread's immutable choices.
+		a.agentMode, a.fastMode = "", ""
 	}
 	bridge.serve(a.decidePermission, sink.CancelControlRequest)
 	return a

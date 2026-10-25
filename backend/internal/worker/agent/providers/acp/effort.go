@@ -5,8 +5,8 @@ package acp
 // provider declares), how its values are
 // ranked and ordered strongest-first, how a "none"/"off" default is raised to a real level on a
 // model switch, and how the env-effort override is mapped onto the daemon's actual axis id. The
-// catalog-effort projection for the model-dependent providers (Claude/Codex/Pi) lives separately
-// in options.go; this file covers only the server-driven ACP config-option axis.
+// model-dependent catalog projection lives in internal/worker/agent/options.go.
+// This file covers only the server-driven ACP config-option axis.
 
 import (
 	"maps"
@@ -23,19 +23,51 @@ import (
 // acpConfigOptionByCategory's category-then-id matching so the effort override
 // (raiseEffortOffNone) and the strongest-first sort (buildOptionGroup) never depend on the
 // daemon supplying category when its id already identifies the axis.
+// A true/false-only selector is a boolean switch and never receives an effort override.
 //
 // The convention id is the provider's own, so ACP code names none of them. An uncategorized
 // option under another provider's convention id is therefore not an effort axis here: Cursor
 // or Reasonix would not sort or raise a `thinking_effort` option, and no daemon sends one.
 func isEffortConfigOption(option ConfigOption, effortConfigID string) bool {
+	if isBooleanConfigOption(option) {
+		return false
+	}
 	return option.Category == acpConfigOptionCategoryThoughtLevel ||
 		option.ID == agent.OptionIDEffort ||
 		(effortConfigID != "" && option.ID == effortConfigID)
 }
 
+// isBooleanConfigOption distinguishes an on/off switch from an effort-level selector.
+func isBooleanConfigOption(option ConfigOption) bool {
+	if option.Type == configOptionTypeBoolean {
+		return true
+	}
+	if len(option.Options) == 0 {
+		return false
+	}
+	for _, value := range option.Options {
+		if value.Value != "true" && value.Value != "false" {
+			return false
+		}
+	}
+	return true
+}
+
 // acpEffortConfigOption returns the selectable reasoning-effort axis from a configOptions
-// payload (matched by isEffortConfigOption), or a zero option and false when none is present.
+// payload, preferring a declared or canonical ID over category matching.
+// It returns a zero option and false when none is present.
 func acpEffortConfigOption(options []ConfigOption, effortConfigID string) (ConfigOption, bool) {
+	// A declared or canonical ID identifies the axis more precisely than its category.
+	for _, id := range []string{effortConfigID, agent.OptionIDEffort} {
+		if id == "" {
+			continue
+		}
+		for _, option := range options {
+			if option.ID == id && isEffortConfigOption(option, effortConfigID) && isSelectableConfigOption(option) {
+				return option, true
+			}
+		}
+	}
 	for _, option := range options {
 		if isEffortConfigOption(option, effortConfigID) && isSelectableConfigOption(option) {
 			return option, true
@@ -97,9 +129,13 @@ func effortCloserToHigh(a, b, high int) bool {
 // running provider did not claim can't be mistaken for its axis and get the override double-pushed.
 // Iterates templates in sorted id order so a (pathological) daemon tagging two axes thought_level
 // resolves deterministically. Caller holds the owning Base.Mu.
+// A canonical effort selector takes precedence and needs no remapping. Boolean switches are excluded.
 func (g *optionState) thoughtLevelConfigOptionID() string {
+	if option, ok := g.templates[agent.OptionIDEffort]; ok && isEffortConfigOption(option, "") {
+		return ""
+	}
 	for _, id := range slices.Sorted(maps.Keys(g.templates)) {
-		if id != agent.OptionIDEffort && g.templates[id].Category == acpConfigOptionCategoryThoughtLevel {
+		if id != agent.OptionIDEffort && g.templates[id].Category == acpConfigOptionCategoryThoughtLevel && isEffortConfigOption(g.templates[id], "") {
 			return id
 		}
 	}

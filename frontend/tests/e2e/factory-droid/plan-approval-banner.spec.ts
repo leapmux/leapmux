@@ -15,33 +15,48 @@ import { answerPlanReview, assistantBubbles, chooseSettingsOption, controlBanner
 import { expectDroidNativeSettings } from './settingsUpdates'
 
 droidTest.describe('Factory Droid Spec mode', () => {
-  droidTest('shows the native plan review and returns to Default after approval', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
-    void askingDroidWorkspace
-    await waitForSettingsHydrated(page)
-    await chooseSettingsOption(page, 'permissionMode-spec')
-    await waitForSettingsIdle(page)
-    await expectSettingsOptionChosen(page, 'permissionMode-spec')
-    const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-1', '# Native plan\n\n- Apply the change.')] },
-      { text: 'The plan was approved.' },
-    )
-    await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
-    await modelScript.waitForSteps(start + 1)
+  for (const approval of [
+    { choice: 'Unchanged', mode: 'default', autonomyLevel: 'off', answer: 'Approve' },
+    { choice: 'Smart', mode: 'auto-medium', autonomyLevel: 'medium', answer: 'Approve and set the autonomy level to Medium' },
+    { choice: 'Bypass', mode: 'auto-high', autonomyLevel: 'high', answer: 'Approve and set the autonomy level to High' },
+  ] as const) {
+    droidTest(`shows the native plan review and applies ${approval.choice} after approval`, async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
+      void askingDroidWorkspace
+      await waitForSettingsHydrated(page)
+      await chooseSettingsOption(page, 'permissionMode-spec')
+      await waitForSettingsIdle(page)
+      await expectSettingsOptionChosen(page, 'permissionMode-spec')
+      const start = await modelScript.queue(
+        { toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-1', '# Native plan\n\n- Apply the change.')] },
+        { text: 'The plan was approved.' },
+      )
+      await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
+      await modelScript.waitForSteps(start + 1)
 
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText('Proposed Plan')
-    await expect(banner).toContainText('Apply the change.')
-    await answerPlanReview(page, 'approve')
-    await modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(page)
-    await expectNoControlBanner(page)
-    await expect(assistantBubbles(page).filter({ hasText: 'The plan was approved.' }).first()).toBeVisible()
-    // The saved row reads Droid's own `proceed_once` reply as the plan button's word.
-    await expect(savedControlAnswer(page)).toHaveText('Approve')
-    await expectSettingsOptionChosen(page, 'permissionMode-default')
-    // Droid leaves Spec mode by itself after the approval, so the latest event states the mode, whatever sent it.
-    await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: 'off' })
-  })
+      const banner = await waitForControlBanner(page)
+      await expect(banner).toContainText('Proposed Plan')
+      await expect(banner).toContainText('Apply the change.')
+      const permissions = page.getByRole('radiogroup', { name: 'Permissions' })
+      await expect(permissions.getByRole('radio', { name: 'Smart', exact: true })).toBeChecked()
+      if (approval.choice !== 'Smart')
+        await permissions.getByRole('radio', { name: approval.choice, exact: true }).click()
+      await expect(permissions.getByRole('radio', { name: approval.choice, exact: true })).toBeChecked()
+      await answerPlanReview(page, 'approve')
+      await modelScript.waitForSteps(start + 2)
+      await waitForAgentIdle(page)
+      await expectNoControlBanner(page)
+      await expect(assistantBubbles(page).filter({ hasText: 'The plan was approved.' }).first()).toBeVisible()
+      // The saved row describes the exact native approval option.
+      await expect(savedControlAnswer(page)).toHaveText(approval.answer)
+      await expectSettingsOptionChosen(page, `permissionMode-${approval.mode}`)
+      // Droid leaves Spec mode and applies the autonomy level through the same native reply.
+      await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: approval.autonomyLevel })
+      await page.reload()
+      await expect(savedControlAnswer(page)).toHaveText(approval.answer)
+      await expectSettingsOptionChosen(page, `permissionMode-${approval.mode}`)
+      await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: approval.autonomyLevel })
+    })
+  }
 
   // Reject answers ExitSpecMode with the option `cancel` ("No, keep iterating on
   // spec"). Droid records a failed result for the call and ends the turn with no

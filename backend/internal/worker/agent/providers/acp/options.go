@@ -28,7 +28,7 @@ import (
 type optionState struct {
 	// groups holds the surfaced config-option selectors -- a thought_level axis (OpenCode/Kilo
 	// "effort", Goose "thinking_effort"), a permissions axis (Reasonix "tool_approval"), or any
-	// other select. They are surfaced as MUTABLE groups: displayed via OptionGroups(),
+	// other select or boolean widget. They are surfaced as MUTABLE groups: displayed via OptionGroups(),
 	// kept in sync at handshake / runtime / ClearContext, and written back via
 	// session/set_config_option (applyOptionUpdates). nil when the provider emits none.
 	groups []*leapmuxv1.AvailableOptionGroup
@@ -389,6 +389,9 @@ func (g *optionState) storedIfOffered(option ConfigOption) (string, bool) {
 // Used to reconcile a stored current against a freshly-reported option list so a
 // ClearContext refresh never surfaces a selection the new session no longer offers.
 func configOptionOffers(option ConfigOption, value string) bool {
+	if option.Type == configOptionTypeBoolean {
+		return value == "false" || value == "true"
+	}
 	return configOptionValuesContain(option.Options, value)
 }
 
@@ -429,6 +432,9 @@ func appendConfigOptionValueIfMissing(options []ConfigOptionValue, value string)
 // Caller holds the owning Base.Mu.
 func (g *optionState) offersValue(id, value string) bool {
 	tmpl, ok := g.templates[id]
+	if ok && tmpl.Type == configOptionTypeBoolean {
+		return configOptionOffers(tmpl, value)
+	}
 	if !ok || len(tmpl.Options) == 0 {
 		return true
 	}
@@ -441,6 +447,9 @@ func (g *optionState) offersValue(id, value string) bool {
 //
 // effortConfigID is the running provider's declared effort id (Base.effortConfigID).
 func buildOptionGroup(option ConfigOption, current, effortConfigID string) *leapmuxv1.AvailableOptionGroup {
+	if option.Type == configOptionTypeBoolean {
+		option.Options = []ConfigOptionValue{{Value: "false", Name: "Off"}, {Value: "true", Name: "On"}}
+	}
 	// Guarantee the current value is a selectable option of the group. A (non-conforming) server
 	// can report a CurrentValue absent from its own option list, and buildOptionValues builds the
 	// list from option.Options ONLY -- it does not inject the current. Without this the group would
@@ -465,7 +474,7 @@ func buildOptionGroup(option ConfigOption, current, effortConfigID string) *leap
 		// current value (there is nothing else to point at).
 		DefaultValue: current,
 		// Writable via session/set_config_option (applyOptionUpdates): these are
-		// user-selectable selects, not agent-owned read-only state.
+		// user-selectable values, not agent-owned read-only state.
 		Mutable: true,
 		Order:   agent.OptionOrderTrailing,
 	}
@@ -564,7 +573,7 @@ func (g *optionState) apply(options []ConfigOption, authority payloadAuthority, 
 	order := make([]string, 0, len(options))
 	winner := make(map[string]ConfigOption, len(options))
 	for _, option := range options {
-		if option.ID == "" || !isSelectableConfigOption(option) {
+		if option.ID == "" || !isSupportedConfigOption(option) {
 			continue
 		}
 		if (claimedModel && option.ID == claimedModelID) || (claimedMode && option.ID == claimedModeID) {

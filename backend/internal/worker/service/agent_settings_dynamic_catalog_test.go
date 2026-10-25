@@ -17,8 +17,8 @@ import (
 )
 
 // dynamicCatalogProviders are the providers that read the model list, and the effort tiers of
-// each model, from the running session or the server. Each one registers no static model
-// catalog (Cline registers only the account-default placeholder), and each one sets
+// each model, from the running session or the server. Static entries supply at most
+// placeholder models without effort tiers. Each provider sets
 // Registration.ManagesEffort, so a model switch passes through resetEffortToAutoIfUnsupported.
 var dynamicCatalogProviders = []struct {
 	name     string
@@ -29,6 +29,7 @@ var dynamicCatalogProviders = []struct {
 	{"codewhale", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE},
 	{"kimi", leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE},
 	{"mimo", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE},
+	{"letta", leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA},
 }
 
 // dynamicCatalogModels is a catalog of the shape that these providers report: every model

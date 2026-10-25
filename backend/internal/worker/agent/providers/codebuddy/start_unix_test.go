@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/stretchr/testify/assert"
 )
 
 // CodeBuddy Code updates its own install unless a truthy DISABLE_AUTOUPDATER
@@ -13,7 +14,10 @@ import (
 // skips the updater today, but a daemon (CODEBUDDY_SESSION_KIND=daemon) runs it,
 // so the launch pins the switch off after the user's profile.
 func TestStartPinsTheUpdaterOff(t *testing.T) {
-	agenttest.RequireLaunchPins(t, agenttest.LaunchProbe{
+	runs := agenttest.RequireLaunchPins(t, agenttest.LaunchProbe{
 		Binary: "codebuddy", Start: Start, Pins: []string{"DISABLE_AUTOUPDATER=1"},
 	})
+	for _, run := range runs {
+		assert.Contains(t, run.Args, "--include-partial-messages")
+	}
 }

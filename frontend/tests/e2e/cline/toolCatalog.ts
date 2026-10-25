@@ -17,6 +17,27 @@ export interface ClineCatalogTool {
   headlessToolNames: string[]
 }
 
+export const CLINE_TEAM_TOOL_NAMES = [
+  'team_spawn_teammate',
+  'team_shutdown_teammate',
+  'team_status',
+  'team_task',
+  'team_run_task',
+  'team_cancel_run',
+  'team_list_runs',
+  'team_await_runs',
+  'team_send_message',
+  'team_broadcast',
+  'team_read_mailbox',
+  'team_mission_log',
+  'team_cleanup',
+  'team_create_outcome',
+  'team_attach_outcome_fragment',
+  'team_review_outcome_fragment',
+  'team_finalize_outcome',
+  'team_list_outcomes',
+] as const
+
 // The native configuration command lists disabled builtins and plugin tools also.
 // The table follows core/extensions/tools/runtime.ts and team/team-tools.ts.
 const CORE_TOOL_NAMES: Readonly<Record<string, readonly string[]>> = {
@@ -28,26 +49,7 @@ const CORE_TOOL_NAMES: Readonly<Record<string, readonly string[]>> = {
   skills: ['skills'],
   ask_question: ['ask_question'],
   spawn_agent: ['spawn_agent'],
-  teams: [
-    'team_spawn_teammate',
-    'team_shutdown_teammate',
-    'team_status',
-    'team_task',
-    'team_run_task',
-    'team_cancel_run',
-    'team_list_runs',
-    'team_await_runs',
-    'team_send_message',
-    'team_broadcast',
-    'team_read_mailbox',
-    'team_mission_log',
-    'team_cleanup',
-    'team_create_outcome',
-    'team_attach_outcome_fragment',
-    'team_review_outcome_fragment',
-    'team_finalize_outcome',
-    'team_list_outcomes',
-  ],
+  teams: CLINE_TEAM_TOOL_NAMES,
   web_search: ['web_search'],
 }
 

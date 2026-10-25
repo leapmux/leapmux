@@ -517,6 +517,8 @@ export const SESSION_INFO_TABLES = [
   { json: 'keys', goPrefix: 'SessionInfoKey', ts: 'SESSION_INFO_KEY', tsType: 'SessionInfoKey', what: 'top-level `info` keys' },
   { json: 'contextUsageFields', goPrefix: 'ContextUsageField', ts: 'CONTEXT_USAGE_FIELD', tsType: 'ContextUsageField', what: 'fields of the context_usage object' },
   { json: 'rateLimitFields', goPrefix: 'RateLimitField', ts: 'RATE_LIMIT_FIELD', tsType: 'RateLimitField', what: 'fields of one rate_limits tier' },
+  { json: 'rateLimitTypes', goPrefix: 'RateLimitType', ts: 'RATE_LIMIT_TYPE', tsType: 'RateLimitType', what: 'standard quota window types' },
+  { json: 'rateLimitStatuses', goPrefix: 'RateLimitStatus', ts: 'RATE_LIMIT_STATUS', tsType: 'RateLimitStatus', what: 'normalized quota statuses' },
   { json: 'rateLimitUpdateFields', goPrefix: 'RateLimitUpdateField', ts: 'RATE_LIMIT_UPDATE_FIELD', tsType: 'RateLimitUpdateField', what: 'fields of the rate_limits update envelope' },
   { json: 'rateLimitUpdateModes', goPrefix: 'RateLimitUpdateMode', ts: 'RATE_LIMIT_UPDATE_MODE', tsType: 'RateLimitUpdateMode', what: 'rate_limits update operations' },
   { json: 'runningToolFields', goPrefix: 'RunningToolField', ts: 'RUNNING_TOOL_FIELD', tsType: 'RunningToolField', what: 'fields of the running_tool object' },
@@ -2504,6 +2506,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'daemon events that both sides read' },
       { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'OpenCodeStatusType', doc: 'status.type values of session.status that both sides read' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'OpenCodeOptionID', owner: 'LeapMux chose these', doc: 'option keys for the family settings both sides address' },
     ],
   },
   {
@@ -2608,6 +2611,7 @@ export const PROVIDER_PROTOCOLS = [
     tsPrefix: 'CURSOR',
     title: 'Cursor',
     tables: [
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CursorOptionID', owner: 'LeapMux chose these', doc: 'option keys for native launch settings' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CursorTool', doc: 'ACP tool identifiers' },
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CursorMethod', doc: 'JSON-RPC methods both sides dispatch on' },
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CursorSupplementField', owner: 'LeapMux chose these', doc: 'supplemental content fields on a Cursor tool row' },
@@ -2651,6 +2655,21 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'McpElicitationAction', doc: 'response actions' },
       { key: 'approvalKinds', goTable: 'ApprovalKind', tsTable: 'APPROVAL_KIND', tsType: 'McpElicitationApprovalKind', doc: 'approval request kinds' },
       { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'McpElicitationApprovalScope', doc: 'approval duration values' },
+    ],
+  },
+  {
+    name: 'workspace-trust',
+    goPrefix: 'WorkspaceTrust',
+    tsPrefix: 'WORKSPACE_TRUST',
+    title: 'Workspace trust',
+    preamble: [
+      'LeapMux owns this vocabulary. The Go worker writes the trust question and reads the',
+      'saved answer; the browser draws the question and the saved answer.',
+    ].join('\n// '),
+    tables: [
+      { key: 'controlTypes', goTable: 'ControlType', tsTable: 'CONTROL_TYPE', tsType: 'WorkspaceTrustControlType', owner: 'LeapMux chose', doc: 'the type of the question payload that the worker writes' },
+      { key: 'fields', goTable: 'Field', tsTable: 'FIELD', tsType: 'WorkspaceTrustField', owner: 'LeapMux chose', doc: 'the fields of the question payload and of the saved answer' },
+      { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'WorkspaceTrustDecision', owner: 'LeapMux chose', doc: 'the decision words of the saved answer' },
     ],
   },
   {
@@ -2982,7 +3001,8 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'messages', frameKind: 'name', goTable: 'Message', tsTable: 'MESSAGE', tsType: 'LettaMessage', doc: 'server-to-client message type values' },
       { key: 'deltaKinds', frameKind: 'name', goTable: 'DeltaKind', tsTable: 'DELTA_KIND', tsType: 'LettaDeltaKind', doc: '`message_type` values of a `stream_delta`' },
       { key: 'eventTypes', goTable: 'EventType', tsTable: 'EVENT_TYPE', tsType: 'LettaEventType', doc: 'event_type values of native event messages' },
-      { key: 'deltaFields', goTable: 'DeltaField', tsTable: 'DELTA_FIELD', tsType: 'LettaDeltaField', doc: 'fields of a stream delta payload that both sides read' },
+      { key: 'deltaFields', goTable: 'DeltaField', tsTable: 'DELTA_FIELD', tsType: 'LettaDeltaField', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', doc: 'fields of a stream delta payload that both sides read' },
+      { key: 'compaction', goTable: 'Compaction', tsTable: 'COMPACTION', tsType: 'LettaCompaction', doc: 'native manual compaction command and help argument' },
       { key: 'toolOutput', goTable: 'ToolOutput', tsTable: 'TOOL_OUTPUT', tsType: 'LettaToolOutput', doc: 'identity of native current-window tool output' },
       { key: 'toolStatuses', goTable: 'ToolStatus', tsTable: 'TOOL_STATUS', tsType: 'LettaToolStatus', doc: 'native status of returned tool data' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'LettaTool', doc: 'tool names that both sides dispatch on' },
@@ -3039,12 +3059,11 @@ export const PROVIDER_PROTOCOLS = [
     tsPrefix: 'FASTAGENT',
     title: 'Fast Agent',
     preamble: [
-      'fast-agent owns the session mode id below. LeapMux owns no value in this file. Both',
-      'sides read it -- the worker falls back to the one mode a default fast-agent setup',
-      'reports and lists it on the permission-mode axis, and the browser plugin badges that',
-      'same default on the settings panel.',
+      'Fast Agent owns the native session mode IDs. LeapMux owns the option IDs',
+      'that select native launch settings. The worker and browser share these values.',
     ].join('\n// '),
     tables: [
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'FastagentOption', doc: 'LeapMux option IDs for native launch settings' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'FastagentMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
     ],
   },

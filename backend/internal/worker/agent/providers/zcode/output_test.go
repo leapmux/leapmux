@@ -29,18 +29,33 @@ func TestZCodeGenerationDiscardKeepsUnselectedScopes(t *testing.T) {
 
 // --- turn lifecycle ---
 
-func TestZCodeTurnActiveWithoutAProvenMailboxIsNotSteerable(t *testing.T) {
+// A running turn takes a steer through the command inbox, unless the
+// app-server refused the inbox. A compaction alone is no turn to steer.
+func TestZCodeTurnSteerability(t *testing.T) {
 	t.Parallel()
-	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	a.Mu.Lock()
-	a.turnActive = true
-	a.Mu.Unlock()
-	state := a.PublishTurnActive()
-	assert.True(t, state.Active)
-	// A build whose drain hook has not shown itself gets no Steer control:
-	// steering it would mail envelopes nothing drains. The discovery test in
-	// steering_test.go covers the proven-mailbox half.
-	assert.False(t, state.Steerable)
+	for name, tc := range map[string]struct {
+		turnActive, compaction, unsupported bool
+		want                                agent.TurnState
+	}{
+		"a running turn":                   {turnActive: true, want: agent.TurnState{Active: true, Steerable: true}},
+		"a running turn without the inbox": {turnActive: true, unsupported: true, want: agent.TurnState{Active: true}},
+		"a compaction alone":               {compaction: true, want: agent.TurnState{Active: true}},
+		"no turn":                          {want: agent.TurnState{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+			a.Mu.Lock()
+			a.turnActive = tc.turnActive
+			if tc.compaction {
+				a.compactionSessionID = a.sessionID
+			}
+			a.steeringUnsupported = tc.unsupported
+			a.Mu.Unlock()
+			assert.Equal(t, tc.want, a.PublishTurnActive())
+			assert.Equal(t, !tc.unsupported, a.SupportsSteering())
+		})
+	}
 }
 
 func TestHandleZCodeOutput_TurnStarted_ArmsTheUsersTurn(t *testing.T) {
@@ -1394,23 +1409,6 @@ func TestHandleZCodeOutput_HookFailurePersistsOnlyWhenClientVisible(t *testing.T
 			assert.Equal(t, 0, sink.MessageCount())
 		})
 	}
-}
-
-// Pending workspace hooks are worth one notice; an admission with nothing
-// pending states no change.
-func TestHandleZCodeOutput_WorkspaceHookAdmissionPersists(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.ControlSink{}
-	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
-		`{"pendingCount":2,"bundleDigest":"abc"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-		`{"pendingCount":0,"bundleDigest":"abc"}`))
-
-	require.Equal(t, 1, sink.NotificationCount())
-	assert.Equal(t, 0, sink.MessageCount())
 }
 
 // The discard notice replaces the queued notice the same key already holds, so

@@ -6,7 +6,7 @@ import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { writeToolCall } from '../helpers/providerToolCalls'
-import { answerControl, chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { answerPlanReview, chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
 /**
  * Prove that Reasonix refuses a native write in Plan mode and asks before the same write in Normal mode, before and
@@ -41,8 +41,8 @@ export async function exerciseReasonixPlanAndNormalWrites(context: ManagedNative
     expect(existsSync(planFile)).toBe(false)
     expect(await nativeToolResultAt(modelScript, planned + 1, planCall)).toContain('plan mode forbids workspace mutations')
     const exitBanner = await waitForControlBanner(page)
-    await expect(exitBanner).toContainText('exit_plan_mode')
-    await answerControl(page, 'deny')
+    await expect(exitBanner).toContainText('Plan Ready for Review')
+    await answerPlanReview(page, 'reject')
     await expectNoControlBanner(page)
 
     await chooseSettingsOption(page, 'permissionMode-normal')

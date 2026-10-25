@@ -3,6 +3,8 @@ package kilo
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
@@ -26,4 +28,9 @@ func TestKiloRegisteredSecondaryFallback(t *testing.T) {
 	assert.Equal(t, fromSpec.OptionGroups, registered.OptionGroups)
 	assert.Equal(t, fromSpec.EnvModelKey, registered.EnvModelKey)
 	assert.Equal(t, fromSpec.EnvEffortKey, registered.EnvEffortKey)
+}
+
+func TestKiloRegistrationServesAutoApprove(t *testing.T) {
+	t.Parallel()
+	assert.Same(t, opencode.AutoApproveGroup, optionids.GroupByID(Registration().OptionGroups, contracts.OpenCodeOptionAutoApprove))
 }

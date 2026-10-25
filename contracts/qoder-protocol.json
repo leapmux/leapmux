@@ -161,6 +161,10 @@
     "ClearGoal": "clear_goal",
     "Elicitation": "elicitation",
     "ElicitationResponse": "elicitation_response",
+    "McpStatus": "mcp_status",
+    "McpSetServers": "mcp_set_servers",
+    "GetUsageInfo": "get_usage_info",
+    "StopTask": "stop_task",
     "GenerateSessionTitle": "generate_session_title",
     "EndSession": "end_session"
   },
@@ -183,10 +187,12 @@
     "AcceptEdits": "acceptEdits",
     "Auto": "auto",
     "DontAsk": "dontAsk",
-    "Plan": "plan"
+    "Plan": "plan",
+    "BypassPermissions": "bypassPermissions"
   },
   "defaultMode": "Default",
   "effortLevels": {
+    "Auto": "auto",
     "None": "none",
     "Low": "low",
     "Medium": "medium",

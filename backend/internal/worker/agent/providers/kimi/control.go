@@ -346,6 +346,8 @@ func (a *Agent) withdrawAllControls() {
 	for _, id := range ids {
 		a.sink.CancelControlRequest(id)
 	}
+	// The workspace-trust question belongs to the session too.
+	a.workspaceTrust.Retire(a.sink)
 }
 
 // reconcileControls makes the published requests match the ones the server

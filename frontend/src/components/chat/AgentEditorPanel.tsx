@@ -30,7 +30,7 @@ import { AgentActivityState, AgentInputQueuePauseReason, AgentProvider } from '~
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import { flavorFromOs } from '~/lib/paths'
-import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
+import { formatResetTimestamp, getResetsAt, rateLimitStatusLabel } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { requestInstanceId } from '~/stores/control.store'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
@@ -645,11 +645,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               <Tooltip
                 {...(() => {
                   const resetsAt = getResetsAt(rl().info)
-                  return resetsAt ? { text: formatResetTimestamp(resetsAt) } : {}
+                  return resetsAt !== undefined ? { text: formatResetTimestamp(resetsAt) } : {}
                 })()}
               >
                 <span class={styles.rateLimitCountdown}>
-                  {rl().countdown ?? (rl().info.status === 'allowed_warning' ? 'Warning' : 'Exceeded')}
+                  {rl().countdown ?? rateLimitStatusLabel(rl().info.status)}
                 </span>
               </Tooltip>
             )}

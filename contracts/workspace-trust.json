@@ -1,0 +1,16 @@
+{
+  "_readme": "LeapMux asks the reader to trust a working directory for an agent that keeps a list of trusted folders but asks nothing in the mode that LeapMux runs it in, such as GitHub Copilot in server mode, or ZCode, which shows its hook review only to a subscriber of its desktop protocol. The agent loads part of a project's configuration only from a trusted folder, so the Worker reads the agent's trust, asks once for each session when the folder is untrusted, and on Trust adds the folder to the agent's list and loads that configuration. A Reject leaves the folder untrusted, and the agent asks no more during its life. An agent that raises its own trust request, such as Grok Build, keeps that request in its own protocol contract.\n\ncontrolTypes holds the type of the question payload, {type, path, configuration}: path is the folder, and configuration lists what the trust controls, in words the browser shows. decisions holds the word of the saved answer, {decision}.",
+  "controlTypes": {
+    "Question": "leapmux_workspace_trust"
+  },
+  "fields": {
+    "Type": "type",
+    "Path": "path",
+    "Configuration": "configuration",
+    "Decision": "decision"
+  },
+  "decisions": {
+    "Trust": "trust",
+    "Reject": "reject"
+  }
+}

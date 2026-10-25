@@ -25,7 +25,9 @@ func TestTheRegistrationStatesTheProvider(t *testing.T) {
 	assert.True(t, registration.FixedPermissionModes)
 	assert.Nil(t, registration.DefaultModels, "omp's models come from its own configuration")
 	assert.Equal(t, []string{agent.OptionIDEffort}, registration.AdditionalOptionIDs)
-	require.Len(t, registration.OptionGroups, 1)
+	require.Len(t, registration.OptionGroups, 3)
+	assert.Equal(t, outputStyleGroup, registration.OptionGroups[1])
+	assert.Equal(t, fastModeGroup, registration.OptionGroups[2])
 	approval := registration.OptionGroups[0]
 	assert.Equal(t, agent.OptionIDPermissionMode, approval.GetId())
 	assert.Equal(t, approvalModes, optionIDs(approval), "the launch vocabulary and the offered modes are one list")

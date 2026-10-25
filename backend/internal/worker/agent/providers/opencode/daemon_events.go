@@ -62,10 +62,12 @@ func (b *FamilyBase) handleDaemonEvent(raw json.RawMessage) {
 				ID        string `json:"id"`
 				MessageID string `json:"messageID"`
 				SessionID string `json:"sessionID"`
+				openCodeTaskPart
 			} `json:"part"`
 		}
 		if json.Unmarshal(event.Properties, &properties) == nil && (properties.Part.SessionID == "" || properties.Part.SessionID == sessionID) {
 			b.observeDaemonPart(properties.Part.ID, properties.Part.MessageID)
+			b.observeTaskPart(properties.Part.openCodeTaskPart)
 		}
 	case openCodeEventPartDelta:
 		if providerkit.StringField(event.Properties, "field") == "text" && providerkit.StringField(event.Properties, "delta") != "" {

@@ -177,7 +177,7 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 				})
 			}
 			replay := newTestWriter()
-			svc.replayAgentCatchUp(newReplaySink(replay, 0), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, row, nil)
+			svc.replayAgentCatchUp(newReplaySink(replay, 0, nil), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, row, nil)
 			var recovered *leapmuxv1.AgentControlRequest
 			for _, stream := range replay.streamsSnapshot() {
 				request := decodeWatchAgentEvent(t, stream).GetControlRequest()
@@ -234,7 +234,7 @@ func TestControlRequestReplayCarriesNonBlocking(t *testing.T) {
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	replay := newTestWriter()
-	svc.replayAgentCatchUp(newReplaySink(replay, 0), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, row, nil)
+	svc.replayAgentCatchUp(newReplaySink(replay, 0, nil), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, row, nil)
 
 	replayed := map[string]*leapmuxv1.AgentControlRequest{}
 	for _, stream := range replay.streamsSnapshot() {

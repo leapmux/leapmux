@@ -41,6 +41,7 @@ func Registration() agent.Registration {
 		OptionGroups:  diracStaticOptionGroups,
 		AdditionalOptionIDs: []string{
 			contracts.DiracConfigReasoningEffort,
+			contracts.DiracConfigYolo,
 			agent.OptionIDPermissionMode,
 			agent.OptionIDEffort,
 		},

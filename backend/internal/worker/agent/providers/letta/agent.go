@@ -35,6 +35,11 @@ type Agent struct {
 	sendMu       sync.Mutex
 	settingsMu   sync.Mutex
 	approvalWork providerkit.CoalescingWork
+	rpcReplies   providerkit.Correlator[string]
+	quotaWork    providerkit.CoalescingWork
+	// The output dispatcher serializes quota ownership and publication.
+	quotaState   lettaQuotaState
+	quotaRetries map[lettaQuotaAccount]time.Time
 	// The output dispatcher owns held errors and the process-exit boundary.
 	heldErrors      map[string][]lettaHeldError
 	outputEnded     bool
@@ -43,22 +48,22 @@ type Agent struct {
 
 	// --- guarded by Mu ---
 
-	agentID         string
-	conversationID  string
-	turnActive      bool
-	transportErr    error
-	settings        lettaSettings
-	catalog         lettaCatalog
-	tools           map[string]*lettaTool
-	turnToolCallIDs map[string]struct{}
-	children        map[string]*lettaChild
-	generation      providerkit.GenerationBuffer
-	retries         map[string]*providerkit.RetryResolution
+	agentID          string
+	conversationID   string
+	turnActive       bool
+	manualCompaction *lettaManualCompaction
+	transportErr     error
+	settings         lettaSettings
+	catalog          lettaCatalog
+	tools            map[string]*lettaTool
+	turnToolCallIDs  map[string]struct{}
+	children         map[string]*lettaChild
+	generation       providerkit.GenerationBuffer
+	retries          map[string]*providerkit.RetryResolution
 	// runtimeReady holds the open runtime_start handshake, until the response
 	// settles it. Start waits on it before it returns the agent.
 	runtimeReady         *runtimeWaiter
 	catalogPending       *lettaCatalogPending
-	modelPending         *lettaModelUpdatePending
 	modePending          *lettaModePending
 	permissions          map[string]*lettaPendingPermission
 	permissionDeliveries map[string]*lettaPermissionDelivery
@@ -78,27 +83,28 @@ var errAgentStopped = errors.New("the Letta Code server stopped")
 // lettaSettings is the live configuration of the conversation.
 type lettaSettings struct {
 	model          string
+	modelProvider  string
 	reasoningLevel string
 	permissionMode string
 }
 
 // lettaCatalog is the model list the server reported.
 type lettaCatalog struct {
-	models []lettaModel
+	models          []lettaModel
+	providerAliases map[string]string
 }
 
-// lettaModel is one entry of list_models.
+// lettaModel groups the native presets that share one model handle.
 type lettaModel struct {
 	id          string
 	displayName string
+	variants    []lettaModelVariant
 }
 
-type lettaModelUpdatePending struct {
-	requestID     string
-	model         string
-	effort        string
-	effortPresent bool
-	waiter        *runtimeWaiter
+type lettaModelVariant struct {
+	id           string
+	effort       string
+	providerType string
 }
 
 // lettaTool is one open tool call.
@@ -158,9 +164,15 @@ func (a *Agent) SupportsSteering() bool { return false }
 
 // sendInput writes one input command.
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
-	payload, err := buildUserMessages(content, attachments)
-	if err != nil {
-		return err
+	args, compact := lettaCompactArguments(content)
+	compact = compact && len(attachments) == 0
+	var payload []any
+	if !compact {
+		var err error
+		payload, err = buildUserMessages(content, attachments)
+		if err != nil {
+			return err
+		}
 	}
 
 	a.sendMu.Lock()
@@ -188,7 +200,12 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	}
 
 	a.setTurnActive(true)
-	cmd := a.createMessageCommand(scope, payload)
+	var cmd lettaCommand
+	if compact {
+		cmd = a.prepareManualCompaction(scope, args)
+	} else {
+		cmd = a.createMessageCommand(scope, payload)
+	}
 	// One line per delivered input. The scope fields name the runtime the
 	// frame addresses, which is the difference between a turn and a silent
 	// drop on this protocol.
@@ -200,7 +217,11 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		"content_len", len(content))
 	if err := a.sendCommand(cmd); err != nil {
 		slog.Warn("letta: input send failed", "agent_id", a.AgentID(), "error", err)
-		a.setTurnActive(false)
+		if compact {
+			a.failManualCompactionSend(cmd.RequestID)
+		} else {
+			a.setTurnActive(false)
+		}
 		return err
 	}
 	return nil
@@ -296,7 +317,13 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()
 	active := a.turnActive
+	compacting := a.manualCompaction != nil
 	a.Mu.Unlock()
+	if compacting && active {
+		// Native execute_command runs outside the loop that abort_message cancels.
+		// Its abort receipt reports aborted=false while the summarizer continues.
+		return &agent.InterruptUnavailableError{Message: "the Letta Code process cannot interrupt compaction; wait for it to finish or close the agent"}
+	}
 	if !active {
 		return nil
 	}

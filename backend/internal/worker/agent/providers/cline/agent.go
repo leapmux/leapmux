@@ -80,7 +80,7 @@ type Agent struct {
 	// sessionMu serializes changes to the session and its configuration:
 	//   - Open the initial session.
 	//   - Clear the context.
-	//   - Rebuild the session for a new mode.
+	//   - Rebuild the session for settings that fixed its runtime.
 	//   - Write the settings.
 	//   - Release session claims during teardown.
 	//

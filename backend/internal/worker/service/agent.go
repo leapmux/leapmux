@@ -944,23 +944,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				}
 				target, targetErr := svc.Agents.CaptureStopTarget(row.OwnerAgentID)
 				if targetErr != nil {
-					sendNotFoundError(sender, "agent not found or not running")
+					sendInterruptError(sender, targetErr)
 					return
 				}
 				stop := svc.Output.NoteAgentStopRequested(agentID, row.OwnerAgentID)
 				if err := target.InterruptChild(row.RowKey, stop.Context()); err != nil {
 					stop.Failed()
-					if errors.Is(err, agent.ErrChildOperationUnsupported) {
-						sendFailedPrecondition(sender, "this subagent cannot be interrupted")
-						return
-					}
-					if errors.Is(err, agent.ErrChildRouteNotReady) {
-						// The child route can be empty after an owner restart. Tell the client to retry.
-						sendUnavailable(sender, "subagent route is not ready in the running owner process; retry")
-						return
-					}
 					slog.Warn("interrupt child failed", "agent_id", agentID, "error", err)
-					sendNotFoundError(sender, "agent not found or not running")
+					sendInterruptError(sender, err)
 					return
 				}
 				stop.Delivered(target)
@@ -992,7 +983,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			if err := target.Interrupt(stop.Context()); err != nil {
 				stop.Failed()
 				slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
-				sendNotFoundError(sender, "agent not found or not running")
+				sendInterruptError(sender, err)
 				return
 			}
 			stop.Delivered(target)

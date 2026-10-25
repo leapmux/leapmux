@@ -138,6 +138,8 @@ func (a *Agent) ClearContext() (string, error) {
 	a.dispatchMu.Unlock()
 	a.withdrawAllControls()
 	a.PublishTurnActive()
+	// The question of the session that went away retired with it.
+	go a.checkWorkspaceTrust()
 	a.sink.ReportProgress(agent.ResetProgress())
 	// A goal belongs to a session, and this one has none yet.
 	a.sink.ClearGoal(false)

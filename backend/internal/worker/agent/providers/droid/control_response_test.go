@@ -139,6 +139,67 @@ func TestResolveControlResponseClassifiesNativeSpecApproval(t *testing.T) {
 	assert.JSONEq(t, `{"selectedOption":"proceed_once"}`, string(envelope.Result))
 }
 
+func TestResolvePlanApprovalSelectsNativeAutonomy(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, mode, selected, want                        string
+		deny, clear, noOffer, ordinary, wrongConfirmation bool
+		refusal                                           string
+	}{
+		{name: "unchanged", want: "proceed_once"},
+		{name: "default", mode: "default", want: "proceed_once"},
+		{name: "low", mode: "auto-low", want: "proceed_auto_run_low"},
+		{name: "medium", mode: "auto-medium", want: "proceed_auto_run_medium"},
+		{name: "high", mode: "auto-high", want: "proceed_auto_run_high"},
+		{name: "matching explicit option", mode: "auto-medium", selected: "proceed_auto_run_medium", want: "proceed_auto_run_medium"},
+		{name: "reject keeps cancellation", mode: "auto-high", deny: true, noOffer: true, want: "cancel"},
+		{name: "ordinary tool cannot change autonomy", mode: "auto-high", ordinary: true, want: "proceed_once"},
+		{name: "clear context uses the service path", mode: "auto-medium", clear: true, want: "proceed_once"},
+		{name: "unoffered policy", mode: "auto-medium", noOffer: true, refusal: "Factory Droid did not offer proceed_auto_run_medium"},
+		{name: "unknown policy", mode: "other", refusal: "the Factory Droid session cannot approve a plan with permission mode \"other\""},
+		{name: "spec is not an approval policy", mode: "spec", refusal: "the Factory Droid session cannot approve a plan with permission mode \"spec\""},
+		{name: "wrong confirmation", mode: "auto-medium", wrongConfirmation: true, refusal: "this Factory Droid confirmation cannot apply the selected plan permission mode"},
+		{name: "conflicting explicit option", mode: "auto-medium", selected: "proceed_once", refusal: "the selected native option contradicts the plan permission mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tool, confirmation := contracts.DroidToolExitSpecMode, contracts.DroidConfirmationTypeExitSpecMode
+			if tc.ordinary {
+				tool = contracts.DroidToolEdit
+			}
+			if tc.ordinary || tc.wrongConfirmation {
+				confirmation = contracts.DroidConfirmationTypeEdit
+			}
+			offered := []string{"proceed_once", "proceed_auto_run_low", "proceed_auto_run_medium", "proceed_auto_run_high", "cancel"}
+			if tc.noOffer {
+				offered = []string{"proceed_once"}
+			}
+			behavior := "allow"
+			if tc.deny {
+				behavior = "deny"
+			}
+			resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+				RequestID:       "droid-perm-1",
+				RequestPayload:  permissionRequestPayload(t, tool, confirmation, offered...),
+				ResponseContent: decision(t, "droid-perm-1", map[string]any{"behavior": behavior, "selectedOption": tc.selected}),
+				PlanApproval:    &leapmuxv1.PlanApprovalSettings{PermissionMode: tc.mode, ClearContext: tc.clear},
+			})
+			if tc.refusal != "" {
+				require.True(t, resolution.Withhold)
+				assert.EqualError(t, resolution.Refusal(), tc.refusal)
+				assert.Empty(t, resolution.Content)
+				return
+			}
+			id, raw := replyResult(t, resolution)
+			assert.Equal(t, "rpc-42", id)
+			var reply droidPermissionResult
+			require.NoError(t, json.Unmarshal(raw, &reply))
+			assert.Equal(t, tc.want, reply.SelectedOption)
+		})
+	}
+}
+
 // Droid's reply schema accepts a `comment` beside every selectedOption, but Droid
 // reads it only beside an APPROVAL of exit_spec_mode or propose_mission. A cancel
 // discards it for every confirmation type, and Droid's own TUI sends the reason

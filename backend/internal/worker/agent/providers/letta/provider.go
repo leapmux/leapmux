@@ -27,6 +27,14 @@ func (lettaProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 		}
 	case contracts.LettaDeltaKindSummaryMessage:
 		return agent.CompactionBoundaryNotification()
+	case contracts.LettaDeltaKindSlashCommandEnd:
+		var delta lettaCompactionDelta
+		if json.Unmarshal(raw, &delta) == nil {
+			help, valid := lettaCompactionKind(&delta)
+			if valid && !help && delta.Success != nil && *delta.Success {
+				return agent.CompactionBoundaryNotification()
+			}
+		}
 	case contracts.LettaDeltaKindStatus:
 		level := providerkit.StringField(raw, "level")
 		if lettaWarningLevel(level) {

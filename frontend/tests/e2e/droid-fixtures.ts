@@ -26,7 +26,8 @@ import { createProviderTest } from './provider-fixture-factory'
 export const DROID_E2E_SKIP_REASON: string | null = missingBinaryReason('droid', 'Factory Droid E2E requires the droid CLI on PATH (https://docs.factory.ai/)')
 
 /**
- * The agent opens in Auto (High), which answers every tool call at once.
+ * The agent opens in Auto (High), which approves ordinary tools at every risk level.
+ * Native protected decisions still require a response.
  *
  * LeapMux opens a new Droid session in Default, which asks before a tool that
  * changes something. A spec that tests tool rendering would otherwise answer
@@ -40,7 +41,7 @@ export const droidTest = createProviderTest({
   agent: DROID_AGENT,
   nativeContext,
   skipReason: DROID_E2E_SKIP_REASON,
-  /** An agent in Auto (High), which raises no banner for a tool call. */
+  /** An agent in Auto (High), which approves ordinary tools without a banner. */
   workspaceName: 'authenticatedDroidWorkspace',
   workspaceOptions: { openOptions: AUTO_HIGH },
   // Droid runs its session-title turn at a time that no test controls, so every test of the provider answers it.

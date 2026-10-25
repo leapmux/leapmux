@@ -53,21 +53,21 @@ func (a *Agent) sessionHandleLocked() string {
 // sessionState takes the fields of a get_state response that the worker reads.
 //
 // The response is large -- it carries the system prompt and every tool's schema,
-// about 100 KB -- so the worker reads it only at startup, after a model switch,
-// and after a context clear.
+// about 100 KB. The worker reads it at startup, after context replacement,
+// and when a model change, local command, or failed settings write requires a refresh.
 type sessionState struct {
 	Model *struct {
 		ID       string `json:"id"`
 		Provider string `json:"provider"`
 	} `json:"model"`
-	ThinkingLevel string `json:"thinkingLevel"`
-	SessionID     string `json:"sessionId"`
-	SessionFile   string `json:"sessionFile"`
+	ThinkingLevel   string `json:"thinkingLevel"`
+	FastModeEnabled *bool  `json:"fastModeEnabled"`
+	SessionID       string `json:"sessionId"`
+	SessionFile     string `json:"sessionFile"`
 }
 
-// applyState folds a get_state response into the agent: the model, the thinking
-// level and the session identity. It reports whether the session identity
-// changed.
+// applyState records the native model, thinking level, fast-mode state, and session identity.
+// It reports whether the session identity changed.
 //
 // A reader's thinking level of Auto stays Auto: omp reports the level it
 // resolved, and the reader chose omp's own default rather than that level. omp
@@ -84,6 +84,9 @@ func (a *Agent) applyState(raw json.RawMessage) bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	hasModel := state.Model != nil && state.Model.ID != ""
+	if state.FastModeEnabled != nil {
+		a.fastMode = *state.FastModeEnabled
+	}
 	if hasModel {
 		a.applyReportedModelLocked(joinModelID(state.Model.Provider, state.Model.ID))
 	}

@@ -30,10 +30,10 @@ function inNewSession(words: ControlDecisionWords, level: string): string {
  *
  * Each label starts with the word of the button that the control drew: Approve or
  * Reject for the spec review, and Allow or Deny for every other permission. The two
- * buttons reach Droid as `proceed_once` and `cancel`, because the worker turns allow
- * and deny into them (`droidResolveControlResponse`). The worker also forwards another
- * option that the browser's decision states, when the request offered it, so every
- * option has its words.
+ * buttons reach Droid as `proceed_once` and `cancel` unless a plan approval selects
+ * an autonomy level. That selection uses the native `proceed_auto_run_*` option.
+ * The worker also forwards an explicit option when the request offered it and it
+ * agrees with the selected plan permission mode, so every option has its words.
  * The rest of each label states what Droid does beyond the approval, as the Factory
  * Droid SDK describes the option.
  */

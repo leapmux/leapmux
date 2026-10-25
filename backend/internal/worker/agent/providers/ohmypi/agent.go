@@ -3,6 +3,7 @@ package ohmypi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -49,6 +51,7 @@ type Agent struct {
 
 	sink       agent.ProviderServices
 	workingDir string
+	directory  *agentdir.Dir
 
 	// nextReqID mints the command ids.
 	nextReqID atomic.Int64
@@ -86,6 +89,8 @@ type Agent struct {
 	// approvalMode is the effective tool policy. The Worker can apply Yolo live.
 	// Other changes restart the process with the requested native policy.
 	approvalMode    string
+	outputStyle     string
+	fastMode        bool
 	availableModels []*agent.ModelInfo
 
 	sessionID   string
@@ -133,7 +138,7 @@ var (
 	_ agent.SteerEchoReporter = (*Agent)(nil)
 	_ agent.SteerSurvivor     = (*Agent)(nil)
 	_ agent.ContextCompactor  = (*Agent)(nil)
-	_ agent.GoalCapable       = (*Agent)(nil)
+	_ agent.GoalWriter        = (*Agent)(nil)
 )
 
 // rootConversation returns the conversation of the session itself, and creates it
@@ -263,6 +268,8 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		}
 		switch {
 		case !promptInvokesAgent(result.data):
+			// Local commands such as /fast can change settings without a model-change event.
+			a.stateRefresh.schedule(a)
 			// A local slash command. omp answered it itself, and no run takes it.
 			// omp runs a built-in command before it reads the streaming behavior,
 			// so a steer can be one too.
@@ -469,7 +476,7 @@ func (a *Agent) Wait() error {
 	a.stateRefresh.stop()
 	a.dialogDeadlines.StopAll()
 	a.finishOutput(a.ProcessExitCompletion())
-	return err
+	return errors.Join(err, a.directory.Close())
 }
 
 // finishOutput persists what the process left unfinished when it stopped: the

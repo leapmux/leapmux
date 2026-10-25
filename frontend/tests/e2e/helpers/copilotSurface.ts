@@ -6,6 +6,7 @@ export interface CopilotSurfaceOptions {
   sessionToken: string
   defaultModelId: string
   reasoningModelId: string
+  messagesModelId: string
 }
 
 /** Preserve the native CAPI capability fields in the shared model catalog. */
@@ -25,9 +26,13 @@ export function copilotModelCapabilities(id: string, options: Pick<CopilotSurfac
 }
 
 /** Return the same native catalog additions for every standard model client. */
-export function copilotCatalogMetadata(id: string, options: Pick<CopilotSurfaceOptions, 'defaultModelId' | 'reasoningModelId'>): Record<string, unknown> {
+export function copilotCatalogMetadata(id: string, options: Pick<CopilotSurfaceOptions, 'defaultModelId' | 'reasoningModelId' | 'messagesModelId'>): Record<string, unknown> {
   return {
-    ...(id === options.reasoningModelId ? { supported_endpoints: ['/responses'] } : {}),
+    ...(id === options.reasoningModelId
+      ? { supported_endpoints: ['/responses'] }
+      : id === options.messagesModelId
+        ? { supported_endpoints: ['/v1/messages'] }
+        : {}),
     capabilities: copilotModelCapabilities(id, options),
   }
 }

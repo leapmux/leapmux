@@ -13,13 +13,14 @@ import (
 )
 
 // These native records update internal state or repeat content that another event supplies.
-// Only the Worker reads this drop list.
+// Only the Worker reads this drop list. dsh 0.2.1-rc.2 adds `job/registered` and `job/settled`
+// around each bash command; tool/call and tool/result already state that command and its outcome.
 var silentSessionEvents = map[string]struct{}{
 	"agent-preset/selected": {}, "approval/asked": {}, "approval/decided": {}, "approval/policy": {},
 	contracts.DeepseekHarnessEventAssistantAttempt: {}, "command/done": {}, "command/run": {},
 	"compaction/prune": {}, "compaction/summary": {}, "developer/message": {},
 	"feedback/message-delete": {}, "feedback/message-put": {}, "feedback/record": {}, "hook/invoked": {},
-	"image/offload": {}, "model/selection": {}, "permission/preset": {}, "request/header": {},
+	"image/offload": {}, "job/registered": {}, "job/settled": {}, "model/selection": {}, "permission/preset": {}, "request/header": {},
 	"sandbox/mode": {}, "schedule/change": {}, "session-log-deepseek/delivery-accepted": {},
 	"session/end-seed": {}, "session/title": {}, "session/title-llm-request": {}, "step/start": {}, "step/end": {},
 	"subagent/descriptor": {}, "subagent/model-selection-policy": {}, "system/message": {},

@@ -1,6 +1,6 @@
 import type { CompactionDetails, NotificationEntry, RetryFacts } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { LETTA_DELTA_FIELD, LETTA_DELTA_KIND, LETTA_EVENT_TYPE } from '~/generated/contracts/letta-protocol'
+import { LETTA_COMPACTION, LETTA_DELTA_FIELD, LETTA_DELTA_KIND, LETTA_EVENT_TYPE, LETTA_MESSAGE } from '~/generated/contracts/letta-protocol'
 import { assignDefined, isObject, pickCounter, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 import { retryEntry } from '../../../model/notification'
@@ -43,6 +43,24 @@ export function lettaErrorWords(text: string): string {
 /** Read stored native notices. An unknown notice returns no entry and retains the classifier's diagnostic policy. */
 export function lettaNotificationEntry(message: Record<string, unknown>): NotificationEntry[] {
   const kind = pickString(message, LETTA_DELTA_FIELD.MessageType)
+  if (pickString(message, 'type') === LETTA_MESSAGE.ExecuteCommandResponse) {
+    const text = pickString(message, LETTA_DELTA_FIELD.Output).trim()
+    return text ? [{ kind: 'text', text }] : []
+  }
+  if (kind === LETTA_DELTA_KIND.SlashCommandEnd) {
+    const command = lettaCompactCommand(message)
+    const success = message[LETTA_DELTA_FIELD.Success]
+    if (command === null || typeof success !== 'boolean')
+      return []
+    const text = pickString(message, LETTA_DELTA_FIELD.Output).trim()
+    if (command === 'help')
+      return text ? [{ kind: 'text', text }] : []
+    if (success)
+      return [{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual' } }]
+    const entry: NotificationEntry = { kind: 'compaction', phase: 'end', detail: { trigger: 'manual' }, outcome: 'failed' }
+    assignDefined(entry, 'error', text || undefined)
+    return [entry]
+  }
   if (kind === LETTA_DELTA_KIND.SummaryMessage)
     return [{ kind: 'compaction', phase: 'end', detail: lettaCompactionDetails(message) }]
   if (kind === LETTA_DELTA_KIND.Status) {
@@ -78,12 +96,29 @@ function lettaCompactionDetails(message: Record<string, unknown>): CompactionDet
 /** Read the native summary boundary for the context meter. */
 export function lettaCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const message = getInnerMessage(parsed)
-  return isObject(message) && message[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.SummaryMessage
-    ? lettaCompactionDetails(message)
-    : null
+  if (!isObject(message))
+    return null
+  if (message[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.SummaryMessage)
+    return lettaCompactionDetails(message)
+  if (message[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.SlashCommandEnd
+    && lettaCompactCommand(message) === 'compaction' && message[LETTA_DELTA_FIELD.Success] === true) {
+    return { trigger: 'manual' }
+  }
+  return null
 }
 
 /** Identify a stored native start for the shared compaction safety net. */
 export function lettaCompactionStart(message: Record<string, unknown>): boolean {
-  return message[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.EventMessage && message[LETTA_DELTA_FIELD.EventType] === LETTA_EVENT_TYPE.Compaction
+  return (message[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.EventMessage && message[LETTA_DELTA_FIELD.EventType] === LETTA_EVENT_TYPE.Compaction)
+    || (message[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.SlashCommandStart && lettaCompactCommand(message) === 'compaction')
+}
+
+/** Distinguish native help from a command that attempts to rewrite context. */
+function lettaCompactCommand(message: Record<string, unknown>): 'help' | 'compaction' | null {
+  if (message[LETTA_DELTA_FIELD.CommandID] !== LETTA_COMPACTION.CommandID)
+    return null
+  const words = pickString(message, LETTA_DELTA_FIELD.Input).trim().split(/\s+/u)
+  if (words[0] !== `/${LETTA_COMPACTION.CommandID}`)
+    return null
+  return words[1] === LETTA_COMPACTION.HelpArgument ? 'help' : 'compaction'
 }

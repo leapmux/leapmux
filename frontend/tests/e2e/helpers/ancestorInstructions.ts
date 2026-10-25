@@ -36,6 +36,11 @@ import { isInsideDirectory } from './runRoot'
  *
  * The guard holds no file in the directories above the run root, such as `/tmp`, which no test owns. A provider whose
  * request body quotes such a file passes the body check. Only the file check of Cursor and Amp sees such a file.
+ *
+ * The body check has one known escape. CodeBuddy's Auto-mode classifier quotes the memory files of each directory up to
+ * the root of the file system, and no setting stops it. The body check therefore skips the one message of a classifier
+ * request that quotes only the sentinel documents of the run root (`./codebuddySurface.ts`). Every other part of that
+ * request, and every other request, keeps the refusal.
  */
 
 /**
@@ -180,6 +185,11 @@ const SENTINEL_TEXT: Readonly<Record<AncestorInstructionForm, string>> = {
   constitution: `${JSON.stringify({ authority: [ANCESTOR_INSTRUCTION_SENTINEL, SENTINEL_SENTENCE] }, null, 2)}\n`,
 }
 
+/** The text of a sentinel file of `form`, as {@link writeAncestorInstructionSentinels} writes it. */
+export function sentinelFileText(form: AncestorInstructionForm): string {
+  return SENTINEL_TEXT[form]
+}
+
 /** Write each sentinel instruction file into `runRoot`. */
 export function writeAncestorInstructionSentinels(runRoot: string): void {
   for (const { path, form } of ANCESTOR_INSTRUCTION_FILES) {
@@ -192,6 +202,16 @@ export function writeAncestorInstructionSentinels(runRoot: string): void {
 /** Whether a model request body holds the text of a sentinel instruction file. */
 export function holdsAncestorInstructions(body: unknown): boolean {
   return JSON.stringify(body ?? null).includes(ANCESTOR_INSTRUCTION_SENTINEL)
+}
+
+/**
+ * Whether `text` holds sentinel documents and nothing else: one copy of the document text or more, with only white
+ * space around and between the copies. A provider that trims each instruction file and joins the files quotes the
+ * sentinel documents of the run root in this form.
+ */
+export function holdsOnlySentinelDocuments(text: string): boolean {
+  const parts = text.split(sentinelFileText('document').trim())
+  return parts.length > 1 && parts.every(part => part.trim() === '')
 }
 
 /** One instruction file that a native agent sent to its own service rather than to the model. */

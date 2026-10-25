@@ -5,7 +5,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { codeExecutionToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
-import { answerControl, assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly, waitForControlBanner } from '../helpers/ui'
+import { answerControl, assistantBubbles, interruptButton, sendMessage, tabById, userBubbles, visibleOnly, waitForControlBanner } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { qoderTest } from '../qoder-fixtures'
 
@@ -73,6 +73,8 @@ qoderTest.describe('native workflow grouping', () => {
       const childTabId = await openChildTabFromRow(page, firstChild)
       await expect(userBubbles(page).filter({ hasText: `Read ${file}` }).first()).toBeVisible()
       await expect(assistantBubbles(page).filter({ hasText: FIRST_ANSWER })).toHaveCount(0)
+      // Qoder's stop_task leaves a Workflow script's child running, so its tab offers no Interrupt control.
+      await expect(interruptButton(page)).toHaveCount(0)
       return childTabId
     }, async () => {
       try {

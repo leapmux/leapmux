@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,10 +16,12 @@ import (
 )
 
 // OptionGroups returns the model group, the current model's thinking-level group,
-// and the approval-mode group.
+// the approval-mode group, the output-style group, and the fast-mode group.
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.Mu.Lock()
 	model, effort, approval := a.model, a.thinkingLevel, a.approvalMode
+	style := a.outputStyle
+	fastMode := strconv.FormatBool(a.fastMode)
 	models := a.availableModels
 	a.Mu.Unlock()
 
@@ -29,24 +32,30 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 		// No catalog yet: the running values read back, and nothing can be picked.
 		groups = providerkit.ReadOnlyModelAndEffortGroups(model, model, effort)
 	}
-	return append(groups, providerkit.LiveGroup(approvalModeGroup, approval))
+	return append(groups, providerkit.LiveGroup(approvalModeGroup, approval), providerkit.LiveGroup(outputStyleGroup, style), providerkit.LiveGroup(fastModeGroup, fastMode))
 }
 
-// SettingsSnapshot confirms every value the running agent reports.
+// SettingsSnapshot confirms the settings applied to the running agent.
 func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(agent.CurrentOptions(a.OptionGroups()))
 }
 
-// UpdateSettings applies model, thinking-level and Yolo changes live.
-// Other approval-mode changes and a move to Auto restart the agent.
+// UpdateSettings applies model, thinking-level, fast-mode, and Yolo changes live.
+// Other approval-mode changes, output-style changes, and a move to Auto restart the agent.
 //
 // omp applies its native approval mode at launch. The Worker grants Yolo tool approvals itself.
 // No RPC command removes a thinking level, which is what Auto requires.
-// If a live change fails, the caller restarts the agent with the requested settings.
+// A failed model or thinking-level change requires a restart. A refused fast-mode choice stays unresolved.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	defer a.approvePendingDialogs()
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
 	a.Mu.Lock()
 	curModel, curEffort, curApproval := a.model, a.thinkingLevel, a.approvalMode
+	if style := options[OptionOutputStyle]; style != "" && style != a.outputStyle {
+		a.Mu.Unlock()
+		return agent.RestartRequiredSettings(options)
+	}
 	if options[agent.OptionIDPermissionMode] == contracts.OhMyPiApprovalModeYolo {
 		a.approvalMode = contracts.OhMyPiApprovalModeYolo
 	}
@@ -85,15 +94,68 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		return agent.RestartRequiredSettings(options)
 	}
 
+	var fastModeErr error
+	if value := options[OptionFastMode]; value != "" {
+		a.Mu.Lock()
+		current := strconv.FormatBool(a.fastMode)
+		a.Mu.Unlock()
+		// A different model can select a different native service-tier family.
+		modelChanged := options[agent.OptionIDModel] != "" && options[agent.OptionIDModel] != curModel
+		if value != current || modelChanged {
+			fastModeErr = a.applyFastMode(value, timeout)
+			if fastModeErr != nil {
+				slog.Warn("omp fast-mode change failed", "agent_id", a.AgentID(), "error", fastModeErr)
+				a.stateRefresh.schedule(a)
+			}
+		}
+	}
 	a.Mu.Lock()
-	model, effort, approval := a.model, a.thinkingLevel, a.approvalMode
+	settings := a.currentSettingsLocked()
 	a.Mu.Unlock()
-	a.sink.PersistSettingsRefresh(map[string]string{
-		agent.OptionIDModel:          model,
-		agent.OptionIDEffort:         effort,
-		agent.OptionIDPermissionMode: approval,
-	})
-	return a.SettingsSnapshot()
+	a.sink.PersistSettingsRefresh(settings)
+	result := a.SettingsSnapshot()
+	if value := options[OptionFastMode]; value != "" && (fastModeErr != nil || result.SurfacedOptions[OptionFastMode] != value) {
+		result.Settlements[OptionFastMode] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
+	}
+	return result
+}
+
+// applyFastMode records the state that the native command acknowledges.
+// The caller holds sessionMu so an older state read cannot replace this reply.
+func (a *Agent) applyFastMode(value string, timeout time.Duration) error {
+	if value != "true" && value != "false" {
+		return fmt.Errorf("unsupported Oh My Pi fast-mode value %q", value)
+	}
+	raw, err := a.sendCommand(CommandSetFastMode, map[string]any{"enabled": value == "true"}, timeout)
+	if err != nil {
+		return err
+	}
+	var result struct {
+		Enabled *bool `json:"enabled"`
+		Active  *bool `json:"active"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return fmt.Errorf("decode the Oh My Pi fast-mode response: %w", err)
+	}
+	if result.Enabled == nil || result.Active == nil {
+		return fmt.Errorf("the Oh My Pi fast-mode response has no enabled or active state")
+	}
+	a.Mu.Lock()
+	a.fastMode = *result.Enabled
+	a.Mu.Unlock()
+	return nil
+}
+
+// currentSettingsLocked retains every option when a native event changes only one.
+// The caller holds Process.Mu.
+func (a *Agent) currentSettingsLocked() map[string]string {
+	return map[string]string{
+		agent.OptionIDModel:          a.model,
+		agent.OptionIDEffort:         a.thinkingLevel,
+		agent.OptionIDPermissionMode: a.approvalMode,
+		OptionOutputStyle:            a.outputStyle,
+		OptionFastMode:               strconv.FormatBool(a.fastMode),
+	}
 }
 
 // applyModel switches the model with set_model. omp answers with the model it
@@ -220,27 +282,21 @@ func (a *Agent) handleConfigUpdate(raw []byte) {
 // value it reports differs from the one this worker holds. `apply` runs under
 // a.Mu and reports whether anything moved; nothing publishes when nothing moved.
 //
-// The approval mode rides along unchanged: the settings pipeline takes every axis
+// Every unchanged setting stays in the snapshot: the settings pipeline takes every axis
 // at once, and one left out would read as deleted.
 func (a *Agent) publishSettings(apply func() bool) {
 	a.Mu.Lock()
 	changed := apply()
-	model, effort, approval := a.model, a.thinkingLevel, a.approvalMode
+	settings := a.currentSettingsLocked()
 	a.Mu.Unlock()
 	if !changed {
 		return
 	}
-	a.sink.PersistSettingsRefresh(map[string]string{
-		agent.OptionIDModel:          model,
-		agent.OptionIDEffort:         effort,
-		agent.OptionIDPermissionMode: approval,
-	})
+	a.sink.PersistSettingsRefresh(settings)
 }
 
-// stateRefresher runs the get_state reads that a model_changed frame asks for, one
-// at a time. A frame that arrives while a read runs asks for one more read after
-// it, rather than for a read of its own: omp's answer is the same either way, and
-// each answer is about 100 KB.
+// stateRefresher coalesces reads requested by native events, local commands, and failed settings writes.
+// A request during a read schedules one more read after it. Each native response is about 100 KB.
 type stateRefresher struct {
 	mu      sync.Mutex
 	running bool
@@ -267,14 +323,16 @@ func (r *stateRefresher) schedule(a *Agent) {
 
 func (r *stateRefresher) run(a *Agent) {
 	for {
+		a.sessionMu.Lock()
 		raw, err := a.sendCommand(CommandGetState, nil, a.APITimeout())
 		if err != nil {
 			if !a.IsStopped() {
-				slog.Warn("omp get_state after a model change failed", "agent_id", a.AgentID(), "error", err)
+				slog.Warn("omp state refresh failed", "agent_id", a.AgentID(), "error", err)
 			}
 		} else {
 			a.applyRefreshedState(raw)
 		}
+		a.sessionMu.Unlock()
 		r.mu.Lock()
 		if r.again && !r.stopped {
 			r.again = false
@@ -300,10 +358,11 @@ func (r *stateRefresher) stop() {
 func (a *Agent) applyRefreshedState(raw json.RawMessage) {
 	a.Mu.Lock()
 	prevModel, prevEffort := a.model, a.thinkingLevel
+	prevFastMode := a.fastMode
 	a.Mu.Unlock()
 	identityChanged := a.applyState(raw)
 	a.publishSettings(func() bool {
-		return a.model != prevModel || a.thinkingLevel != prevEffort
+		return a.model != prevModel || a.thinkingLevel != prevEffort || a.fastMode != prevFastMode
 	})
 	if identityChanged {
 		a.Mu.Lock()

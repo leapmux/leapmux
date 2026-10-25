@@ -1,5 +1,6 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
+import { OPENCODE_OPTION } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
@@ -19,6 +20,11 @@ describe('kilo classify', () => {
   // payload), and the ACP interrupt request are the standard stub behaviours. Kilo's POPULATED
   // config_option_update case below is the genuine divergence and stays inline.
   describeACPProviderBasics(AgentProvider.KILO, { text: true, image: true, pdf: true, binary: false })
+
+  it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
+    expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })
+    expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
+  })
 
   it('classifies tool_call as tool_use with kind', () => {
     const parent = {

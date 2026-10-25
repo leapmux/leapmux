@@ -19,7 +19,7 @@ codebuddyTest('stops an actual native tool and accepts the next queued turn', as
   await exerciseInterruptTurn(native, { kind: 'tool' })
 })
 
-// CodeBuddy Code asks no native question, so a permission request holds the turn. The asking agent raises one.
+// Default mode raises a permission request so this test can interrupt an ordinary tool before it runs.
 codebuddyTest('withdraws a waiting permission and accepts the next queued turn', async ({ askingCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingCodebuddyWorkspace.workspaceId })
   await exerciseControlInterrupt(context, { control: 'permission' })

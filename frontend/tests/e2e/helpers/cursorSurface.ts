@@ -23,7 +23,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { CursorRunRequestWitness } from './cursorRequestWire'
-import type { CursorContextRule, CursorExecutionCall, CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
+import type { CursorContextRule, CursorExecutionCall, CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorModelParameter, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
 import type { InstructionFileGuard, MockModelScriptHost, MockSurface, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelDeliveredError, MockModelError, MockModelServerContext, MockModelToolCall, MockModelUsage } from './mockModelScript'
 import type { ModelStream } from './modelStream'
@@ -130,17 +130,28 @@ const CURSOR_AVAILABLE_MODELS_PATH = '/aiserver.v1.AiService/AvailableModels'
 const CURSOR_USABLE_MODELS_PATH = '/aiserver.v1.AiService/GetUsableModels'
 const CURSOR_DEFAULT_MODEL_PATH = '/aiserver.v1.AiService/GetDefaultModelForCli'
 
+/** Build every legal combination for the mock models whose parameters are independent. */
+function parameterizedMockModel(name: string, displayName: string, definitions: readonly CursorModelParameter[]): CursorModel {
+  let selections: { id: string, value: string }[][] = [[]]
+  for (const definition of definitions) {
+    selections = selections.flatMap(selection => definition.values.map(value => [...selection, { id: definition.id, value: value.value }]))
+  }
+  return {
+    name,
+    displayName,
+    parameterDefinitions: definitions,
+    // Cursor normalizes every selection against these variants, even in parameterized mode.
+    variants: selections.map(parameters => ({
+      id: `${name}[${parameters.map(parameter => `${parameter.id}=${parameter.value}`).join(',')}]`,
+      displayName: `${displayName} ${parameters.map(parameter => parameter.value).join(' ')}`,
+      parameters,
+    })),
+  }
+}
+
 /**
- * The model catalogue the mock reports.
- *
- * It is small, but it keeps the SHAPE of the real one, because LeapMux parses
- * that shape. Cursor states a variant's whole metadata inside the bracketed id
- * and nowhere else, and it spells the effort level three ways across its own
- * catalogue. Two of those spellings appear here, so the picker this produces
- * exercises the same parsing a live account does.
- *
- * `default` answers to `auto`, which is the alias LeapMux normalizes to and the
- * model it starts on.
+ * Native model definitions and legal variants. Two effort IDs exercise the native catalog's different effort axes.
+ * `default` answers to `auto`, which is the alias LeapMux uses for the initial model.
  */
 export const CURSOR_MOCK_MODELS: readonly CursorModel[] = [
   {
@@ -149,22 +160,16 @@ export const CURSOR_MOCK_MODELS: readonly CursorModel[] = [
     aliases: ['auto'],
     variants: [{ id: 'default[]', displayName: 'Auto', isDefault: true, parameters: [] }],
   },
-  {
-    name: 'mock-sonnet',
-    displayName: 'Mock Sonnet',
-    variants: [
-      { id: 'mock-sonnet[context=200k,effort=low]', displayName: 'Mock Sonnet Low', parameters: [{ id: 'context', value: '200k' }, { id: 'effort', value: 'low' }] },
-      { id: 'mock-sonnet[context=200k,effort=high]', displayName: 'Mock Sonnet High', parameters: [{ id: 'context', value: '200k' }, { id: 'effort', value: 'high' }] },
-    ],
-  },
-  {
-    name: 'mock-grok',
-    displayName: 'Mock Grok',
-    variants: [
-      { id: 'mock-grok[context=256k,reasoning_effort=low]', displayName: 'Mock Grok Low', parameters: [{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'low' }] },
-      { id: 'mock-grok[context=256k,reasoning_effort=xhigh]', displayName: 'Mock Grok Extra High', parameters: [{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'xhigh' }] },
-    ],
-  },
+  parameterizedMockModel('mock-sonnet', 'Mock Sonnet', [
+    { id: 'context', name: 'Context', kind: 'enum', values: [{ value: '200k', name: '200K' }, { value: '1m', name: '1M' }] },
+    { id: 'effort', name: 'Effort', kind: 'enum', values: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+    { id: 'thinking', name: 'Thinking', kind: 'boolean', values: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }] },
+    { id: 'fast', name: 'Fast', kind: 'boolean', values: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }] },
+  ]),
+  parameterizedMockModel('mock-grok', 'Mock Grok', [
+    { id: 'context', name: 'Context', kind: 'enum', values: [{ value: '256k', name: '256K' }, { value: '1m', name: '1M' }] },
+    { id: 'reasoning_effort', name: 'Reasoning Effort', kind: 'enum', values: [{ value: 'low', name: 'Low' }, { value: 'xhigh', name: 'Extra High' }] },
+  ]),
 ]
 
 /** Cursor's own backend services, which take an all-defaults answer apart from the catalogue. */

@@ -9,6 +9,8 @@ import (
 // Agent manages a single Cursor CLI ACP process.
 type Agent struct {
 	acp.Base
+	// bypassPermissions records the immutable --force choice used to start this process.
+	bypassPermissions bool
 
 	// taskToolCalls holds the toolCallId of every `task` tool call the spawn
 	// hook claimed. The closing hook needs it: Cursor reports "this ran in the

@@ -16,8 +16,10 @@ import (
 
 // handleZCodeOutput dispatches one line the response interceptor did not consume.
 //
-// Only two notification methods carry conversation: session/event and the top-level
-// state.updated. Everything else the app-server emits is its own telemetry.
+// Session events and the top-level state.updated carry conversation. A conversation
+// frame arrives while a hook trust or a workflow run needs its subscription
+// (workspace_trust.go, workflow.go). Everything else the app-server emits is its own
+// telemetry.
 func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 	switch line.Method {
 	case NotifySessionEvent:
@@ -29,6 +31,8 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 		a.dispatchZCodeEvent(event)
 	case contracts.ZCodeMethodStateUpdated:
 		a.handleZCodeStateUpdated(line.Params)
+	case NotifyConversationFrame:
+		a.handleZCodeConversationFrame(line.Params)
 	case "":
 		// An id with no method and no pending request: a reply nobody waited for. It
 		// happens when a request timed out and its answer arrived afterwards.
@@ -100,11 +104,17 @@ func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	case contracts.ZCodeEventPermissionResolved:
 		a.handleZCodePermissionResolved(event)
 	case contracts.ZCodeEventTurnSteerQueued, contracts.ZCodeEventTurnSteerDrained:
-		// A steer LeapMux mailed resolves through the ledger that writes its
-		// row at the drain. The runtime's OWN steers (a background task
+		// A steer of LeapMux's resolves through the ledger that writes its row
+		// at the drain. The runtime's OWN steers (a background task
 		// notification, a subagent message) keep their notification row.
-		if !a.observeZCodeMailboxSteerEvent(event) {
+		if !a.observeZCodeSteerEvent(event) {
 			a.persistZCodeNotification(event)
+		}
+	case contracts.ZCodeEventTurnSteerDeliveryChanged:
+		// A steer of LeapMux's that moved to the ordinary queue stays pending.
+		// Any other input keeps the row of an event no reader knows.
+		if !a.observeZCodeSteerEvent(event) {
+			a.persistUnknownZCodeEvent(event)
 		}
 	case contracts.ZCodeEventSessionClosed:
 		a.persistZCodeNotification(event)
@@ -221,28 +231,30 @@ func (a *Agent) persistZCodeNotificationTo(sink agent.ProviderServices, event zc
 // Never called with a.Mu held: the sink broadcasts, and a broadcast can block on
 // a slow transport.
 //
-// A prompt turn is steerable through the session mailbox once the app-server's
-// drain hook has proved itself live (mailboxActive); a compaction never is --
-// its summary query is not the user's conversation. A BACKGROUND turn counts as
-// active here, deliberately. It persists no divider and closes none of the
-// user's spans, but the agent IS processing, and turnActive is already what
-// Interrupt and Stop read to decide the session is live.
+// A prompt turn is steerable through the command inbox unless the app-server
+// refused it (steeringUnsupported); a compaction never is -- its summary query
+// is not the user's conversation. A BACKGROUND turn counts as active here,
+// deliberately. It persists no divider and closes none of the user's spans, but
+// the agent IS processing, and turnActive is already what Interrupt and Stop
+// read to decide the session is live.
 //
 // A publish that leaves the agent inactive is also the one choke point every
-// turn end crosses, so it withdraws any mailbox steer the turn never drained --
-// see withdrawUndeliveredZCodeSteers for why that must not wait for the next
-// prompt.
+// turn end crosses, so it takes back each steer the turn left queued. ZCode
+// keeps such a steer queued until the next input; see steering.go.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	state := agent.TurnState{
 		Active:    a.turnActive || a.compactionSessionID != "",
-		Steerable: a.turnActive && a.mailboxActive,
+		Steerable: a.turnActive && !a.steeringUnsupported,
 	}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	state = providerkit.PublishTurnStateTo(a.sink, state, seq)
-	if !state.Active && a.hasPendingZCodeSteers() {
-		a.withdrawUndeliveredZCodeSteers()
+	if !state.Active {
+		if a.hasPendingZCodeSteers() {
+			go a.withdrawZCodeSteersAfterTurnEnd()
+		}
+		a.askZCodeHookTrustWhenIdle()
 	}
 	return state
 }
@@ -282,6 +294,8 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
+	// A steer that ZCode moved to the ordinary queue runs as this turn's prompt.
+	a.observeZCodeSteerTurnStart(payload.InputID)
 
 	if !background {
 		a.generationBuffer.Reset()
@@ -1013,15 +1027,11 @@ type zcodeSessionUpdatedPayload struct {
 	HookInvocationID json.RawMessage `json:"hookInvocationId"`
 	Descriptor       json.RawMessage `json:"descriptor"`
 	Outcome          json.RawMessage `json:"outcome"`
-	// HookSource names the builtin that ran, and separates the session-mailbox
-	// drain (the steering transport; see steering.go) from every other hook.
-	// HookEventName tells the drain's three trigger events apart.
-	HookSource    json.RawMessage `json:"hookSource"`
-	HookEventName json.RawMessage `json:"hookEventName"`
 
 	// A workspace hook admission.
-	PendingCount json.RawMessage `json:"pendingCount"`
-	BundleDigest json.RawMessage `json:"bundleDigest"`
+	PendingCount      json.RawMessage `json:"pendingCount"`
+	BundleDigest      json.RawMessage `json:"bundleDigest"`
+	WorkspaceIdentity json.RawMessage `json:"workspaceIdentity"`
 
 	// A discarded queued input.
 	PendingInputIDs json.RawMessage `json:"pendingInputIds"`
@@ -1254,22 +1264,14 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		if payload.hookRunIsVisibleFailure() {
 			a.persistZCodeNotification(event)
 		}
-		// A successful session-mailbox drain run is the live proof that this
-		// app-server steers what LeapMux mails it. See steering.go.
-		a.noteZCodeMailboxDrainRun(payload)
 	case zcodeSessionUpdateHookAdmission:
-		// ZCode 3.15.3 cannot reduce a positive count to zero in this session.
-		// LeapMux sends neither v4/command nor workspace/hooks/trustGrant.
-		// ZCode does not watch its trust store for external changes.
-		var pending int
-		if json.Unmarshal(payload.PendingCount, &pending) != nil || pending <= 0 {
-			return
-		}
-		a.persistZCodeNotification(event)
+		// Hooks that wait for trust raise the workspace-trust question, which
+		// states them. See workspace_trust.go.
+		a.observeZCodeHookAdmission(event.SessionID, payload)
 	case zcodeSessionUpdateSteerDiscarded:
 		if a.observeZCodeSteerDiscard(payload) {
-			// One of LeapMux's own mailbox steers: the ledger reported the
-			// outcome, and the queue's row or requeue is the visible result.
+			// One of LeapMux's own steers: the ledger reported the outcome, and
+			// the queue's row or requeue is the visible result.
 			return
 		}
 		if reason, _ := providerkit.RawString(payload.Reason); reason == zcodeSteerDiscardReasonPromoted {
@@ -1510,6 +1512,18 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 		upsert.ActiveForm = task.BlockedReason
 	}
 
+	// A workflow run's own row heads the group of its subagents' rows, which only
+	// the conversation subscription states. See workflow.go.
+	if kind == bgtask.KindWorkflow {
+		upsert.GroupKey, upsert.GroupLabel = rowKey, title
+		a.Mu.Lock()
+		tracked := a.workflows.track(task.TaskID, upsert)
+		a.Mu.Unlock()
+		if tracked {
+			a.reconcileZCodeConversationInBackground()
+		}
+	}
+
 	// A subagent task owns a conversation, so it gets a child transcript -- through the
 	// SAME creator the tool.updated path uses, so one subagent can never end up with two
 	// transcripts and two rows.
@@ -1520,6 +1534,11 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	// `takeChild` and the spawn's own teardown all miss -- a permanently Running row
 	// beside an empty tab. The tool.updated path owns the transcript instead.
 	if kind == bgtask.KindSubagent && task.ToolCallID != "" {
+		// The task is what an Interrupt of the subagent's tab cancels.
+		a.children.rememberTask(rowKey, task.TaskID)
+		if status == bgtask.StatusStopped {
+			upsert.Status = a.children.cancelledStatus(rowKey)
+		}
 		childID, childTitle, ok := a.ensureZCodeSubagentTranscript(rowKey, task.ToolCallID, title)
 		if ok {
 			a.children.rememberSession(rowKey, task.ChildSessionID)
@@ -1527,7 +1546,10 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 			// The creator may have used the spawn's own label instead of this event's, so
 			// the row states what the tab states.
 			upsert.Title = childTitle
-			if final {
+			// A subagent that reports lifecycle events ends with one, which follows
+			// this final status and carries the report, so that event ends the
+			// transcript. Ending it here would leave the report nowhere to land.
+			if final && !a.children.reportsLifecycle(rowKey) {
 				a.sink.CleanupChildAgent(childID)
 				// Drop the index entry too, or the spawn's own result would clean up a
 				// transcript this path already tore down.
@@ -1581,7 +1603,7 @@ func (a *Agent) handleZCodePermissionResolved(event zcodeEventEnvelope) {
 	}
 	if payload.Decision == contracts.ZCodeDecisionDeny && payload.Reason == zcodePermissionCancelledReason {
 		a.Mu.Lock()
-		if a.stopWindow.armed() {
+		if a.stopCanCancelLocked() {
 			a.stopCancelledRequest = true
 		}
 		a.Mu.Unlock()

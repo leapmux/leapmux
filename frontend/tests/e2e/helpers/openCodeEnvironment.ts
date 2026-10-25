@@ -24,7 +24,15 @@ export interface OpenCodeFamilyProviderOptions {
 
 export interface OpenCodeEnvironmentOptions extends OpenCodeFamilyProviderOptions {
   mcpEchoServer: McpProbeServer
+  /** The mock that stands in for the Kilo cloud, and the access token of its account. See ./kiloCloudSurface. */
+  kiloCloud: { origin: string, identityToken: string }
 }
+
+/**
+ * The expiry of the mocked Kilo cloud credential, in milliseconds since the epoch: the end of 9999, so Kilo never
+ * refreshes the credential during a run.
+ */
+const KILO_CREDENTIAL_EXPIRY = Date.UTC(9999, 11, 31)
 
 /**
  * Point OpenCode and Kilo at one inline mock provider, and close the project configuration, the telemetry, and the
@@ -46,6 +54,12 @@ export function createOpenCodeEnvironment(options: OpenCodeEnvironmentOptions): 
     // sends it only for the value `all`. Kilo 7.8 reads the variable once at
     // start, and the variable outranks the configuration.
     KILO_TELEMETRY_LEVEL: 'off',
+    // Kilo signs in to its cloud with the `kilo` credential of this variable, which Kilo keeps in its process and never
+    // writes to its store, and it reaches the cloud at KILO_API_URL. The mock stands in for the cloud, so the provider
+    // usage of every Kilo agent reads the mocked account, whose coding plan exists only while a test configures its
+    // usage. Kilo reads no personal plan for a credential that names an organization (`accountId`), so this one names none.
+    KILO_API_URL: options.kiloCloud.origin,
+    KILO_AUTH_CONTENT: JSON.stringify({ kilo: { type: 'oauth', access: options.kiloCloud.identityToken, refresh: options.kiloCloud.identityToken, expires: KILO_CREDENTIAL_EXPIRY } }),
     // OpenCode and Kilo upgrade their own install from the check that their TUI
     // starts, never from `acp`. The `autoupdate` key of the inline configuration
     // above cannot carry the switch: the check reads only the global config files,

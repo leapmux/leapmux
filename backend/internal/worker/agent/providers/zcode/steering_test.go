@@ -3,10 +3,9 @@ package zcode
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -17,321 +16,401 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ZCode steers through the session mailbox and through nothing else. The
-// app-server protocol offers no steering input: session/send is the only input
-// method, its schema is strict (no delivery, no intent), and its handler
-// refuses with -32010 while a prompt runs, before any runtime admission.
-// Verified against ZCode 3.16.2 (CLI 0.17.0) by disassembly of
-// Resources/glm/zcode.cjs and by a live probe that held a turn inside a Bash
-// call: a plain mid-turn session/send returned -32010, and sends carrying
-// intent or delivery fields returned -32602 unrecognized keys with no steer
-// events and no queued input left behind. The mailbox path the same probe
-// proved (turn.steerQueued, turn.steerDrained, the message on every follow-up
-// model request) is what steering.go drives; the tests below pin its contract.
+// ZCode steers through the command inbox: `v4/command` with a `sendText` of
+// the `guide` delivery, and `deleteQueueItem` to take a queued steer back.
+// Probed live against ZCode 3.16.3, whose shapes the fixtures below repeat.
 
-// zcodeSteerSessionID satisfies the drain's `^sess_[A-Za-z0-9._-]+$` directory
-// rule, which the harness default "sess-1" does not.
-const zcodeSteerSessionID = "sess_steering-1"
-
-// newZCodeSteerTestAgent is a test agent whose mailbox drain has already
-// proved itself and whose user turn is running: the state SteerInput needs.
-func newZCodeSteerTestAgent(t *testing.T, sink agent.ProviderServices) *Agent {
-	t.Helper()
-	a := newZCodeTestAgent(t, sink)
-	a.mailboxRoot = t.TempDir()
-	a.Mu.Lock()
-	a.sessionID = zcodeSteerSessionID
-	a.mailboxActive = true
-	a.turnActive = true
-	a.Mu.Unlock()
-	return a
+// zcodeTestCommand is one `v4/command` request that the agent sent.
+type zcodeTestCommand struct {
+	ID           int64
+	CommandID    string          `json:"commandId"`
+	ClientID     string          `json:"clientId"`
+	SessionID    string          `json:"sessionId"`
+	BaseRevision *int64          `json:"baseRevision"`
+	Type         string          `json:"type"`
+	Payload      json.RawMessage `json:"payload"`
+	IssuedAt     int64           `json:"issuedAt"`
 }
 
-// zcodeUnreadEnvelopes lists the envelope files the next drain would read, in
-// the drain's own order, and fails on any leftover that is not one.
-func zcodeUnreadEnvelopes(t *testing.T, a *Agent) []string {
+// zcodeSentCommands decodes the commands that the agent sent, in send order.
+func zcodeSentCommands(t *testing.T, stdin *zcodeRecordedStdin) []zcodeTestCommand {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(a.mailboxRoot, zcodeSteerSessionID, zcodeMailboxUnreadDir))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	require.NoError(t, err)
-	var names []string
-	for _, entry := range entries {
-		require.True(t, strings.HasSuffix(entry.Name(), ".json"), "a temporary name must never be left behind: %s", entry.Name())
-		names = append(names, entry.Name())
-	}
-	return names
-}
-
-func zcodeReadEnvelope(t *testing.T, a *Agent, name string) zcodeMailboxEnvelope {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(a.mailboxRoot, zcodeSteerSessionID, zcodeMailboxUnreadDir, name))
-	require.NoError(t, err)
-	var envelope zcodeMailboxEnvelope
-	require.NoError(t, json.Unmarshal(raw, &envelope))
-	return envelope
-}
-
-// zcodeSteerEventPayload builds the steerQueued or steerDrained payload the
-// runtime sends for a drained envelope, wrapped exactly as its drain wraps it.
-func zcodeSteerEventPayload(t *testing.T, eventType string, envelope zcodeMailboxEnvelope) string {
-	t.Helper()
-	wrapped := zcodeMailboxWrappedInput(envelope)
-	var payload any
-	switch eventType {
-	case contracts.ZCodeEventTurnSteerQueued:
-		payload = map[string]any{"pendingInputId": "pending_1", "input": wrapped, "delivery": "guide", "queueLength": 1}
-	case contracts.ZCodeEventTurnSteerDrained:
-		payload = map[string]any{
-			"injectedMessageIds": []string{"msg_1"},
-			"drainedInputs":      []map[string]any{{"pendingInputId": "pending_1", "messageId": "msg_1", "text": wrapped, "delivery": "guide"}},
+	var commands []zcodeTestCommand
+	for _, req := range stdin.Requests(t) {
+		if req.Method != MethodCommand {
+			continue
 		}
-	default:
-		t.Fatalf("not a steer event: %s", eventType)
+		var command zcodeTestCommand
+		require.NoError(t, json.Unmarshal(req.Params, &command))
+		require.NoError(t, json.Unmarshal(req.ID, &command.ID))
+		commands = append(commands, command)
 	}
-	encoded, err := json.Marshal(payload)
-	require.NoError(t, err)
-	return string(encoded)
+	return commands
 }
 
-func zcodeSteerEventLine(t *testing.T, seq int64, eventType, payload string) []byte {
+// zcodeSentCommandsOf is the commands of one type, in send order.
+func zcodeSentCommandsOf(t *testing.T, stdin *zcodeRecordedStdin, commandType string) []zcodeTestCommand {
 	t.Helper()
-	line := zcodeEventLine(t, seq, eventType, payload)
-	// The harness stamps "sess-1"; the steering session is the one the agent runs.
-	return []byte(strings.Replace(string(line), `"sessionId":"sess-1"`, `"sessionId":"`+zcodeSteerSessionID+`"`, 1))
+	var commands []zcodeTestCommand
+	for _, command := range zcodeSentCommands(t, stdin) {
+		if command.Type == commandType {
+			commands = append(commands, command)
+		}
+	}
+	return commands
 }
 
-func TestZCodeSteerInputWritesTheEnvelopeTheDrainReads(t *testing.T) {
-	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-
-	require.NoError(t, a.SteerInput("Stop and summarize first.", nil))
-
-	names := zcodeUnreadEnvelopes(t, a)
-	require.Len(t, names, 1)
-	envelope := zcodeReadEnvelope(t, a, names[0])
-	assert.Equal(t, 1, envelope.Version)
-	assert.Equal(t, zcodeSteerSessionID, envelope.ToSessionID)
-	assert.True(t, strings.HasPrefix(envelope.MessageID, zcodeMailboxMessageIDPrefix), envelope.MessageID)
-	assert.Equal(t, "sess_leapmux_test-agent", envelope.FromSessionID)
-	assert.Regexp(t, `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`, envelope.CreatedAt)
-	// The drain presents the content as reference material from another
-	// session; the content itself must say it is the user's steer.
-	assert.Contains(t, envelope.Content, "The user sent a new message while you were working:\n\nStop and summarize first.")
-	assert.Contains(t, envelope.Content, "Address the message above as you continue this turn.")
-	assert.Contains(t, envelope.Content, `the "For reference only" line above does not apply`)
-
-	a.Mu.Lock()
-	tracked := a.mailboxSteers[envelope.MessageID]
-	a.Mu.Unlock()
-	require.NotNil(t, tracked)
-	assert.Equal(t, names[0], tracked.file)
-	assert.Empty(t, tracked.pendingInputID, "the runtime has not admitted it yet")
-	assert.Empty(t, sink.SteerEchoReports(), "nothing is reported before the runtime states an outcome")
+// answerZCodeCommand answers the nth command of commandType, counted from 1,
+// with the acknowledgement that reply builds from it. The command blocks its
+// caller, so the answer goes out from its own goroutine.
+func answerZCodeCommand(t *testing.T, a *Agent, stdin *zcodeRecordedStdin, commandType string, nth int, reply func(zcodeTestCommand) string) {
+	t.Helper()
+	go func() {
+		deadline := time.Now().Add(zcodeTestRPCTimeout)
+		for time.Now().Before(deadline) {
+			if commands := zcodeSentCommandsOf(t, stdin, commandType); len(commands) >= nth {
+				command := commands[nth-1]
+				a.HandleOutput(zcodeReplyLine(t, command.ID, json.RawMessage(reply(command))))
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		t.Errorf("timed out waiting for %s command %d", commandType, nth)
+	}()
 }
 
-func TestZCodeSteerInputNamesEnvelopesInMintOrder(t *testing.T) {
-	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-
-	require.NoError(t, a.SteerInput("first", nil))
-	require.NoError(t, a.SteerInput("second", nil))
-
-	names := zcodeUnreadEnvelopes(t, a)
-	require.Len(t, names, 2)
-	// The drain reads names in sort order, so the names must sort as minted
-	// even when both land in the same millisecond.
-	assert.Less(t, names[0], names[1])
-	assert.Contains(t, zcodeReadEnvelope(t, a, names[0]).Content, "first")
-	assert.Contains(t, zcodeReadEnvelope(t, a, names[1]).Content, "second")
+// zcodeAcceptedSteer acknowledges a steer that the inbox admitted with delivery.
+func zcodeAcceptedSteer(delivery string) func(zcodeTestCommand) string {
+	return func(command zcodeTestCommand) string {
+		return fmt.Sprintf(`{"commandId":%q,"status":"accepted","revisionAtDecision":8,"result":{"type":"inputAccepted","delivery":%q,"inputId":%q},"memoryEnabled":false}`,
+			command.CommandID, delivery, command.CommandID)
+	}
 }
 
-func TestZCodeSteerInputRefusesAttachmentsTheMailboxCannotCarry(t *testing.T) {
-	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	// No active turn: the refusal must depend on the input alone, so the
-	// queue learns "next turn" rather than "turn ended" for this input.
-	a.Mu.Lock()
-	a.turnActive = false
-	a.Mu.Unlock()
-
-	err := a.SteerInput("look at this", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}})
-	require.ErrorIs(t, err, agent.ErrSteeringUnsupported)
-	assert.Contains(t, err.Error(), `"shot.png" goes in the next turn`)
-	assert.Empty(t, zcodeUnreadEnvelopes(t, a))
-
-	err = a.SteerInput("read this", []*leapmuxv1.Attachment{{Filename: "paper.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.4")}})
-	require.ErrorIs(t, err, agent.ErrSteeringUnsupported)
-	assert.Empty(t, zcodeUnreadEnvelopes(t, a))
+// zcodeCommandAnswer acknowledges a command with status and revision.
+func zcodeCommandAnswer(status string, revision int64) func(zcodeTestCommand) string {
+	return func(command zcodeTestCommand) string {
+		return fmt.Sprintf(`{"commandId":%q,"status":%q,"revisionAtDecision":%d}`, command.CommandID, status, revision)
+	}
 }
 
-func TestZCodeSteerInputInlinesATextAttachment(t *testing.T) {
-	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+// zcodePendingInputID is the queued-input id that ZCode states for a command.
+func zcodePendingInputID(commandID string) string { return "queue_" + commandID }
 
-	require.NoError(t, a.SteerInput("use these notes", []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("line one\nline two")}}))
-
-	names := zcodeUnreadEnvelopes(t, a)
-	require.Len(t, names, 1)
-	content := zcodeReadEnvelope(t, a, names[0]).Content
-	assert.Contains(t, content, "use these notes")
-	assert.Contains(t, content, "notes.txt")
-	assert.Contains(t, content, "line one\nline two")
+func zcodeSteerQueuedLine(t *testing.T, seq int64, commandID string) []byte {
+	t.Helper()
+	return zcodeEventLine(t, seq, contracts.ZCodeEventTurnSteerQueued, fmt.Sprintf(
+		`{"inputId":%q,"queryId":%q,"pendingInputId":%q,"input":"steered","inputPresentation":"user_steer","delivery":"guide","targetTurnId":"turn_1","queueLength":1}`,
+		commandID, commandID, zcodePendingInputID(commandID)))
 }
 
-func TestZCodeSteerInputNeedsAnActiveTurn(t *testing.T) {
-	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	a.Mu.Lock()
-	a.turnActive = false
-	a.Mu.Unlock()
-	require.ErrorIs(t, a.SteerInput("now", nil), agent.ErrNoActiveTurn)
-
-	// A compaction alone keeps the queue busy, and is still not a turn to steer.
-	a.Mu.Lock()
-	a.compactionSessionID = zcodeSteerSessionID
-	a.Mu.Unlock()
-	require.ErrorIs(t, a.SteerInput("now", nil), agent.ErrNoActiveTurn)
-	assert.Empty(t, zcodeUnreadEnvelopes(t, a))
-}
-
-func TestZCodeSteerInputNeedsTheDiscoveredMailbox(t *testing.T) {
-	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	a.Mu.Lock()
-	a.mailboxActive = false
-	a.Mu.Unlock()
-
-	assert.False(t, a.SupportsSteering())
-	require.ErrorIs(t, a.SteerInput("now", nil), agent.ErrSteeringUnsupported)
-	assert.Empty(t, zcodeUnreadEnvelopes(t, a))
-}
-
-func TestZCodeSteerInputRefusesASessionTheDrainCannotResolve(t *testing.T) {
-	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	a.Mu.Lock()
-	a.sessionID = "sess-1"
-	a.Mu.Unlock()
-
-	err := a.SteerInput("now", nil)
-	require.ErrorIs(t, err, agent.ErrSteeringUnsupported)
-	_, statErr := os.Stat(filepath.Join(a.mailboxRoot, "sess-1"))
-	assert.True(t, os.IsNotExist(statErr), "no envelope for a session the runtime's drain would throw on")
-}
-
-func TestZCodeSteerInputRefusesAnInputTheRuntimeWouldReject(t *testing.T) {
-	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-
-	err := a.SteerInput(strings.Repeat("x", zcodeSteerInputMaxBytes), nil)
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, agent.ErrSteeringUnsupported, "an oversized input is not a next-turn candidate either")
-	assert.Contains(t, err.Error(), "200000")
-	assert.Empty(t, zcodeUnreadEnvelopes(t, a))
-}
-
-// The size admission and the event correlation both read the wrapped input,
-// so the rendering must match the runtime's formatter byte for byte. The
-// expectation is the `input` field of the turn.steerQueued event probe run10
-// recorded, including the escape the runtime applies to each attribute.
-func TestZCodeMailboxWrappedInputMatchesTheRuntimeFormatter(t *testing.T) {
-	t.Parallel()
-	wrapped := zcodeMailboxWrappedInput(zcodeMailboxEnvelope{
-		MessageID:     "leapmux-1792573924078",
-		FromSessionID: "sess_leapmux-external-steer",
-		CreatedAt:     "2026-10-21T09:12:04.078Z",
-		Content:       "MAILBOXSTEER The user says: stop what you are doing and reply with the single word STEERED.",
+func zcodeSteerDrainedLine(t *testing.T, seq int64, queryIDs, pendingInputIDs []string) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"injectedMessageIds": []string{"msg_1"},
+		"pendingInputIds":    pendingInputIDs,
+		"queryIds":           queryIDs,
+		"drainedInputs":      []map[string]any{{"messageId": "msg_1", "text": "steered", "delivery": "guide"}},
+		"targetTurnId":       "turn_1",
 	})
-	assert.Equal(t, "<session-message source=\"mailbox\" message_id=\"leapmux-1792573924078\" from_session=\"sess_leapmux-external-steer\" created_at=\"2026-10-21T09:12:04.078Z\">\n"+
-		"For reference only. Verify against raw source before acting.\n\n"+
-		"MAILBOXSTEER The user says: stop what you are doing and reply with the single word STEERED.\n"+
-		"</session-message>", wrapped)
-
-	assert.Equal(t, `a &amp; b &quot;c&quot; &lt;d>`, zcodeEscapeMailboxAttr(`a & b "c" <d>`))
-	id, ok := zcodeMailboxMessageID(wrapped)
-	assert.True(t, ok)
-	assert.Equal(t, "leapmux-1792573924078", id)
-	_, ok = zcodeMailboxMessageID("The user sent a new message while you were working:\nplain steer")
-	assert.False(t, ok, "a native steer carries no mailbox attribute")
+	require.NoError(t, err)
+	return zcodeEventLine(t, seq, contracts.ZCodeEventTurnSteerDrained, string(payload))
 }
 
-func TestZCodeMailboxDrainHookRunDiscoversSteering(t *testing.T) {
-	t.Parallel()
+func zcodeSteerDiscardLine(t *testing.T, seq int64, reason string, pendingInputIDs ...string) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"pendingInputIds": pendingInputIDs, "reason": reason, "targetTurnId": "turn_1"})
+	require.NoError(t, err)
+	return zcodeEventLine(t, seq, contracts.ZCodeEventSessionUpdated, string(payload))
+}
+
+// newZCodeSteerAgent is a test agent whose user turn runs: the state
+// SteerInput needs.
+func newZCodeSteerAgent(t *testing.T) (*Agent, *agenttest.Sink, *zcodeRecordedStdin) {
+	t.Helper()
 	sink := &agenttest.Sink{}
-	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	a.Mu.Lock()
 	a.turnActive = true
 	a.Mu.Unlock()
-	assert.False(t, a.SupportsSteering(), "nothing has proved the drain yet")
-	assert.False(t, a.PublishTurnActive().Steerable)
-
-	// The hook's own start event carries no outcome and proves nothing.
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
-		`{"hookRunId":"run-1","hookInvocationId":"inv-1","hookSource":"builtin.sessionMailbox.drain","hookEventName":"UserPromptSubmit","descriptor":{"clientVisible":false,"commandDisplay":"Session mailbox"}}`))
-	assert.False(t, a.SupportsSteering())
-
-	// Another hook's success is not the mailbox's.
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-		`{"hookRunId":"run-2","hookInvocationId":"inv-2","hookSource":"config.PostToolUse.0.0","outcome":"success","descriptor":{"clientVisible":true,"commandDisplay":"lint"}}`))
-	assert.False(t, a.SupportsSteering())
-
-	// A failed drain proves the hook exists and nothing about delivery.
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
-		`{"hookRunId":"run-3","hookInvocationId":"inv-3","hookSource":"builtin.sessionMailbox.drain","outcome":"failed","descriptor":{"clientVisible":false,"commandDisplay":"Session mailbox"}}`))
-	assert.False(t, a.SupportsSteering())
-	assert.Equal(t, 0, sink.NotificationCount(), "the drain's own failure is not client-visible")
-
-	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventSessionUpdated,
-		`{"hookRunId":"run-4","hookInvocationId":"inv-4","hookSource":"builtin.sessionMailbox.drain","outcome":"success","durationMs":1,"descriptor":{"clientVisible":false,"commandDisplay":"Session mailbox"}}`))
-	assert.True(t, a.SupportsSteering())
-	assert.True(t, a.PublishTurnActive().Steerable, "a running prompt turn is steerable once the drain is proven")
-	// The flip must reach the browser too: the Steer control reads the agent
-	// status change, which was last sampled at startup, before any prompt could
-	// prove the drain. The re-broadcast happens exactly once, on the first
-	// proof; the run above and any later success add nothing.
-	assert.Equal(t, []string{"sess-1"}, sink.StatusActives())
-	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated,
-		`{"hookRunId":"run-5","hookInvocationId":"inv-5","hookSource":"builtin.sessionMailbox.drain","outcome":"success","durationMs":1,"descriptor":{"clientVisible":false,"commandDisplay":"Session mailbox"}}`))
-	assert.Equal(t, []string{"sess-1"}, sink.StatusActives())
-
-	a.Mu.Lock()
-	a.turnActive = false
-	a.compactionSessionID = "sess-1"
-	a.Mu.Unlock()
-	state := a.PublishTurnActive()
-	assert.True(t, state.Active)
-	assert.False(t, state.Steerable, "a compaction is never steerable")
+	return a, sink, stdin
 }
 
-func TestZCodeMailboxSteerEventsResolveTheLedgerEntry(t *testing.T) {
+// steerZCode sends one steer that the inbox queues for the running turn, and
+// feeds the turn.steerQueued event that ZCode sends with it. It returns the
+// command id.
+func steerZCode(t *testing.T, a *Agent, stdin *zcodeRecordedStdin, nth int, seq int64) string {
+	t.Helper()
+	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, nth, zcodeAcceptedSteer("queue"))
+	require.NoError(t, a.SteerInput(fmt.Sprintf("steer %d", nth), nil))
+	commands := zcodeSentCommandsOf(t, stdin, zcodeCommandSendText)
+	require.Len(t, commands, nth)
+	commandID := commands[nth-1].CommandID
+	a.HandleOutput(zcodeSteerQueuedLine(t, seq, commandID))
+	return commandID
+}
+
+func zcodePendingSteerCount(a *Agent) int {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return len(a.steers)
+}
+
+func TestZCodeSteerInputSendsAGuideCommand(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-	require.True(t, a.SteerRowAtEcho())
-	require.NoError(t, a.SteerInput("change course", nil))
-	envelope := zcodeReadEnvelope(t, a, zcodeUnreadEnvelopes(t, a)[0])
+	a, sink, stdin := newZCodeSteerAgent(t)
+	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("queue"))
+	require.NoError(t, a.SteerInput("Also run the linter.", nil))
 
-	a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventTurnSteerQueued, zcodeSteerEventPayload(t, contracts.ZCodeEventTurnSteerQueued, envelope)))
-	assert.Empty(t, sink.SteerEchoReports(), "queued is admission, not delivery")
-	assert.Equal(t, 0, sink.NotificationCount(), "the row waits for the drain, per SteerRowAtEcho")
-	a.Mu.Lock()
-	pendingInput := a.mailboxSteers[envelope.MessageID].pendingInputID
-	a.Mu.Unlock()
-	assert.Equal(t, "pending_1", pendingInput)
+	commands := zcodeSentCommands(t, stdin)
+	require.Len(t, commands, 1)
+	command := commands[0]
+	assert.True(t, strings.HasPrefix(command.CommandID, zcodeSteerCommandPrefix), command.CommandID)
+	assert.Equal(t, zcodeCommandClientID, command.ClientID)
+	assert.Equal(t, "sess-1", command.SessionID)
+	assert.Equal(t, zcodeCommandSendText, command.Type)
+	assert.JSONEq(t, `{"text":"Also run the linter.","requestedDelivery":"guide"}`, string(command.Payload))
+	assert.Positive(t, command.IssuedAt)
+	assert.Nil(t, command.BaseRevision, "a sendText is no compare-and-set command")
 
-	a.HandleOutput(zcodeSteerEventLine(t, 2, contracts.ZCodeEventTurnSteerDrained, zcodeSteerEventPayload(t, contracts.ZCodeEventTurnSteerDrained, envelope)))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
-	assert.Equal(t, 0, sink.NotificationCount())
+	assert.Equal(t, 1, zcodePendingSteerCount(a), "the steer waits for the model to read it")
+	assert.Empty(t, sink.SteerEchoReports())
 	a.Mu.Lock()
-	tracked := len(a.mailboxSteers)
+	revision := a.commandRevision
 	a.Mu.Unlock()
-	assert.Equal(t, 0, tracked, "the drain delivered it")
+	assert.Equal(t, int64(8), revision, "the acknowledgement states the session revision")
 }
 
-func TestZCodeMailboxSteerDiscardEvents(t *testing.T) {
+// ZCode can report the queued input before it acknowledges v4/command. The
+// steer must already be registered then, so its native event persists no row
+// and its pendingInputId can address the queue immediately.
+func TestZCodeSteerQueuedBeforeCommandAcknowledgement(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		resolve func(t *testing.T, a *Agent, sink *agenttest.Sink, stdin *zcodeRecordedStdin, pendingInputID string)
+	}{
+		{"drainage", func(t *testing.T, a *Agent, sink *agenttest.Sink, _ *zcodeRecordedStdin, pendingInputID string) {
+			a.HandleOutput(zcodeSteerDrainedLine(t, 2, nil, []string{pendingInputID}))
+			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			assert.Zero(t, zcodePendingSteerCount(a))
+		}},
+		{"deleteQueueItem", func(t *testing.T, a *Agent, _ *agenttest.Sink, stdin *zcodeRecordedStdin, pendingInputID string) {
+			answerZCodeCommand(t, a, stdin, zcodeCommandDeleteQueueItem, 1, zcodeCommandAnswer(zcodeCommandAccepted, 9))
+			assert.True(t, a.deleteZCodeQueuedInput("sess-1", pendingInputID))
+			deletes := zcodeSentCommandsOf(t, stdin, zcodeCommandDeleteQueueItem)
+			require.Len(t, deletes, 1)
+			assert.JSONEq(t, fmt.Sprintf(`{"queueItemId":%q}`, pendingInputID), string(deletes[0].Payload))
+			a.HandleOutput(zcodeSteerDiscardLine(t, 2, "user_removed", pendingInputID))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newZCodeSteerAgent(t)
+			done := make(chan error, 1)
+			go func() { done <- a.SteerInput("early queued input", nil) }()
+			waitZCodeRequestNumber(t, stdin, MethodCommand, 0)
+			commands := zcodeSentCommandsOf(t, stdin, zcodeCommandSendText)
+			require.Len(t, commands, 1)
+			commandID := commands[0].CommandID
+
+			a.HandleOutput(zcodeSteerQueuedLine(t, 1, commandID))
+			assert.Zero(t, sink.NotificationCount(), "LeapMux's own queued steer persists no native notification")
+			a.Mu.Lock()
+			steer := a.steers[commandID]
+			require.NotNil(t, steer)
+			pendingInputID := steer.pendingInputID
+			a.Mu.Unlock()
+			assert.Equal(t, zcodePendingInputID(commandID), pendingInputID)
+
+			a.HandleOutput(zcodeReplyLine(t, commands[0].ID, json.RawMessage(zcodeAcceptedSteer("queue")(commands[0]))))
+			require.NoError(t, <-done)
+			tc.resolve(t, a, sink, stdin, pendingInputID)
+			assert.Zero(t, sink.NotificationCount())
+		})
+	}
+}
+
+// The model read the steer when ZCode drained it into the turn, which ZCode
+// states by the command id, or by the queued input alone.
+func TestZCodeSteerDrainEchoesTheSteer(t *testing.T) {
+	t.Parallel()
+	for name, line := range map[string]func(t *testing.T, commandID string) []byte{
+		"by command": func(t *testing.T, commandID string) []byte {
+			return zcodeSteerDrainedLine(t, 2, []string{commandID}, nil)
+		},
+		"by queued input": func(t *testing.T, commandID string) []byte {
+			return zcodeSteerDrainedLine(t, 2, nil, []string{zcodePendingInputID(commandID)})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newZCodeSteerAgent(t)
+			commandID := steerZCode(t, a, stdin, 1, 1)
+			a.HandleOutput(line(t, commandID))
+			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			assert.Zero(t, zcodePendingSteerCount(a))
+			assert.Zero(t, sink.NotificationCount(), "the queue's row is the visible outcome")
+		})
+	}
+}
+
+// A turn end between the check and the admission makes the steer a turn of its
+// own, whose prompt the model reads.
+func TestZCodeSteerThatStartedATurnIsEchoed(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer(zcodeDeliveryStartNow))
+	require.NoError(t, a.SteerInput("late", nil))
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Zero(t, zcodePendingSteerCount(a))
+}
+
+// A steer that the inbox did not admit fails, so the queue keeps the input, and
+// the ledger holds nothing for it.
+func TestZCodeSteerInputThatTheInboxRefuses(t *testing.T) {
+	t.Parallel()
+	for name, reply := range map[string]func(zcodeTestCommand) string{
+		"a rejection":           zcodeCommandAnswer("rejected", 3),
+		"a failure":             zcodeCommandAnswer("failed", 3),
+		"an accept of no input": zcodeCommandAnswer(zcodeCommandAccepted, 3),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newZCodeSteerAgent(t)
+			answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, reply)
+			err := a.SteerInput("refused", nil)
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, agent.ErrSteeringUnsupported)
+			assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the inbox answered")
+			assert.Zero(t, zcodePendingSteerCount(a))
+			assert.Empty(t, sink.SteerEchoReports())
+			assert.Empty(t, a.steerLedger.Pending())
+			assert.True(t, a.SupportsSteering())
+		})
+	}
+}
+
+// An acknowledgement that does not state the steer leaves its delivery unknown,
+// so the queue neither replays the input nor claims its delivery.
+func TestZCodeSteerInputWithAnUnreadableAcknowledgement(t *testing.T) {
+	t.Parallel()
+	for name, reply := range map[string]func(zcodeTestCommand) string{
+		"another command's acknowledgement": func(zcodeTestCommand) string {
+			return `{"commandId":"another","status":"accepted","revisionAtDecision":3,"result":{"type":"inputAccepted","delivery":"queue","inputId":"another"}}`
+		},
+		"an acknowledgement that is not an object": func(zcodeTestCommand) string { return `"accepted"` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newZCodeSteerAgent(t)
+			answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, reply)
+			require.ErrorIs(t, a.SteerInput("unread", nil), agent.ErrDeliveryUncertain)
+			assert.Zero(t, zcodePendingSteerCount(a))
+			assert.Empty(t, sink.SteerEchoReports())
+			assert.Empty(t, a.steerLedger.Pending())
+		})
+	}
+}
+
+func TestZCodeSteerInputThatTheAppServerRefuses(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	go func() {
+		req := waitZCodeRequest(t, stdin, MethodCommand)
+		a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, req), -32602, "Invalid params"))
+	}()
+	err := a.SteerInput("refused", nil)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, agent.ErrSteeringUnsupported)
+	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the app-server answered")
+	assert.Zero(t, zcodePendingSteerCount(a))
+	assert.Empty(t, sink.SteerEchoReports())
+	assert.True(t, a.SupportsSteering())
+}
+
+// An app-server without the command inbox steers nothing: the input goes in the
+// next turn, and the turn state and the agent status lose the Steer control.
+func TestZCodeSteerInputWithoutTheCommandInbox(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	refuseZCodeRequest(t, a, stdin, MethodCommand, ErrMethodNotFound, "Method not found")
+	require.ErrorIs(t, a.SteerInput("no inbox", nil), agent.ErrSteeringUnsupported)
+	assert.False(t, a.SupportsSteering())
+	assert.Equal(t, agent.TurnState{Active: true}, a.PublishTurnActive())
+	assert.Equal(t, []string{"sess-1"}, sink.StatusActives(), "the status republishes the capability")
+
+	require.ErrorIs(t, a.SteerInput("again", nil), agent.ErrSteeringUnsupported)
+	assert.Len(t, zcodeSentCommands(t, stdin), 1, "a known absence sends nothing")
+	assert.Empty(t, sink.SteerEchoReports())
+}
+
+func TestZCodeSteerInputPreconditions(t *testing.T) {
+	t.Parallel()
+	t.Run("no running turn", func(t *testing.T) {
+		t.Parallel()
+		a, _, stdin := newZCodeSteerAgent(t)
+		a.Mu.Lock()
+		a.turnActive = false
+		a.Mu.Unlock()
+		require.ErrorIs(t, a.SteerInput("idle", nil), agent.ErrNoActiveTurn)
+		assert.Empty(t, zcodeSentCommands(t, stdin))
+	})
+	t.Run("a compaction alone", func(t *testing.T) {
+		t.Parallel()
+		a, _, stdin := newZCodeSteerAgent(t)
+		a.Mu.Lock()
+		a.turnActive = false
+		a.compactionSessionID = a.sessionID
+		a.Mu.Unlock()
+		require.ErrorIs(t, a.SteerInput("compacting", nil), agent.ErrNoActiveTurn)
+		assert.Empty(t, zcodeSentCommands(t, stdin))
+	})
+	t.Run("a stopped agent", func(t *testing.T) {
+		t.Parallel()
+		a, _, stdin := newZCodeSteerAgent(t)
+		a.SetStoppedForTest(true)
+		require.Error(t, a.SteerInput("stopped", nil))
+		assert.Empty(t, zcodeSentCommands(t, stdin))
+	})
+	t.Run("an input above the runtime's limit", func(t *testing.T) {
+		t.Parallel()
+		a, _, stdin := newZCodeSteerAgent(t)
+		require.ErrorIs(t, a.SteerInput(strings.Repeat("x", zcodeSteerInputMaxBytes+1), nil), agent.ErrSteeringUnsupported)
+		assert.Empty(t, zcodeSentCommands(t, stdin))
+	})
+}
+
+// A steer carries text: a text attachment inlines into it, and any other one
+// sends the input in the next turn.
+func TestZCodeSteerInputAttachments(t *testing.T) {
+	t.Parallel()
+	t.Run("a text attachment inlines", func(t *testing.T) {
+		t.Parallel()
+		a, _, stdin := newZCodeSteerAgent(t)
+		answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("queue"))
+		require.NoError(t, a.SteerInput("Read this.", []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("the notes")}}))
+		commands := zcodeSentCommands(t, stdin)
+		require.Len(t, commands, 1)
+		var payload zcodeSendTextPayload
+		require.NoError(t, json.Unmarshal(commands[0].Payload, &payload))
+		assert.Contains(t, payload.Text, "Read this.")
+		assert.Contains(t, payload.Text, "the notes")
+		assert.Contains(t, payload.Text, "notes.txt")
+	})
+	t.Run("an image goes in the next turn", func(t *testing.T) {
+		t.Parallel()
+		a, _, stdin := newZCodeSteerAgent(t)
+		err := a.SteerInput("Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}})
+		require.ErrorIs(t, err, agent.ErrSteeringUnsupported)
+		assert.Empty(t, zcodeSentCommands(t, stdin))
+	})
+}
+
+// A discard that ZCode reports for a steer: `promoted` ran it as a turn of its
+// own, and any other reason removed it unread.
+func TestZCodeSteerDiscard(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		reason  string
@@ -342,215 +421,249 @@ func TestZCodeMailboxSteerDiscardEvents(t *testing.T) {
 		{"session_resumed", agent.SteerOutcomeDropped},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
-			sink := &agenttest.Sink{}
-			a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-			require.NoError(t, a.SteerInput("will be dropped", nil))
-			envelope := zcodeReadEnvelope(t, a, zcodeUnreadEnvelopes(t, a)[0])
-			a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventTurnSteerQueued, zcodeSteerEventPayload(t, contracts.ZCodeEventTurnSteerQueued, envelope)))
-
-			a.HandleOutput(zcodeSteerEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-				fmt.Sprintf(`{"pendingInputIds":["pending_1"],"reason":%q,"targetTurnId":"turn_1"}`, tc.reason)))
-
+			t.Parallel()
+			a, sink, stdin := newZCodeSteerAgent(t)
+			commandID := steerZCode(t, a, stdin, 1, 1)
+			a.HandleOutput(zcodeSteerDiscardLine(t, 2, tc.reason, zcodePendingInputID(commandID)))
 			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: tc.outcome, Count: 1}}, sink.SteerEchoReports())
-			assert.Equal(t, 0, sink.NotificationCount(), "the requeue or the promoted turn is the visible outcome")
-			a.Mu.Lock()
-			tracked := len(a.mailboxSteers)
-			a.Mu.Unlock()
-			assert.Equal(t, 0, tracked)
+			assert.Zero(t, sink.NotificationCount(), "the requeue or the promoted turn is the visible outcome")
+			assert.Zero(t, zcodePendingSteerCount(a))
 		})
 	}
 }
 
-func TestZCodeMailboxSteerEventsKeepTheRowForTheRuntimesOwnSteers(t *testing.T) {
+// The runtime's own steers (a background task notification, a subagent
+// message) keep their rows.
+func TestZCodeSteerEventsKeepTheRowsOfTheRuntimesOwnSteers(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
+	a, sink, stdin := newZCodeSteerAgent(t)
+	commandID := steerZCode(t, a, stdin, 1, 1)
 
-	// A background task notification the runtime steered into the turn.
-	a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventTurnSteerQueued,
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnSteerQueued,
 		`{"pendingInputId":"pending_7","input":"[SYSTEM NOTIFICATION - NOT USER INPUT]\nBackground task finished.","delivery":"guide","queueLength":1}`))
-	assert.Equal(t, 1, sink.NotificationCount())
-
-	// A mailbox message LeapMux did not write (an id it never tracked).
-	a.HandleOutput(zcodeSteerEventLine(t, 2, contracts.ZCodeEventTurnSteerDrained, zcodeSteerEventPayload(t, contracts.ZCodeEventTurnSteerDrained,
-		zcodeMailboxEnvelope{MessageID: "leapmux-0-000000", FromSessionID: "sess_other", CreatedAt: "2026-10-21T00:00:00.000Z", Content: "hello"})))
+	a.HandleOutput(zcodeSteerDrainedLine(t, 3, nil, []string{"pending_7"}))
 	assert.Equal(t, 2, sink.NotificationCount())
-}
+	a.HandleOutput(zcodeSteerDiscardLine(t, 4, "user_removed", "pending_7"))
+	assert.Equal(t, 3, sink.NotificationCount())
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventTurnSteerDeliveryChanged,
+		`{"pendingInputId":"pending_7","requestedDelivery":"guide","admittedDelivery":"queue","fallbackReasonCode":"turn_not_steerable"}`))
+	assert.Len(t, sink.Messages(), 1, "an input of the runtime's keeps the row of an event no reader knows")
 
-func TestZCodeActiveTurnPublishKeepsAWaitingSteer(t *testing.T) {
-	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-	require.NoError(t, a.SteerInput("still working on it", nil))
-	names := zcodeUnreadEnvelopes(t, a)
-	require.Len(t, names, 1)
-
-	// The turn is running, so the envelope is deliverable at the next boundary:
-	// a publish in that state must not sweep it, or every progress republish
-	// would eat a steer still in flight.
-	assert.True(t, a.PublishTurnActive().Active)
-	assert.Equal(t, names, zcodeUnreadEnvelopes(t, a))
 	assert.Empty(t, sink.SteerEchoReports())
+	assert.Equal(t, 1, zcodePendingSteerCount(a), "LeapMux's steer %s waits", commandID)
 }
 
-func TestZCodeOneDrainEventResolvesEverySteerItTook(t *testing.T) {
+// A steer that ZCode moved to the ordinary queue stays pending, and the turn
+// that runs it as its prompt echoes it.
+func TestZCodeSteerMovedToTheQueueEchoesAtItsTurn(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-	require.NoError(t, a.SteerInput("first nudge", nil))
-	require.NoError(t, a.SteerInput("second nudge", nil))
-	first := zcodeReadEnvelope(t, a, zcodeUnreadEnvelopes(t, a)[0])
-	second := zcodeReadEnvelope(t, a, zcodeUnreadEnvelopes(t, a)[1])
-
-	wrappedFirst := zcodeMailboxWrappedInput(first)
-	wrappedSecond := zcodeMailboxWrappedInput(second)
-	payload, err := json.Marshal(map[string]any{
-		"injectedMessageIds": []string{"msg_1", "msg_2"},
-		"drainedInputs": []map[string]any{
-			{"pendingInputId": "pending_1", "text": wrappedFirst, "delivery": "guide"},
-			{"pendingInputId": "pending_2", "text": wrappedSecond, "delivery": "guide"},
+	for name, payload := range map[string]func(commandID string) string{
+		"by queued input": func(commandID string) string {
+			return fmt.Sprintf(`{"pendingInputId":%q,"requestedDelivery":"guide","admittedDelivery":"queue","fallbackReasonCode":"turn_not_steerable"}`, zcodePendingInputID(commandID))
 		},
-	})
-	require.NoError(t, err)
-	a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventTurnSteerDrained, string(payload)))
+		"by command": func(commandID string) string {
+			return fmt.Sprintf(`{"pendingInputId":"other","intent":{"sourceCommandId":%q},"requestedDelivery":"guide","admittedDelivery":"queue"}`, commandID)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newZCodeSteerAgent(t)
+			commandID := steerZCode(t, a, stdin, 1, 1)
+			a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnSteerDeliveryChanged, payload(commandID)))
+			assert.Empty(t, sink.Messages(), "LeapMux's own steer writes no row")
+			assert.Equal(t, 1, zcodePendingSteerCount(a))
+			assert.Empty(t, sink.SteerEchoReports())
 
-	// The ledger settles the resolved run in send order, so one drain of two
-	// steers is ONE echoed report of two inputs.
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 2}}, sink.SteerEchoReports())
-	assert.Equal(t, 0, sink.NotificationCount())
+			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnStarted, fmt.Sprintf(`{"turnNumber":2,"input":"steer 1","inputId":%q}`, commandID)))
+			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			assert.Zero(t, zcodePendingSteerCount(a))
+		})
+	}
 }
 
-func TestZCodeTurnEndWithdrawsUndeliveredMailboxSteers(t *testing.T) {
+// A turn that LeapMux's own send started echoes no steer.
+func TestZCodeTurnStartOfAnotherInputLeavesTheSteerPending(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-	require.NoError(t, a.SteerInput("too late", nil))
-	require.Len(t, zcodeUnreadEnvelopes(t, a), 1)
+	a, sink, stdin := newZCodeSteerAgent(t)
+	steerZCode(t, a, stdin, 1, 1)
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnStarted, `{"turnNumber":2,"input":"hi","inputId":"abc123"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnStarted, `{"turnNumber":3,"input":"hi"}`))
+	assert.Empty(t, sink.SteerEchoReports())
+	assert.Equal(t, 1, zcodePendingSteerCount(a))
+}
 
-	// The turn ends without a drain: the next prompt's UserPromptSubmit drain
-	// would fold the envelope in as reference material, beside the input the
-	// queue requeues for that same prompt.
-	a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{"resultType":"success","toolCallCount":0}`))
+// An interrupt takes a queued steer back before it stops the turn, because the
+// stop would drain it into the conversation, where no model request reads it.
+// The withdrawal starts from the newest revision and follows a stale answer.
+func TestZCodeInterruptWithdrawsAQueuedSteerBeforeTheStop(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	commandID := steerZCode(t, a, stdin, 1, 1)
+	answerZCodeCommand(t, a, stdin, zcodeCommandDeleteQueueItem, 1, zcodeCommandAnswer(zcodeCommandStale, 9))
+	answerZCodeCommand(t, a, stdin, zcodeCommandDeleteQueueItem, 2, zcodeCommandAnswer(zcodeCommandAccepted, 9))
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
-	assert.Empty(t, zcodeUnreadEnvelopes(t, a))
-	_, err := os.Stat(filepath.Join(a.mailboxRoot, zcodeSteerSessionID))
-	assert.True(t, os.IsNotExist(err), "the session's whole mailbox goes, read copies included")
-	a.Mu.Lock()
-	tracked := len(a.mailboxSteers)
-	a.Mu.Unlock()
-	assert.Equal(t, 0, tracked)
+	var methods []string
+	for _, req := range stdin.Requests(t) {
+		methods = append(methods, req.Method)
+	}
+	assert.Equal(t, []string{MethodCommand, MethodCommand, MethodCommand, MethodSessionStop}, methods, "the steer, two withdrawals, then the stop")
+	deletes := zcodeSentCommandsOf(t, stdin, zcodeCommandDeleteQueueItem)
+	require.Len(t, deletes, 2)
+	for i, revision := range []int64{8, 9} {
+		require.NotNil(t, deletes[i].BaseRevision)
+		assert.Equal(t, revision, *deletes[i].BaseRevision)
+		assert.JSONEq(t, fmt.Sprintf(`{"queueItemId":%q}`, zcodePendingInputID(commandID)), string(deletes[i].Payload))
+		assert.True(t, strings.HasPrefix(deletes[i].CommandID, zcodeWithdrawCommandPrefix), deletes[i].CommandID)
+	}
+	assert.NotEqual(t, deletes[0].CommandID, deletes[1].CommandID, "each attempt is a command of its own")
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports(),
-		"the queue learns the steer never reached the model and requeues it")
-	assert.False(t, a.PublishTurnActive().Active)
+		"the queue runs the steer as the next turn")
 
-	// A later steer, in a later turn, starts clean.
-	a.Mu.Lock()
-	a.turnActive = true
-	a.Mu.Unlock()
-	require.NoError(t, a.SteerInput("next turn", nil))
-	assert.Len(t, zcodeUnreadEnvelopes(t, a), 1)
-}
-
-func TestZCodeStopDrainSuccessResolvesTheSteerItTook(t *testing.T) {
-	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-	require.NoError(t, a.SteerInput("steer the final answer", nil))
-	envelope := zcodeReadEnvelope(t, a, zcodeUnreadEnvelopes(t, a)[0])
-
-	// The Stop drain renames the envelope out of unread and answers
-	// continue:true; the runtime injects it into the continuation request and
-	// states no steer event of its own. A second Stop success with the next
-	// steer's envelope still in unread resolves nothing for it.
-	sessionDir := filepath.Join(a.mailboxRoot, zcodeSteerSessionID)
-	a.Mu.Lock()
-	envelopeName := a.mailboxSteers[envelope.MessageID].file
-	a.Mu.Unlock()
-	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, zcodeMailboxReadDir), 0o700))
-	require.NoError(t, os.Rename(
-		filepath.Join(sessionDir, zcodeMailboxUnreadDir, envelopeName),
-		filepath.Join(sessionDir, zcodeMailboxReadDir, "drained.json")))
-
-	a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
-		`{"hookRunId":"run-9","hookInvocationId":"inv-9","hookSource":"builtin.sessionMailbox.drain","hookEventName":"Stop","outcome":"success","durationMs":1,"descriptor":{"clientVisible":false,"commandDisplay":"Session mailbox"}}`))
-
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
-	a.Mu.Lock()
-	tracked := len(a.mailboxSteers)
-	a.Mu.Unlock()
-	assert.Equal(t, 0, tracked)
-
-	// An entry whose envelope is still in unread keeps waiting: the drain took
-	// nothing of its own to report about it yet.
-	require.NoError(t, a.SteerInput("a second steer", nil))
-	a.HandleOutput(zcodeSteerEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-		`{"hookRunId":"run-10","hookInvocationId":"inv-10","hookSource":"builtin.sessionMailbox.drain","hookEventName":"Stop","outcome":"success","durationMs":1,"descriptor":{"clientVisible":false,"commandDisplay":"Session mailbox"}}`))
+	// ZCode then reports the removal, which belongs to the withdrawal.
+	a.HandleOutput(zcodeSteerDiscardLine(t, 2, "user_removed", zcodePendingInputID(commandID)))
+	assert.Zero(t, sink.NotificationCount())
 	assert.Len(t, sink.SteerEchoReports(), 1)
 }
 
-func TestZCodeTurnEndReportsAnEnvelopeThatLeftUnreadAsUncertain(t *testing.T) {
+// A stop that the browser sends as a raw frame takes the steer back too.
+func TestZCodeRawStopWithdrawsAQueuedSteerBeforeTheStop(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(sink))
-	require.NoError(t, a.SteerInput("ambiguous", nil))
-	// The envelope left unread with no resolution the settled paths recognize:
-	// the sweep must neither claim delivery nor auto-replay the input.
-	sessionDir := filepath.Join(a.mailboxRoot, zcodeSteerSessionID)
-	require.NoError(t, os.Remove(filepath.Join(sessionDir, zcodeMailboxUnreadDir, zcodeUnreadEnvelopes(t, a)[0])))
-
-	a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{"resultType":"success","toolCallCount":0}`))
-
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	a, sink, stdin := newZCodeSteerAgent(t)
+	commandID := steerZCode(t, a, stdin, 1, 1)
+	answerZCodeCommand(t, a, stdin, zcodeCommandDeleteQueueItem, 1, zcodeCommandAnswer(zcodeCommandAccepted, 8))
+	go func() {
+		deadline := time.Now().Add(zcodeTestRPCTimeout)
+		for time.Now().Before(deadline) {
+			for _, frame := range stdin.Frames() {
+				if strings.Contains(string(frame), `"id":4242`) {
+					a.HandleOutput(zcodeReplyLine(t, 4242, json.RawMessage(`{}`)))
+					return
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		t.Errorf("the raw stop was never sent")
+	}()
+	require.NoError(t, a.SendRawInput([]byte(`{"id":4242,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{}))
+	var methods []string
+	for _, req := range stdin.Requests(t) {
+		methods = append(methods, req.Method)
+	}
+	assert.Equal(t, []string{MethodCommand, MethodCommand, MethodSessionStop}, methods)
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, zcodeCommandDeleteQueueItem, zcodeSentCommands(t, stdin)[1].Type, "steer %s", commandID)
 }
 
-func TestZCodeTurnEndWithNoPendingSteerLeavesTheMailboxAlone(t *testing.T) {
+// A withdrawal that ZCode does not perform leaves the delivery unknown: an
+// input that the model read was echoed by its drain, which precedes the
+// answer. A steer whose queued input ZCode never stated cannot be addressed.
+func TestZCodeWithdrawalThatDoesNotDeleteIsUncertain(t *testing.T) {
 	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	require.NoError(t, a.SteerInput("delivered", nil))
-	envelope := zcodeReadEnvelope(t, a, zcodeUnreadEnvelopes(t, a)[0])
-	a.HandleOutput(zcodeSteerEventLine(t, 1, contracts.ZCodeEventTurnSteerDrained, zcodeSteerEventPayload(t, contracts.ZCodeEventTurnSteerDrained, envelope)))
-	// The runtime renamed it; mimic the read copy it leaves.
-	sessionDir := filepath.Join(a.mailboxRoot, zcodeSteerSessionID)
-	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, zcodeMailboxReadDir), 0o700))
-	require.NoError(t, os.Rename(
-		filepath.Join(sessionDir, zcodeMailboxUnreadDir, zcodeUnreadEnvelopes(t, a)[0]),
-		filepath.Join(sessionDir, zcodeMailboxReadDir, "delivered.json")))
-
-	a.HandleOutput(zcodeSteerEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"resultType":"success","toolCallCount":1}`))
-
-	// Nothing was pending, so the publish paid no sweep; the read copy waits
-	// for a sweep that has something to withdraw, or for teardown.
-	_, err := os.Stat(filepath.Join(sessionDir, zcodeMailboxReadDir, "delivered.json"))
-	assert.NoError(t, err)
+	t.Run("a refused deletion", func(t *testing.T) {
+		t.Parallel()
+		a, sink, stdin := newZCodeSteerAgent(t)
+		steerZCode(t, a, stdin, 1, 1)
+		answerZCodeCommand(t, a, stdin, zcodeCommandDeleteQueueItem, 1, zcodeCommandAnswer("noop", 9))
+		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+		a.Mu.Lock()
+		withdrawn := len(a.withdrawnSteerInputs)
+		a.Mu.Unlock()
+		assert.Zero(t, withdrawn, "a discard that ZCode reports later is not LeapMux's")
+	})
+	t.Run("a stale answer each time", func(t *testing.T) {
+		t.Parallel()
+		a, sink, stdin := newZCodeSteerAgent(t)
+		steerZCode(t, a, stdin, 1, 1)
+		for attempt := 1; attempt <= zcodeCompareAndSetAttempts; attempt++ {
+			answerZCodeCommand(t, a, stdin, zcodeCommandDeleteQueueItem, attempt, zcodeCommandAnswer(zcodeCommandStale, int64(8+attempt)))
+		}
+		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Len(t, zcodeSentCommandsOf(t, stdin, zcodeCommandDeleteQueueItem), zcodeCompareAndSetAttempts)
+		assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	})
+	t.Run("an unstated queued input", func(t *testing.T) {
+		t.Parallel()
+		a, sink, stdin := newZCodeSteerAgent(t)
+		answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("queue"))
+		require.NoError(t, a.SteerInput("unqueued", nil))
+		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Empty(t, zcodeSentCommandsOf(t, stdin, zcodeCommandDeleteQueueItem))
+		assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	})
 }
 
-func TestZCodeClearContextRemovesTheReplacedSessionsMailbox(t *testing.T) {
+// A turn that ends with a steer still queued (a failed turn keeps it there)
+// takes it back off the read loop, and the queue runs it as the next turn.
+func TestZCodeTurnEndWithdrawsALeftoverSteer(t *testing.T) {
 	t.Parallel()
-	stdin := &zcodeRecordedStdin{}
-	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
-	a.mailboxRoot = t.TempDir()
-	stale := filepath.Join(a.mailboxRoot, "sess-1", zcodeMailboxUnreadDir)
-	require.NoError(t, os.MkdirAll(stale, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(stale, "0000000000001-000001.json"), []byte(`{}`), 0o600))
-	answerZCodeRequest(t, a, stdin, MethodSessionCreate, `{"session":{"sessionId":"sess_new"},"settings":{"mode":{"current":"build"}}}`)
-	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{}`)
-
-	_, err := a.ClearContext()
-	require.NoError(t, err)
-
-	_, statErr := os.Stat(filepath.Join(a.mailboxRoot, "sess-1"))
-	assert.True(t, os.IsNotExist(statErr), "the retired session's envelopes can never drain again")
+	a, sink, stdin := newZCodeSteerAgent(t)
+	commandID := steerZCode(t, a, stdin, 1, 1)
+	answerZCodeCommand(t, a, stdin, zcodeCommandDeleteQueueItem, 1, zcodeCommandAnswer(zcodeCommandAccepted, 9))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnFailed, `{"error":{"message":"probe failure"}}`))
+	require.Eventually(t, func() bool { return len(sink.SteerEchoReports()) == 1 }, zcodeTestRPCTimeout, 2*time.Millisecond)
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	deletes := zcodeSentCommandsOf(t, stdin, zcodeCommandDeleteQueueItem)
+	require.Len(t, deletes, 1)
+	assert.JSONEq(t, fmt.Sprintf(`{"queueItemId":%q}`, zcodePendingInputID(commandID)), string(deletes[0].Payload))
 }
 
-func TestZCodeStopRemovesTheMailboxRoot(t *testing.T) {
+func TestZCodeTurnEndWithNoPendingSteerSendsNoCommand(t *testing.T) {
 	t.Parallel()
-	a := newZCodeSteerTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	require.NoError(t, a.SteerInput("pending at stop", nil))
-	root := a.mailboxRoot
+	a, _, stdin := newZCodeSteerAgent(t)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnFailed, `{"error":{"message":"probe failure"}}`))
+	assert.Empty(t, zcodeSentCommands(t, stdin))
+}
 
-	a.cleanupZCodeMailbox()
-	a.cleanupZCodeMailbox()
+// A turn that starts before the withdrawal runs keeps the steers for its own
+// end: ZCode may run them in that turn.
+func TestZCodeTurnEndWithdrawalSkipsARunningTurn(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	steerZCode(t, a, stdin, 1, 1)
+	a.withdrawZCodeSteersAfterTurnEnd()
+	assert.Empty(t, zcodeSentCommandsOf(t, stdin, zcodeCommandDeleteQueueItem))
+	assert.Empty(t, sink.SteerEchoReports())
+	assert.Equal(t, 1, zcodePendingSteerCount(a))
+}
 
-	_, err := os.Stat(root)
-	assert.True(t, os.IsNotExist(err))
+// A session that a new one replaced runs no turn again, so its steers drop
+// and the queue runs them in the new session.
+func TestZCodeReplacedSessionDropsItsSteers(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	steerZCode(t, a, stdin, 1, 1)
+	steerZCode(t, a, stdin, 2, 2)
+	a.dropZCodeSteersOfReplacedSession()
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 2}}, sink.SteerEchoReports())
+	assert.Zero(t, zcodePendingSteerCount(a))
+}
+
+// The process exit owns the queue's recovery, so the agent forgets its steers
+// without a report.
+func TestZCodeProcessEndForgetsTheSteers(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	steerZCode(t, a, stdin, 1, 1)
+	a.resetZCodeSteers()
+	assert.Zero(t, zcodePendingSteerCount(a))
+	assert.Empty(t, a.steerLedger.Pending())
+	assert.Empty(t, sink.SteerEchoReports())
+}
+
+// Steers resolve in send order: a later drain waits for an earlier steer.
+func TestZCodeSteersSettleInSendOrder(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	first := steerZCode(t, a, stdin, 1, 1)
+	second := steerZCode(t, a, stdin, 2, 2)
+	a.HandleOutput(zcodeSteerDrainedLine(t, 3, []string{second}, nil))
+	assert.Empty(t, sink.SteerEchoReports(), "the first steer is still pending")
+	a.HandleOutput(zcodeSteerDrainedLine(t, 4, []string{first}, nil))
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 2}}, sink.SteerEchoReports())
 }

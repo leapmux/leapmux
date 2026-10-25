@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -15,4 +16,20 @@ func TestFastagentRegistrationStatesItsPermissionFallback(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, contracts.FastagentModeAgent, Registration().PermissionDefaults.Fallback)
 	assert.Equal(t, []string{agent.OptionIDPermissionMode}, Registration().AdditionalOptionIDs)
+}
+
+func TestFastAgentBypassRegistration(t *testing.T) {
+	t.Parallel()
+	groups := Registration().OptionGroups
+	require.Len(t, groups, 1)
+	assert.Equal(t, "bypassPermissions", groups[0].Id)
+	assert.Equal(t, "false", groups[0].DefaultValue)
+	assert.True(t, groups[0].Mutable)
+	require.Len(t, groups[0].Options, 2)
+	assert.Equal(t, "false", groups[0].Options[0].Id)
+	assert.Equal(t, "true", groups[0].Options[1].Id)
+	for _, choice := range groups[0].Options {
+		assert.Contains(t, choice.Description, "restarts the agent")
+		assert.Contains(t, choice.Description, "stops any active turn")
+	}
 }

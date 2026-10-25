@@ -3,6 +3,7 @@
 package codewhale
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -118,6 +119,42 @@ func TestStartOpensAThreadOnAFreshStore(t *testing.T) {
 
 	require.NoError(t, a.SendInput("Say hello.", nil))
 	awaitReply(t, sink)
+}
+
+func TestStartRestoresOutputStyleOnTheSameThread(t *testing.T) {
+	record := installFakeCodewhale(t, "")
+	home := startHome(t)
+	t.Setenv("CODEWHALE_VERBOSITY", "concise")
+	var threadID, storeDir string
+	for _, style := range []string{"concise", "normal", "auto"} {
+		options := optionmap.Map{OptionOutputStyle: style, agent.OptionIDModel: "deepseek-flash", agent.OptionIDEffort: "high", agent.OptionIDPermissionMode: "ask"}
+		if style == "auto" {
+			delete(options, OptionOutputStyle)
+		}
+		originalStyle := options.Get(OptionOutputStyle)
+		opts := startOptions(t, home, options)
+		opts.ResumeSessionID = threadID
+		a, sink := startAgent(t, opts)
+		if threadID == "" {
+			threadID, storeDir = a.threadID, a.store.dir
+		}
+		assert.Equal(t, threadID, a.threadID)
+		assert.Equal(t, storeDir, a.store.dir)
+		current := a.SettingsSnapshot().SurfacedOptions
+		assert.Equal(t, style, current[OptionOutputStyle])
+		for key, value := range options {
+			assert.Equal(t, value, current[key], key)
+		}
+		require.NoError(t, a.SendInput("Keep the native conversation.", nil))
+		awaitReply(t, sink)
+		a.Stop()
+		// Stop cancels the launch context even when the fake process exits cleanly.
+		require.ErrorIs(t, a.Wait(), context.Canceled)
+		assert.Equal(t, originalStyle, options.Get(OptionOutputStyle), "startup leaves the caller's option map unchanged")
+	}
+	launches := readLaunchRecords(t, record)
+	require.Len(t, launches, 3)
+	assert.Equal(t, []string{"concise", "normal", "concise"}, []string{launches[0].Verbosity, launches[1].Verbosity, launches[2].Verbosity})
 }
 
 func TestStartResumesTheStoredThread(t *testing.T) {

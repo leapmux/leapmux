@@ -1,18 +1,18 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectChildToolOutputDeferred, writeChildMarkerFile } from '../helpers/liveChildTranscript'
-import { readToolCall } from '../helpers/providerToolCalls'
-import { openProfiledNativeChild } from '../helpers/runningChildProof'
+import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
+import { expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { kiloTest } from '../kilo-fixtures'
 import { KILO_CHILD } from './childScenario'
 
-/** The call ID of the native Read of the child. */
-const READ_CALL_ID = 'native-child-read'
-
-// The provider delivers only the prompt and the report of a child, so the Read result shows in no live row.
-kiloTest('keeps actual child tool output out of the child tab before native completion', async ({ native, authenticatedKiloWorkspace }) => {
-  const file = writeChildMarkerFile(authenticatedKiloWorkspace.workingDir, 'native-child-live.txt')
-  const child = await openProfiledNativeChild(native, KILO_CHILD, { childTool: readToolCall(AgentProvider.KILO, READ_CALL_ID, file.path) })
-  await expectChildToolOutputDeferred(native, child, { marker: file.marker, fileName: 'native-child-live.txt', readCallId: READ_CALL_ID, restoredAfterCompletion: false })
+// Kilo streams a child session only to a client that loaded it. The Worker loads it once the parent's task call states
+// the session, so the child's own tool calls and text reach the child tab while it runs.
+kiloTest('shows the child tool result before its final answer', async ({ native, authenticatedKiloWorkspace }) => {
+  const child = await exerciseLiveChildTranscript(native, {
+    childWhen: KILO_CHILD.childTask('Read the assigned file for the live Kilo child'),
+    childTask: 'Read the assigned file for the live Kilo child, then report its marker.',
+    parentTask: 'Spawn one subagent to read the child note.',
+    toolProof: { read: { workingDir: authenticatedKiloWorkspace.workingDir } },
+  })
+  await expectRowBecomesFinal(native.page, child.row)
 })
 
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/516.
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/516.

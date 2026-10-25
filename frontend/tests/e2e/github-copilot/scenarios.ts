@@ -14,8 +14,7 @@ import { applyPermissionPreset } from '../helpers/ui'
  * Copilot CLI reads its custom instructions (AGENTS.md, CLAUDE.md, GEMINI.md and the `.github/` files) from each
  * directory between its working directory and the root of its git repository, and from directories above that when no
  * repository holds the working directory. Its one switch, `--no-custom-instructions`, also turns off the AGENTS.md of
- * the working directory that `workspace-trust.spec.ts` proves. A repository of its own stops Copilot at the working
- * directory.
+ * the working directory. A repository of its own stops Copilot at the working directory.
  */
 export const COPILOT_AGENT: ProviderAgent = { provider: AgentProvider.GITHUB_COPILOT, prefix: 'copilot-e2e', workingDir: gitRepositoryWorkingDir }
 

@@ -1,9 +1,9 @@
 import type { Locator, Page } from '@playwright/test'
 import type { RpcMark } from './timingFixture'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '../../../src/generated/contracts/worker-vocab'
 import { isObject } from '../../../src/lib/jsonPick'
+import { captureClipboardText } from './clipboardCapture'
 import { installRpcListeners } from './timingFixture'
 
 /** One setting transition that the copied notification must preserve. */
@@ -27,7 +27,8 @@ export function expectSettingsNotificationEnvelope(text: string, change: Setting
   const settings = entries.filter(isObject).filter(message => message.type === NOTIFICATION_TYPE.SettingsChanged)
   expect(settings, 'Copy must contain exactly one settings notification.').toHaveLength(1)
   expect(settings[0]?.changes, 'Copy must preserve the original setting transition.').toMatchObject({ [change.groupId]: { old: change.oldValue, new: change.value } })
-  if (envelope.supplemental_content !== undefined) {
+  // Copy writes null when the received message has no supplemental bytes.
+  if (envelope.supplemental_content !== undefined && envelope.supplemental_content !== null) {
     expect(isObject(envelope.supplemental_content), 'The copied supplement must be an object.').toBe(true)
     if (isObject(envelope.supplemental_content) && envelope.supplemental_content.metadata !== undefined)
       expect(isObject(envelope.supplemental_content.metadata), 'The copied supplement metadata must be an object.').toBe(true)
@@ -51,12 +52,9 @@ export async function copySettingsNotification(bubble: Locator, change: Settings
   const page = bubble.page()
   await expect(bubble).toHaveCount(1)
   await bubble.hover()
-  const sentinel = `CLIPBOARD${randomUUID()}`
-  await page.evaluate(value => navigator.clipboard.writeText(value), sentinel)
   await installRpcListeners(page)
-  await bubble.locator('..').getByTestId('message-copy-json').click()
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe(sentinel)
-  expectSettingsNotificationEnvelope(await page.evaluate(() => navigator.clipboard.readText()), change, requireThread)
+  const copied = await captureClipboardText(page, () => bubble.locator('..').getByTestId('message-copy-json').click())
+  expectSettingsNotificationEnvelope(copied, change, requireThread)
   const sends = await sentRpcMethods(page)
   for (const method of ['ListAgentMessages', 'GetAgentMessage', 'GetAgentSpanMessages'])
     expect(sends).not.toContain(method)

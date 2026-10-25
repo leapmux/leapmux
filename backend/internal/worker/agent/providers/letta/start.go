@@ -193,7 +193,17 @@ func (a *Agent) openConversation(opts agent.Options) error {
 	if agentID == "" || conversationID == "" {
 		return errors.New("runtime_start named no agent and conversation")
 	}
-	return a.loadModelCatalog(opts.EffectiveStartupTimeout())
+	if err := a.loadModelCatalog(opts.EffectiveStartupTimeout()); err != nil {
+		return err
+	}
+	// Auto keeps the native choice, including the effort of a resumed conversation.
+	if effort := opts.Effort(); effort != "" && effort != agent.EffortAuto {
+		if err := a.applyNativeEffort(effort); err != nil {
+			return err
+		}
+	}
+	a.requestQuotaRefresh()
+	return nil
 }
 
 // lettaModeFor maps LeapMux's permission mode onto runtime_start.mode.

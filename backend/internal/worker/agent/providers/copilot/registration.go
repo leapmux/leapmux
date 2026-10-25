@@ -1,6 +1,8 @@
 package copilot
 
 import (
+	"cmp"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -11,6 +13,10 @@ import (
 const copilotBinaryName = "copilot"
 
 const copilotOptionSessionMode = contracts.CopilotOptionSessionMode
+
+// copilotOptionFleet is the option of Fleet. While it is on, each new turn goes
+// through Copilot's fleet request (sendInputForSession).
+const copilotOptionFleet = contracts.CopilotOptionFleet
 
 // copilotNativeModes are the session modes the runtime accepts. Copilot 1.0.83
 // refuses every other word, and its own message lists exactly these three.
@@ -44,6 +50,19 @@ func copilotPermissionModeGroup(current string) *leapmuxv1.AvailableOptionGroup 
 	return agent.SelectGroup(agent.OptionIDPermissionMode, "Permissions", agent.OptionOrderPermissionMode, current, copilotNativePermissionModes)
 }
 
+// copilotFleetModes are the values of Fleet. Copilot applies fleet mode to one
+// request at a time (`session.fleet.start`, and `copilot --fleet` for its
+// prompt), so the setting is LeapMux's own and decides how each new turn goes.
+var copilotFleetModes = []agent.OptionDef{
+	{Id: "false", Name: "Off", Default: true, Description: "Send each message as a plain turn."},
+	{Id: "true", Name: "On", Description: "Send each new turn as a fleet request: Copilot dispatches subagents in parallel to do the work."},
+}
+
+// copilotFleetGroup reports Fleet. An absent value is Off.
+func copilotFleetGroup(current string) *leapmuxv1.AvailableOptionGroup {
+	return agent.SelectGroup(copilotOptionFleet, "Fleet", agent.OptionOrderProviderFirst, cmp.Or(current, "false"), copilotFleetModes)
+}
+
 // copilotLocator finds the Copilot CLI on the user's PATH.
 var copilotLocator = launch.Binaries(copilotBinaryName)
 
@@ -58,7 +77,7 @@ func Registration() agent.Registration {
 		// The account decides which models exist, so the catalog is read from the
 		// open session rather than declared here.
 		DefaultModels:       nil,
-		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{copilotSessionModeGroup(""), copilotPermissionModeGroup("")},
+		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{copilotSessionModeGroup(""), copilotPermissionModeGroup(""), copilotFleetGroup("")},
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},
 		PermissionDefaults: agent.PermissionDefaults{
 			// A new session asks for Assisted: it approves what a safety check finds

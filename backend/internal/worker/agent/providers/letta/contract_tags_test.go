@@ -59,6 +59,16 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 		assert.True(t, found, field)
 		assert.Equal(t, key, decoded.Tag.Get("json"))
 	}
+	for field, key := range map[string]string{
+		"CommandID": contracts.LettaDeltaFieldCommandID,
+		"Input":     contracts.LettaDeltaFieldInput,
+		"Output":    contracts.LettaDeltaFieldOutput,
+		"Success":   contracts.LettaDeltaFieldSuccess,
+	} {
+		decoded, found := reflect.TypeFor[lettaCompactionDelta]().FieldByName(field)
+		assert.True(t, found, field)
+		assert.Equal(t, key, decoded.Tag.Get("json"))
+	}
 	stopReason, found := reflect.TypeFor[lettaTurnFinished]().FieldByName("StopReason")
 	assert.True(t, found, "StopReason")
 	assert.Equal(t, contracts.LettaDeltaFieldStopReason, stopReason.Tag.Get("json"))

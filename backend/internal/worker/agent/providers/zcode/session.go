@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -362,16 +360,11 @@ func (a *Agent) ClearContext() (string, error) {
 	current := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.permissionModeLocked()}
 	oldSessionID := a.sessionID
 	a.Mu.Unlock()
-	if a.mailboxRoot != "" && oldSessionID != "" {
-		// The replaced session's mailbox holds envelopes no runtime will drain
-		// again; the next prompt of the new session must not fold them in as
-		// reference material. See steering.go.
-		_ = os.RemoveAll(filepath.Join(a.mailboxRoot, oldSessionID))
-	}
 
 	if err := a.openSession("", timeout); err != nil {
 		return "", err
 	}
+	a.dropZCodeSteersOfReplacedSession()
 	a.retryResolution.Reset()
 	a.applyStartupSettings(current, timeout)
 	// The turn belonged to the session this call replaced, so it ends with it. The
@@ -393,8 +386,15 @@ func (a *Agent) ClearContext() (string, error) {
 	clear(a.toolCalls)
 	a.nextToolOrder = 0
 	sessionID := a.sessionID
+	// The replaced session's workflow runs end with it, and so does the
+	// subscription that watched them.
+	workflowUpserts := a.workflows.clear(agent.IncompleteTaskStatus(agent.MessageCompletionInterrupted))
 	a.Mu.Unlock()
+	a.upsertZCodeWorkflowRows(workflowUpserts)
 	a.withdrawPendingControls()
+	if err := a.reconcileZCodeConversation(); err != nil {
+		slog.Warn("zcode conversation subscription", "agent_id", a.AgentID(), "error", err)
+	}
 	a.PublishTurnActive()
 	a.toolCallPrompts.Clear()
 	a.children.clear()

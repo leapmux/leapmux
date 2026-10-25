@@ -1,7 +1,7 @@
 import { zcodeTest } from '../zcode-fixtures'
-import { exerciseZCodeMcpInputLimit } from './mcpScenario'
+import { exerciseZCodeMcpForm } from './mcpScenario'
 import { nativeContext } from './scenarios'
 
-zcodeTest('returns the actual native MCP form refusal without opening a form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  await exerciseZCodeMcpInputLimit(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }))
+zcodeTest('answers a project MCP server\'s form through the typed form, also after a reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+  await exerciseZCodeMcpForm(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }))
 })

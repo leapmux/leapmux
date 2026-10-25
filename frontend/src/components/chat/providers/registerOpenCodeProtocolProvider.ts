@@ -7,6 +7,7 @@ import { openCodeControlResponseSummary } from './opencode/controlResponse'
 import { openCodeExtractControl } from './opencode/extractControl'
 import { openCodeToolCallAdapterFor } from './opencode/extractors/toolCall'
 import { openCodeNativeNotifications } from './openCodeEvents'
+import { openCodePermissionPresets } from './openCodePermissionPresets'
 import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './openCodeQuestions'
 
 /**
@@ -48,6 +49,7 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     // Each daemon uses its own permission option IDs, including requests that supply no options.
     extractControl: openCodeExtractControl,
     planValue: PLAN_PRIMARY_AGENT,
+    permissionPresets: openCodePermissionPresets,
     attachments: { text: true, image: true, pdf: true, binary: false },
     // This registration supplies the same question handling for both providers.
     // The backend's questionRequestContext hook also supplies one family implementation.

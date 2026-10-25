@@ -46,7 +46,7 @@ export async function waitForNativeOptionApplied(context: Pick<ManagedNativeScen
 }
 
 /** Choose `model` in the settings menu and wait until the Worker applies it. A model that the agent runs already stays. */
-async function chooseNativeModel(context: ManagedNativeScenarioContext, model: string): Promise<void> {
+export async function chooseNativeModel(context: ManagedNativeScenarioContext, model: string): Promise<void> {
   if (nativeOptionValue(await currentNativeAgent(context), 'model') === model)
     return
   const optionId = `model-${model}`

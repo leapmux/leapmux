@@ -7,11 +7,11 @@ export function codebuddyCommandOutput(block: Record<string, unknown> | undefine
     return undefined
   const meta = pickObject(block, '_meta')
   const response = pickObject(meta, 'rawResponse')
-  // The CLI ignores late pipe data after process exit and can lose stderr.
-  // Its empty failure record still states the command and the exit.
+  // CodeBuddy 2.160.0 could lose stderr when the process exited before its pipe readers finished.
+  // An empty failure record still carries the exit and stream status, with or without a command header.
   // Keep that record intact.
   if (typeof response?.exitCode === 'number' && response.exitCode !== 0
-    && /^Command: [^\r\n]+\nStdout: \(empty\)\nStderr: \(empty\)\nExit Code: -?\d+\nSignal: \(none\)$/u.test(text)) {
+    && /^(?:Command: [^\r\n]+\n)?Stdout: \(empty\)\nStderr: \(empty\)\nExit Code: -?\d+\nSignal: \(none\)$/u.test(text)) {
     return undefined
   }
   const renderer = pickObject(meta, 'renderer')

@@ -80,12 +80,15 @@ function shortcutContext(preset: 'smart' | 'bypass', options: { removeTarget?: b
   })
   const modelScript = {
     prompt: (text: string) => text,
-    queue: async (step: { toolCalls?: Array<{ id: string, arguments: { command: string } }> }) => {
+    queue: async (...steps: { toolCalls?: Array<{ id: string, arguments: { command: string } }> }[]) => {
+      const step = steps[0]
+      if (!step)
+        throw new Error('The native shortcut needs a tool step.')
       toolIds.push(step.toolCalls?.[0]?.id ?? '')
       fake.commands.push(step.toolCalls?.[0]?.arguments.command ?? '')
       fake.events.push(`queue:${toolIds.at(-1)}`)
       const start = queued
-      queued += 2
+      queued += steps.length
       return start
     },
     waitForSteps: async (count: number) => {
@@ -107,6 +110,15 @@ function shortcutContext(preset: 'smart' | 'bypass', options: { removeTarget?: b
 }
 
 describe('exerciseBypassPermissions', () => {
+  it('uses one request when the native exchange contains both tools and the answer', async () => {
+    const proof = { answerStep: 'same-step' as const, settingsProof: () => {} }
+    await exerciseBypassPermissions(shortcutContext('bypass'), proof)
+    expect(fake.waits).toEqual([1, 2])
+    expect(fake.reads).toEqual([0, 1])
+    expect(fake.commands).toHaveLength(2)
+    expect(existsSync(join(fake.workingDir, 'native-bypass-proof'))).toBe(false)
+  })
+
   it('prepares the session before both passes and reloads between them', async () => {
     await exerciseBypassPermissions(shortcutContext('bypass'), {
       prepare: async () => { fake.events.push('prepare') },

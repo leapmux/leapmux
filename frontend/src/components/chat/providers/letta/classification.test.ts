@@ -188,3 +188,12 @@ describe('classifyLettaMessage notices', () => {
     expect(classifyLettaMessage(input(undefined, { old_seqs: [], messages: [] }, AgentProvider.LETTA))).toEqual({ kind: 'hidden' })
   })
 })
+
+describe('classifyLettaMessage native manual compaction', () => {
+  it('keeps the native completion visible in raw and threaded rows', () => {
+    const frame = { message_type: 'slash_command_end', command_id: 'compact', input: '/compact', success: true, output: 'Native summary.' }
+    const expected = { kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual' } }] }
+    expect(classifyLettaMessage(input(frame, undefined, AgentProvider.LETTA))).toEqual(expected)
+    expect(classifyLettaMessage(input(frame, { old_seqs: [], messages: [frame] }, AgentProvider.LETTA))).toEqual(expected)
+  })
+})

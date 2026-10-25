@@ -1,6 +1,7 @@
 package deepseekharness
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -158,4 +159,92 @@ func TestCommandDuringARunningNativeTurnKeepsThatTurnActive(t *testing.T) {
 	serveCommands(t, a, func(string) {})
 	require.NoError(t, a.SteerInput("/plan", nil))
 	assert.Equal(t, []string{"turn_active:true"}, sink.TurnLifecycle(), "the native turn still runs")
+}
+
+// dsh 0.2.1-rc.2 reuses a named Session in `session/create` only while the Session is blank. For a Session that
+// started a turn, it mints a new identity, so a resume through `session/create` lost the stored conversation.
+func TestCreateSessionResumesAStoredSessionWithoutCreatingOne(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	calls := serveNativeReplies(t, a, map[string]map[string]any{
+		"session/projections": {"ok": true, "value": map[string]any{"values": map[string]any{"workingDirectory": "/workspace"}}},
+		"session/create":      {"ok": true, "value": map[string]any{"sessionId": "minted"}},
+	})
+	id, err := a.createSession(context.Background(), "stored")
+	require.NoError(t, err)
+	assert.Equal(t, "stored", id)
+	assert.Equal(t, []string{"session/projections"}, calls.methods())
+	assert.Equal(t, map[string]any{"sessionId": "stored"}, calls.first("session/projections")["request"])
+}
+
+func TestCreateSessionAcceptsAStoredSessionThatStatesNoDirectory(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	calls := serveNativeReplies(t, a, map[string]map[string]any{
+		"session/projections": {"ok": true, "value": map[string]any{"values": map[string]any{}}},
+	})
+	id, err := a.createSession(context.Background(), "stored")
+	require.NoError(t, err)
+	assert.Equal(t, "stored", id)
+	assert.Equal(t, []string{"session/projections"}, calls.methods())
+}
+
+func TestCreateSessionRefusesAStoredSessionOfAnotherDirectory(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	calls := serveNativeReplies(t, a, map[string]map[string]any{
+		"session/projections": {"ok": true, "value": map[string]any{"values": map[string]any{"workingDirectory": "/elsewhere"}}},
+	})
+	_, err := a.createSession(context.Background(), "stored")
+	require.ErrorContains(t, err, "another working directory")
+	assert.Equal(t, []string{"session/projections"}, calls.methods(), "a refused Session creates nothing")
+}
+
+func TestCreateSessionCreatesAnUnstoredSessionUnderItsIdentity(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	calls := serveNativeReplies(t, a, map[string]map[string]any{
+		"session/projections": {"ok": true, "value": nil},
+		"session/create":      {"ok": true, "value": map[string]any{"sessionId": "stored"}},
+	})
+	id, err := a.createSession(context.Background(), "stored")
+	require.NoError(t, err)
+	assert.Equal(t, "stored", id)
+	assert.Equal(t, []string{"session/projections", "session/create"}, calls.methods())
+	assert.Equal(t, map[string]any{"cwd": "/workspace", "sessionId": "stored"}, calls.first("session/create")["request"])
+}
+
+func TestCreateSessionRefusesAnUnstoredSessionThatComesBackUnderAnotherIdentity(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	serveNativeReplies(t, a, map[string]map[string]any{
+		"session/projections": {"ok": true, "value": nil},
+		"session/create":      {"ok": true, "value": map[string]any{"sessionId": "minted"}},
+	})
+	_, err := a.createSession(context.Background(), "stored")
+	require.ErrorContains(t, err, "invalid Session identity")
+}
+
+func TestCreateSessionCreatesANewSessionWithoutReadingTheStore(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	calls := serveNativeReplies(t, a, map[string]map[string]any{
+		"session/create": {"ok": true, "value": map[string]any{"sessionId": "minted"}},
+	})
+	id, err := a.createSession(context.Background(), "")
+	require.NoError(t, err)
+	assert.Equal(t, "minted", id)
+	assert.Equal(t, []string{"session/create"}, calls.methods())
+	assert.Equal(t, map[string]any{"cwd": "/workspace"}, calls.first("session/create")["request"])
+}
+
+func TestCreateSessionReturnsAFailedStoreRead(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	calls := serveNativeReplies(t, a, map[string]map[string]any{
+		"session/projections": {"ok": false, "error": map[string]any{"code": "gateway/internal", "message": "the store is unavailable"}},
+	})
+	_, err := a.createSession(context.Background(), "stored")
+	require.ErrorContains(t, err, "the store is unavailable")
+	assert.Equal(t, []string{"session/projections"}, calls.methods())
 }

@@ -53,8 +53,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 	a.clock = clock
 	return acp.Hooks{
-		ModeChannel:    acp.ModeChannelPermissionMode,
-		EffortConfigID: contracts.DiracConfigReasoningEffort,
+		WithBypassPermission: func(claim func()) {
+			a.WithOptionValue(contracts.DiracConfigYolo, "true", claim)
+		},
+		PermissionAllowsBypass: permissionAllowsBypass,
+		ModeChannel:            acp.ModeChannelPermissionMode,
+		EffortConfigID:         contracts.DiracConfigReasoningEffort,
 		// Dirac advertises `dev.dirac/whisper` in the initialize `_meta` as a
 		// bare capability flag, not the sessionSteer.method shape the shared
 		// parser reads, so the advertised steer method is a constant of this

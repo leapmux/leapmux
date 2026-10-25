@@ -18,9 +18,10 @@ func fallbackKiloPrimaryAgents() []*leapmuxv1.AvailableOption {
 	}
 }
 
-// kiloStaticOptionGroups holds Kilo's static primary-agent group. Registration
-// gives this group to both the registry and the ACP start.
-var kiloStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPrimaryAgent, fallbackKiloPrimaryAgents())
+// kiloStaticOptionGroups holds Kilo's static primary-agent group, the family's
+// Auto-approve group and Kilo Swarm. Registration gives these groups to both
+// the registry and the ACP start.
+var kiloStaticOptionGroups = append(acp.StaticSecondaryGroup(acp.ModeChannelPrimaryAgent, fallbackKiloPrimaryAgents()), opencode.AutoApproveGroup, kiloSwarmGroup)
 
 // kiloLocator finds the Kilo CLI on the user's PATH.
 var kiloLocator = launch.Binaries("kilo")

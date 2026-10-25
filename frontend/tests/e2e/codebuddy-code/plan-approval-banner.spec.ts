@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { enterPlanModeToolCall, exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { answerPlanReview, enterControlFeedback, expectNoControlBanner, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
+import { answerPlanReview, chooseSettingsOption, enterControlFeedback, expectNoControlBanner, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code plan approval', () => {
   const PROVIDER = AgentProvider.CODEBUDDY
@@ -37,6 +37,11 @@ codebuddyTest.describe('CodeBuddy Code plan approval', () => {
     await waitForAgentIdle(page)
     await expectSettingsOptionChosen(page, 'permissionMode-plan')
     await expectSettingsChip(page, 'Plan')
+
+    // A live setting acknowledgement must not erase the required input recovery.
+    await chooseSettingsOption(page, 'thinking-true')
+    await waitForSettingsIdle(page)
+    await expectSettingsOptionChosen(page, 'thinking-true')
 
     const second = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(PROVIDER, 'exit-plan-2', modelScript.prompt(planText('second')))] })
     await modelScript.rule({

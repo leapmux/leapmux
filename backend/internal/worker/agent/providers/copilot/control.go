@@ -258,6 +258,8 @@ func (a *Agent) clearNativeControls() {
 	for _, identifier := range identifiers {
 		a.sink.CancelControlRequest(identifier)
 	}
+	// The folder-trust question belongs to the session too.
+	a.workspaceTrust.Retire(a.sink)
 }
 
 func (a *Agent) abortNativeControlSession(sessionID string) {
@@ -284,6 +286,13 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	identifier := envelope.Response.RequestID
 	if identifier == "" {
 		return a.copilotConnection.SendRawInput(raw, stop)
+	}
+	if providerkit.IsWorkspaceTrustRequestID(identifier) {
+		// LeapMux asked this question, so no runtime request waits for the answer.
+		a.sessionMu.RLock()
+		defer a.sessionMu.RUnlock()
+		_, err := a.workspaceTrust.Answer(a.sink, copilotWorkspaceTrustHost{a}, raw)
+		return err
 	}
 	a.controlMu.Lock()
 	pending := a.controls[identifier]

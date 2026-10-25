@@ -8,8 +8,11 @@ import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
 import { commandCodePermissionPresets } from './commandcode/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
+import { cursorPermissionPresets } from './cursor/permissionPresets'
 import { deepseekHarnessPermissionPresets } from './deepseekharness/permissionPresets'
+import { diracPermissionPresets } from './dirac/permissionPresets'
 import { droidPermissionPresets } from './droid/permissionPresets'
+import { fastAgentPermissionPresets } from './fastagent/permissionPresets'
 import { geminiPermissionPresets } from './gemini/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
 import { grokPermissionPresets } from './grok/permissionPresets'
@@ -20,6 +23,7 @@ import { lettaPermissionPresets } from './letta/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
 import { musePermissionPresets } from './muse/permissionPresets'
 import { ohMyPiPermissionPresets } from './ohmypi/permissionPresets'
+import { openCodePermissionPresets } from './openCodePermissionPresets'
 import { qoderPermissionPresets } from './qoder/permissionPresets'
 import { qwenPermissionPresets } from './qwen/permissionPresets'
 import { reasonixPermissionPresets } from './reasonix/permissionPresets'
@@ -30,10 +34,10 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.UNSPECIFIED]: undefined,
   [AgentProvider.CLAUDE_CODE]: claudePermissionPresets,
   [AgentProvider.CODEX]: codexPermissionPresets,
-  [AgentProvider.CURSOR]: undefined,
+  [AgentProvider.CURSOR]: cursorPermissionPresets,
   [AgentProvider.GITHUB_COPILOT]: copilotPermissionPresets,
-  [AgentProvider.KILO]: undefined,
-  [AgentProvider.OPENCODE]: undefined,
+  [AgentProvider.KILO]: openCodePermissionPresets,
+  [AgentProvider.OPENCODE]: openCodePermissionPresets,
   [AgentProvider.GOOSE]: goosePermissionPresets,
   [AgentProvider.PI]: undefined,
   [AgentProvider.REASONIX]: reasonixPermissionPresets,
@@ -50,14 +54,14 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.CODEBUDDY]: codebuddyPermissionPresets,
   [AgentProvider.JUNIE]: juniePermissionPresets,
   [AgentProvider.LETTA]: lettaPermissionPresets,
-  [AgentProvider.DIRAC]: undefined,
+  [AgentProvider.DIRAC]: diracPermissionPresets,
   [AgentProvider.QODER]: qoderPermissionPresets,
   [AgentProvider.DROID]: droidPermissionPresets,
   [AgentProvider.COMMAND_CODE]: commandCodePermissionPresets,
   [AgentProvider.DEEPSEEK_HARNESS]: deepseekHarnessPermissionPresets,
   [AgentProvider.GEMINI_CLI]: geminiPermissionPresets,
   [AgentProvider.MUSE_CODE]: musePermissionPresets,
-  [AgentProvider.FAST_AGENT]: undefined,
+  [AgentProvider.FAST_AGENT]: fastAgentPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

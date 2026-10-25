@@ -828,8 +828,10 @@ var (
 	ErrAutoReviewThreadRetired = errors.New("the automatic review belongs to a thread that the agent no longer runs")
 )
 
-// NativeTurnRestarter reports a launch-only change made by a native tool.
-// The Worker replaces the process with the same session before it sends queued input.
+// NativeTurnRestarter reports a change that only a new process applies: a
+// launch-only change that a native tool made, or a workspace trust that a
+// running session does not load. The Worker replaces the process with the same
+// session before it sends queued input.
 type NativeTurnRestarter interface {
 	NativeTurnRestartRequired() bool
 }

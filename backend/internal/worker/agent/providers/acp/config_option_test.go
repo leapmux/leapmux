@@ -768,3 +768,73 @@ func TestACPSessionRPCs_ConcurrentWithClearContext(t *testing.T) {
 		}
 	}
 }
+
+func TestTypedBooleanConfigWritesUseNativeValues(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		t.Run(value, func(t *testing.T) {
+			a, requests := newTestAgentForRPC(t)
+			a.options.markKnown(ConfigOption{ID: "feature_flag", Type: "boolean", CurrentValue: "false"})
+			require.NoError(t, a.setConfigOption("feature_flag", value))
+			recorded := requests()
+			require.Len(t, recorded, 1)
+			assert.Equal(t, MethodSessionSetConfigOption, recorded[0].Method)
+			assert.Equal(t, "boolean", recorded[0].Params["type"])
+			assert.Equal(t, value == "true", recorded[0].Params["value"])
+		})
+	}
+}
+
+func TestTypedBooleanConfigWritesRejectInvalidChoices(t *testing.T) {
+	a, requests := newTestAgentForRPC(t)
+	a.options.markKnown(ConfigOption{ID: "feature_flag", Type: "boolean", CurrentValue: "false"})
+	for _, value := range []string{"", "0", "1", "yes", "TRUE", "{}"} {
+		require.NoError(t, a.setConfigOption("feature_flag", value))
+	}
+	assert.Empty(t, requests(), "an unsupported choice never reaches the native runtime")
+}
+
+func TestTypedBooleanConfigWriteReadbackAndRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reply      agenttest.RPCReply
+		want       string
+		wantError  bool
+		unresolved bool
+	}{
+		{name: "confirmed", reply: agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[{"id":"feature_flag","type":"boolean","currentValue":true}]}`)}, want: "true"},
+		{name: "missing snapshot", reply: agenttest.RPCReply{Result: json.RawMessage(`{}`)}, want: "true", unresolved: true},
+		{name: "refused", reply: agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"choice refused"}`)}, want: "false", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newTestAgentForRPCWithResponder(t, func(string) agenttest.RPCReply { return tc.reply })
+			a.Mu.Lock()
+			a.applyOptionGroupsLocked([]ConfigOption{{ID: "feature_flag", Type: "boolean", CurrentValue: "false"}})
+			a.Mu.Unlock()
+			err := a.setConfigOption("feature_flag", "true")
+			if tc.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			a.Mu.Lock()
+			defer a.Mu.Unlock()
+			assert.Equal(t, tc.want, a.options.values["feature_flag"])
+			assert.Equal(t, tc.unresolved, a.options.unresolved.has("feature_flag"))
+		})
+	}
+}
+
+func TestTypedBooleanConfigStartupReplaysFalse(t *testing.T) {
+	a, requests := newTestAgentForRPCWithResponder(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[{"id":"feature_flag","type":"boolean","currentValue":false}]}`)}
+	})
+	a.Mu.Lock()
+	a.applyOptionGroupsLocked([]ConfigOption{{ID: "feature_flag", Type: "boolean", CurrentValue: "true"}})
+	a.Mu.Unlock()
+	a.applyStartupOptions(agent.Options{Options: map[string]string{"feature_flag": "false"}})
+	recorded := requests()
+	require.Len(t, recorded, 1)
+	assert.Equal(t, false, recorded[0].Params["value"])
+	assert.Equal(t, "boolean", recorded[0].Params["type"])
+	assert.Equal(t, "false", agent.CurrentOptions(a.OptionGroups())["feature_flag"])
+}

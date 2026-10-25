@@ -1278,7 +1278,7 @@ func TestModelDecorator_ReadsTheMetadataOfTheInfoThatTheBuildKept(t *testing.T) 
 	t.Parallel()
 	b := &Base{}
 	b.hooks.ModelIDNormalizer = func(id string) string {
-		if id == "default[]" {
+		if id == "default" {
 			return "auto"
 		}
 		return id
@@ -1289,9 +1289,9 @@ func TestModelDecorator_ReadsTheMetadataOfTheInfoThatTheBuildKept(t *testing.T) 
 	}
 
 	models, current := b.buildModels([]ModelInfo{
-		{ModelID: "default[]", Name: "Auto", Meta: json.RawMessage(`{"rank":1}`)},
+		{ModelID: "default", Name: "Auto", Meta: json.RawMessage(`{"rank":1}`)},
 		{ModelID: "auto", Name: "Auto again", Meta: json.RawMessage(`{"rank":2}`)},
-	}, "default[]")
+	}, "default")
 
 	require.Len(t, models, 1)
 	assert.Equal(t, "auto", models[0].Id)
@@ -1324,9 +1324,9 @@ func TestModelInfo_DecodesItsMetadata(t *testing.T) {
 // TestParseACPSessionResult_ToleratesNonStringCurrentValue guards the Dirac shape: a
 // config option of a non-select widget type sends its current value as that widget's
 // own JSON type (`type: "boolean"` auto_approve/yolo arrive as JSON bools). The
-// session parse must survive -- isSelectableConfigOption drops those widgets from the
-// option machinery, so nobody surfaces the value -- instead of aborting startup over
-// it. Strings and null keep their old readings.
+// session parse keeps those scalar values without aborting startup. Boolean widgets
+// become independent option groups; numeric and text widgets stay unsupported.
+// Strings and null keep their old readings.
 func TestParseACPSessionResult_ToleratesNonStringCurrentValue(t *testing.T) {
 	t.Parallel()
 	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[` +
@@ -1342,4 +1342,28 @@ func TestParseACPSessionResult_ToleratesNonStringCurrentValue(t *testing.T) {
 	assert.Equal(t, "true", session.ConfigOptions[2].CurrentValue)
 	assert.Equal(t, "3", session.ConfigOptions[3].CurrentValue, "a number keeps its JSON literal")
 	assert.Equal(t, "", session.ConfigOptions[4].CurrentValue, "null reads as the empty value it always did")
+}
+
+func TestConfigOptionDuplicateOrderingIncludesWidgetAndDisplayMetadata(t *testing.T) {
+	t.Parallel()
+	for _, change := range []struct {
+		name string
+		edit func(*ConfigOption)
+	}{
+		{"widget", func(o *ConfigOption) { o.Type = "boolean" }},
+		{"name", func(o *ConfigOption) { o.Name = "Other label" }},
+		{"description", func(o *ConfigOption) { o.Description = "Other description" }},
+		{"category", func(o *ConfigOption) { o.Category = "other" }},
+		{"choice label", func(o *ConfigOption) { o.Options[0].Name = "Disabled" }},
+		{"choice description", func(o *ConfigOption) { o.Options[0].Description = "Disabled state" }},
+		{"choice metadata", func(o *ConfigOption) { o.Options[0].Meta = json.RawMessage(`{"contextLimit":42}`) }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			a := ConfigOption{ID: "flag", Type: "select", CurrentValue: "false", Options: []ConfigOptionValue{{Value: "false"}, {Value: "true"}}}
+			b := a
+			b.Options = append([]ConfigOptionValue(nil), a.Options...)
+			change.edit(&b)
+			assert.NotEqual(t, acpConfigOptionContentLess(a, b), acpConfigOptionContentLess(b, a), "different duplicate definitions need a stable winner")
+		})
+	}
 }

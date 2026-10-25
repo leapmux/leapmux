@@ -129,6 +129,24 @@ func (b *Base) SendPromptDetached(content string, attachments []*leapmuxv1.Attac
 	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
 }
 
+// SendChildPromptDetached sends a prompt to sessionID, a session that a
+// subagent runs in, and returns without waiting for the turn. handle receives
+// the answer when the turn ends. The provider's PromptParams hook does not
+// run: it states the settings of the main session.
+func (b *Base) SendChildPromptDetached(sessionID, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+	if sessionID == "" {
+		return fmt.Errorf("the subagent prompt has no session")
+	}
+	params, err := json.Marshal(map[string]any{
+		"sessionId": sessionID,
+		"prompt":    BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal ACP prompt params: %w", err)
+	}
+	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+}
+
 func (a *Base) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendPreparedPromptForSession(&sessionID, content, attachments, nil)
 }

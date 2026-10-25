@@ -114,9 +114,14 @@ func TestCodexUncertainRetryStartKeepsLaterInputOut(t *testing.T) {
 	ctx := codexLifecycleTestContext(t)
 	trap := clock.Trap().NewTimer(codexTurnStartAckTimerTag)
 	t.Cleanup(trap.Close)
+	startObserved := make(chan struct{})
 	var a *Agent
 	a, sink, requests := newCodexAgentForRPCWithClock(t, clock, retryResponder(&a, func(method string) (agenttest.RPCReply, bool) {
-		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}, method == "turn/start"
+		if method == "turn/start" {
+			close(startObserved)
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}, true
+		}
+		return agenttest.RPCReply{}, false
 	}))
 	armRetryableTurn(t, a, sink)
 	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
@@ -125,13 +130,25 @@ func TestCodexUncertainRetryStartKeepsLaterInputOut(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- retry.Start() }()
 	require.Equal(t, turnStartAckTimeout, testutil.WaitForTimer(t, ctx, trap))
+	// The timer starts after the write, but the peer can record that write later.
+	select {
+	case <-startObserved:
+	case <-ctx.Done():
+		t.Fatal("the peer did not record the retry start")
+	}
 	clock.Advance(turnStartAckTimeout).MustWait(ctx)
 	require.ErrorIs(t, <-done, agent.ErrDeliveryUncertain)
 	active, _ := sink.LastTurnActive()
 	require.True(t, active, "delivery uncertainty must not release the queue")
-	before := len(requests())
+	before := requests()
 	require.ErrorIs(t, a.SendInput("A later message.", nil), agent.ErrAgentBusy)
-	assert.Len(t, requests(), before)
+	// The barrier reply proves the peer consumed every preceding frame.
+	_, err = a.SendRequest("test/barrier", json.RawMessage(`{}`), 30*time.Second)
+	require.NoError(t, err)
+	after := requests()
+	require.Len(t, after, len(before)+1)
+	assert.Equal(t, before, after[:len(before)])
+	assert.Equal(t, "test/barrier", after[len(before)].Method)
 	feedCodexLines(a, retryTurnStarted)
 	model, effort := a.modelAndEffortForTest()
 	assert.Equal(t, "gpt-5.5", model)

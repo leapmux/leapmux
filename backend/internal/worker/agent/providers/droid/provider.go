@@ -3,7 +3,6 @@ package droid
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 
@@ -57,30 +56,15 @@ func (droidProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 	return droidResolveControlResponse(ctx)
 }
 
-// ValidateAttachment accepts text and images. A PDF and a binary file are
-// refused with a reason.
-func (droidProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if err := providerkit.RejectPDFAndBinaryAttachment(droidAttachmentLabel, attachment); err != nil {
-		return err
-	}
-	if attachment.Kind == agent.AttachmentKindImage && len(attachment.Data) == 0 {
-		return fmt.Errorf("factory Droid does not support an empty image attachment: %s", attachment.Filename)
-	}
-	return nil
-}
-
-// ChildCapabilities.AcceptsMessages is true: droid.add_user_message routes by
-// params.sessionId, so a child session id addresses the child. The registry
-// row key of a child is its childSessionId (see child_steer.go).
-
-// ChildCapabilities.AcceptsInterrupt is false for the same reason.
-
 // ListStoredSessions reads Factory Droid's own session store.
 func (droidProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return droidStoredSessions(ctx, q)
 }
 
 // ChildCapabilities states the native child operations that this provider supports.
+// Messages use a separate process loaded with the child session; the root
+// stream RPC process ignores params.sessionId when choosing where to execute.
+// A native background child's running process cannot be interrupted through that route.
 func (droidProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: false}
 }

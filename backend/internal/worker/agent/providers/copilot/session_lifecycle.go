@@ -164,6 +164,7 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 
 // prepareNativeSession subscribes an open session to the control events and restores
 // the settings the previous session carried. opts comes from sessionLaunchOptions.
+// It then asks about folder trust again (checkFolderTrust).
 //
 // Every path that opens a session again needs both, in this order: the context clear,
 // its own rollback, and the goal clear. The subscription comes first because a setting
@@ -173,7 +174,13 @@ func (a *Agent) prepareNativeSession(opts agent.Options) error {
 	if err := a.registerNativeControlEvents(); err != nil {
 		return err
 	}
-	return a.restoreNativeSettings(opts)
+	if err := a.restoreNativeSettings(opts); err != nil {
+		return err
+	}
+	// The question of the session that went away retired with it, so a folder
+	// that the reader neither trusted nor declined is asked about again.
+	a.checkFolderTrustInBackground()
+	return nil
 }
 
 func (a *Agent) currentNativeSessionID() string {

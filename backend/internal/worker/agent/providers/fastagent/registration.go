@@ -14,13 +14,20 @@ import (
 // argument shape this package states.
 var fastagentLocator = launch.Binaries("fast-agent")
 
+const bypassRestartNote = "Changing this setting restarts the agent and stops any active turn."
+
+var bypassPermissionsGroup = agent.SelectGroup(contracts.FastagentOptionBypassPermissions, "Bypass Permissions", agent.OptionOrderProviderFirst, "false", []agent.OptionDef{
+	{Id: "false", Name: "Off", Description: bypassRestartNote + " Use native tool permission rules and prompts.", Default: true},
+	{Id: "true", Name: "On", Description: bypassRestartNote + " Skip native tool permission rules and prompts."},
+})
+
 // Registration states everything the worker knows about fast-agent before any of
 // its agents runs. fast-agent discovers its modes and its one model at session
 // creation, so the session supplies the catalog. Its modes are its configured
 // agents, and the default setup has one -- the permission-mode axis carries that
 // single `agent` mode, reported on the native modes channel. There is no
-// per-session approval switch to pair with it: the ACP permission handler
-// asks for each tool that needs approval, and the mode axis selects agents.
+// live approval switch to pair with it. Bypass uses a native process flag and
+// therefore restarts the agent; the mode axis still selects configured agents.
 func Registration() agent.Registration {
 	return agent.Registration{
 		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT,
@@ -30,8 +37,8 @@ func Registration() agent.Registration {
 		// Models are whatever the launch `--model` names; fast-agent routes the
 		// string through its own model database and reports no catalog.
 		DefaultModels: nil,
-		// The session supplies available modes and config options.
-		OptionGroups:        nil,
+		// The session supplies modes and config options; this group describes the native launch policy.
+		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{bypassPermissionsGroup},
 		AdditionalOptionIDs: []string{agent.OptionIDPermissionMode},
 		PermissionDefaults: agent.PermissionDefaults{
 			Fallback: contracts.FastagentModeAgent,

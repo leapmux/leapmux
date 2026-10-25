@@ -50,9 +50,10 @@ func FamilyRegistration(spec FamilyRegistrationSpec) agent.Registration {
 	}
 }
 
-// opencodeStaticOptionGroups holds OpenCode's static primary-agent group. The
-// factory registration and Start both read this one value.
-var opencodeStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPrimaryAgent, fallbackOpenCodePrimaryAgents())
+// opencodeStaticOptionGroups holds OpenCode's static primary-agent group and
+// the family's Auto-approve group. The factory registration and Start both
+// read this one value.
+var opencodeStaticOptionGroups = append(acp.StaticSecondaryGroup(acp.ModeChannelPrimaryAgent, fallbackOpenCodePrimaryAgents()), AutoApproveGroup)
 
 // opencodeLocator finds the OpenCode CLI on the user's PATH.
 var opencodeLocator = launch.Binaries("opencode")

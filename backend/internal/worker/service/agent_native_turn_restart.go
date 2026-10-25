@@ -76,13 +76,16 @@ func (svc *Service) restartAfterNativeTurn(agentID string, admission agent.TurnS
 	if err != nil {
 		return
 	}
-	slog.Info("agent restarted with native mode", "agent_id", agentID, "resume_session_id", resumeSessionID)
+	slog.Info("agent restarted for a native change", "agent_id", agentID, "resume_session_id", resumeSessionID)
 }
 
+// nativeTurnRestartMessages speak for any change that a provider can apply only in
+// a new process (agent.NativeTurnRestarter): a native plan mode, or a workspace
+// trust that loads the project's configuration.
 var nativeTurnRestartMessages = restartMessages{
-	pauseFailedLog:      "failed to pause input for a native plan mode restart",
-	finishFailedLog:     "failed to finish the queue pause after a native plan mode restart",
-	restartFailedLog:    "failed to restart the native plan mode process",
-	pauseFailedNotice:   "Failed to apply the native plan mode because the input queue could not pause: ",
-	restartFailedNotice: "Failed to restart the agent with the native plan mode: ",
+	pauseFailedLog:      "failed to pause input for a native restart",
+	finishFailedLog:     "failed to finish the queue pause after a native restart",
+	restartFailedLog:    "failed to restart the agent process for a native change",
+	pauseFailedNotice:   "Failed to apply the change that needs a new agent process, because the input queue could not pause: ",
+	restartFailedNotice: "Failed to restart the agent to apply the change that needs a new process: ",
 }

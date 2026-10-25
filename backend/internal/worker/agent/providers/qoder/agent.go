@@ -29,13 +29,18 @@ type Agent struct {
 	permissionMode           string
 	planMode                 bool
 	effort                   string
+	thinking                 string   // The Extended Thinking value at launch; Qoder reads it only then.
+	outputStyle              string   // The Output Style value at launch; empty or auto sends no flag.
+	outputStyles             []string // The styles that the initialize reply lists, under mu.
+	runningOutputStyle       string   // The style that the initialize reply reports, under mu.
 	active                   bool
 	turnOrder                providerkit.TurnSeq
 	activityRev              uint64
 	capabilities             []string
 	childStreamMu            sync.Mutex
 	childStreams             map[string]*qoderChildStream
-	rootStreamKinds          map[int]string // Native block kinds for live progress, under mu.
+	childTaskIDs             map[string]string // Native task ID of each running task child, by its spawn tool_use_id, under mu.
+	rootStreamKinds          map[int]string    // Native block kinds for live progress, under mu.
 	storedInstructionWarning bool
 	notifications            map[string]*qoderNotificationState // The empty key identifies the root transcript. Guarded by mu.
 	workflows                map[qoderWorkflowKey]*qoderWorkflowRun
@@ -49,10 +54,15 @@ type Agent struct {
 	interruptRequested bool
 
 	controls providerkit.Correlator[string]
+
+	// usageRefresh wakes refreshUsageLoop. Start creates it, so an agent built
+	// without a process sends no quota request. It never changes afterwards.
+	usageRefresh chan struct{}
 }
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.ChildInterrupter = (*Agent)(nil)
 
 // qoderControlResult is the outcome of one pending control request.
 type qoderControlResult struct {

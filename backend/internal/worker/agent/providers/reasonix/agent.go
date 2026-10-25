@@ -30,6 +30,10 @@ type Agent struct {
 	// goalStatusMu on purpose, because it writes a row and the lock protects the
 	// goal revision alone.
 	lastStatusPhase string
+	// planDraft is the assistant text of the current turn. Reasonix raises its
+	// plan approval after streaming the proposal, so the observer saves this text
+	// for a possible fresh-context execution. Guarded by Base.Mu.
+	planDraft string
 }
 
 // Agent steers. Manager.SupportsSteering answers false, with no build error, for a

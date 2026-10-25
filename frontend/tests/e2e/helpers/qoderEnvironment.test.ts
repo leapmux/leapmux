@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createQoderEnvironment } from './qoderEnvironment'
+import { createQoderEnvironment, QODER_PROBE_OUTPUT_STYLE } from './qoderEnvironment'
 import { qoderEndpointCacheRecords } from './qoderSurface'
 
 let runDirectory: string
@@ -65,6 +65,13 @@ describe('createQoderEnvironment', () => {
       QODER_SERVER_ENDPOINT: '',
       QODERSEC_SKIP_ASYNC_UPDATE: '1',
     })
+  })
+
+  it('writes the probe output style where Qoder reads user styles', () => {
+    createQoderEnvironment(options())
+    const style = readFileSync(join(runDirectory, 'home', '.qoder', 'output-styles', 'leapmux-probe.md'), 'utf8')
+    expect(style).toMatch(new RegExp(`^---\\nname: ${QODER_PROBE_OUTPUT_STYLE.name}\\n`))
+    expect(style).toContain(QODER_PROBE_OUTPUT_STYLE.marker)
   })
 
   it('writes no launch wrapper when the search path holds no qodercli', () => {

@@ -347,6 +347,8 @@ func (a *Agent) handleTurnEnded(event kimiEvent) {
 	run.turnActive = false
 	a.Mu.Unlock()
 	a.PublishTurnActive()
+	// The turn used the plan, so its windows moved.
+	a.requestUsageRefresh()
 
 	retry := payload.Reason == contracts.KimiTurnEndFailed && payload.Error != nil && payload.Error.Retryable
 	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, retry, event.Raw)

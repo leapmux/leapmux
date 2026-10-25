@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -40,6 +41,32 @@ func TestRuntimeEnvPinsTheStoreAndTheToken(t *testing.T) {
 	assert.True(t, envutil.HasKey(env, "PATH"))
 	assert.Contains(t, env, "EXTRA=1")
 	assert.Contains(t, env, "LEAPMUX_WORKER=1")
+}
+
+func TestRuntimeEnvSelectsOutputStyle(t *testing.T) {
+	t.Parallel()
+	for _, style := range []string{"", "auto", "normal", "concise"} {
+		t.Run(style, func(t *testing.T) {
+			t.Parallel()
+			inherited := []string{"PATH=/bin", "CODEWHALE_VERBOSITY=normal", "DEEPSEEK_VERBOSITY=concise"}
+			opts := agent.Options{Options: optionmap.Map{"outputStyle": style}, ExtraEnv: []string{"CODEWHALE_VERBOSITY=concise"}}
+			original := append([]string(nil), inherited...)
+			wanted := []string{"normal", "concise"}
+			if style == "normal" || style == "concise" {
+				wanted = []string{style}
+			}
+			env := runtimeEnv(inherited, opts, codewhaleStore{dir: "/stores/style"}, "style-token")
+			assert.Equal(t, wanted, envutil.ValuesFor(env, "CODEWHALE_VERBOSITY"))
+			assert.Empty(t, envutil.ValuesFor(env, "DEEPSEEK_VERBOSITY"))
+			assert.Equal(t, original, inherited)
+			assert.Equal(t, style, opts.Get("outputStyle"))
+			assert.Equal(t, []string{"style-token"}, envutil.ValuesFor(env, envRuntimeToken))
+		})
+	}
+	for _, style := range []string{"", "auto"} {
+		env := runtimeEnv(nil, agent.Options{Options: optionmap.Map{"outputStyle": style}}, codewhaleStore{dir: "/stores/auto"}, "token")
+		assert.Empty(t, envutil.ValuesFor(env, "CODEWHALE_VERBOSITY"), "Auto leaves the native configuration authoritative")
+	}
 }
 
 // healthRuntime is a runtime that answers /health with 503 until ready reports

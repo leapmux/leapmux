@@ -26,15 +26,14 @@ const factoryApiVersion = "1.0.0"
 // tolerates unknown notification types rather than failing.
 const factoryProtocolVersion = "1.222.0"
 
-// droidExecArgs start one long-lived stream-jsonrpc session worker.
+// droidBaseArgs start one long-lived stream-jsonrpc session worker.
 //
 //   - `--input-format stream-jsonrpc` / `--output-format stream-jsonrpc` select
 //     Factory's daemon-compatible JSON-RPC protocol. `stream-json` is a
 //     deprecated subset.
 //   - `--settings <path>` points the process at the runtime settings file
 //     LeapMux generates, which is the isolation seam for the BYOK model.
-//   - `--skip-permissions-unsafe` is added by the caller for E2E/bypass runs.
-//     It cannot combine with `--auto`.
+//   - The session API supplies autonomy so live changes remain effective.
 var droidBaseArgs = []string{
 	"exec",
 	"--input-format", "stream-jsonrpc",
@@ -160,14 +159,15 @@ type loadSessionParams struct {
 // addUserMessageParams are the droid.add_user_message params. The prompt
 // argument is forbidden with a streaming --input-format, so every turn goes
 // over this method. `text` is a plain string; a probe proved a `content` array
-// is refused with `params.text: Required`. Images ride the separate `images`
-// field, which carries each supported image as base64 data.
+// is refused with `params.text: Required`. Images use the separate images field;
+// PDF sources use files. Both carry the original bytes as base64 data.
 type addUserMessageParams struct {
 	SessionID string `json:"sessionId"`
 	// Droid's mq schema accepts messageId. enqueueRequest preserves it for the committed user message.
 	MessageID      string            `json:"messageId"`
 	Text           string            `json:"text"`
 	Images         []droidInputImage `json:"images,omitempty"`
+	Files          []droidInputFile  `json:"files,omitempty"`
 	QueuePlacement string            `json:"queuePlacement,omitempty"`
 }
 
@@ -176,6 +176,14 @@ type droidInputImage struct {
 	Type      string `json:"type"`
 	MediaType string `json:"mediaType"`
 	Data      string `json:"data"`
+}
+
+// droidInputFile is a native base64 PDF source.
+type droidInputFile struct {
+	Type      string `json:"type"`
+	MediaType string `json:"mediaType"`
+	Data      string `json:"data"`
+	Name      string `json:"name,omitempty"`
 }
 
 // interruptParams are the droid.interrupt_session params.

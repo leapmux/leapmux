@@ -264,15 +264,6 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       .toEqual([{ kind: 'hook', outcome: 'timed-out' }])
   })
 
-  it('words the workspace hook admission when hooks are pending', () => {
-    expect(zcodeNotificationEntry(sessionUpdated({ pendingCount: 2, bundleDigest: 'abc' })))
-      .toEqual([{ kind: 'text', text: '2 workspace hooks pending review; disabled for this session' }])
-    expect(zcodeNotificationEntry(sessionUpdated({ pendingCount: 1, bundleDigest: 'abc' })))
-      .toEqual([{ kind: 'text', text: '1 workspace hook pending review; disabled for this session' }])
-    expect(zcodeNotificationEntry(sessionUpdated({ pendingCount: 0, bundleDigest: 'abc' })))
-      .toEqual([{ kind: 'text', text: '0 workspace hooks pending review; disabled for this session' }])
-  })
-
   // The reason is a wire word. A known word reads as a phrase; an unknown word
   // stays off the row rather than showing a raw token.
   it('words a discarded queued input with a phrase for its reason', () => {

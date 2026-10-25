@@ -12,7 +12,7 @@ droidTest('runs successful and failed native commands with their actual output',
 droidTest('updates one tool card with the live output and stores one completed result', async ({ native }) => {
   const callID = bashToolCall(native.provider, PROGRESS_OUTPUT_CALL_ID, 'printf progress').id
   await exerciseOutputByteProgress(native, {
-    supported: false,
+    supported: true,
     afterOutputBoundary: async (boundary) => {
       const live = toolCallRow(native.page, callID, 'request')
       await expect(live).toHaveCount(1)

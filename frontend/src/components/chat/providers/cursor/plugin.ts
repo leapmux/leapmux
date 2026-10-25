@@ -3,6 +3,7 @@ import { registerACPProvider } from '../acp/registerACPProvider'
 import { cursorControlResponseSummary } from './controlResponse'
 import { cursorExtractControl } from './extractControl'
 import { cursorToolCallAdapter } from './extractors/toolCall'
+import { cursorPermissionPresets } from './permissionPresets'
 import { cursorControlActionsFor, cursorQuestionHandling } from './pluginControls'
 
 registerACPProvider({
@@ -10,6 +11,7 @@ registerACPProvider({
   toolCallAdapter: cursorToolCallAdapter,
   attachments: { text: true, image: true, pdf: false, binary: false },
   defaultPermissionMode: 'agent',
+  permissionPresets: cursorPermissionPresets,
   controlResponseDisplay: cursorControlResponseSummary,
   extractControl: cursorExtractControl,
   // Cursor answers its create-plan itself: the verdict its worker transforms is

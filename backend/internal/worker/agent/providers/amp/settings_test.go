@@ -47,11 +47,36 @@ func TestLaunchModes(t *testing.T) {
 		launchPermissionMode(options(map[string]string{agent.OptionIDPermissionMode: "bypassPermissions"})))
 }
 
+func TestFastModeBeforeFirstMessage(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, withOptions(map[string]string{"fastMode": "true", contracts.AmpOptionAgentMode: agentModeHigh}))
+	group := groupByID(t, h.agent.OptionGroups(), "fastMode")
+	assert.True(t, group.Mutable)
+	assert.Equal(t, "true", group.CurrentValue)
+	assert.Equal(t, []string{"false", "true"}, optionIDs(group))
+	result := h.agent.UpdateSettings(map[string]string{"fastMode": "false"})
+	assert.Equal(t, "false", result.ConfirmedOptions()["fastMode"])
+	assert.Equal(t, agentModeHigh, result.ConfirmedOptions()[contracts.AmpOptionAgentMode])
+	assert.Equal(t, "false", h.sink.LastSettingsRefresh().Options["fastMode"])
+}
+
+func TestFastModeLocksWithTheNativeThread(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, withOptions(map[string]string{"fastMode": "true"}))
+	h.send("start the thread")
+	group := groupByID(t, h.agent.OptionGroups(), "fastMode")
+	assert.False(t, group.Mutable)
+	assert.Equal(t, "true", group.CurrentValue)
+	assert.NotEmpty(t, group.ReadOnlyReason)
+	result := h.agent.UpdateSettings(map[string]string{"fastMode": "false"})
+	assert.Equal(t, "true", result.ConfirmedOptions()["fastMode"])
+}
+
 func TestOptionGroupsBeforeTheFirstMessage(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withOptions(map[string]string{contracts.AmpOptionAgentMode: agentModeHigh}))
 	groups := h.agent.OptionGroups()
-	require.Len(t, groups, 2)
+	require.Len(t, groups, 3)
 
 	mode := groupByID(t, groups, contracts.AmpOptionAgentMode)
 	assert.True(t, mode.GetMutable())
@@ -127,25 +152,61 @@ func TestUpdateSettingsIgnoresUnknownValues(t *testing.T) {
 	result := h.agent.UpdateSettings(map[string]string{
 		contracts.AmpOptionAgentMode: "deep",
 		agent.OptionIDPermissionMode: "plan",
+		OptionFastMode:               "invalid",
 	})
 	assert.Equal(t, agentModeMedium, result.ConfirmedOptions().Get(contracts.AmpOptionAgentMode))
+	assert.Equal(t, "false", result.ConfirmedOptions().Get(OptionFastMode))
 	assert.Equal(t, contracts.AmpPermissionModeAsk, result.ConfirmedOptions().Get(agent.OptionIDPermissionMode))
 }
 
-func TestSettingsSnapshotConfirmsBothAxes(t *testing.T) {
+func TestSettingsSnapshotConfirmsEveryAxis(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withOptions(map[string]string{agent.OptionIDPermissionMode: contracts.AmpPermissionModeAllowAll}))
 	snapshot := h.agent.SettingsSnapshot()
+	assert.Equal(t, "false", snapshot.ConfirmedOptions().Get(OptionFastMode))
 	assert.Equal(t, agentModeMedium, snapshot.ConfirmedOptions().Get(contracts.AmpOptionAgentMode))
 	assert.Equal(t, contracts.AmpPermissionModeAllowAll, snapshot.ConfirmedOptions().Get(agent.OptionIDPermissionMode))
 }
 
 func TestLockedModeGroupOfAModeTheDialDoesNotList(t *testing.T) {
 	t.Parallel()
-	group := modeGroup("smart", true)
+	group := threadOptionGroup(agentModeGroup, "smart", true, lockedModeNote)
 	require.Len(t, group.GetOptions(), 1)
 	assert.Equal(t, "smart", group.GetOptions()[0].GetId())
 	assert.Equal(t, "smart", group.GetOptions()[0].GetName(), "a mode of a plugin shows its own id")
 	assert.False(t, group.GetMutable())
 	assert.Equal(t, lockedModeNote, group.GetReadOnlyReason())
+}
+
+// settingsProbeServices inspects the lock scope at the actual persistence boundary.
+type settingsProbeServices struct {
+	agent.ProviderServices
+	beforeRefresh func()
+}
+
+func (s settingsProbeServices) PersistSettingsRefresh(refresh optionmap.Map) {
+	s.beforeRefresh()
+	s.ProviderServices.PersistSettingsRefresh(refresh)
+}
+
+func TestSettingsPublicationSerializesChangesWithoutHoldingStateMutex(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	publications := 0
+	h.agent.sink = settingsProbeServices{ProviderServices: h.agent.sink, beforeRefresh: func() {
+		publications++
+		if h.agent.settingsMu.TryLock() {
+			h.agent.settingsMu.Unlock()
+			t.Error("a concurrent settings change can overtake this persistence")
+		}
+		if h.agent.mu.TryLock() {
+			h.agent.mu.Unlock()
+		} else {
+			t.Error("the persistence sink cannot read the current settings while the state mutex is held")
+		}
+	}}
+	h.agent.UpdateSettings(map[string]string{OptionFastMode: "true"})
+	h.send("start with fast mode")
+	assert.Equal(t, 2, publications)
+	assert.Equal(t, "true", h.sink.LastSettingsRefresh().Options[OptionFastMode])
 }

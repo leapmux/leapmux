@@ -25,11 +25,11 @@ const droidPlugin: ProviderPlugin = {
     compactionBoundaryFromMessage: droidCompactionBoundary,
   },
   configuration: {
-    // The same policy as the worker's ValidateAttachment.
+    // File-kind support; the worker checks sizes and the selected native model before delivery.
     attachments: {
       text: true,
       image: true,
-      pdf: false,
+      pdf: true,
       binary: false,
     },
     planMode: buildPlanMode('permissionMode', DROID_MODE.Spec, DROID_MODE.Default),

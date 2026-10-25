@@ -47,9 +47,29 @@ func TestMessageSupplementProjectionReplayRejectsShadowedPrivateState(t *testing
 	t.Parallel()
 	svc, dispatcher, base := setupTestService(t)
 	agentID, _, _ := createShadowedPrivateProjectionRow(t, svc)
-	writer := &replayIdentityWriter{testResponseWriter: base}
+	type failureObservation struct {
+		modes      map[string]leapmuxv1.WatchMode
+		liveFrames int
+	}
+	observed := make(chan failureObservation, 1)
+	writer := &replayIdentityWriter{testResponseWriter: base, onSend: func(message *leapmuxv1.InnerStreamMessage) {
+		if !message.GetIsError() {
+			return
+		}
+		modes := svc.Watchers.AgentModesForChannel(base.ChannelID())
+		before := len(base.streamsSnapshot())
+		svc.Watchers.BroadcastAgentEvent(agentID, testAgentEvent(agentID))
+		observed <- failureObservation{modes: modes, liveFrames: len(base.streamsSnapshot()) - before}
+	}}
 	openReplayIdentityWatch(t, dispatcher, replayIdentityRequest(1, 9, agentID, 0), writer)
 	require.Eventually(t, func() bool { return streamEndedWithError(base) || countCatchUpCompletes(base) > 0 }, 30*time.Second, time.Millisecond)
+	select {
+	case observation := <-observed:
+		assert.Empty(t, observation.modes, "the error must retire registrations before it becomes observable")
+		assert.Zero(t, observation.liveFrames, "a new live broadcast cannot follow the fatal replay error")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the replay did not report its failure observation")
+	}
 	assert.True(t, streamEndedWithError(base))
 	assert.Zero(t, countCatchUpCompletes(base), "corruption cannot complete a successful replay")
 	for _, stream := range base.streamsSnapshot() {

@@ -2,22 +2,22 @@ import { exerciseSteerAfterTool, exerciseSteerDuringText, exerciseStopWithPendin
 import { zcodeTest } from '../zcode-fixtures'
 import { bypassToolRequests } from './scenarios'
 
-// ZCode steers through the session mailbox: the provider drops an envelope in
-// $ZCODE_MAILBOX_ROOT/<sessionId>/unread, and the runtime's builtin drain hook
-// feeds it to steerTurn at the next tool boundary (PostToolUse) or continues
-// the turn with it at the model's stop (Stop). The wire protocol offers no
-// steering input of its own -- see steering_test.go in the provider package.
-// The queue holds each steer's row until turn.steerDrained proves the model
-// read it (SteerRowAtEcho), so an interrupted steer returns to the queue.
+// ZCode steers through its command inbox: the provider sends a `sendText` with
+// the `guide` delivery (`v4/command`), and the runtime injects it into the
+// running turn after the next tool result, or continues the turn with it after
+// the model's answer. See steering.go in the provider package. The queue holds
+// each steer's row until turn.steerDrained proves the model read it
+// (SteerRowAtEcho). An interrupt takes a queued steer back first
+// (`deleteQueueItem`), so the steer returns to the queue and runs once.
 
 zcodeTest('delivers steering to the actual native tool turn before its single turn end', async ({ native }) => {
   // The held Bash command must run without a permission prompt, so the turn
-  // reaches the tool boundary the mailbox drains at.
+  // reaches the tool boundary where the runtime injects the steer.
   await bypassToolRequests(native)
   await exerciseSteerAfterTool(native)
 })
 
-zcodeTest('continues the streaming answer with the steer the Stop hook drains', async ({ native }) => {
+zcodeTest('continues the streaming answer with the steer', async ({ native }) => {
   await exerciseSteerDuringText(native, { answer: 'continue' })
 })
 

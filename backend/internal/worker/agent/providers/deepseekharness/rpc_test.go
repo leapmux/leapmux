@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -119,4 +120,38 @@ func stringMustJSON(t *testing.T, value any) string {
 	raw, err := json.Marshal(value)
 	require.NoError(t, err)
 	return string(raw)
+}
+
+// serveNativeReplies answers each native RPC method with its result envelope, records each call, and fails the test
+// for a method that results does not list.
+func serveNativeReplies(t *testing.T, a *Agent, results map[string]map[string]any) *nativeCalls {
+	t.Helper()
+	calls := &nativeCalls{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID      string `json:"rpcId"`
+			Payload struct {
+				Args map[string]any `json:"args"`
+			} `json:"payload"`
+		}
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+			return
+		}
+		method := strings.TrimPrefix(r.URL.Path, "/api/")
+		calls.mu.Lock()
+		calls.calls = append(calls.calls, nativeCall{method: method, args: request.Payload.Args})
+		calls.mu.Unlock()
+		result, ok := results[method]
+		if !ok {
+			t.Errorf("unexpected native method %s", method)
+			result = map[string]any{"ok": false, "error": map[string]any{"code": "test/unexpected", "message": method}}
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": request.ID, "result": result}))
+	}))
+	t.Cleanup(server.Close)
+	endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.Close)
+	a.rpc = remoteRPC{endpoint: endpoint}
+	return calls
 }

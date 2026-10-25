@@ -1,18 +1,18 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectChildToolOutputDeferred, writeChildMarkerFile } from '../helpers/liveChildTranscript'
-import { readToolCall } from '../helpers/providerToolCalls'
-import { openProfiledNativeChild } from '../helpers/runningChildProof'
+import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
+import { expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { opencodeTest } from '../opencode-fixtures'
 import { OPENCODE_CHILD } from './childScenario'
 
-/** The call ID of the native Read of the child. */
-const READ_CALL_ID = 'native-child-read'
-
-// The provider delivers only the prompt and the report of a child, so the Read result shows in no live row.
-opencodeTest('keeps actual child tool output out of the child tab before native completion', async ({ native, authenticatedOpencodeWorkspace }) => {
-  const file = writeChildMarkerFile(authenticatedOpencodeWorkspace.workingDir, 'native-child-live.txt')
-  const child = await openProfiledNativeChild(native, OPENCODE_CHILD, { childTool: readToolCall(AgentProvider.OPENCODE, READ_CALL_ID, file.path) })
-  await expectChildToolOutputDeferred(native, child, { marker: file.marker, fileName: 'native-child-live.txt', readCallId: READ_CALL_ID, restoredAfterCompletion: false })
+// OpenCode streams a child session only to a client that loaded it. The Worker loads it once the parent's task call
+// states the session, so the child's own tool calls and text reach the child tab while it runs.
+opencodeTest('shows the child tool result before its final answer', async ({ native, authenticatedOpencodeWorkspace }) => {
+  const child = await exerciseLiveChildTranscript(native, {
+    childWhen: OPENCODE_CHILD.childTask('Read the assigned file for the live OpenCode child'),
+    childTask: 'Read the assigned file for the live OpenCode child, then report its marker.',
+    parentTask: 'Spawn one subagent to read the child note.',
+    toolProof: { read: { workingDir: authenticatedOpencodeWorkspace.workingDir } },
+  })
+  await expectRowBecomesFinal(native.page, child.row)
 })
 
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/516.
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/516.

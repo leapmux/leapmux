@@ -83,7 +83,7 @@ const ZCODE_STEER_DISCARD_REASON_PHRASE: ReadonlyMap<string, string> = new Map([
  * - Compaction ends and microcompact boundaries.
  * - API retries.
  * - Registry model fallbacks.
- * - Hook failures and hook admission notices.
+ * - Hook failures.
  * - Discarded queued input.
  * A shape with no readable facts returns no entries.
  */
@@ -106,13 +106,6 @@ function zcodeSessionUpdateEntries(payload: Record<string, unknown>): Notificati
     }
     case 'hookRun':
       return zcodeHookRunEntries(payload)
-    case 'hookAdmission': {
-      const pending = pickCounter(payload, 'pendingCount')
-      if (pending === undefined)
-        return []
-      const hooks = pending === 1 ? 'workspace hook' : 'workspace hooks'
-      return [{ kind: 'text', text: `${pending} ${hooks} pending review; disabled for this session` }]
-    }
     case 'steerDiscarded': {
       const reason = ZCODE_STEER_DISCARD_REASON_PHRASE.get(pickString(payload, 'reason'))
       return [{ kind: 'text', text: reason ? `Queued input discarded (${reason})` : 'Queued input discarded' }]

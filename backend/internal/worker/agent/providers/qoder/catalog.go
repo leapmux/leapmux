@@ -14,6 +14,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 const qoderSettingsLimit = 1 << 20
@@ -112,6 +113,40 @@ type qoderModelEntry struct {
 
 type qoderInitializeResponse struct {
 	Models []qoderModelEntry `json:"models"`
+	// OutputStyle is the style that the session runs; AvailableOutputStyles
+	// lists the built-in styles and the user's own styles. Both are optional,
+	// so qoderOutputStyleReport reads them without failing the handshake.
+	OutputStyle           json.RawMessage `json:"output_style"`
+	AvailableOutputStyles json.RawMessage `json:"available_output_styles"`
+}
+
+// qoderOutputStyleReport reads the style fields of an initialize reply. A
+// field of an unexpected shape reads as absent.
+func qoderOutputStyleReport(response qoderInitializeResponse) (running string, styles []string, malformed bool) {
+	running, ok := providerkit.RawString(response.OutputStyle)
+	if !ok && providerkit.RawPresent(response.OutputStyle) {
+		malformed = true
+	}
+	if providerkit.RawPresent(response.AvailableOutputStyles) && json.Unmarshal(response.AvailableOutputStyles, &styles) != nil {
+		styles, malformed = nil, true
+	}
+	return running, styles, malformed
+}
+
+// applyOutputStyles records the styles that the initialize reply states, and
+// refreshes the stored settings when they change. A reply without a list
+// keeps the built-in styles.
+func (a *Agent) applyOutputStyles(running string, styles []string) {
+	a.mu.Lock()
+	changed := running != a.runningOutputStyle || styles != nil && !slices.Equal(styles, a.outputStyles)
+	a.runningOutputStyle = running
+	if styles != nil {
+		a.outputStyles = slices.Clone(styles)
+	}
+	a.mu.Unlock()
+	if changed {
+		a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
+	}
 }
 
 func (a *Agent) handleAvailableModelsUpdate(raw []byte) {

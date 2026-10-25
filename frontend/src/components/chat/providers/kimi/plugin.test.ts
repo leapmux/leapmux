@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { KIMI_DEFAULT_MODE, KIMI_EVENT, KIMI_MODE, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { kimiApprovalRequest, kimiFrame, kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
+import { WORKSPACE_TRUST_OPTION } from '../workspaceTrust'
 import './plugin'
 
 const plugin = providerFor(AgentProvider.KIMI_CODE)!
@@ -67,5 +69,46 @@ describe('kimi plugin', () => {
       type: 'control_response',
       response: { subtype: 'success', request_id: 'approval_1', response: { behavior: 'deny', message: 'Not this way.' } },
     })
+  })
+})
+
+// The Worker asks Kimi Code's workspace-trust question itself, in LeapMux's neutral shape.
+describe('kimiControls workspace trust', () => {
+  const question = { type: WORKSPACE_TRUST_CONTROL_TYPE.Question, path: '/work/project', configuration: ['MCP servers', 'skills', 'instructions'] }
+
+  it('draws the question with the name of the agent', () => {
+    expect(plugin.controls?.extractControl?.({ payload: question })).toEqual({
+      kind: 'permission',
+      permission: {
+        title: 'Trust the folder /work/project',
+        reason: 'Kimi Code loads the MCP servers, skills and instructions of a project only from a folder that you trust, and it keeps your answer for the folder.',
+        options: [
+          { optionId: 'workspace-trust', kind: 'allow_once', name: 'Trust this folder' },
+          { optionId: 'workspace-reject', kind: 'reject_once', name: 'Do not trust' },
+        ],
+      },
+    })
+  })
+
+  it('still draws a native approval', () => {
+    expect(plugin.controls?.extractControl?.({ payload: kimiApprovalRequest(KIMI_TOOL.Bash, { kind: 'command', command: 'ls' }) })).toMatchObject({ kind: 'permission' })
+  })
+
+  it('sends Do not trust as a deny decision', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    await plugin.controls?.sendPermissionOption?.(onRespond, 'workspace-trust:session-1', WORKSPACE_TRUST_OPTION.Reject)
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0] as Uint8Array))).toEqual({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'workspace-trust:session-1', response: { behavior: 'deny' } },
+    })
+  })
+
+  it('reads the saved answer', () => {
+    expect(plugin.controls?.controlResponseDisplay?.({
+      requestId: 'workspace-trust:session-1',
+      claimToken: '',
+      request: question,
+      response: { type: 'control_response', response: { request_id: 'workspace-trust:session-1', response: { decision: WORKSPACE_TRUST_DECISION.Trust } } },
+    })).toEqual({ kind: 'label', text: 'Trusted this folder' })
   })
 })

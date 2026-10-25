@@ -3,7 +3,8 @@
   "toolNames": {
     "Task": "task",
     "ReadOnlyTask": "read_only_task",
-    "UseCapability": "use_capability"
+    "UseCapability": "use_capability",
+    "ExitPlanMode": "exit_plan_mode"
   },
   "capabilityActions": {
     "Call": "call"
@@ -28,13 +29,7 @@
         "sides": [
           "ts"
         ],
-        "why": "the browser spells `Yolo` alone, for the bypass preset it builds; Reasonix itself labels the three choices on the option group the worker forwards, so no browser code words this one"
-      },
-      "Auto": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the browser spells `Yolo` alone, for the bypass preset it builds; Reasonix itself labels the three choices on the option group the worker forwards, so no browser code words this one"
+        "why": "the browser presets select Auto and Yolo; Reasonix labels Ask in the native option group, so the browser does not consume the Ask constant"
       }
     }
   },

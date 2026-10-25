@@ -14,10 +14,10 @@ import (
 
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.Mu.Lock()
-	catalog, selection, mode, permissions := a.catalog, a.selection, a.mode, a.permissions
+	catalog, selection, mode, permissions, autoReview := a.catalog, a.selection, a.mode, a.permissions, a.autoReview
 	a.Mu.Unlock()
 	groups := providerkit.ModelAndEffortGroups(catalog.models, selection.id(), selection.Effort, agent.EffortGroupLabel, nil)
-	return append(groups, modeGroup(mode), permissionGroup(permissions))
+	return append(groups, modeGroup(mode), permissionGroup(permissions, autoReview))
 }
 
 func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
@@ -65,11 +65,10 @@ func (a *Agent) applySessionSettings(sessionID string, selection modelSelection,
 	if mode != contracts.DeepseekHarnessModeAct && mode != contracts.DeepseekHarnessModePlan {
 		return fmt.Errorf("DeepSeek Harness mode is unavailable")
 	}
-	valid := false
-	for _, option := range nativePermissions {
-		valid = valid || option.Id == permissions
-	}
-	if !valid {
+	a.Mu.Lock()
+	autoReview := a.autoReview
+	a.Mu.Unlock()
+	if !permissionOffered(permissions, autoReview) {
 		return fmt.Errorf("DeepSeek Harness permission preset is unavailable")
 	}
 	var result struct {

@@ -20,9 +20,11 @@ import (
 )
 
 // FakeDaemon answers the two routes the question bridge reads, and lets a
-// test push events onto the stream the way the daemon does.
+// test push events onto the stream the way the daemon does. HandleFunc adds a
+// route that one test reads beside them.
 type FakeDaemon struct {
 	Server *httptest.Server
+	mux    *http.ServeMux
 
 	Mu       sync.Mutex
 	events   chan string
@@ -84,9 +86,16 @@ func NewFakeDaemon(t *testing.T, eventRoute, questionRoot string) *FakeDaemon {
 		}
 		_, _ = fmt.Fprint(w, `true`)
 	})
+	daemon.mux = mux
 	daemon.Server = httptest.NewServer(mux)
 	t.Cleanup(daemon.Server.Close)
 	return daemon
+}
+
+// HandleFunc serves one more route of the daemon, such as a route that one
+// member of the family serves alone.
+func (d *FakeDaemon) HandleFunc(pattern string, handler http.HandlerFunc) {
+	d.mux.HandleFunc(pattern, handler)
 }
 
 func (d *FakeDaemon) Send(event string) { d.events <- event }

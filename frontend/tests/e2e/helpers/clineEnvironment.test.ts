@@ -1,3 +1,4 @@
+import type { ClineEnvironmentOptions } from './clineEnvironment'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +21,13 @@ afterEach(() => {
 })
 
 describe('createClineEnvironment', () => {
+  it.each([false, true])('writes the configured thinking preference %s and effort into the private provider profile', (enabled) => {
+    const configured = { ...options(), reasoning: { enabled, effort: 'low' } }
+    const env = createClineEnvironment(configured)
+    const providers = JSON.parse(readFileSync(join(env.CLINE_DATA_DIR!, 'settings', 'providers.json'), 'utf8'))
+    expect(providers.providers['unit-provider'].settings.reasoning).toEqual({ enabled, effort: 'low' })
+  })
+
   it('selects the given provider and model with a UTC update time, which Cline requires', () => {
     vi.useFakeTimers({ now: new Date('2026-10-06T01:02:03.004Z'), toFake: ['Date'] })
     const env = createClineEnvironment(options())
@@ -50,6 +58,14 @@ describe('createClineEnvironment', () => {
     expect(JSON.parse(readFileSync(join(settings, 'cline_mcp_settings.json'), 'utf8'))).toEqual({
       mcpServers: { echo_probe: { transport: { type: 'stdio', command: echoServer.command, args: ['/srv/echo.mjs'] } } },
     })
+  })
+
+  it('writes no server when the private workspace needs no echo tool', () => {
+    const configured: ClineEnvironmentOptions = options()
+    delete configured.mcpEchoServer
+    const env = createClineEnvironment(configured)
+    expect(JSON.parse(readFileSync(join(env.CLINE_DATA_DIR!, 'settings', 'cline_mcp_settings.json'), 'utf8')))
+      .toEqual({ mcpServers: {} })
   })
 
   it('keeps Cline under the isolated home, and empties every path override so each follows CLINE_DATA_DIR', () => {

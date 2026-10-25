@@ -2,10 +2,15 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { writePrivateJSON } from './privateConfigFile'
 
+/** A native custom-model API supported by the isolated model server. */
+export type DroidModelProvider = 'anthropic' | 'openai' | 'generic-chat-completion-api'
+
 /** One BYOK custom model of Droid: the handle that Droid selects it by, and the model that the endpoint receives. */
 export interface DroidCustomModel {
   handle: string
   model: string
+  /** The native API for this model. Omission retains generic Chat Completions. */
+  provider?: DroidModelProvider
 }
 
 export interface DroidEnvironmentOptions {
@@ -62,12 +67,12 @@ function droidSettings(options: DroidEnvironmentOptions): Record<string, unknown
     maxOutputTokens: 8192,
     noImageSupport: false,
     reasoningEffort: 'high',
-    provider: 'generic-chat-completion-api',
+    provider: options.primary.provider ?? 'generic-chat-completion-api',
   }
   return {
     customModels: [
       primary,
-      { ...primary, model: options.alternate.model, id: options.alternate.handle, index: 1, displayName: 'Alternate Mock Model' },
+      { ...primary, model: options.alternate.model, id: options.alternate.handle, index: 1, displayName: 'Alternate Mock Model', provider: options.alternate.provider ?? 'generic-chat-completion-api' },
     ],
     sessionDefaultSettings: {
       model: options.primary.handle,

@@ -7,6 +7,7 @@ package ohmypi
 // omp echoes the command id on its `{type:"response"}` frame. The `compact` command
 // is contracts.OhMyPiCommandCompact, because the browser reads its response too.
 const (
+	CommandGoal                    = "goal"
 	CommandNegotiateProtocol       = "negotiate_protocol"
 	CommandSetSubagentSubscription = "set_subagent_subscription"
 	CommandSetEventFilter          = "set_event_filter"
@@ -18,8 +19,11 @@ const (
 	CommandGetAvailableModels      = "get_available_models"
 	CommandSetModel                = "set_model"
 	CommandSetThinkingLevel        = "set_thinking_level"
+	CommandSetFastMode             = "set_fast_mode"
 	CommandHostToolResult          = "host_tool_result"
 	CommandHostURIResult           = "host_uri_result"
+	CommandSteerSubagent           = "steer_subagent"
+	CommandCancelSubagent          = "cancel_subagent"
 )
 
 // rpcProtocolVersion is the RPC protocol version the worker negotiates. Version 1

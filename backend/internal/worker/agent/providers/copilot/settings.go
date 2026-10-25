@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -21,7 +22,26 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return append(groups,
 		copilotSessionModeGroup(a.options[copilotOptionSessionMode]),
 		copilotPermissionModeGroup(a.options[agent.OptionIDPermissionMode]),
+		copilotFleetGroup(a.options[copilotOptionFleet]),
 	)
+}
+
+// copilotFleetFromOptions reads a value of Fleet. An absent value is Off, and a
+// value other than `true` and `false` is refused.
+func copilotFleetFromOptions(options optionmap.Map) (bool, error) {
+	switch value := options.Get(copilotOptionFleet); value {
+	case "":
+		return false, nil
+	case "true", "false":
+		return value == "true", nil
+	default:
+		return false, fmt.Errorf("fleet takes true or false, not %q", value)
+	}
+}
+
+// fleetOnLocked reports whether Fleet is on. The caller holds stateMu.
+func (a *Agent) fleetOnLocked() bool {
+	return a.options[copilotOptionFleet] == "true"
 }
 
 func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
@@ -205,6 +225,20 @@ func (a *Agent) applyNativeSettings(requested optionmap.Map) agent.SettingsApply
 			method, params = "permissions.setMode", map[string]any{"mode": value}
 		case copilotOptionSessionMode:
 			method, params = "mode.set", map[string]any{"mode": value}
+		case copilotOptionFleet:
+			// Fleet is LeapMux's own setting, and the next turn reads it, so the
+			// runtime receives no request for it.
+			fleet, err := copilotFleetFromOptions(optionmap.Map{key: value})
+			if err != nil {
+				slog.Warn("Refuse a Copilot Fleet value", "agent_id", a.AgentID(), "error", err)
+				continue
+			}
+			surfaced := strconv.FormatBool(fleet)
+			a.stateMu.Lock()
+			a.options[key] = surfaced
+			a.stateMu.Unlock()
+			result.Settlements[key] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &surfaced}
+			continue
 		default:
 			continue
 		}

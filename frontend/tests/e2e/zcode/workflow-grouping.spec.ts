@@ -1,23 +1,30 @@
 import { expect } from '@playwright/test'
 import { zcodeCreateWorkflowToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
-import { backgroundTaskRows } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { answerControl, controlButton, expectNoControlBanner, sendMessage, waitForControlBanner } from '../helpers/ui'
-import { workflowGroupHeading } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { zcodeTest } from '../zcode-fixtures'
 
-const WORKFLOW_NAME = 'leapmux-e2e-probe'
+const WORKFLOW_NAME = 'leapmux-e2e-flow'
 
-const SCRIPT = 'phase("Compute a local answer"); return { conclusion: "ZCODE_WORKFLOW_DONE" };'
-
-zcodeTest('shows a native CreateWorkflow run without grouped work', async ({ native }) => {
+// ZCode states a CreateWorkflow run as one background task, and its subagents only through the conversation
+// subscription of its desktop protocol. The Worker reads them there and draws each subagent's task under the run.
+zcodeTest('groups the subagents of a native CreateWorkflow run under the run', async ({ native }) => {
   const { page, modelScript } = native
   await modelScript.fallback({ text: 'Workflow notification noted.' })
+  await modelScript.rule(
+    { name: 'the alpha subagent answers', when: { user: 'ZFLOW_ALPHA' }, respond: { text: 'alpha done' }, once: true },
+    { name: 'the beta subagent answers', when: { user: 'ZFLOW_BETA' }, respond: { text: 'beta done' }, once: true },
+  )
+  const alphaTask = JSON.stringify(modelScript.prompt('ZFLOW_ALPHA: reply with alpha done.'))
+  const betaTask = JSON.stringify(modelScript.prompt('ZFLOW_BETA: reply with beta done.'))
+  const script = `const [a, b] = await Promise.all([agent("alpha").ask(${alphaTask}), agent("beta").ask(${betaTask})]);\nreturn { alpha: a, beta: b };`
   const start = await modelScript.queue(
     { toolCalls: [zcodeWorkflowSkillToolCall('load-workflow-skill')] },
-    { toolCalls: [zcodeCreateWorkflowToolCall('create-workflow', WORKFLOW_NAME, SCRIPT)] },
+    { toolCalls: [zcodeCreateWorkflowToolCall('create-workflow', WORKFLOW_NAME, script)] },
     { text: 'The workflow launched.' },
   )
-  await sendMessage(page, modelScript.prompt('Use a workflow to compute one local answer.'))
+  await sendMessage(page, modelScript.prompt('Use a workflow to compute two answers.'))
   await modelScript.waitForSteps(start + 2)
 
   const permission = await waitForControlBanner(page)
@@ -28,16 +35,19 @@ zcodeTest('shows a native CreateWorkflow run without grouped work', async ({ nat
   await answerControl(page, 'allow')
   await modelScript.waitForSteps(start + 3)
   await expectNoControlBanner(page)
-  const workflowFilter = page.getByTestId('bg-task-filter-workflow').filter({ visible: true }).first()
-  await expect(workflowFilter).toBeVisible()
-  await workflowFilter.click()
-  await expect(workflowFilter).toHaveAttribute('aria-selected', 'true')
-  const row = backgroundTaskRows(page, { kind: 'workflow' }).filter({ hasText: WORKFLOW_NAME }).first()
-  await expect(row).toBeVisible()
-  await expect(row).toHaveAttribute('data-status', 'succeeded')
-  await page.getByTestId('bg-task-filter-all').filter({ visible: true }).first().click()
-  await expect(backgroundTaskRows(page)).toHaveCount(1)
-  await expect.poll(() => workflowGroupHeading(row)).toBe('')
+
+  await expandBackgroundTasksSection(page)
+  const run = backgroundTaskRows(page, { kind: 'workflow' }).filter({ hasText: WORKFLOW_NAME }).first()
+  const alpha = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: 'alpha' }).first()
+  const beta = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: 'beta' }).first()
+  for (const row of [run, alpha, beta]) {
+    await expectRowBecomesFinal(page, row)
+    await expect(row).toHaveAttribute('data-status', 'succeeded')
+  }
+  await expectRowsInWorkflowGroup([run, alpha, beta], WORKFLOW_NAME)
+  const status = await modelScript.status()
+  expect(status.ruleMatches['the alpha subagent answers']).toBe(1)
+  expect(status.ruleMatches['the beta subagent answers']).toBe(1)
 })
 
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/520.
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.

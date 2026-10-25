@@ -87,11 +87,15 @@ describe('qoderControls', () => {
   })
 })
 
-// Auto approves safe calls and asks about the rest. Do not offer bypass:
-// Don't Ask denies calls that Qoder does not approve in advance.
+// Auto approves safe calls and asks about the rest. Bypass is Qoder's own
+// bypassPermissions mode. Don't Ask is neither: it denies the calls that Qoder
+// does not approve in advance.
 describe('qoderControls permissionPresets', () => {
-  it('maps Smart to Auto without offering bypass', () => {
-    expect(qoderControls.permissionPresets).toEqual({ smart: { sets: { permissionMode: QODER_MODE.Auto } } })
+  it('maps Smart to Auto and Bypass to the native bypass mode', () => {
+    expect(qoderControls.permissionPresets).toEqual({
+      smart: { sets: { permissionMode: QODER_MODE.Auto } },
+      bypass: { sets: { permissionMode: QODER_MODE.BypassPermissions } },
+    })
   })
 })
 

@@ -205,6 +205,7 @@ const FIELD_MODEL_CLIENT_DISPLAY_NAME = 17
 const FIELD_MODEL_SERVER_MODEL_NAME = 18
 const FIELD_MODEL_SUPPORTS_NON_MAX_MODE = 19
 const FIELD_MODEL_SUPPORTS_PLAN_MODE = 22
+const FIELD_MODEL_PARAMETER_DEFINITIONS = 29
 const FIELD_MODEL_VARIANTS = 30
 const FIELD_MODEL_ID_ALIASES = 37
 
@@ -225,14 +226,36 @@ export interface CursorModelVariant {
   isDefault?: boolean
 }
 
-/** One model in Cursor's catalogue, with the variants it explodes into. */
+/** One native parameter definition from Cursor's model catalogue. */
+export interface CursorModelParameter {
+  id: string
+  name: string
+  kind: 'boolean' | 'enum'
+  values: readonly { value: string, name: string }[]
+}
+
+/** One model in Cursor's catalogue, including parameter definitions and default variants. */
 export interface CursorModel {
   /** The bare, bracket-less id, which is what the server reports as a model's name. */
   name: string
   displayName: string
   variants: readonly CursorModelVariant[]
+  parameterDefinitions?: readonly CursorModelParameter[]
   /** Alternative ids that select this model; Cursor's own `default` answers to `auto`. */
   aliases?: readonly string[]
+}
+
+/** Encode ModelParameterDefinition using the installed CLI's compact protobuf schema. */
+function encodeCursorParameter(parameter: CursorModelParameter): Uint8Array {
+  const values = concatBytes(parameter.values.map(value => encodeLengthDelimited(1, concatBytes([
+    encodeStringField(1, value.value),
+    encodeStringField(2, value.name),
+  ]))))
+  return concatBytes([
+    encodeStringField(1, parameter.id),
+    encodeStringField(2, parameter.name),
+    encodeLengthDelimited(4, encodeLengthDelimited(parameter.kind === 'boolean' ? 1 : 2, values)),
+  ])
 }
 
 function encodeCursorVariant(variant: CursorModelVariant): Uint8Array {
@@ -257,6 +280,7 @@ function encodeCursorModel(model: CursorModel): Uint8Array {
     encodeStringField(FIELD_MODEL_SERVER_MODEL_NAME, model.name),
     encodeBoolField(FIELD_MODEL_SUPPORTS_NON_MAX_MODE, true),
     encodeBoolField(FIELD_MODEL_SUPPORTS_PLAN_MODE, true),
+    ...(model.parameterDefinitions ?? []).map(parameter => encodeLengthDelimited(FIELD_MODEL_PARAMETER_DEFINITIONS, encodeCursorParameter(parameter))),
     ...model.variants.map(variant => encodeLengthDelimited(FIELD_MODEL_VARIANTS, encodeCursorVariant(variant))),
     ...(model.aliases ?? []).map(alias => encodeStringField(FIELD_MODEL_ID_ALIASES, alias)),
   ])

@@ -236,6 +236,40 @@ describe('cursorAvailableModels', () => {
   const text = (bytes: Uint8Array | undefined): string | undefined =>
     bytes === undefined ? undefined : new TextDecoder().decode(bytes)
 
+  it('encodes native boolean and enum parameter definitions independently of variants', () => {
+    const model = {
+      name: 'parameterized',
+      displayName: 'Parameterized',
+      variants: [],
+      parameterDefinitions: [
+        { id: 'thinking', name: 'Thinking', kind: 'boolean' as const, values: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }] },
+        { id: 'effort', name: 'Effort', kind: 'enum' as const, values: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+      ],
+    }
+    const encoded = cursorAvailableModels([model])
+    const nativeModel = descend(encoded, [2])!
+    const definitions = readCursorProtobufFields(nativeModel).strings.get(29) ?? []
+    expect(definitions).toHaveLength(2)
+    for (const [index, definition] of definitions.entries()) {
+      const expected = model.parameterDefinitions[index]!
+      const fields = readCursorProtobufFields(definition).strings
+      expect(text(fields.get(1)?.[0])).toBe(expected.id)
+      expect(text(fields.get(2)?.[0])).toBe(expected.name)
+      const type = readCursorProtobufFields(fields.get(4)![0]!).strings
+      expect([...type.keys()]).toEqual([index + 1])
+      const values = readCursorProtobufFields(type.get(index + 1)![0]!).strings.get(1) ?? []
+      expect(values.map(value => ({
+        value: text(readCursorProtobufFields(value).strings.get(1)?.[0]),
+        name: text(readCursorProtobufFields(value).strings.get(2)?.[0]),
+      }))).toEqual(expected.values)
+    }
+  })
+
+  it.each([undefined, []])('omits parameter definitions when none are supplied: %j', (parameterDefinitions) => {
+    const encoded = cursorAvailableModels([{ name: 'plain', displayName: 'Plain', variants: [], ...(parameterDefinitions === undefined ? {} : { parameterDefinitions }) }])
+    expect(readCursorProtobufFields(descend(encoded, [FIELD_MODELS])!).strings.has(29)).toBe(false)
+  })
+
   it('writes one repeated models entry per model', () => {
     const encoded = cursorAvailableModels([
       { name: 'default', displayName: 'Auto', variants: [{ id: 'default[]', displayName: 'Auto' }] },
@@ -325,8 +359,7 @@ describe('cursorAvailableModels', () => {
     expect(cursorAvailableModels([]).byteLength).toBe(0)
   })
 
-  // The native protocol permits a model with no variants.
-  // It contributes no picker entry, so the encoder must not invent one.
+  // The parameterized picker can list a model without variants. The encoder must not invent default parameters.
   it('writes a model that has no variants', () => {
     const encoded = cursorAvailableModels([{ name: 'bare', displayName: 'Bare', variants: [] }])
     const model = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)![0]!

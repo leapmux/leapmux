@@ -31,7 +31,8 @@ export function deepseekHarnessExtractControl(input: ControlExtractionInput): Ex
   const title = pickString(request, 'toolName')
   if (!title)
     return null
-  const reason = pickString(request, 'reason')
+  // DeepSeek Harness's own client shows the display text, and `reason` is its English audit record.
+  const reason = pickString(pickObject(request, 'displayReason'), 'en') || pickString(request, 'reason')
   return {
     kind: 'permission',
     permission: {

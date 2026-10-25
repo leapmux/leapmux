@@ -16,7 +16,7 @@
 //   - control.go: approvals, questions, the plan tool and their answers.
 //   - subagent.go and team.go: subagents, teammate runs and their transcripts.
 //   - session_lifecycle.go: session open, rebuild, and context clear.
-//   - settings.go: the model, the effort and the mode.
+//   - settings.go: the model, the effort, thinking, agent teams and the mode.
 //
 // # What the private daemon shares
 //

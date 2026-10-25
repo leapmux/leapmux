@@ -2,9 +2,14 @@ package ohmypi
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -49,6 +54,20 @@ func launchEffort(opts agent.Options) string {
 	return agent.EffortAuto
 }
 
+// launchOutputStyle validates the native personality choice before starting a process.
+func launchOutputStyle(opts agent.Options) (string, error) {
+	style := opts.Options[OptionOutputStyle]
+	if style == "" {
+		style = outputStyleGroup.DefaultValue
+	}
+	for _, option := range outputStyleGroup.Options {
+		if option.Id == style {
+			return style, nil
+		}
+	}
+	return "", fmt.Errorf("unsupported Oh My Pi output style %q", style)
+}
+
 // launchArgs builds omp's native arguments.
 //
 //   - --mode rpc-ui supplies the UI context that enables the ask tool.
@@ -77,6 +96,11 @@ var _ agent.StartFunc = Start
 // providerkit.ResumeFailedError tells the user to send /clear in that case.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	outputStyle, err := launchOutputStyle(opts)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
 	registration := Registration()
 	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
@@ -89,23 +113,49 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
+	if opts.AgentDirs == nil {
+		cancel()
+		return nil, fmt.Errorf("the Oh My Pi provider requires the Worker's private agent directories")
+	}
+	directory, err := opts.AgentDirs.New(ctx, *registration.AgentDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	// Native goals otherwise continue only in interactive mode. This overlay changes
+	// this process alone and leaves the user's persistent configuration untouched.
+	configPath := filepath.Join(directory.Path(), "config.yml")
+	configuration := map[string]any{"goal": map[string]any{"enabled": true, "continuationModes": []string{"rpc"}}}
+	if outputStyle != outputStyleGroup.DefaultValue {
+		configuration["personality"] = outputStyle
+	}
+	configBytes, err := json.Marshal(configuration)
+	if err != nil {
+		cancel()
+		return nil, errors.Join(fmt.Errorf("encode the Oh My Pi runtime configuration: %w", err), directory.Close())
+	}
+	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
+		cancel()
+		return nil, errors.Join(fmt.Errorf("write the Oh My Pi runtime configuration: %w", err), directory.Close())
+	}
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
 		StripEnvKeys: terminalIdentityEnvKeys,
-		BaseArgs:     launchArgs(opts, resume),
+		BaseArgs:     append(launchArgs(opts, resume), "--config", configPath),
 		WorkingDir:   opts.WorkingDir,
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 
 	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, directory.Close())
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
+		directory:     directory,
 		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "omp", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		sink:          agent.NewModelProgressResetSink(sink),
 		workingDir:    opts.WorkingDir,
@@ -113,11 +163,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		model:         opts.Model(),
 		thinkingLevel: launchEffort(opts),
 		approvalMode:  launchApprovalMode(opts),
+		outputStyle:   outputStyle,
 	}
 	a.startupSnapshot.Store(true)
 
 	if err := a.StartCmd(); err != nil {
-		return nil, err
+		return nil, errors.Join(err, directory.Close())
 	}
 	a.DrainStderr(stderrPipe)
 	go a.ReadOutput(agent.NewStdoutScanner(stdout), a.interceptFrame, a.handleFrame)
@@ -126,7 +177,20 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		a.Stop()
 		_ = a.Wait()
 	}
-	if err := a.handshake(opts.EffectiveStartupTimeout()); err != nil {
+	a.sessionMu.Lock()
+	err = a.handshake(opts.EffectiveStartupTimeout())
+	if err == nil {
+		if value := opts.Options[OptionFastMode]; value != "" {
+			a.Mu.Lock()
+			current := strconv.FormatBool(a.fastMode)
+			a.Mu.Unlock()
+			if value != current {
+				err = a.applyFastMode(value, opts.EffectiveStartupTimeout())
+			}
+		}
+	}
+	a.sessionMu.Unlock()
+	if err != nil {
 		cleanup()
 		return nil, err
 	}

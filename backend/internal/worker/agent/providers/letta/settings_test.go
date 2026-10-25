@@ -94,10 +94,9 @@ func TestClosedSocketSettlesThePendingSettingsWaiter(t *testing.T) {
 	go func() { result <- a.UpdateSettings(map[string]string{agent.OptionIDModel: "new-model"}) }()
 	command := fake.nextCommand(t)
 	require.Equal(t, "update_model", command["type"])
-	a.Mu.Lock()
-	pending := a.modelPending
-	a.Mu.Unlock()
-	require.NotNil(t, pending)
+	requestID, ok := command["request_id"].(string)
+	require.True(t, ok)
+	require.True(t, a.rpcReplies.IsPendingForTest(requestID))
 	a.ws.close()
 	ctx := testutil.DeadlineContext(t)
 	select {
@@ -105,12 +104,11 @@ func TestClosedSocketSettlesThePendingSettingsWaiter(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the native reader did not stop")
 	}
-	select {
-	case <-pending.waiter.done:
-	default:
-		t.Fatal("the settings waiter survived its native reader")
-	}
-	assert.Equal(t, "initial-model", waitModeResult(t, result).ConfirmedOptions()[agent.OptionIDModel])
+	applied := waitModeResult(t, result)
+	assert.False(t, applied.AppliedLive)
+	assert.Empty(t, applied.ConfirmedOptions())
+	assert.False(t, a.rpcReplies.IsPendingForTest(requestID))
+	assert.Equal(t, "initial-model", a.SettingsSnapshot().ConfirmedOptions()[agent.OptionIDModel])
 }
 
 func TestModeSyncReplyCannotConfirmAnotherRuntime(t *testing.T) {

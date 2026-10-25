@@ -841,11 +841,11 @@ const TOOL_VOCABULARY = {
     // The native agent_type enum includes explore.
     // The name field becomes the child ID and requires an identifier.
     // The CLI reports "Invalid input: \"description\": Required" when description is absent.
-    // Omit mode to keep the child in the foreground.
-    spawnSubagent: (id, { description, prompt }) => ({
+    // The mode is `sync` (the parent waits) or `background`, and the default here is the foreground.
+    spawnSubagent: (id, { description, prompt, background }) => ({
       id,
       name: 'task',
-      arguments: { agent_type: 'explore', name: identifierFrom(description), description, prompt },
+      arguments: { agent_type: 'explore', name: identifierFrom(description), description, prompt, mode: background ? 'background' : 'sync' },
     }),
     spawnSubagentBatch: null,
     backgroundBash: null,

@@ -1196,6 +1196,7 @@ describe('generate', () => {
       'backend/generated/contracts/validate.go',
       'backend/generated/contracts/wire.go',
       'backend/generated/contracts/worker-vocab.go',
+      'backend/generated/contracts/workspace-trust.go',
       'backend/generated/contracts/zcode-protocol.go',
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/acp-protocol.ts',
@@ -1250,6 +1251,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/validate.ts',
       'frontend/src/generated/contracts/wire.ts',
       'frontend/src/generated/contracts/worker-vocab.ts',
+      'frontend/src/generated/contracts/workspace-trust.ts',
       'frontend/src/generated/contracts/zcode-protocol.ts',
     ])
   })
@@ -1972,6 +1974,8 @@ describe('checkSessionInfo', () => {
       keys: { TotalCostUsd: 'total_cost_usd', ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
       contextUsageFields: { InputTokens: 'input_tokens' },
       rateLimitFields: { Status: 'status' },
+      rateLimitTypes: { FiveHour: 'five_hour', SevenDay: 'seven_day' },
+      rateLimitStatuses: { Allowed: 'allowed', AllowedWarning: 'allowed_warning', Exceeded: 'exceeded' },
       rateLimitUpdateFields: { Mode: 'mode', Values: 'values' },
       rateLimitUpdateModes: { Merge: 'merge', Replace: 'replace' },
       runningToolFields: { SpanId: 'span_id' },
@@ -2062,6 +2066,19 @@ describe('checkSessionInfo', () => {
       expect(ts).toContain(`export const ${table.ts} = {`)
       expect(ts).toContain(`export type ${table.tsType} =`)
     }
+  })
+
+  it('emits normalized quota types and statuses for both consumers', () => {
+    const contract = sessionInfo({
+      rateLimitTypes: { FiveHour: 'five_hour', SevenDay: 'seven_day' },
+      rateLimitStatuses: { Allowed: 'allowed', AllowedWarning: 'allowed_warning', Exceeded: 'exceeded' },
+    })
+    const go = emitGoSessionInfo(contract)
+    const ts = emitTsSessionInfo(contract)
+    expect(go).toContain('RateLimitTypeFiveHour')
+    expect(go).toContain('RateLimitStatusAllowedWarning')
+    expect(ts).toContain('export const RATE_LIMIT_TYPE =')
+    expect(ts).toContain('export const RATE_LIMIT_STATUS =')
   })
 
   it('emits the running_tool vocabulary the Claude tool_progress path needs', () => {

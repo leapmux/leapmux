@@ -1075,7 +1075,8 @@ func TestReplaySink_StopsSendingOnceTheTransportDies(t *testing.T) {
 	t.Parallel()
 
 	w := newDeadTransportWriter("ch-1")
-	sink := newReplaySink(w, 0)
+	retired := 0
+	sink := newReplaySink(w, 0, func() { retired++ })
 
 	for i := 0; i < 10; i++ {
 		sink.send(&leapmuxv1.WatchEventsResponse{
@@ -1086,6 +1087,7 @@ func TestReplaySink_StopsSendingOnceTheTransportDies(t *testing.T) {
 	assert.Equal(t, int64(1), w.streamCount.Load(),
 		"the first failure must latch; the other nine sends never reach the transport")
 	assert.False(t, sink.alive(), "and the sink reports the burst should be abandoned")
+	assert.Equal(t, 1, retired)
 }
 
 // TestReplaySink_KeepsGoingWhenOneMessageIsRejected pins the other side.
@@ -1097,7 +1099,8 @@ func TestReplaySink_KeepsGoingWhenOneMessageIsRejected(t *testing.T) {
 
 	w := newTestWatcher("ch-1")
 	w.failSends(fmt.Errorf("message too large: %w", channel.ErrMessageRejected))
-	sink := newReplaySink(w, 0)
+	retired := 0
+	sink := newReplaySink(w, 0, func() { retired++ })
 
 	for i := 0; i < 5; i++ {
 		sink.send(&leapmuxv1.WatchEventsResponse{
@@ -1108,6 +1111,34 @@ func TestReplaySink_KeepsGoingWhenOneMessageIsRejected(t *testing.T) {
 	assert.Equal(t, int64(5), w.streamCount.Load(),
 		"a per-message rejection must not abandon the replay")
 	assert.True(t, sink.alive())
+	assert.Zero(t, retired)
+}
+
+func TestReplaySinkRetiresBeforePreparationError(t *testing.T) {
+	t.Parallel()
+	base := newTestWriter()
+	retired := 0
+	var sink *replaySink
+	writer := &replayIdentityWriter{testResponseWriter: base, onSend: func(message *leapmuxv1.InnerStreamMessage) {
+		if message.GetIsError() {
+			assert.Equal(t, 1, retired)
+			assert.False(t, sink.alive())
+			sink.fail(errors.New("reentrant failure"))
+		}
+	}}
+	sink = newReplaySink(writer, 0, func() {
+		retired++
+		assert.False(t, sink.alive(), "failure is latched before the callback")
+		sink.send(&leapmuxv1.WatchEventsResponse{})
+	})
+	sink.fail(nil)
+	assert.Zero(t, retired)
+	assert.True(t, sink.alive())
+	sink.fail(errors.New("projection failed"))
+	sink.fail(errors.New("duplicate failure"))
+	assert.Equal(t, 1, retired)
+	require.Len(t, base.streamsSnapshot(), 1)
+	assert.True(t, base.streamsSnapshot()[0].GetIsError())
 }
 
 // TestTransportDead_ClassifiesEachFailureKind pins the one place two
@@ -1179,7 +1210,8 @@ func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
 	t.Parallel()
 
 	w := newTestWatcher("ch-1")
-	sink := newReplaySink(w, 0)
+	retired := 0
+	sink := newReplaySink(w, 0, func() { retired++ })
 
 	unencodable := &leapmuxv1.AgentEvent{
 		AgentId: string([]byte{0x80}),
@@ -1203,6 +1235,7 @@ func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
 		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: testAgentEvent("agent-1")},
 	})
 	assert.Equal(t, before+1, w.streamCount.Load(), "the next event still goes out")
+	assert.Zero(t, retired)
 }
 
 // TestRetire_DoesNotCleanUpAfterAnyoneElse pins the SCOPE of retire's

@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
@@ -203,7 +204,26 @@ func TestCopilotControlIDSeparatesKindsAndSessions(t *testing.T) {
 // subagent tab reads them before its root runs.
 func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	t.Parallel()
-	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
+	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil),
+		optionmap.Map{copilotOptionExecutionMode: copilotExecutionBackground})
+}
+
+// Copilot passes a message only to a subagent that runs in the background, and
+// cancels any subagent. A child of an older row states no execution mode.
+func TestChildCapabilitiesFollowTheExecutionMode(t *testing.T) {
+	t.Parallel()
+	plugin := Registration().Plugin
+	assert.Equal(t, agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true},
+		plugin.ChildCapabilities(optionmap.Map{copilotOptionExecutionMode: copilotExecutionBackground}))
+	for name, options := range map[string]optionmap.Map{
+		"no options":          nil,
+		"no execution mode":   {},
+		"a foreground child":  {copilotOptionExecutionMode: "sync"},
+		"an unknown mode":     {copilotOptionExecutionMode: "detached"},
+		"a mode in uppercase": {copilotOptionExecutionMode: "BACKGROUND"},
+	} {
+		assert.Equal(t, agent.ChildCapabilities{AcceptsInterrupt: true}, plugin.ChildCapabilities(options), name)
+	}
 }
 
 func TestCompactionEndIsABoundary(t *testing.T) {

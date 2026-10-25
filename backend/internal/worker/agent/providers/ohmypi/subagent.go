@@ -2,15 +2,111 @@ package ohmypi
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
+
+var (
+	_ agent.ChildSteerer     = (*Agent)(nil)
+	_ agent.ChildInterrupter = (*Agent)(nil)
+)
+
+// childForKeyLocked resolves the complete stored identity, including its session.
+// The caller holds Process.Mu. A completed child is absent from this map.
+func (a *Agent) childForKeyLocked(key string) *subagentState {
+	for _, child := range a.subagents {
+		if child.rowKey == key {
+			return child
+		}
+	}
+	return nil
+}
+
+// ActiveChildTurnState reports whether native child events describe a running turn.
+func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	child := a.childForKeyLocked(childKey)
+	active := child != nil && child.conv != nil && !child.conv.runStartedAt.IsZero()
+	return agent.TurnState{Active: active, Steerable: active}
+}
+
+// SendChildInput starts a child round, or requires an explicit steer during a running round.
+func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendChildInput(childKey, content, attachments, false)
+}
+
+// SteerChildInput delivers input to the child's current native round.
+func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendChildInput(childKey, content, attachments, true)
+}
+
+func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+	// Native child input carries a message string only, unlike the root prompt's image array.
+	for _, attachment := range agent.ClassifyAttachments(attachments) {
+		if attachment.Kind != agent.AttachmentKindText {
+			return fmt.Errorf("the Oh My Pi child message supports text attachments only")
+		}
+	}
+	payload := promptPayload(content, attachments)
+	if strings.TrimSpace(payload["message"].(string)) == "" {
+		return fmt.Errorf("the child message must not be empty")
+	}
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	a.Mu.Lock()
+	child := a.childForKeyLocked(childKey)
+	if child == nil {
+		a.Mu.Unlock()
+		return agent.ErrChildRouteNotReady
+	}
+	id := child.id
+	active := child.conv != nil && !child.conv.runStartedAt.IsZero()
+	a.Mu.Unlock()
+	if active && !steer {
+		return agent.ErrAgentBusy
+	}
+	if !active && steer {
+		return agent.ErrNoActiveTurn
+	}
+	payload["subagentId"] = id
+	wait, err := a.beginCommand(CommandSteerSubagent, payload)
+	if err != nil {
+		return err
+	}
+	_, err = wait(a.APITimeout())
+	var refused *commandError
+	if err != nil && !errors.As(err, &refused) {
+		// A lost acknowledgement cannot establish whether native input was accepted.
+		return fmt.Errorf("%w: send the Oh My Pi child message: %w", agent.ErrDeliveryUncertain, err)
+	}
+	return err
+}
+
+// InterruptChild cancels one owned child. Native lifecycle events close its transcript.
+func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	a.Mu.Lock()
+	child := a.childForKeyLocked(childKey)
+	if child == nil {
+		a.Mu.Unlock()
+		return agent.ErrChildRouteNotReady
+	}
+	id := child.id
+	a.Mu.Unlock()
+	_, err := a.sendCommand(CommandCancelSubagent, map[string]any{"subagentId": id}, a.APITimeout())
+	return err
+}
 
 // omp's subagents.
 //

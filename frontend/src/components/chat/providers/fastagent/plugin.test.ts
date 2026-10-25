@@ -8,6 +8,14 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
 
+describe('fast agent permission presets', () => {
+  it('maps Bypass to the native launch policy without changing another setting', () => {
+    const plugin = providerFor(AgentProvider.FAST_AGENT)
+    expect(plugin?.controls?.permissionPresets?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+    expect(plugin?.controls?.permissionPresets?.smart).toBeUndefined()
+  })
+})
+
 describe('native output without a filesystem pointer', () => {
   it('keeps a valid native result and omits the output path hook', () => {
     const frame = {

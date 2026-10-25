@@ -52,14 +52,26 @@ describe('openCodeFamilyConfig', () => {
 })
 
 describe('createOpenCodeEnvironment', () => {
+  const kiloCloud = { origin: 'http://127.0.0.1:4567', identityToken: 'unit-identity-token' }
+
   it('gives OpenCode and Kilo one configuration that keeps two recent turns', () => {
-    const env = createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer })
+    const env = createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer, kiloCloud })
     expect(env.KILO_CONFIG_CONTENT).toBe(env.OPENCODE_CONFIG_CONTENT)
     expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({ ...openCodeFamilyConfig(provider, echoServer), compaction: { tail_turns: 2 } })
   })
 
+  it('signs Kilo in to the mocked cloud with a credential that never expires during a run and names no organization', () => {
+    const env = createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer, kiloCloud })
+    expect(env.KILO_API_URL).toBe('http://127.0.0.1:4567')
+    const credential = JSON.parse(env.KILO_AUTH_CONTENT!)
+    expect(Object.keys(credential)).toEqual(['kilo'])
+    expect(credential.kilo).toEqual({ type: 'oauth', access: 'unit-identity-token', refresh: 'unit-identity-token', expires: Date.UTC(9999, 11, 31) })
+    expect(credential.kilo).not.toHaveProperty('accountId')
+    expect(env.OPENCODE_API_URL).toBeUndefined()
+  })
+
   it('closes the project configuration, the telemetry, and the update of each', () => {
-    expect(createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer })).toMatchObject({
+    expect(createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer, kiloCloud })).toMatchObject({
       OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
       KILO_DISABLE_PROJECT_CONFIG: 'true',
       KILO_TELEMETRY_LEVEL: 'off',
@@ -70,7 +82,7 @@ describe('createOpenCodeEnvironment', () => {
 
   // Each scan otherwise walks from the working directory up to the root of the file system, and so reaches the run root.
   it('turns off the external skill scan of each', () => {
-    expect(createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer })).toMatchObject({
+    expect(createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer, kiloCloud })).toMatchObject({
       OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true',
       KILO_DISABLE_EXTERNAL_SKILLS: 'true',
     })

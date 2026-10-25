@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -144,16 +145,69 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 	}
 	ordinary := true
 	for _, use := range params.ToolUses {
-		if use.ToolUse.Name == "" || (droidProvider{}).PlanModeControl(use.ToolUse.Name) != agent.PlanModeControlNone || use.ToolUse.Name == contracts.DroidToolAskUser {
+		if !droidToolAllowsBypass(use.ToolUse.Name) || !droidConfirmationAllowsBypass(use.ConfirmationType, use.Details) {
 			ordinary = false
 		}
 	}
 	if ordinary && record.root {
-		if result, err := droidPermissionReply(droidOptionValues(params.Options), true, json.RawMessage(`{}`)); err == nil {
+		if result, err := droidPermissionReply(droidOptionValues(params.Options), true, json.RawMessage(`{}`), ""); err == nil {
 			record.automaticReply, _ = json.Marshal(droidResponseEnvelope(env.ID, result))
 		}
 	}
 	a.registerControl(record)
+}
+
+func droidToolAllowsBypass(name string) bool {
+	return strings.TrimSpace(name) != "" && (droidProvider{}).PlanModeControl(name) == agent.PlanModeControlNone && name != contracts.DroidToolAskUser
+}
+
+func droidOrdinaryConfirmation(kind string) bool {
+	switch kind {
+	case contracts.DroidConfirmationTypeEdit, contracts.DroidConfirmationTypeExec,
+		contracts.DroidConfirmationTypeCreate, contracts.DroidConfirmationTypeApplyPatch,
+		contracts.DroidConfirmationTypeMCPTool:
+		return true
+	default:
+		return false
+	}
+}
+
+// Droid Shield and sandbox decisions use ordinary tool identities. Check the
+// confirmation metadata before sending an automatic reply.
+func droidConfirmationAllowsBypass(kind string, raw json.RawMessage) bool {
+	var confirmation struct {
+		Type  string `json:"type"`
+		Calls []struct {
+			ToolName     string `json:"toolName"`
+			Confirmation struct {
+				Type string `json:"type"`
+			} `json:"confirmation"`
+			AlwaysAsk json.RawMessage `json:"alwaysAsk"`
+		} `json:"calls"`
+	}
+	if json.Unmarshal(raw, &confirmation) != nil || confirmation.Type != kind {
+		return false
+	}
+	if droidOrdinaryConfirmation(kind) {
+		return true
+	}
+	if kind != contracts.DroidConfirmationTypeScript || len(confirmation.Calls) == 0 {
+		return false
+	}
+	// Native Script calls carry non-Script confirmations and optional alwaysAsk
+	// policies. Every call must permit automatic approval for the batch to do so.
+	for _, call := range confirmation.Calls {
+		if !droidToolAllowsBypass(call.ToolName) || !droidOrdinaryConfirmation(call.Confirmation.Type) {
+			return false
+		}
+		if len(call.AlwaysAsk) > 0 {
+			var alwaysAsk *bool
+			if json.Unmarshal(call.AlwaysAsk, &alwaysAsk) != nil || alwaysAsk == nil || *alwaysAsk {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // onAskUser publishes a question control request.
@@ -215,9 +269,10 @@ func (a *Agent) respond(id string, result any) {
 // droidStoredRequest is the part of a published control request that the reply
 // reads. onRequestPermission and onAskUser write these fields.
 type droidStoredRequest struct {
-	Type    string `json:"type"`
-	RPCID   string `json:"rpcId"`
-	ToolUse struct {
+	Type             string `json:"type"`
+	RPCID            string `json:"rpcId"`
+	ConfirmationType string `json:"confirmationType"`
+	ToolUse          struct {
 		Name string `json:"name"`
 	} `json:"toolUse"`
 	// Options holds the option values that a permission request offers.
@@ -271,8 +326,14 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	var err error
 	switch request.Type {
 	case contracts.DroidRequestTypePermission:
-		result, err = droidPermissionReply(request.Options, allow, decision)
 		resolution.PlanModeControl = (droidProvider{}).PlanModeControl(request.ToolUse.Name)
+		var approvalOption string
+		if allow && resolution.PlanModeControl == agent.PlanModeControlExit && !ctx.PlanApproval.GetClearContext() {
+			approvalOption, err = droidPlanApprovalOption(request, ctx.PlanApproval.GetPermissionMode())
+		}
+		if err == nil {
+			result, err = droidPermissionReply(request.Options, allow, decision, approvalOption)
+		}
 	case contracts.DroidRequestTypeAskUser:
 		result, err = droidAskUserReply(request.Questions, allow, decision)
 	default:
@@ -311,18 +372,42 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	return resolution
 }
 
+// Droid applies the plan's autonomy through the approval option. A separate
+// settings update races the native transition that a plain approval makes to Default.
+func droidPlanApprovalOption(request droidStoredRequest, mode string) (string, error) {
+	if mode == "" {
+		return "", nil
+	}
+	if request.ToolUse.Name != contracts.DroidToolExitSpecMode || request.ConfirmationType != contracts.DroidConfirmationTypeExitSpecMode {
+		return "", errors.New("this Factory Droid confirmation cannot apply the selected plan permission mode")
+	}
+	switch mode {
+	case contracts.DroidModeDefault:
+		return contracts.DroidPermissionOptionProceedOnce, nil
+	case contracts.DroidModeAutoLow:
+		return contracts.DroidPermissionOptionProceedAutoRunLow, nil
+	case contracts.DroidModeAutoMedium:
+		return contracts.DroidPermissionOptionProceedAutoRunMedium, nil
+	case contracts.DroidModeAutoHigh:
+		return contracts.DroidPermissionOptionProceedAutoRunHigh, nil
+	default:
+		return "", fmt.Errorf("the Factory Droid session cannot approve a plan with permission mode %q", mode)
+	}
+}
+
 // droidPermissionReply builds the reply to a permission request. Its error is
 // the reason that the reader sees for a refusal.
 //
-// Allow becomes proceed_once and deny becomes cancel, unless the decision states
-// its own `selectedOption`. The request must have offered any option other than
+// Allow becomes the selected plan option or proceed_once; deny becomes cancel.
+// An explicit selectedOption must agree with the selected plan option.
+// The request must have offered any option other than
 // cancel. Factory's SDK refuses to send an option that the request did not
 // offer, and it cancels the request instead. A cancel needs no offer, because it
 // is the reply that Droid's own client sends for every failure. The worker
 // refuses proceed_edit even when the request offered it. Droid's reply schema
 // requires `editedSpecContent` beside proceed_edit, and the worker sends no
 // edited spec.
-func droidPermissionReply(offered []string, allow bool, decision json.RawMessage) (droidPermissionResult, error) {
+func droidPermissionReply(offered []string, allow bool, decision json.RawMessage, approvalOption string) (droidPermissionResult, error) {
 	var stated struct {
 		SelectedOption string `json:"selectedOption"`
 	}
@@ -330,6 +415,12 @@ func droidPermissionReply(offered []string, allow bool, decision json.RawMessage
 		return droidPermissionResult{}, errors.New(agent.RefusalUnreadableAnswer)
 	}
 	option := stated.SelectedOption
+	if allow && approvalOption != "" {
+		if option != "" && option != approvalOption {
+			return droidPermissionResult{}, errors.New("the selected native option contradicts the plan permission mode")
+		}
+		option = approvalOption
+	}
 	switch {
 	case option == "" && allow:
 		option = contracts.DroidPermissionOptionProceedOnce

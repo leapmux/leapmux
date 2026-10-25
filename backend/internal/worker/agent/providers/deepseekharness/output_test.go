@@ -52,7 +52,7 @@ func TestSessionEventVerdicts(t *testing.T) {
 	for _, kind := range []string{
 		"agent-preset/selected", "approval/asked", "approval/decided", "approval/policy", "assistant/attempt", "command/done", "command/run",
 		"compaction/prune", "compaction/summary", "developer/message", "feedback/message-delete", "feedback/message-put", "feedback/record", "hook/invoked",
-		"image/offload", "llm/retry-started", "model/selection", "permission/preset", "request/header", "sandbox/mode", "schedule/change",
+		"image/offload", "job/registered", "job/settled", "llm/retry-started", "model/selection", "permission/preset", "request/header", "sandbox/mode", "schedule/change",
 		"session-log-deepseek/delivery-accepted", "session/end-seed", "session/title", "session/title-llm-request", "step/start", "step/end",
 		"subagent/descriptor", "subagent/model-selection-policy", "system/message", "team/member", "team/message/delivered", "team/message/queued", "team/task",
 		"tool/ptc-dispatch", "tool/ptc-dispatch-start", "web/deepseek-search-llm-request", "workspace/changes", "request/context", "compaction/start", "agent/inbox/spliced",

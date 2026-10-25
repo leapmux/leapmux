@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -30,6 +31,11 @@ type FamilySpec struct {
 	// DefaultPrimaryAgent is the primary agent that a session uses when the
 	// launch options state none.
 	DefaultPrimaryAgent string
+	// LaunchEnv returns the "KEY=value" assignments that one member derives
+	// from the launch options, such as a feature switch that the member reads
+	// only at start. The start pins them as it pins the flags above. An error
+	// refuses the start. It may be nil.
+	LaunchEnv func(opts agent.Options) ([]string, error)
 }
 
 // StartFamily starts one member of the OpenCode family and performs the
@@ -44,18 +50,33 @@ func StartFamily[T any](
 	newAgent func() *T,
 	family func(*T) *FamilyBase,
 ) (agent.Agent, error) {
+	autoApprove, err := autoApproveFromOptions(opts.Options)
+	if err != nil {
+		return nil, fmt.Errorf("auto-approve: %w", err)
+	}
+	pinned := []string{spec.QuestionToolEnv + "=1", spec.DisableAutoUpdateEnv + "=1"}
+	if spec.LaunchEnv != nil {
+		memberEnv, err := spec.LaunchEnv(opts)
+		if err != nil {
+			return nil, err
+		}
+		pinned = append(pinned, memberEnv...)
+	}
 	return acp.Start(ctx, opts, sink, acp.StartSpec[T]{
 		Registration:   registration,
 		ProviderName:   spec.ProviderName,
 		BaseArgs:       ACPArgs(),
 		RCMarkerEnvKey: spec.RCMarkerEnvKey,
-		PinnedEnv:      []string{spec.QuestionToolEnv + "=1", spec.DisableAutoUpdateEnv + "=1"},
+		PinnedEnv:      pinned,
 		SessionConfig:  acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:       newAgent,
 		Base:           func(a *T) *acp.Base { return &family(a).Base },
 		Configure: func(a *T, sink agent.ProviderServices) acp.Hooks {
-			family(a).configureQuestions(sink)
-			return FamilyHooks(family(a))
+			f := family(a)
+			f.configureQuestions(sink)
+			// Before the process starts, so no request arrives before the value.
+			f.setAutoApprove(autoApprove)
+			return FamilyHooks(f)
 		},
 		AfterHandshake: func(a *T, handshake *acp.SessionResult, opts agent.Options) error {
 			f := family(a)
@@ -79,6 +100,9 @@ func FamilyHooks(f *FamilyBase) acp.Hooks {
 			if err != nil || stopped {
 				providerkit.EndCompaction(f.Sink())
 			}
+			if f.TurnEnded != nil {
+				f.TurnEnded()
+			}
 			return acp.PromptEnding{}
 		},
 		ModeChannel:              acp.ModeChannelPrimaryAgent,
@@ -94,8 +118,15 @@ func FamilyHooks(f *FamilyBase) acp.Hooks {
 		// and the queue held a steer back behind it.
 		SteersByOwnRoute: true,
 		// The family omits child-session events from the root ACP stream. The
-		// prompt and the final task result still form an inspectable transcript.
+		// family base loads each running child session into the agent, so the
+		// child's own updates reach its transcript (FamilyBase.followChildSession).
 		SubagentFromToolCall:       SubagentFromToolCall,
-		SubagentFromToolCallUpdate: SubagentFromToolCallUpdate,
+		SubagentFromToolCallUpdate: f.subagentFromToolCallUpdate,
+		// Auto-approve answers each permission request once, as the
+		// family's own --auto option does in its clients (AutoApproveGroup).
+		WithBypassPermission:   f.withAutoApprove,
+		PermissionAllowsBypass: permissionOffersAlways,
+		LocalOptionGroups:      f.localOptionGroups,
+		ApplyLocalOption:       f.applyLocalOption,
 	}
 }

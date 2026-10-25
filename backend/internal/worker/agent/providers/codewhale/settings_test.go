@@ -39,9 +39,67 @@ func TestOptionGroupsStateEveryAxis(t *testing.T) {
 		agent.OptionIDEffort:          agent.EffortAuto,
 		contracts.CodewhaleOptionMode: contracts.CodewhaleModeAgent,
 		agent.OptionIDPermissionMode:  contracts.CodewhalePostureAsk,
+		"outputStyle":                 "auto",
 	}
 	assert.Equal(t, want, map[string]string(options))
 	assert.Equal(t, want, map[string]string(a.SettingsSnapshot().SurfacedOptions))
+}
+
+func TestOutputStyleSettingsRequireRestart(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		current, wanted string
+	}{
+		{"auto", "concise"}, {"concise", "normal"}, {"normal", "auto"},
+	} {
+		t.Run(tc.current+" to "+tc.wanted, func(t *testing.T) {
+			t.Parallel()
+			rt := newFakeRuntime(t)
+			a, sink := newTestAgentWith(t, rt, testAgentOptions{launchOptions: optionmap.Map{"outputStyle": tc.current}})
+			a.applyThreadRecordLocked(threadRecord{ID: testThreadID, Model: "deepseek-flash", Mode: "agent", PermissionPosture: "ask"})
+			before := a.SettingsSnapshot().SurfacedOptions
+			beforeState := a.settings
+			refreshes := sink.SettingsRefreshCount()
+			result := a.UpdateSettings(optionmap.Map{"outputStyle": tc.wanted, agent.OptionIDModel: "deepseek-pro", agent.OptionIDEffort: "high", agent.OptionIDPermissionMode: "full_access"})
+			assert.False(t, result.AppliedLive)
+			assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements["outputStyle"].State)
+			assert.Empty(t, rt.requestsTo(http.MethodPatch, threadRoute))
+			assert.Equal(t, before, a.SettingsSnapshot().SurfacedOptions)
+			assert.Equal(t, beforeState, a.settings)
+			assert.Equal(t, tc.current, a.SettingsSnapshot().SurfacedOptions["outputStyle"])
+			assert.Equal(t, refreshes, sink.SettingsRefreshCount())
+		})
+	}
+}
+
+func TestOutputStyleSettingsPreserveUnchangedAndInvalidChoices(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"concise", "", "unknown", "CONCISE", "concise\nCODEWHALE_OTHER=1"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			rt := newFakeRuntime(t)
+			a, _ := newTestAgentWith(t, rt, testAgentOptions{launchOptions: optionmap.Map{"outputStyle": "concise"}})
+			before := a.SettingsSnapshot().SurfacedOptions
+			beforeState := a.settings
+			requested := optionmap.Map{"outputStyle": value}
+			if value != "" && value != "concise" {
+				requested[agent.OptionIDModel] = "deepseek-pro"
+				requested[agent.OptionIDEffort] = "high"
+			}
+			result := a.UpdateSettings(requested)
+			assert.True(t, result.AppliedLive)
+			assert.Empty(t, rt.requestsTo(http.MethodPatch, threadRoute))
+			assert.Equal(t, before, a.SettingsSnapshot().SurfacedOptions)
+			assert.Equal(t, beforeState, a.settings)
+			assert.Equal(t, "concise", result.SurfacedOptions["outputStyle"])
+			if value == "concise" {
+				assert.Equal(t, map[string]string{"outputStyle": "concise"}, map[string]string(result.ConfirmedOptions()))
+			} else if value != "" {
+				assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements["outputStyle"].State)
+				assert.Empty(t, result.ConfirmedOptions())
+			}
+		})
+	}
 }
 
 func TestUpdateSettingsPatchesTheThreadOnce(t *testing.T) {

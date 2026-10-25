@@ -95,8 +95,8 @@ type Agent struct {
 	// numbers events across ALL threads, so gaps are normal; a reconnect asks for
 	// the events after it.
 	lastSeq uint64
-	// settings is what the thread record last reported, plus the effort LeapMux
-	// sends with each turn. See settings.go.
+	// settings holds the native thread state, the effort sent with each turn,
+	// and the output style selected at process launch. See settings.go.
 	settings codewhaleSettings
 	// catalog is the thread provider's model catalog as the runtime stated it,
 	// and models is the same catalog converted for the option groups.

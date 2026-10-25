@@ -159,7 +159,22 @@ describe('isCursorPath', () => {
 })
 
 describe('CURSOR_MOCK_MODELS', () => {
-  it('keeps the bracketed-id shape LeapMux parses', () => {
+  it('provides a legal native variant for each independent thinking and fast choice', () => {
+    const model = CURSOR_MOCK_MODELS.find(model => model.name === 'mock-sonnet')
+    expect(model).toBeDefined()
+    for (const context of ['200k', '1m']) {
+      for (const effort of ['low', 'high']) {
+        for (const thinking of ['false', 'true']) {
+          for (const fast of ['false', 'true']) {
+            const wanted = [{ id: 'context', value: context }, { id: 'effort', value: effort }, { id: 'thinking', value: thinking }, { id: 'fast', value: fast }]
+            expect(model?.variants.map(variant => variant.parameters)).toContainEqual(wanted)
+          }
+        }
+      }
+    }
+  })
+
+  it('keeps the native variant identifiers used to choose default parameters', () => {
     for (const model of CURSOR_MOCK_MODELS) {
       expect(model.variants.length, `model ${model.name}`).toBeGreaterThan(0)
       for (const variant of model.variants)
@@ -167,13 +182,14 @@ describe('CURSOR_MOCK_MODELS', () => {
     }
   })
 
-  it('spells the effort level both ways the real catalogue does', () => {
-    // Cursor uses `effort=` on some models and `reasoning_effort=` on others.
-    // A catalogue that carried one spelling would leave the other path of the
-    // parser untested by every Cursor specification.
-    const ids = CURSOR_MOCK_MODELS.flatMap(model => model.variants.map(variant => variant.id))
-    expect(ids.some(id => /[[,]effort=/.test(id))).toBe(true)
-    expect(ids.some(id => id.includes('reasoning_effort='))).toBe(true)
+  it('offers both native effort IDs and independent boolean controls', () => {
+    const definitions = CURSOR_MOCK_MODELS.flatMap(model => model.parameterDefinitions ?? [])
+    expect(definitions.map(definition => definition.id)).toEqual(expect.arrayContaining(['effort', 'reasoning_effort', 'thinking', 'fast']))
+    for (const id of ['thinking', 'fast']) {
+      const definition = definitions.find(definition => definition.id === id)
+      expect(definition?.kind).toBe('boolean')
+      expect(definition?.values.map(value => value.value)).toEqual(['false', 'true'])
+    }
   })
 
   it('marks exactly one variant as the default', () => {

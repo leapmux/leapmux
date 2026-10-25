@@ -25,12 +25,16 @@ import { LOOPBACK_HOSTNAMES } from './agentEnvironmentInputs'
 import { ampScriptOptions, createAmpSurface } from './ampSurface'
 import { ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions, refusedInstructionFiles } from './ancestorInstructions'
 import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
+import { withoutCodebuddyClassifierSentinelMemory } from './codebuddySurface'
 import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
 import { createCursorSurface } from './cursorSurface'
 import { handleDroidHttp } from './droidSurface'
 import { createDualVersionListener } from './dualVersionListener'
 import { handleGoogleModelHttp } from './googleModelApi'
+import { createKiloCloudSurface } from './kiloCloudSurface'
+import { createKimiCodeSurface } from './kimiCodeSurface'
 import { handleKiroHttp, kiroRequestMetadata } from './kiroSurface'
+import { createLettaSurface } from './lettaSurface'
 import { MOCK_IDENTITY_TOKEN, MOCK_MODELS, MOCK_SESSION_TOKEN, MODEL_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, waitUnlessDisconnected, writeMockJSON, writeResponseHeaders } from './mockHttp'
@@ -49,7 +53,7 @@ import {
 } from './mockModelScript'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput, createBufferedModelStream, createModelStream } from './modelStream'
-import { handleQoderHttp } from './qoderSurface'
+import { createQoderSurface } from './qoderSurface'
 
 const MAX_HTTP_REQUEST_RECORDS = 10_000
 const MAX_UNMATCHED_RECORDS = 200
@@ -233,8 +237,9 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   // Record unregistered scenario requests consistently across all supported model routes.
   const answerFor = (context: ModelRequestContext, capabilities?: { allowServiceToolMetadata?: boolean }): ScenarioAnswer => {
     // An agent that read an instruction file above its working directory sent that text to the model. The test does
-    // not control that text, so the request fails its scenario rather than reach a scripted answer.
-    if (holdsAncestorInstructions(context.body)) {
+    // not control that text, so the request fails its scenario rather than reach a scripted answer. The one known
+    // escape is the memory message of CodeBuddy's Auto-mode classifier (./codebuddySurface.ts).
+    if (holdsAncestorInstructions(withoutCodebuddyClassifierSentinelMemory(context.protocol, context.body))) {
       const reason = `The request holds ${ANCESTOR_INSTRUCTION_SENTINEL}: the agent read an instruction file above its working directory. Give the provider a working directory that is the root of a git repository of its own, or exclude the files above it (./ancestorInstructions.ts).`
       refuseAncestorInstructions(context, reason)
       return { kind: 'missing', message: reason }
@@ -282,14 +287,18 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       }
     },
   }
-  const copilotOptions = { sessionToken: MOCK_SESSION_TOKEN, defaultModelId: MOCK_MODELS.openai, reasoningModelId: MOCK_MODELS.gooseReasoning }
+  const copilotOptions = { sessionToken: MOCK_SESSION_TOKEN, defaultModelId: MOCK_MODELS.openai, reasoningModelId: MOCK_MODELS.gooseReasoning, messagesModelId: MOCK_MODELS.anthropic }
   const qoderOptions = { origin: () => `http://127.0.0.1:${ownPort}`, identityToken: MOCK_IDENTITY_TOKEN }
   // The native services, in the order that the server offers them a request. A request
   // that no surface claims reaches the model routes below.
   const surfaces: readonly MockSurface[] = [
+    createLettaSurface(scriptHost),
     { handleHttp: (request, response, url) => handleDroidHttp(request, response, url, { modelKey: MODEL_KEY }) },
     { handleHttp: (request, response, url) => handleCopilotHttp(request, response, url, copilotOptions) },
-    { handleHttp: (request, response, url) => handleQoderHttp(request, response, url, qoderOptions) },
+    createQoderSurface(scriptHost, qoderOptions),
+    // Before Amp, which claims every `/api/` path: the Kilo cloud procedures sit under `/api/trpc/`.
+    createKiloCloudSurface(scriptHost, { identityToken: MOCK_IDENTITY_TOKEN }),
+    createKimiCodeSurface(scriptHost, { accessToken: MOCK_IDENTITY_TOKEN }),
     createAmpSurface(ampScriptOptions(scriptHost, instructionFiles)),
     createCursorSurface(scriptHost, instructionFiles),
     { handleHttp: (request, response, url) => handleKiroHttp(request, response, url, scriptHost) },
@@ -797,7 +806,7 @@ function modelCatalog(models: string[]): Record<string, unknown> {
       object: 'model',
       created: 1,
       owned_by: 'leapmux-e2e',
-      ...copilotCatalogMetadata(id, { defaultModelId: MOCK_MODELS.openai, reasoningModelId: MOCK_MODELS.gooseReasoning }),
+      ...copilotCatalogMetadata(id, { defaultModelId: MOCK_MODELS.openai, reasoningModelId: MOCK_MODELS.gooseReasoning, messagesModelId: MOCK_MODELS.anthropic }),
     })),
   }
 }

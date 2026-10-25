@@ -194,6 +194,11 @@ func runtimeEnv(env []string, opts agent.Options, store codewhaleStore, token st
 	// ambient alias -- another tool's export, or another provider's value in a
 	// shared environment -- must never reach the runtime.
 	env = envutil.StripByPrefix(env, "DEEPSEEK_")
+	// startWith validates this choice. Auto leaves native configuration intact.
+	// The native thread and turn APIs expose no verbosity field, so a change restarts this process.
+	if style := opts.Get(OptionOutputStyle); style != "" && style != codewhaleOutputStyleGroup.GetDefaultValue() {
+		env = envutil.PinEnv(env, "CODEWHALE_VERBOSITY="+style)
+	}
 	return envutil.PinEnv(env,
 		envRuntimeToken+"="+token,
 		envTasksDir+"="+store.tasksDir(),

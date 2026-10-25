@@ -1,10 +1,34 @@
 package droid
 
 import (
+	"fmt"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+// droidCatalogModel is one model record from the native session catalog.
+type droidCatalogModel struct {
+	ID                        string   `json:"id"`
+	DisplayName               string   `json:"displayName"`
+	SupportedReasoningEfforts []string `json:"supportedReasoningEfforts"`
+	SupportsPDFs              *bool    `json:"supportsPDFs"`
+	ModelProvider             string   `json:"modelProvider"`
+	IsCustom                  bool     `json:"isCustom"`
+}
+
+func droidModelFromNative(native droidCatalogModel) droidModel {
+	model := droidModel{id: native.ID, displayName: native.DisplayName, efforts: native.SupportedReasoningEfforts}
+	if native.SupportsPDFs != nil {
+		model.supportsPDF = *native.SupportsPDFs
+	} else if native.IsCustom {
+		// Droid omits the PDF flag on custom models. Its Anthropic and Responses
+		// converters retain documents; generic Chat and Bedrock Converse do not.
+		model.supportsPDF = native.ModelProvider == "anthropic" || native.ModelProvider == "openai"
+	}
+	return model
+}
 
 // droidModelGroup builds the model option group from the session's catalog.
 func droidModelGroup(models []droidModel, current string) *leapmuxv1.AvailableOptionGroup {
@@ -16,9 +40,14 @@ func droidModelGroup(models []droidModel, current string) *leapmuxv1.AvailableOp
 		Order:        agent.OptionOrderModel,
 	}
 	for _, m := range models {
+		description := ""
+		if m.supportsPDF {
+			description = fmt.Sprintf("Supports PDF attachments up to %d MiB", droidMaxPDFBytes/(1024*1024))
+		}
 		group.Options = append(group.Options, &leapmuxv1.AvailableOption{
-			Id:   m.id,
-			Name: m.displayName,
+			Id:          m.id,
+			Name:        m.displayName,
+			Description: description,
 		})
 	}
 	if group.CurrentValue == "" && len(group.Options) > 0 {

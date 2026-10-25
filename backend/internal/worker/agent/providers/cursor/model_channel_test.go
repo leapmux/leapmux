@@ -15,7 +15,7 @@ func TestBuildACPModels_DedupsByNormalizedID(t *testing.T) {
 
 	models := acp.BuildModelsForTest([]acp.ModelInfo{
 		{ModelID: cursorCLIModelAuto, Name: "Auto"},
-		{ModelID: cursorCLIModelAutoWire, Name: "Auto (wire form)"}, // "default[]" -> "auto"
+		{ModelID: cursorCLIModelAutoWire, Name: "Auto (wire form)"}, // "default" -> "auto"
 		{ModelID: "gpt-5", Name: "GPT-5"},
 	}, cursorCLIModelAuto, normalizeCursorModelID)
 

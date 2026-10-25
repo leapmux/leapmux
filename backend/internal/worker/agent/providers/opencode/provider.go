@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -46,6 +47,16 @@ func (FamilyProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) 
 		return fmt.Errorf("OpenCode protocol does not support binary attachments: %s", attachment.Filename)
 	}
 	return nil
+}
+
+// ChildCapabilities states what a child tab offers.
+//
+// AcceptsInterrupt is true: the family base stops one child session through
+// the daemon's own session abort (FamilyBase.InterruptChild). AcceptsMessages
+// is true: the family base steers a running child session with a second prompt
+// on that session (FamilyBase.SteerChildInput).
+func (FamilyProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}
 }
 
 // opencodeProvider is the wire-format plugin for OpenCode.

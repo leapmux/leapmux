@@ -137,7 +137,7 @@ func (s *eventSink) log() []string {
 }
 
 // start is the agent's process starter: it hands the agent a fake process.
-func (h *harness) start(threadID, mode string) (*ampProcess, error) {
+func (h *harness) start(threadID string, config threadConfiguration) (*ampProcess, error) {
 	h.mu.Lock()
 	err := h.startErr
 	h.startErr = nil
@@ -148,7 +148,7 @@ func (h *harness) start(threadID, mode string) (*ampProcess, error) {
 	}
 	fp := newFakeProc(h.agent.agentID, threadID != "")
 	if threadID == "" {
-		fp.mode = mode
+		fp.config = config
 	}
 	if err := h.agent.adopt(fp.ampProcess); err != nil {
 		return nil, err

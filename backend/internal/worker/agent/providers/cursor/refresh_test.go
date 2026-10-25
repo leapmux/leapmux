@@ -18,10 +18,10 @@ func TestCursorClearContextRefreshesWithNormalization(t *testing.T) {
 
 	a, _ := newCursorAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
 		if method == acp.MethodSessionNew {
-			// Cursor returns the wire format "default[]" for auto model.
+			// Cursor returns the wire format "default" for auto model.
 			return agenttest.RPCReply{Result: json.RawMessage(`{
 				"sessionId": "session-2",
-				"models": {"currentModelId": "default[]"},
+				"models": {"currentModelId": "default"},
 				"modes":  {"currentModeId": "agent"}
 			}`)}
 		}
@@ -57,7 +57,7 @@ func TestCursorClearContextRefreshesOptions(t *testing.T) {
 		if method == acp.MethodSessionNew {
 			return agenttest.RPCReply{Result: json.RawMessage(`{
 				"sessionId": "session-2",
-				"models": {"currentModelId": "default[]"},
+				"models": {"currentModelId": "default"},
 				"modes":  {"currentModeId": "agent"},
 				"configOptions": [
 					{"id":"mode","currentValue":"agent","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"}]},

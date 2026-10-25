@@ -9,13 +9,152 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestChildControlCapabilities(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	assert.Equal(t, agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}, ompProvider{}.ChildCapabilities(nil))
+	_, sends := any(r.agent).(agent.ChildSteerer)
+	_, interrupts := any(r.agent).(agent.ChildInterrupter)
+	assert.True(t, sends)
+	assert.True(t, interrupts)
+}
+
+func TestChildInputReportsUncertainDelivery(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
+	ctx := testutil.DeadlineContext(t)
+	ack := r.clock.Trap().NewTimer(providerkit.AwaitResponseTimerTag, CommandSteerSubagent)
+	defer ack.Close()
+	r.respond(func(recordedCommand) *rigReply { return &rigReply{Skip: true} })
+	result := make(chan error, 1)
+	go func() {
+		result <- r.agent.SteerChildInput(subagentRowKey(r.agent.sessionID, "Probe"), "Read this", nil)
+	}()
+	// The pipe write can finish before the fake process reads it. Observe delivery before expiring its reply timer.
+	r.waitForCommand(CommandSteerSubagent, 1)
+	r.clock.Advance(testutil.WaitForTimer(t, ctx, ack)).MustWait(ctx)
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	case <-ctx.Done():
+		t.Fatal("the child input acknowledgement did not time out")
+	}
+	assert.Len(t, r.commandsOfType(CommandSteerSubagent), 1, "an unknown acknowledgement must not resend the message")
+}
+
+func TestChildInputUsesTheOwnedNativeChild(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	steerer, ok := any(r.agent).(agent.ChildSteerer)
+	require.True(t, ok)
+	r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
+	key := subagentRowKey(r.agent.sessionID, "Probe")
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, steerer.ActiveChildTurnState(key))
+	require.ErrorIs(t, steerer.SendChildInput(key, "Read this", nil), agent.ErrAgentBusy)
+	assert.Empty(t, r.commandsOfType("steer_subagent"))
+	attachment := &leapmuxv1.Attachment{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("revised instructions")}
+	require.NoError(t, steerer.SteerChildInput(key, "Read this", []*leapmuxv1.Attachment{attachment}))
+	commands := r.commandsOfType("steer_subagent")
+	require.Len(t, commands, 1)
+	assert.Equal(t, "Probe", commands[0].Payload["subagentId"])
+	assert.Contains(t, commands[0].Payload["message"], "Read this")
+	assert.Contains(t, commands[0].Payload["message"], "revised instructions")
+	assert.Empty(t, r.commandsOfType(CommandPrompt), "the message never reaches the parent prompt")
+
+	r.emit(subagentEvent("Probe", `{"type":"agent_end","messages":[]}`))
+	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState(key))
+	require.ErrorIs(t, steerer.SteerChildInput(key, "Too late", nil), agent.ErrNoActiveTurn)
+	require.NoError(t, steerer.SendChildInput(key, "Start another child round", nil))
+	assert.Len(t, r.commandsOfType("steer_subagent"), 2)
+}
+
+func TestChildInputRejectsInvalidPayloads(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		content     string
+		attachments []*leapmuxv1.Attachment
+	}{
+		{name: "empty"},
+		{name: "blank", content: " \n\t"},
+		{name: "image", content: "Inspect", attachments: []*leapmuxv1.Attachment{{Filename: "a.png", MimeType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}}}},
+		{name: "binary", content: "Inspect", attachments: []*leapmuxv1.Attachment{{Filename: "a.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0xfe}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			steerer, ok := any(r.agent).(agent.ChildSteerer)
+			require.True(t, ok)
+			r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
+			require.Error(t, steerer.SteerChildInput(subagentRowKey(r.agent.sessionID, "Probe"), tc.content, tc.attachments))
+			assert.Empty(t, r.commandsOfType("steer_subagent"))
+		})
+	}
+}
+
+func TestChildControlsRejectStaleIdentityAndNativeFailures(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	steerer, sends := any(r.agent).(agent.ChildSteerer)
+	interrupter, interrupts := any(r.agent).(agent.ChildInterrupter)
+	require.True(t, sends)
+	require.True(t, interrupts)
+	r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
+	key := subagentRowKey(r.agent.sessionID, "Probe")
+	for _, invalid := range []string{"", "Probe", "other-session/Probe", key + "/extra"} {
+		require.ErrorIs(t, steerer.SteerChildInput(invalid, "Do not deliver", nil), agent.ErrChildRouteNotReady)
+		require.ErrorIs(t, interrupter.InterruptChild(invalid, agent.StopContext{}), agent.ErrChildRouteNotReady)
+	}
+	assert.Empty(t, r.commandsOfType("steer_subagent"))
+	assert.Empty(t, r.commandsOfType("cancel_subagent"))
+	r.respond(func(recordedCommand) *rigReply { return &rigReply{Error: "Subagent not running: Probe"} })
+	require.ErrorContains(t, steerer.SteerChildInput(key, "Refused", nil), "Subagent not running")
+	require.ErrorContains(t, interrupter.InterruptChild(key, agent.StopContext{}), "Subagent not running")
+	assert.Equal(t, bgtask.StatusRunning, subagentRow(t, r, "Probe").Status, "a refused command does not invent a final status")
+	r.emit(frameCompleted)
+	require.ErrorIs(t, steerer.SendChildInput(key, "Finished", nil), agent.ErrChildRouteNotReady)
+	require.ErrorIs(t, interrupter.InterruptChild(key, agent.StopContext{}), agent.ErrChildRouteNotReady)
+	assert.Len(t, r.commandsOfType("steer_subagent"), 1)
+	assert.Len(t, r.commandsOfType("cancel_subagent"), 1)
+}
+
+func TestChildInterruptUsesNativeCancellation(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	interrupter, ok := any(r.agent).(agent.ChildInterrupter)
+	require.True(t, ok)
+	r.emit(`{"type":"agent_start"}`, frameTaskStart, frameStarted)
+	r.respond(func(recordedCommand) *rigReply {
+		unlocked := r.agent.sessionMu.TryLock()
+		if unlocked {
+			r.agent.sessionMu.Unlock()
+		}
+		assert.False(t, unlocked, "context replacement waits for the child command")
+		return &rigReply{Data: json.RawMessage(`{"cancelled":true}`)}
+	})
+	require.NoError(t, interrupter.InterruptChild(subagentRowKey(r.agent.sessionID, "Probe"), agent.StopContext{}))
+	commands := r.commandsOfType("cancel_subagent")
+	require.Len(t, commands, 1)
+	assert.Equal(t, "Probe", commands[0].Payload["subagentId"])
+	assert.Empty(t, r.commandsOfType(CommandAbort))
+	assert.Equal(t, bgtask.StatusRunning, subagentRow(t, r, "Probe").Status, "native lifecycle events own completion")
+	r.emit(`{"type":"subagent_lifecycle","payload":{"id":"Probe","status":"aborted"}}`)
+	assert.Equal(t, bgtask.StatusStopped, subagentRow(t, r, "Probe").Status)
+	r.agent.Mu.Lock()
+	assert.True(t, r.agent.turn.active, "the parent's turn continues")
+	r.agent.Mu.Unlock()
+}
 
 // The frames below are omp 18.2.11's own, from the chat-task probe, shortened
 // where a field is irrelevant.

@@ -2,20 +2,45 @@ package ohmypi
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// LeapMux currently displays goals from goal_updated frames without offering goal actions.
-// Oh My Pi exposes a goal RPC with create, pause, resume, and drop operations.
-// Those operations require integration: https://github.com/leapmux/leapmux/issues/503.
-// A resumed session can retain a goal, and the native goal tool can change it.
+// SupportedGoalActions lists the actions that omp's native goal controller accepts.
+func (a *Agent) SupportedGoalActions() []agent.GoalAction {
+	return []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear, agent.GoalActionPause, agent.GoalActionResume}
+}
 
-// SupportedGoalActions reports that the running agent can do nothing to a goal.
-// The goal card still shows a goal omp reports; it offers no control for it.
-func (a *Agent) SupportedGoalActions() []agent.GoalAction { return nil }
+// PerformGoalAction sends a native goal command. Native events report the resulting state.
+// Create and resume start native continuation without an additional user message.
+func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
+	payload := make(map[string]any)
+	switch action {
+	case agent.GoalActionSet:
+		if strings.TrimSpace(objective) == "" {
+			return agent.GoalOutcome{}, fmt.Errorf("the goal objective must not be empty")
+		}
+		payload["op"], payload["objective"] = "create", objective
+	case agent.GoalActionClear:
+		payload["op"] = "drop"
+	case agent.GoalActionPause:
+		payload["op"] = "pause"
+	case agent.GoalActionResume:
+		payload["op"] = "resume"
+	default:
+		return agent.GoalOutcome{}, agent.ErrGoalControlUnsupported
+	}
+
+	// A session replacement must wait until this command finishes against its original session.
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	_, err := a.sendCommand(CommandGoal, payload, a.APITimeout())
+	return agent.GoalOutcome{}, err
+}
 
 // ompGoal is omp's goal, from a goal_updated frame.
 type ompGoal struct {

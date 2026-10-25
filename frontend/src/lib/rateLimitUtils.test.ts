@@ -1,17 +1,64 @@
 import type { RateLimitInfo } from '~/models/agentSession'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { RATE_LIMIT_TYPE } from '~/generated/contracts/session-info'
 import {
   formatCountdown,
   formatRateLimitMessage,
   formatRateLimitSummary,
   getResetsAt,
   pickUrgentRateLimit,
+  rateLimitPopoverLabel,
+  rateLimitStatusLabel,
+  rateLimitTypeLabel,
 } from './rateLimitUtils'
 
 /** Unix seconds `secs` in the future, for a deterministically-positive countdown. */
 const future = (secs: number): number => Math.floor(Date.now() / 1000) + secs
 
+describe('rateLimitStatusLabel', () => {
+  it.each([
+    ['allowed', 'Allowed'],
+    ['allowed_warning', 'Warning'],
+    ['exceeded', 'Exceeded'],
+    ['rejected', 'Exceeded'],
+    ['toString', 'Exceeded'],
+    ['constructor', 'Exceeded'],
+    ['', undefined],
+    [undefined, undefined],
+  ])('labels status %s', (status, expected) => {
+    expect(rateLimitStatusLabel(status)).toBe(expected)
+  })
+})
+
 const UNKNOWN_TYPE_PREFIX_RE = /^Rate limit \(unknown_type\):/
+
+describe('rateLimitTypeLabel', () => {
+  it.each([
+    [RATE_LIMIT_TYPE.FiveHour, '5-hour'],
+    [RATE_LIMIT_TYPE.SevenDay, '7-day'],
+    [RATE_LIMIT_TYPE.OneMonth, 'Monthly'],
+  ])('labels the standard type %s', (rateLimitType, label) => {
+    expect(rateLimitTypeLabel(rateLimitType)).toBe(label)
+  })
+
+  it.each([undefined, '', '3_month', 'toString'])('returns undefined for the type %s, which is not standard', (rateLimitType) => {
+    expect(rateLimitTypeLabel(rateLimitType)).toBeUndefined()
+  })
+})
+
+describe('rateLimitPopoverLabel', () => {
+  it.each([
+    [RATE_LIMIT_TYPE.FiveHour, '5-Hour Rate Limit'],
+    [RATE_LIMIT_TYPE.SevenDay, '7-Day Rate Limit'],
+    [RATE_LIMIT_TYPE.OneMonth, 'Monthly Rate Limit'],
+  ])('labels the standard type %s', (rateLimitType, label) => {
+    expect(rateLimitPopoverLabel(rateLimitType)).toBe(label)
+  })
+
+  it.each([undefined, '', '3_month', 'constructor'])('returns undefined for the type %s, which is not standard', (rateLimitType) => {
+    expect(rateLimitPopoverLabel(rateLimitType)).toBeUndefined()
+  })
+})
 
 describe('formatCountdown', () => {
   beforeEach(() => {
@@ -90,6 +137,15 @@ describe('pickUrgentRateLimit', () => {
 
   it('returns null when no rate limits exist', () => {
     expect(pickUrgentRateLimit({})).toBeNull()
+  })
+
+  it('orders an epoch-zero reset before a future reset of equal severity', () => {
+    const picked = pickUrgentRateLimit({
+      future: { status: 'allowed_warning', resetsAt: future(3600), rateLimitType: 'seven_day' },
+      epoch: { status: 'allowed_warning', resetsAt: 0, rateLimitType: 'five_hour' },
+    })
+    expect(picked?.info.rateLimitType).toBe('five_hour')
+    expect(picked?.countdown).toBeNull()
   })
 
   it('returns null when every tier is allowed', () => {
@@ -191,6 +247,10 @@ describe('formatRateLimitMessage', () => {
   it('includes type label for known types', () => {
     const msg = formatRateLimitMessage({ rateLimitType: 'five_hour', utilization: 0.5 })
     expect(msg).toContain('5-hour')
+  })
+
+  it('labels a monthly window', () => {
+    expect(formatRateLimitMessage({ rateLimitType: RATE_LIMIT_TYPE.OneMonth, utilization: 0.3 })).toBe('Monthly rate limit: 30% used')
   })
 
   it('includes raw type in parentheses for unknown types', () => {

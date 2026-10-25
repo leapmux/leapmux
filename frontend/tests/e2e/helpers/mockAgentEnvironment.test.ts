@@ -7,7 +7,9 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'no
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { agentSearchPathEnv, exeExtensionOnPath, findBinary } from './binaryOnPath'
-import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, COMMAND_CODE_ALT_MODEL_ID, COMMAND_CODE_MODEL_ID, COMMAND_CODE_REASONING_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, GROK_REASONING_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, OPENCODE_FAMILY_PLAIN_MODEL_ID, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID, PI_PLAIN_MODEL_ID, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, QWEN_PLAIN_MODEL_ID, QWEN_PLAIN_MODEL_WIRE_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID, REASONIX_PLAIN_MODEL_ID, REASONIX_PLAIN_PROVIDER_ID, ZCODE_PLAIN_MODEL_WIRE_ID } from './mockAgentEnvironment'
+import { KIMI_CODE_SERVICE_PATH } from './kimiCodeSurface'
+import { KIMI_ACCOUNT_PROVIDER, kimiAccountCredentialKey } from './kimiEnvironment'
+import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, COMMAND_CODE_ALT_MODEL_ID, COMMAND_CODE_MODEL_ID, COMMAND_CODE_REASONING_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, GROK_REASONING_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_IDENTITY_TOKEN, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, OPENCODE_FAMILY_PLAIN_MODEL_ID, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID, PI_PLAIN_MODEL_ID, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, QWEN_PLAIN_MODEL_ID, QWEN_PLAIN_MODEL_WIRE_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID, REASONIX_PLAIN_MODEL_ID, REASONIX_PLAIN_PROVIDER_ID, ZCODE_PLAIN_MODEL_WIRE_ID } from './mockAgentEnvironment'
 import { privateDirectoryMode, privateFileMode } from './privateConfigFile'
 import { qoderEndpointCacheRecords } from './qoderSurface'
 
@@ -22,14 +24,30 @@ const setupBoundary = vi.hoisted(() => {
  * The Letta setup test supplies its own controlled binary through mockImplementationOnce.
  */
 function executeWithoutInstalledLetta(actual: typeof import('node:child_process').execFileSync) {
-  return (file: string, args?: readonly string[], options?: ExecFileSyncOptions) => basename(file) === 'letta' ? Buffer.alloc(0) : actual(file, args, options)
+  return (file: string, args?: readonly string[], options?: ExecFileSyncOptions) => /^letta(?:\.cmd|\.exe)?$/i.test(basename(file)) ? Buffer.alloc(0) : actual(file, args, options)
 }
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   setupBoundary.original.execute = actual.execFileSync
   setupBoundary.execute.mockImplementation(executeWithoutInstalledLetta(actual.execFileSync))
-  return { ...actual, execFileSync: setupBoundary.execute }
+  return {
+    ...actual,
+    execFileSync: setupBoundary.execute,
+    execFile: (file: string, args: readonly string[], options: ExecFileSyncOptions, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      if (!/^letta(?:\.cmd|\.exe)?$/i.test(basename(file)))
+        return Reflect.apply(actual.execFile, undefined, [file, args, options, callback])
+      queueMicrotask(() => {
+        try {
+          callback(null, setupBoundary.execute(file, args, options).toString(), '')
+        }
+        catch (error) {
+          callback(error instanceof Error ? error : new Error(String(error)), '', '')
+        }
+      })
+      return new actual.ChildProcess()
+    },
+  }
 })
 
 let directory: string
@@ -498,11 +516,23 @@ describe('createMockAgentEnvironment', () => {
 
   it('maps each Kimi Code alias onto a model the catalog route already lists', async () => {
     // A new identifier would change the catalog every provider reads.
-    for (const alias of Object.values(KIMI_MOCK_MODELS)) {
+    for (const [name, alias] of Object.entries(KIMI_MOCK_MODELS)) {
       const [provider, model] = alias.split('/')
-      expect(provider).toBe(MOCK_PROVIDER_IDS.kimi)
+      expect(provider, name).toBe(name === 'account' ? 'kimi-code' : MOCK_PROVIDER_IDS.kimi)
       expect(MOCK_MODEL_IDS).toContain(model)
     }
+  })
+
+  it('signs Kimi Code in to the mocked account, whose model and service are the mock', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    expect(env.KIMI_CODE_BASE_URL).toBe(`http://127.0.0.1:43210${KIMI_CODE_SERVICE_PATH}`)
+    expect(env.KIMI_CODE_OAUTH_HOST).toBe('http://127.0.0.1:43210/kimi/oauth')
+    const key = kimiAccountCredentialKey(env.KIMI_CODE_OAUTH_HOST!, env.KIMI_CODE_BASE_URL!)
+    expect(JSON.parse(readFileSync(join(env.KIMI_CODE_HOME!, 'credentials', `${key}.json`), 'utf8'))).toMatchObject({ access_token: MOCK_IDENTITY_TOKEN, expires_at: 0 })
+    const kimi = readFileSync(join(env.KIMI_CODE_HOME!, 'config.toml'), 'utf8')
+    expect(kimi).toContain(`[providers."${KIMI_ACCOUNT_PROVIDER}"]\ntype = "openai"\nbase_url = "http://127.0.0.1:43210/v1"\napi_key_env = "LEAPMUX_E2E_MODEL_API_KEY"`)
+    expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.account}"]\nprovider = "${KIMI_ACCOUNT_PROVIDER}"\nmodel = "${MOCK_MODELS.zai}"`)
+    expect(kimi).toContain(`default_model = "${KIMI_MOCK_MODELS.thinking}"`)
   })
 
   it('isolates Oh My Pi in its own profile, which Pi\'s variables cannot reach', async () => {

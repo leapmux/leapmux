@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type lettaCatalogPending struct {
@@ -43,14 +42,6 @@ func (a *Agent) clearCatalogPending(pending *lettaCatalogPending) {
 	a.Mu.Unlock()
 }
 
-func (a *Agent) clearModelPending(pending *lettaModelUpdatePending) {
-	a.Mu.Lock()
-	if a.modelPending == pending {
-		a.modelPending = nil
-	}
-	a.Mu.Unlock()
-}
-
 // handleListModelsResponse reads the handles and labels that the running App
 // Server offers. An absent availability list leaves the full entry list usable.
 func (a *Agent) handleListModelsResponse(line []byte) {
@@ -59,10 +50,16 @@ func (a *Agent) handleListModelsResponse(line []byte) {
 		Success   bool   `json:"success"`
 		Error     string `json:"error"`
 		Entries   []struct {
-			Handle string `json:"handle"`
-			Label  string `json:"label"`
+			ID         string `json:"id"`
+			Handle     string `json:"handle"`
+			Label      string `json:"label"`
+			UpdateArgs struct {
+				Effort       string `json:"reasoning_effort"`
+				ProviderType string `json:"provider_type"`
+			} `json:"updateArgs"`
 		} `json:"entries"`
-		AvailableHandles *[]string `json:"available_handles"`
+		AvailableHandles *[]string         `json:"available_handles"`
+		ProviderAliases  map[string]string `json:"byok_provider_aliases"`
 	}
 	if err := json.Unmarshal(line, &response); err != nil {
 		return
@@ -83,19 +80,27 @@ func (a *Agent) handleListModelsResponse(line []byte) {
 			}
 		}
 		models := make([]lettaModel, 0, len(response.Entries))
-		seen := make(map[string]bool, len(response.Entries))
+		indices := make(map[string]int, len(response.Entries))
 		for _, entry := range response.Entries {
-			if entry.Handle == "" || seen[entry.Handle] || available != nil && !available[entry.Handle] {
+			if entry.Handle == "" || available != nil && !available[entry.Handle] {
 				continue
 			}
-			seen[entry.Handle] = true
-			label := entry.Label
-			if label == "" {
-				label = entry.Handle
+			index, exists := indices[entry.Handle]
+			if !exists {
+				index = len(models)
+				indices[entry.Handle] = index
+				label := entry.Label
+				if label == "" {
+					label = entry.Handle
+				}
+				models = append(models, lettaModel{id: entry.Handle, displayName: label})
 			}
-			models = append(models, lettaModel{id: entry.Handle, displayName: label})
+			models[index].variants = append(models[index].variants, lettaModelVariant{
+				id: entry.ID, effort: entry.UpdateArgs.Effort, providerType: entry.UpdateArgs.ProviderType,
+			})
 		}
 		a.catalog.models = models
+		a.catalog.providerAliases = response.ProviderAliases
 	}
 	a.Mu.Unlock()
 	if pending == nil {
@@ -112,47 +117,6 @@ func (a *Agent) handleListModelsResponse(line []byte) {
 	pending.waiter.settle(nil)
 }
 
-// handleUpdateModelResponse settles one model write from the native reply.
-func (a *Agent) handleUpdateModelResponse(line []byte) {
-	var response struct {
-		RequestID   string `json:"request_id"`
-		Success     bool   `json:"success"`
-		ModelHandle string `json:"model_handle"`
-		Error       string `json:"error"`
-	}
-	if err := json.Unmarshal(line, &response); err != nil {
-		return
-	}
-	a.Mu.Lock()
-	pending := a.modelPending
-	if pending == nil || pending.requestID != response.RequestID {
-		a.Mu.Unlock()
-		return
-	}
-	a.modelPending = nil
-	if response.Success {
-		model := response.ModelHandle
-		if model == "" {
-			model = pending.model
-		}
-		a.settings.model = model
-		if pending.effortPresent {
-			a.settings.reasoningLevel = pending.effort
-		}
-	}
-	a.Mu.Unlock()
-	if !response.Success {
-		slog.Warn("letta: model update refused", "agent_id", a.AgentID(), "model", pending.model, "error", response.Error)
-		if response.Error == "" {
-			pending.waiter.settle(errors.New("the App Server refused the model update"))
-		} else {
-			pending.waiter.settle(fmt.Errorf("the App Server refused the model update: %s", response.Error))
-		}
-		return
-	}
-	pending.waiter.settle(nil)
-}
-
 // defaultModels is the static model catalog. A running server replaces it with
 // the list its provider configuration exposes.
 var defaultModels = []*agent.ModelInfo{
@@ -162,23 +126,20 @@ var defaultModels = []*agent.ModelInfo{
 	},
 }
 
-// lettaModelGroup builds the model option group from the server's catalog.
-func lettaModelGroup(models []lettaModel, current string) *leapmuxv1.AvailableOptionGroup {
-	group := &leapmuxv1.AvailableOptionGroup{
-		Id:           agent.OptionIDModel,
-		Label:        "Model",
-		CurrentValue: current,
-		Mutable:      true,
-		Order:        agent.OptionOrderModel,
+// lettaModelInfo projects advertised variants without changing the native catalog.
+func lettaModelInfo(model lettaModel) *agent.ModelInfo {
+	info := &agent.ModelInfo{Id: model.id, DisplayName: model.displayName}
+	seen := map[string]bool{agent.EffortAuto: true}
+	for _, variant := range model.variants {
+		if variant.effort == "" || seen[variant.effort] {
+			continue
+		}
+		if len(info.SupportedEfforts) == 0 {
+			info.DefaultEffort = agent.EffortAuto
+			info.SupportedEfforts = append(info.SupportedEfforts, providerkit.EffortTier(agent.EffortAuto))
+		}
+		seen[variant.effort] = true
+		info.SupportedEfforts = append(info.SupportedEfforts, providerkit.EffortTier(variant.effort))
 	}
-	for _, m := range models {
-		group.Options = append(group.Options, &leapmuxv1.AvailableOption{
-			Id:   m.id,
-			Name: m.displayName,
-		})
-	}
-	if group.CurrentValue == "" && len(group.Options) > 0 {
-		group.CurrentValue = group.Options[0].GetId()
-	}
-	return group
+	return info
 }

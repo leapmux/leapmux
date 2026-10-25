@@ -1,10 +1,13 @@
-// The native background-task cancellation route is not integrated.
-// See https://github.com/leapmux/leapmux/issues/505.
 import { copilotTest } from '../copilot-fixtures'
-import { openProfiledNativeChild } from '../helpers/runningChildProof'
-import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
-import { COPILOT_CHILD } from './childScenario'
+import { exerciseChildInterrupt, HELD_CHILD_NAME, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
+import { copilotChildTaskMatcher } from './childIdentity'
+import { bypassToolRequests } from './scenarios'
 
-copilotTest('refuses native child interrupt while the actual child task runs', async ({ native }) => {
-  await expectUnsupportedSubagent(native, { operation: 'interrupt', openChild: () => openProfiledNativeChild(native, COPILOT_CHILD) })
+// Copilot tracks each subagent as a task of the session. The Worker cancels the task of the spawning call with
+// session.tasks.cancel, and Copilot ends the subagent with a cancelled completion while the parent goes on.
+copilotTest('interrupts the native child task without stopping its parent', async ({ native }) => {
+  await bypassToolRequests(native)
+  await exerciseChildInterrupt(native, { childTurn: copilotChildTaskMatcher(HELD_CHILD_TASK), rowTitle: HELD_CHILD_NAME, finalStatus: 'stopped' })
 })
+
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/505.

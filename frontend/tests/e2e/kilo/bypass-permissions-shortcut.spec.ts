@@ -1,9 +1,22 @@
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
-import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfiguration'
+import { expect } from '@playwright/test'
+import { OPENCODE_OPTION } from '../../../src/generated/contracts/opencode-protocol'
+import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
+import { nativeOptionValue } from '../helpers/nativeScenario'
+import { expectPermissionShortcuts, waitForNativeSettingsHydrated } from '../helpers/ui'
 import { kiloTest } from '../kilo-fixtures'
 
-kiloTest('proves the native bypass-permissions-shortcut limit after a real sidebar operation', async ({ native }) => {
-  await expectMissingPermissionShortcut(native, { preset: 'bypass', relatedProof: () => exerciseRelatedTodo(native) })
+// Kilo's default shell rule asks, so each command asks unless Bypass answers the request.
+kiloTest('offers Bypass and runs a native command without a prompt before and after reload', async ({ native }) => {
+  await waitForNativeSettingsHydrated(native.page)
+  await expectPermissionShortcuts(native.page, { smart: 'absent', bypass: 'offered' })
+  await exerciseBypassPermissions(native, {
+    settingsProof: agent => expect(nativeOptionValue(agent, OPENCODE_OPTION.AutoApprove)).toBe('true'),
+  })
 })
 
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/515.
+kiloTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
+  await exerciseMidTurnBypass(native)
+})
+
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/515.

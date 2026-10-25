@@ -12,6 +12,7 @@ import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
 import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
+import { formatResetTimestamp } from '~/lib/rateLimitUtils'
 import { createControlStore } from '~/stores/control.store'
 import { getEditorRef } from '~/stores/editorRef.store'
 import { getActiveChatPanel } from '~/stores/focusedChatPanel.store'
@@ -77,6 +78,7 @@ function agent(overrides: MessageInitShape<typeof AgentInfoSchema> = {}): AgentI
 }
 
 interface RenderPanelOptions {
+  agentSessionInfo?: AgentEditorPanelProps['agentSessionInfo']
   workerId?: string
   agentProvider?: AgentProvider
   controlStore?: ReturnType<typeof createControlStore>
@@ -118,6 +120,7 @@ function renderPanel(options: RenderPanelOptions = {}) {
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={options.onSendMessage ?? (() => {})}
+        {...(options.agentSessionInfo !== undefined ? { agentSessionInfo: options.agentSessionInfo } : {})}
         {...(panelControlStore !== undefined
           ? {
               controlRequests: panelControlStore.getRequests('a1'),
@@ -251,6 +254,13 @@ async function waitForControlActionsReady() {
 // has no such ancestor, because `createComponent` untracks the element that its
 // prop getter builds.
 describe('AgentEditorPanel', () => {
+  it('shows the reset-date tooltip for an epoch-zero quota reset', () => {
+    renderPanel({ agentSessionInfo: { rateLimits: { primary: { status: 'allowed_warning', utilization: 0.9, resetsAt: 0 } } } })
+    const warning = within(screen.getByTestId('agent-info-trigger')).getByText('Warning', { exact: true })
+    const tooltip = hoverForTooltip(warning)
+    expect(tooltip?.textContent).toContain(formatResetTimestamp(0))
+  })
+
   it('identifies the focused editor before and after the agent changes', () => {
     const repoGitStore = createRepoGitStore()
     let selectAgent: ((id: string) => void) | undefined

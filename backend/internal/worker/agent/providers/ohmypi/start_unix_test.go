@@ -17,6 +17,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,13 +96,14 @@ func runFakeOmp(scenario, recordDir string, args []string) int {
 	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
 	for scanner.Scan() {
 		var command struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Enabled bool   `json:"enabled"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &command) != nil || command.ID == "" {
 			continue
 		}
-		for _, frame := range fakeOmpReply(scenario, command.ID, command.Type) {
+		for _, frame := range fakeOmpReply(scenario, command.ID, command.Type, command.Enabled) {
 			write(frame)
 		}
 	}
@@ -110,7 +113,7 @@ func runFakeOmp(scenario, recordDir string, args []string) int {
 
 // fakeOmpReply returns the frames that the fake writes for one command, in
 // order.
-func fakeOmpReply(scenario, id, command string) []string {
+func fakeOmpReply(scenario, id, command string, enabled bool) []string {
 	response := func(data string) string {
 		frame := map[string]any{"type": "response", "id": id, "command": command, "success": true}
 		if data != "" {
@@ -120,6 +123,8 @@ func fakeOmpReply(scenario, id, command string) []string {
 		return string(encoded)
 	}
 	switch command {
+	case CommandSetFastMode:
+		return []string{response(fmt.Sprintf(`{"enabled":%t,"active":%t}`, enabled, enabled))}
 	case CommandGetState:
 		state := response(`{"model":{"id":"mock-model","provider":"mock"},"thinkingLevel":"medium",` +
 			`"sessionId":"` + fakeOmpSessionID + `","sessionFile":"` + fakeOmpSessionFile + `"}`)
@@ -168,6 +173,7 @@ func readOmpRecord(t *testing.T, recordDir string) ompHelperRecord {
 func ompStartOptions(t *testing.T) agent.Options {
 	t.Helper()
 	return agent.Options{
+		AgentDirs:      agentdirtest.NewDirs(t, []agentdir.Spec{{Prefix: "ohmypi"}}, t.TempDir()),
 		AgentID:        "omp-start",
 		WorkingDir:     t.TempDir(),
 		HomeDir:        t.TempDir(),
@@ -202,7 +208,14 @@ func TestStartRunsTheHandshake(t *testing.T) {
 	a, sink := startFakeOmp(t, opts)
 
 	record := readOmpRecord(t, recordDir)
-	assert.Equal(t, []string{"--mode", "rpc-ui", "--cwd", opts.WorkingDir, "--approval-mode", "write"}, record.Args)
+	configIndex := slices.Index(record.Args, "--config")
+	require.GreaterOrEqual(t, configIndex, 0, "goal continuation requires the RPC configuration overlay")
+	require.Greater(t, len(record.Args), configIndex+1)
+	configPath := record.Args[configIndex+1]
+	config, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"goal":{"enabled":true,"continuationModes":["rpc"]}}`, string(config))
+	assert.Equal(t, []string{"--mode", "rpc-ui", "--cwd", opts.WorkingDir, "--approval-mode", "write", "--config", configPath}, record.Args)
 	assert.False(t, record.HasTerminalPane, "omp never sees the terminal identity of the worker")
 	expectedDir, err := filepath.EvalSymlinks(opts.WorkingDir)
 	require.NoError(t, err)
@@ -234,6 +247,57 @@ func TestStartRunsTheHandshake(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("omp did not exit when its stdin closed")
 	}
+	require.NoError(t, a.Wait())
+	assert.NoDirExists(t, filepath.Dir(configPath), "the process no longer needs the private overlay")
+}
+
+func TestOutputStyleNativeConfiguration(t *testing.T) {
+	for _, style := range []string{"", "auto", "default", "friendly", "pragmatic", "none", "invalid"} {
+		t.Run(style, func(t *testing.T) {
+			recordDir := installFakeOmp(t, ompScenarioServe)
+			opts := ompStartOptions(t)
+			opts.Options = optionmap.Map{"outputStyle": style}
+			if style == "invalid" {
+				started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+				if started != nil {
+					started.Stop()
+					_ = started.Wait()
+				}
+				require.ErrorContains(t, err, "output style")
+				assert.NoFileExists(t, filepath.Join(recordDir, "record.json"))
+				return
+			}
+			a, _ := startFakeOmp(t, opts)
+			args := readOmpRecord(t, recordDir).Args
+			index := slices.Index(args, "--config")
+			require.GreaterOrEqual(t, index, 0)
+			require.Greater(t, len(args), index+1)
+			raw, err := os.ReadFile(args[index+1])
+			require.NoError(t, err)
+			var config map[string]any
+			require.NoError(t, json.Unmarshal(raw, &config))
+			assert.Equal(t, map[string]any{"enabled": true, "continuationModes": []any{"rpc"}}, config["goal"])
+			if style == "" || style == "auto" {
+				assert.NotContains(t, config, "personality")
+				style = "auto"
+			} else {
+				assert.Equal(t, style, config["personality"])
+			}
+			assert.Equal(t, style, a.SettingsSnapshot().ConfirmedOptions()["outputStyle"])
+		})
+	}
+}
+
+func TestFastModeStartsWithStoredChoice(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		t.Run(value, func(t *testing.T) {
+			installFakeOmp(t, ompScenarioServe)
+			opts := ompStartOptions(t)
+			opts.Options = optionmap.Map{"fastMode": value}
+			a, _ := startFakeOmp(t, opts)
+			assert.Equal(t, value, a.SettingsSnapshot().ConfirmedOptions()["fastMode"])
+		})
+	}
 }
 
 func TestStartLaunchesWithTheOptionsAndTheResumeHandle(t *testing.T) {
@@ -249,8 +313,12 @@ func TestStartLaunchesWithTheOptionsAndTheResumeHandle(t *testing.T) {
 
 	a, _ := startFakeOmp(t, opts)
 
+	args := readOmpRecord(t, recordDir).Args
+	configIndex := slices.Index(args, "--config")
+	require.GreaterOrEqual(t, configIndex, 0)
+	require.Greater(t, len(args), configIndex+1)
 	assert.Equal(t, []string{"--mode", "rpc-ui", "--cwd", opts.WorkingDir, "--model", "mock/mock-model", "--thinking", "high",
-		"--approval-mode", "always-ask", "--resume", file}, readOmpRecord(t, recordDir).Args)
+		"--approval-mode", "always-ask", "--resume", file, "--config", args[configIndex+1]}, args)
 	groups := a.OptionGroups()
 	assert.Equal(t, "medium", groupByID(groups, agent.OptionIDEffort).GetCurrentValue(), "omp states the level it runs")
 	assert.Equal(t, "always-ask", groupByID(groups, agent.OptionIDPermissionMode).GetCurrentValue())
@@ -269,11 +337,16 @@ func TestStartRefusesAnInvalidResumeHandle(t *testing.T) {
 }
 
 func TestStartReportsAnOmpThatExitsBeforeItIsReady(t *testing.T) {
-	installFakeOmp(t, ompScenarioExitBeforeReady)
+	recordDir := installFakeOmp(t, ompScenarioExitBeforeReady)
 	_, err := Start(t.Context(), ompStartOptions(t), agent.NewProviderServices(&agenttest.Sink{}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ready")
 	assert.Contains(t, err.Error(), "Model not found: mock/missing", "the reader learns why omp exited")
+	args := readOmpRecord(t, recordDir).Args
+	configIndex := slices.Index(args, "--config")
+	require.GreaterOrEqual(t, configIndex, 0)
+	require.Greater(t, len(args), configIndex+1)
+	assert.NoDirExists(t, filepath.Dir(args[configIndex+1]), "startup failure removes its private overlay")
 }
 
 // A goal that omp reports while the session opens is the resumed session's own

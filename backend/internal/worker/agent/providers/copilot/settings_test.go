@@ -132,3 +132,63 @@ func TestNativeCopilotModelSwitchSetsTheKeptEffortOnTheNewModel(t *testing.T) {
 	assert.Equal(t, []string{"session.model.switchTo", "session.model.setReasoningEffort"}, methods,
 		"the update switches the model, then sets the tier on it")
 }
+
+// startFleetCopilot starts an agent on the fake runtime with the given options.
+func startFleetCopilot(t *testing.T, options optionmap.Map) (agent.Agent, error) {
+	t.Helper()
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+	})
+	provider, err := startNativeCopilot(t.Context(), agent.Options{
+		AgentID: "native-fleet", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		APITimeout: time.Second, Options: options,
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	if err == nil {
+		t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	}
+	return provider, err
+}
+
+// Fleet is LeapMux's own setting: Copilot applies it to one request at a time,
+// so a change sends nothing to the runtime and the next turn reads it. Off is
+// the default, a value other than On and Off is refused, and a replaced session
+// keeps the value.
+func TestNativeCopilotFleetIsALocalSetting(t *testing.T) {
+	provider, err := startFleetCopilot(t, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "false", provider.SettingsSnapshot().SurfacedOptions[copilotOptionFleet], "Fleet starts off")
+
+	result := provider.UpdateSettings(optionmap.Map{copilotOptionFleet: "true"})
+	require.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[copilotOptionFleet].State)
+	require.NotNil(t, result.Settlements[copilotOptionFleet].Value)
+	assert.Equal(t, "true", *result.Settlements[copilotOptionFleet].Value)
+	assert.Equal(t, "true", result.SurfacedOptions[copilotOptionFleet])
+
+	for _, invalid := range []string{"maybe", "TRUE", "1"} {
+		result = provider.UpdateSettings(optionmap.Map{copilotOptionFleet: invalid})
+		assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[copilotOptionFleet].State, invalid)
+		assert.Equal(t, "true", provider.SettingsSnapshot().SurfacedOptions[copilotOptionFleet], "a refused value keeps the current one")
+	}
+
+	clearer, ok := provider.(interface{ ClearContext() (string, error) })
+	require.True(t, ok)
+	_, err = clearer.ClearContext()
+	require.NoError(t, err)
+	assert.Equal(t, "true", provider.SettingsSnapshot().SurfacedOptions[copilotOptionFleet], "a replaced session keeps Fleet")
+
+	result = provider.UpdateSettings(optionmap.Map{copilotOptionFleet: "false"})
+	require.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[copilotOptionFleet].State)
+	assert.Equal(t, "false", provider.SettingsSnapshot().SurfacedOptions[copilotOptionFleet])
+}
+
+// The launch value of Fleet comes from the stored options. A stored value
+// other than On and Off fails the start rather than running a mode nobody chose.
+func TestNativeCopilotStartReadsTheStoredFleet(t *testing.T) {
+	provider, err := startFleetCopilot(t, optionmap.Map{copilotOptionFleet: "true"})
+	require.NoError(t, err)
+	assert.Equal(t, "true", provider.SettingsSnapshot().SurfacedOptions[copilotOptionFleet])
+
+	_, err = startFleetCopilot(t, optionmap.Map{copilotOptionFleet: "maybe"})
+	require.ErrorContains(t, err, "fleet")
+}

@@ -1,7 +1,7 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ShellCommand, ShellResultEvidence } from '../helpers/nativeToolExecution'
 import { isObject } from '../../../src/lib/jsonPick'
-import { nativeToolResultContent, nativeToolResultEntry } from '../helpers/nativeToolResult'
+import { nativeToolCallArguments, nativeToolResultContent, nativeToolResultEntry } from '../helpers/nativeToolResult'
 
 /** Read the one text record that CodeBuddy supplied for this tool result. */
 function recordText(content: unknown): string {
@@ -40,19 +40,29 @@ function validateMetadata(entry: Record<string, unknown>, exitCode: number): voi
 }
 
 /**
- * Prove the generated command against CodeBuddy's complete native record.
+ * Prove the generated command against its exact native Bash call and completed record.
+ * The current record starts with Stdout; a record with a Command header must agree with the call also.
  * CodeBuddy 2.160.0 stops its pipe readers on process exit and can omit stderr.
  * Only its exact empty-stderr failure preserves the record instead of the missing marker.
  */
 export function readCodeBuddyShellResult(request: MockModelRequestRecord, command: Readonly<ShellCommand>): ShellResultEvidence {
-  if (!command.command.trim() || /[\r\n\0]/u.test(command.command) || !command.output.trim()
+  if (!command.callId.trim() || !command.command.trim() || /[\r\n\0]/u.test(command.command) || !command.output.trim()
     || /[\r\n\0]/u.test(command.output) || !Number.isSafeInteger(command.exitCode)) {
     throw new Error('The CodeBuddy shell proof requires one command and one output marker.')
   }
   const record = recordText(nativeToolResultContent(request, command.callId))
-  const prefix = `Command: ${command.command}\nStdout: `
-  if (!record.startsWith(prefix))
-    throw new Error('The CodeBuddy native record states another command.')
+  const call = nativeToolCallArguments(request, command.callId)
+  if (call.name !== 'Bash' || !isObject(call.arguments) || call.arguments.command !== command.command)
+    throw new Error('The native call is not the expected CodeBuddy Bash command.')
+  let prefix = 'Stdout: '
+  if (record.startsWith('Command:')) {
+    prefix = `Command: ${command.command}\nStdout: `
+    if (!record.startsWith(prefix))
+      throw new Error('The CodeBuddy native record states another command.')
+  }
+  else if (!record.startsWith(prefix)) {
+    throw new Error('The CodeBuddy native record has no stdout field.')
+  }
   const footerStart = record.lastIndexOf('\nExit Code: ')
   const footer = footerStart >= prefix.length ? /^\nExit Code: (0|-?[1-9]\d*)\nSignal: \(none\)$/u.exec(record.slice(footerStart)) : null
   const exitCode = footer ? Number(footer[1]) : Number.NaN

@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
+import { captureClipboardText } from './clipboardCapture'
 import { uniqueMarker } from './shellArguments'
 
 export interface NativeToolOutput {
@@ -42,24 +42,17 @@ export function computedNativeToolOutput(options: { prefix?: string, lineCount?:
   return { source, text: lines.join('\n'), firstMarker: lines[0]!, omittedMarker: lines[middle]!, lastMarker, lineMarker: `${prefix}-line-` }
 }
 
-/** The browser permissions that the Copy proof needs to write and read the clipboard. */
-const CLIPBOARD_PERMISSIONS: readonly string[] = ['clipboard-read', 'clipboard-write']
-
 /**
- * Clear the clipboard and require the original native preview from Copy.
- * The proof grants the clipboard permissions to the context of the page first, so a caller cannot forget them.
- * The page reset between tests (`resetSharedPage`) clears the permissions again.
+ * Require Copy to write the original native preview successfully.
+ * Observe this page's write because parallel browsers share the OS clipboard.
  */
 export async function copyNativeToolOutputPreview(page: Page, result: Locator, expectedText: string): Promise<void> {
   if (!expectedText)
     throw new Error('The native tool output Copy proof requires nonempty native preview text.')
-  await page.context().grantPermissions([...CLIPBOARD_PERMISSIONS])
-  await page.evaluate(async sentinel => navigator.clipboard.writeText(sentinel), `CLIPBOARD${randomUUID()}`)
   const view = result.locator('..')
-  await view.hover()
-  await view.getByRole('button', { name: 'Copy', exact: true }).click()
-  await expect.poll(async () => {
-    const actual = await page.evaluate(() => navigator.clipboard.readText())
-    return { exact: actual === expectedText, utf16CodeUnits: actual.length }
-  }).toEqual({ exact: true, utf16CodeUnits: expectedText.length })
+  const actual = await captureClipboardText(page, async () => {
+    await view.hover()
+    await view.getByRole('button', { name: 'Copy', exact: true }).click()
+  })
+  expect({ exact: actual === expectedText, utf16CodeUnits: actual.length }).toEqual({ exact: true, utf16CodeUnits: expectedText.length })
 }

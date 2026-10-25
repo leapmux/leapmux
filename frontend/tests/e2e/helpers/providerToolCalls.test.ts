@@ -1120,6 +1120,9 @@ describe('spawnSubagentToolCall', () => {
     // requires separately.
     expect(spawnSubagentToolCall(AgentProvider.GITHUB_COPILOT, 'call-1', request).arguments)
       .toMatchObject({ name: 'probe_the_subagent_path', description: 'Probe the Subagent Path!' })
+    // Copilot's call states its mode either way, and runs a child in the foreground by default.
+    expect(spawnSubagentToolCall(AgentProvider.GITHUB_COPILOT, 'call-1', request).arguments).toMatchObject({ mode: 'sync' })
+    expect(spawnSubagentToolCall(AgentProvider.GITHUB_COPILOT, 'call-1', { ...request, background: true }).arguments).toMatchObject({ mode: 'background' })
     expect(spawnSubagentToolCall(AgentProvider.CODEWHALE, 'call-1', request).arguments)
       .toMatchObject({ name: 'probe_the_subagent_path' })
   })

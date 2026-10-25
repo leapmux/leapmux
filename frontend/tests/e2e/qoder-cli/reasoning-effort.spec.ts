@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { MOCK_MODELS, QODER_ALTERNATE_MODEL_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
+import { exerciseModelSwitchKeepsOption, exerciseNativeOption, exerciseNativeOptionSequence } from '../helpers/nativeSettings'
 import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI effort and session goal', () => {
@@ -21,6 +21,26 @@ qoderTest.describe('Qoder CLI effort and session goal', () => {
       },
     })
     await expect(effortChip).toContainText('Low')
+  })
+
+  // Each change restarts Qoder with --resume, and Qoder then restores the stored reasoning settings of the session
+  // unless the launch states an effort. Auto must therefore reach the next request as Qoder's own default.
+  qoderTest('returns to the automatic effort after a concrete level', async ({ native }) => {
+    await sendNativeAnswer(native, 'Reply once before the effort changes.', 'The first turn answered.')
+    await exerciseNativeOptionSequence(native, {
+      groupId: 'effort',
+      steps: [
+        { value: 'low', via: 'choose' },
+        { value: 'auto', via: 'choose' },
+        { value: 'auto', via: 'reload' },
+      ],
+      nativeProof: (request, step) => {
+        if (step.value === 'low')
+          expect(request.body).toMatchObject({ reasoning_effort: 'low' })
+        else
+          expect(request.body).not.toHaveProperty('reasoning_effort')
+      },
+    })
   })
 })
 

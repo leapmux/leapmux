@@ -20,15 +20,15 @@ import (
 // attachment tray, and a reference reaches the model only after the same normalizer
 // that already reads `dataBase64`.
 //
-// Two boundaries are real and both are enforced here rather than left to fail
-// silently:
+// An image and a PDF each travel with their bytes, as the `image` and the `pdf`
+// kind. The app-server gives the model an image as an image part and a PDF as a
+// file part.
 //
-//   - The installed normalizer accepts a PDF kind and checks the model's PDF capability.
-//     This adapter does not implement that path, so ValidateAttachment refuses PDFs.
-//     See https://github.com/leapmux/leapmux/issues/499.
-//   - An image sent to a text-only model is accepted by the app-server and never
-//     reaches the model. Only the RUNNING agent knows which model is current, so
-//     that refusal is here.
+// The app-server ACCEPTS an image or a PDF that the current model declares no
+// input for, and the file never reaches the model: ZCode replaces it with a note
+// that the media was omitted. Only the RUNNING agent knows which model is current,
+// so that refusal is here and not in ValidateAttachment. A binary file has no kind
+// that keeps its bytes, so ValidateAttachment refuses it.
 
 // zcodeMaxAttachmentBytes caps one send's total attachment payload.
 //
@@ -38,10 +38,30 @@ import (
 // the other, and a base64 body of that size is already 27 MB of line.
 const zcodeMaxAttachmentBytes = 20 * 1024 * 1024
 
-// zcodeAttachmentKindImage is the normalizer discriminator for the one kind LeapMux
-// sends. The normalizer also knows `video`, `audio` and `file`; the first two have no
-// LeapMux attachment kind, and `file` is what makes a PDF unusable (see above).
-const zcodeAttachmentKindImage = "image"
+// The normalizer discriminators for the kinds that LeapMux sends with their bytes.
+// The normalizer also knows `video`, `audio` and `file`. The first two have no
+// LeapMux attachment kind, and LeapMux sends no `file`: a text file is inlined into
+// the prompt, and ValidateAttachment refuses a binary file.
+const (
+	zcodeAttachmentKindImage = "image"
+	zcodeAttachmentKindPDF   = "pdf"
+)
+
+// zcodeMediaKind is how one LeapMux attachment kind travels with its bytes.
+type zcodeMediaKind struct {
+	// wire is the normalizer discriminator.
+	wire string
+	// modality is the input modality that the model must declare.
+	modality string
+	// label states the kind in a refusal.
+	label string
+}
+
+// zcodeMediaKinds lists the LeapMux attachment kinds that travel with their bytes.
+var zcodeMediaKinds = map[agent.AttachmentKind]zcodeMediaKind{
+	agent.AttachmentKindImage: {wire: zcodeAttachmentKindImage, modality: zcodeModalityImage, label: "image"},
+	agent.AttachmentKindPDF:   {wire: zcodeAttachmentKindPDF, modality: zcodeModalityPDF, label: "PDF"},
+}
 
 // zcodeWireAttachment is one entry of session/send.attachments.
 //
@@ -62,8 +82,8 @@ type zcodeWireAttachment struct {
 //
 // Text attachments are INLINED into the prompt, as Pi does: the model then quotes
 // and reasons about them exactly as if the user had pasted them, and no capability
-// question arises. Images travel as wire attachments, and only when the current
-// model declares that it accepts them.
+// question arises. Images and PDFs travel as wire attachments, and only when the
+// current model declares that it accepts them.
 func (a *Agent) buildZCodeInput(content string, attachments []*leapmuxv1.Attachment, model string) (string, []zcodeWireAttachment, error) {
 	classified := agent.ClassifyAttachments(attachments)
 	if len(classified) == 0 {
@@ -75,49 +95,51 @@ func (a *Agent) buildZCodeInput(content string, attachments []*leapmuxv1.Attachm
 	total := 0
 
 	for _, attachment := range classified {
-		// The static policy runs first, so a PDF or a binary is refused with the same
-		// message whether it arrived through the normalizing pre-check or straight here.
+		// The static policy runs first, so a binary is refused with the same message
+		// whether it arrived through the normalizing pre-check or straight here.
 		if err := (zcodeProvider{}).ValidateAttachment(attachment); err != nil {
 			return "", nil, err
 		}
-		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		if attachment.Kind == agent.AttachmentKindText {
 			blocks = append(blocks, providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage:
-			if err := a.checkZCodeImageSupport(model, attachment); err != nil {
-				return "", nil, err
-			}
-			total += len(attachment.Data)
-			if total > zcodeMaxAttachmentBytes {
-				return "", nil, fmt.Errorf("attachments exceed ZCode's %d MB limit", zcodeMaxAttachmentBytes/(1024*1024))
-			}
-			wire = append(wire, zcodeWireAttachment{
-				Kind:       zcodeAttachmentKindImage,
-				Filename:   attachment.Filename,
-				MimeType:   attachment.MIMEType,
-				SizeBytes:  len(attachment.Data),
-				DataBase64: base64.StdEncoding.EncodeToString(attachment.Data),
-			})
-		default:
+			continue
+		}
+		media, ok := zcodeMediaKinds[attachment.Kind]
+		if !ok {
 			// Unreachable: ValidateAttachment above refuses every other kind. Reported
 			// rather than dropped, so a new attachment kind cannot be lost in silence.
 			return "", nil, fmt.Errorf("zcode cannot send attachment %s of kind %q", attachment.Filename, attachment.Kind)
 		}
+		if err := a.checkZCodeModelInput(model, media, attachment); err != nil {
+			return "", nil, err
+		}
+		total += len(attachment.Data)
+		if total > zcodeMaxAttachmentBytes {
+			return "", nil, fmt.Errorf("attachments exceed ZCode's %d MB limit", zcodeMaxAttachmentBytes/(1024*1024))
+		}
+		wire = append(wire, zcodeWireAttachment{
+			Kind:       media.wire,
+			Filename:   attachment.Filename,
+			MimeType:   attachment.MIMEType,
+			SizeBytes:  len(attachment.Data),
+			DataBase64: base64.StdEncoding.EncodeToString(attachment.Data),
+		})
 	}
 
 	return zcodeJoinPrompt(content, blocks), wire, nil
 }
 
-// checkZCodeImageSupport refuses an image the current model cannot read.
+// checkZCodeModelInput refuses an image or a PDF that the current model cannot
+// read.
 //
-// The app-server ACCEPTS such a send and the image never reaches the model, so
-// without this the user sees a confident answer about an image the model never saw.
+// The app-server ACCEPTS such a send and the file never reaches the model, so
+// without this the user sees a confident answer about a file the model never saw.
 // A refusal identifies the model, because the remedy is to switch it.
-func (a *Agent) checkZCodeImageSupport(model string, attachment agent.ClassifiedAttachment) error {
+func (a *Agent) checkZCodeModelInput(model string, media zcodeMediaKind, attachment agent.ClassifiedAttachment) error {
 	if model == "" {
 		// No model is pinned, so the app-server picked one from the registry and its
-		// capabilities are unknown here. Sending is the better failure: an image the
-		// model ignores is recoverable, and refusing every image on an unpinned session
+		// capabilities are unknown here. Sending is the better failure: a file the
+		// model ignores is recoverable, and refusing every file on an unpinned session
 		// would not be.
 		return nil
 	}
@@ -126,15 +148,15 @@ func (a *Agent) checkZCodeImageSupport(model string, attachment agent.Classified
 	a.Mu.Unlock()
 	accepts := false
 	if live {
-		accepts = slices.Contains(record.modalities, zcodeModalityImage)
+		accepts = slices.Contains(record.modalities, media.modality)
 	} else {
-		accepts = a.catalog.acceptsInputModality(model, zcodeModalityImage)
+		accepts = a.catalog.acceptsInputModality(model, media.modality)
 	}
 	if accepts {
 		return nil
 	}
-	return fmt.Errorf("the ZCode model %s does not accept image attachments (%s); choose a model that declares image input",
-		model, attachment.Filename)
+	return fmt.Errorf("the ZCode model %s does not accept %s attachments (%s); choose a model that declares %s input",
+		model, media.label, attachment.Filename, media.label)
 }
 
 // zcodeJoinPrompt appends the inlined attachment blocks to the user's message.

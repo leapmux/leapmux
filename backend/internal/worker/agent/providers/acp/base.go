@@ -11,6 +11,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -2133,8 +2134,8 @@ type ConfigOption struct {
 	// When a provider omits category, the known ID still identifies its channel.
 	Category string `json:"category"`
 	// Type identifies the widget kind.
-	// The ACP specification currently defines select, and isSelectableConfigOption also treats an empty type as select.
-	// The parser ignores every other widget type.
+	// Select and boolean widgets become mutable option groups.
+	// An empty type denotes a select. Other widget types remain unsupported.
 	Type        string `json:"type"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -2146,9 +2147,8 @@ type ConfigOption struct {
 
 // UnmarshalJSON accepts JSON values for currentValue and stores their string representation.
 // Every downstream reader uses a string, but a non-select widget can supply its own JSON scalar type.
-// Dirac sends the auto_approve and yolo values as JSON booleans with type: "boolean".
-// isSelectableConfigOption excludes those widgets from the option system, so no option control displays their values.
-// The session parse must still succeed, as the Type field already requires ignoring unknown widget types safely.
+// Boolean widgets keep their native scalar type when the writer sends a setting.
+// Unsupported widget types still decode without preventing session startup.
 // Convert the native value through these rules:
 //   - Decode JSON strings into plain text.
 //   - Keep null and absent values empty.
@@ -2238,7 +2238,7 @@ type ConfigOptionValue struct {
 //
 // Keep the first entry for each final normalized ID.
 // acpHandshakeModelInfos combines two channels and removes duplicate raw IDs before this step.
-// A normalizer can still map distinct raw IDs to one final ID, such as Cursor's "default[]" -> "auto".
+// A normalizer can still map distinct raw IDs to one final ID, such as Cursor's "default" -> "auto".
 // Removing duplicates here prevents repeated final models from that conversion and from repeated IDs in one native channel.
 func buildACPModels(models []ModelInfo, currentModelID string, normalize func(string) string) []*agentapi.ModelInfo {
 	if normalize != nil {
@@ -2289,10 +2289,20 @@ const (
 )
 
 // isSelectableConfigOption reports whether a config option is a supported value-list selector.
-// The ACP specification currently defines select, and this method treats an empty type as select also.
-// It ignores every other type so an unknown widget cannot reach a picker that supports only a value list.
+// An empty type denotes a select also. Model, mode, and effort channels use only selectors.
+// Boolean widgets are independent option groups even when they share a channel category.
 func isSelectableConfigOption(o ConfigOption) bool {
 	return o.Type == "" || o.Type == "select"
+}
+
+// configOptionTypeBoolean identifies ACP's typed boolean widget.
+const configOptionTypeBoolean = "boolean"
+
+// isSupportedConfigOption accepts selectors and well-formed boolean choices.
+// An absent boolean current value can receive a stored startup preference.
+func isSupportedConfigOption(option ConfigOption) bool {
+	return isSelectableConfigOption(option) || (option.Type == configOptionTypeBoolean &&
+		(option.CurrentValue == "" || option.CurrentValue == "false" || option.CurrentValue == "true"))
 }
 
 // acpConfigOptionContentLess defines a stable total order only to resolve duplicate IDs deterministically.
@@ -2303,7 +2313,25 @@ func acpConfigOptionContentLess(a, b ConfigOption) bool {
 	if a.CurrentValue != b.CurrentValue {
 		return a.CurrentValue < b.CurrentValue
 	}
-	return acpConfigOptionValuesKey(a) < acpConfigOptionValuesKey(b)
+	aValues, bValues := acpConfigOptionValuesKey(a), acpConfigOptionValuesKey(b)
+	if aValues != bValues {
+		return aValues < bValues
+	}
+	return acpConfigOptionDetailsKey(a) < acpConfigOptionDetailsKey(b)
+}
+
+// acpConfigOptionDetailsKey resolves equal-value duplicates using their complete widget metadata.
+// Quoting preserves field separators even when a label contains a control character.
+// The original choice order breaks ties between otherwise identical reordered definitions.
+func acpConfigOptionDetailsKey(option ConfigOption) string {
+	fields := []string{option.ID, option.Type, option.Category, option.Name, option.Description}
+	for _, value := range option.Options {
+		fields = append(fields, value.Value, value.Name, value.Description, string(value.Meta))
+	}
+	for i, field := range fields {
+		fields[i] = strconv.Quote(field)
+	}
+	return strings.Join(fields, "\x00")
 }
 
 // acpConfigOptionValuesKey joins an option's offered values in sorted order to create a stable key.
@@ -2715,8 +2743,7 @@ func (b *Base) handleACPConfigOptionUpdate(update json.RawMessage) {
 	case listChanged || optionListChanged:
 		// An available list changed without changing any current selection.
 		// The changed list can describe models, modes, primary agents, or config options.
-		// BroadcastSettingsRefresh would perform no write because PersistSettingsRefresh skips unchanged model, mode, and option values.
-		// Broadcast a status refresh directly instead.
+		// Broadcast a status refresh for the active session.
 		// Its StatusChange reads the live model list and option groups, so the frontend receives the new options.
 		b.sink.BroadcastStatusActive(sessionID)
 	}
@@ -3026,7 +3053,7 @@ func (b *Base) sendSessionRPCObserved(method string, extraParams map[string]inte
 
 // SetModelViaConfigOption writes configId "model" through native session/set_config_option and leaves b.model unchanged.
 // Each caller stores its model ID. A provider can normalize the native ID before that write.
-// Thus a concurrent OptionGroups read cannot observe or persist a temporary native ID such as "default[]".
+// Thus a concurrent OptionGroups read cannot observe or persist a temporary native ID such as "default".
 //
 // This method serves providers that support the model config-option channel.
 // Its response must carry the complete refreshed configOptions snapshot.
@@ -3151,6 +3178,7 @@ func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func()
 	b.Mu.Lock()
 	known := b.options.known.has(configID)
 	offered := b.options.offersValue(configID, value)
+	widgetType := b.options.templates[configID].Type
 	// Check the precondition under the same lock as the checks below.
 	// Another b.Mu holder then cannot invalidate it between those checks.
 	wanted := stillWanted == nil || stillWanted()
@@ -3177,10 +3205,12 @@ func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func()
 		return nil
 	}
 
-	resp, err := b.sendSessionRPC(MethodSessionSetConfigOption, map[string]interface{}{
-		"configId": configID,
-		"value":    value,
-	})
+	params := map[string]interface{}{"configId": configID, "value": value}
+	if widgetType == configOptionTypeBoolean {
+		params["type"] = configOptionTypeBoolean
+		params["value"] = value == "true"
+	}
+	resp, err := b.sendSessionRPC(MethodSessionSetConfigOption, params)
 	if err != nil {
 		return err
 	}

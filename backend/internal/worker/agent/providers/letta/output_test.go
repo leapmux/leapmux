@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,7 @@ func TestLettaRetryDiscardsThoughtAndTextTogether(t *testing.T) {
 	for _, child := range []bool{false, true} {
 		t.Run(fmt.Sprint(child), func(t *testing.T) {
 			a, sink := newLettaChildTestAgent(t)
+			a.sink = agent.NewModelProgressResetSink(a.sink)
 			target := sink
 			feed := func(delta map[string]any) {
 				if child {
@@ -52,13 +54,17 @@ func TestLettaRetryDiscardsThoughtAndTextTogether(t *testing.T) {
 			}
 			feed(map[string]any{"message_type": "reasoning_message", "reasoning": "FAILED-THOUGHT"})
 			feed(map[string]any{"message_type": "assistant_message", "content": "FAILED-TEXT"})
+			assert.Positive(t, target.ProgressSnapshot().ThinkingTokens)
 			feed(map[string]any{"message_type": "retry", "attempt": 1})
+			assert.Zero(t, target.ProgressSnapshot().ThinkingTokens)
 			feed(map[string]any{"message_type": "assistant_message", "content": "RETRIED-ANSWER"})
+			assert.Positive(t, target.ProgressSnapshot().ThinkingTokens)
 			if child {
 				a.HandleOutput(lettaChildStateFrame(t, "completed"))
 			} else {
 				a.HandleOutput([]byte(lettaLiveTurnFinished))
 			}
+			assert.Zero(t, target.ProgressSnapshot().ThinkingTokens)
 			for _, row := range target.Messages() {
 				assert.NotContains(t, string(row.Content), "FAILED-THOUGHT")
 				assert.NotContains(t, string(row.Content), "FAILED-TEXT")
@@ -786,4 +792,180 @@ func TestUserMessageThatLeapMuxDidNotSendStaysARow(t *testing.T) {
 
 	a.HandleOutput([]byte(fmt.Sprintf(lettaLiveQueuedMessageEcho, "")))
 	assert.Len(t, sink.Messages(), 3, "a message with an empty id is a row")
+}
+
+func TestLettaModelProgress(t *testing.T) {
+	t.Parallel()
+	for _, child := range []bool{false, true} {
+		t.Run(fmt.Sprint(child), func(t *testing.T) {
+			t.Parallel()
+			a, sink := newLettaChildTestAgent(t)
+			a.sink = agent.NewModelProgressResetSink(a.sink)
+			target := sink
+			scope := "main"
+			if child {
+				a.HandleOutput(lettaChildStateFrame(t, "running"))
+				row, ok := sink.BackgroundTask(lettaTestChildID)
+				require.True(t, ok)
+				target = sink.Child(row.ChildAgentID)
+				scope = "child:" + lettaTestChildID
+			}
+			feed := func(delta map[string]any) {
+				if child {
+					a.HandleOutput(lettaChildDeltaFrame(t, delta))
+					return
+				}
+				raw, err := json.Marshal(map[string]any{"type": "stream_delta", "delta": delta})
+				require.NoError(t, err)
+				a.HandleOutput(raw)
+			}
+			feed(map[string]any{"message_type": "assistant_message", "content": []any{map[string]any{"type": "text", "text": "First text 한글 😊"}}})
+			first := target.ProgressSnapshot().ThinkingTokens
+			assert.Positive(t, first)
+			feed(map[string]any{"message_type": "reasoning_message", "content": []any{map[string]any{"type": "text", "text": "Fallback reasoning keeps every character."}}})
+			assert.Greater(t, target.ProgressSnapshot().ThinkingTokens, first)
+			feed(map[string]any{"message_type": "reasoning_message", "reasoning": "Explicit reasoning.", "content": "Do not duplicate fallback."})
+			feed(map[string]any{"message_type": "assistant_message", "content": " More final text."})
+			var observations []agent.ProgressUpdate
+			for _, update := range target.ProgressUpdates() {
+				if update.Operation == agent.ProgressModelText {
+					observations = append(observations, update)
+				}
+			}
+			assert.Equal(t, []agent.ProgressUpdate{
+				agent.ModelTextProgress(scope, "First text 한글 😊"),
+				agent.ModelTextProgress(scope+":reasoning", "Fallback reasoning keeps every character."),
+				agent.ModelTextProgress(scope+":reasoning", "Explicit reasoning."),
+				agent.ModelTextProgress(scope, " More final text."),
+			}, observations)
+			if child {
+				assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+				a.HandleOutput(lettaChildStateFrame(t, "completed"))
+			} else {
+				a.HandleOutput([]byte(lettaLiveTurnFinished))
+			}
+			assert.Zero(t, target.ProgressSnapshot().ThinkingTokens)
+			var stored strings.Builder
+			for _, message := range target.Messages() {
+				stored.Write(message.Content)
+			}
+			assert.Contains(t, stored.String(), "First text 한글 😊 More final text.")
+			assert.Contains(t, stored.String(), "Fallback reasoning keeps every character.Explicit reasoning.")
+			assert.NotContains(t, stored.String(), "Do not duplicate fallback.")
+		})
+	}
+}
+
+func TestLettaModelProgressIgnoresEmptyMalformedAndRetiredChildren(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.sink = agent.NewModelProgressResetSink(a.sink)
+	for _, raw := range []string{
+		`{"type":"stream_delta","delta":{"message_type":"assistant_message","content":null}}`,
+		`{"type":"stream_delta","delta":{"message_type":"assistant_message","content":{}}}`,
+		`{"type":"stream_delta","delta":{"message_type":"assistant_message","content":""}}`,
+		`{"type":"stream_delta","delta":{"message_type":"reasoning_message","reasoning":""}}`,
+		`{"type":"stream_delta","delta":{"message_type":"reasoning_message","reasoning":12}}`,
+	} {
+		a.HandleOutput([]byte(raw))
+	}
+	assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+	delta := map[string]any{"message_type": "assistant_message", "content": "A child must own this text."}
+	a.HandleOutput(lettaChildDeltaFrame(t, delta))
+	assert.Empty(t, sink.Messages())
+	a.HandleOutput(lettaChildStateFrame(t, "running"))
+	row, ok := sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	a.HandleOutput(lettaChildStateFrame(t, "completed"))
+	target := sink.Child(row.ChildAgentID)
+	before := target.Messages()
+	a.HandleOutput(lettaChildDeltaFrame(t, delta))
+	assert.Equal(t, before, target.Messages())
+	assert.Zero(t, target.ProgressSnapshot().ThinkingTokens)
+	assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+}
+
+func TestLettaModelProgressCompletesWhenPersistenceFails(t *testing.T) {
+	t.Parallel()
+	for _, boundary := range []string{"tool", "turn", "exit"} {
+		t.Run(boundary, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{PersistErr: assert.AnError}
+			a := &Agent{sink: agent.NewModelProgressResetSink(agent.NewProviderServices(sink))}
+			// Seed the progress independently so this regression isolates failed-persistence cleanup.
+			a.sink.ReportProgress(agent.ModelTextProgress("main", "Pending text must complete."))
+			a.sink.ReportProgress(agent.ModelTextProgress("main:reasoning", "Pending reasoning must complete."))
+			a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"assistant_message","content":"Pending text must complete."}}`))
+			a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"reasoning_message","reasoning":"Pending reasoning must complete."}}`))
+			require.Positive(t, sink.ProgressSnapshot().ThinkingTokens)
+			switch boundary {
+			case "tool":
+				a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"client_tool_start","tool_call_id":"call-1","tool_name":"Bash"}}`))
+			case "turn":
+				a.HandleOutput([]byte(lettaLiveTurnFinished))
+			case "exit":
+				a.finishOutputAfterExit(agent.MessageCompletionError)
+			}
+			assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+		})
+	}
+}
+
+func TestLettaDeltaText(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, raw, want string }{
+		{name: "string", raw: `"Plain 한글 😊"`, want: "Plain 한글 😊"},
+		{name: "text blocks", raw: `[{"type":"text","text":"first"},{"type":"text","text":" second"}]`, want: "first second"},
+		{name: "unsupported block", raw: `[{"type":"image","text":"not model text"},{"type":"text","text":"actual text"}]`, want: "actual text"},
+		{name: "empty", raw: `[]`}, {name: "null", raw: `null`}, {name: "malformed", raw: `{"text":`}, {name: "number", raw: `0`},
+	} {
+		t.Run(tc.name, func(t *testing.T) { t.Parallel(); assert.Equal(t, tc.want, deltaText(json.RawMessage(tc.raw))) })
+	}
+}
+
+func TestLettaModelProgressConcurrentFrames(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.sink = agent.NewModelProgressResetSink(a.sink)
+	a.HandleOutput(lettaChildStateFrame(t, "running"))
+	row, ok := sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	child := sink.Child(row.ChildAgentID)
+	rootFrame := []byte(`{"type":"stream_delta","delta":{"message_type":"assistant_message","content":"abcdefgh"}}`)
+	childFrame := lettaChildDeltaFrame(t, map[string]any{"message_type": "assistant_message", "content": "abcdefghijkl"})
+	var writers sync.WaitGroup
+	for range 32 {
+		writers.Go(func() { a.HandleOutput(rootFrame) })
+		writers.Go(func() { a.HandleOutput(childFrame) })
+	}
+	writers.Wait()
+	assert.Equal(t, int64(64), sink.ProgressSnapshot().ThinkingTokens)
+	assert.Equal(t, int64(96), child.ProgressSnapshot().ThinkingTokens)
+	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+	assert.Equal(t, int64(96), child.ProgressSnapshot().ThinkingTokens, "root completion preserves child progress")
+	a.HandleOutput(lettaChildStateFrame(t, "completed"))
+	assert.Zero(t, child.ProgressSnapshot().ThinkingTokens)
+}
+
+func TestLettaNonCommandFieldsStayOpaque(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.sink = agent.NewModelProgressResetSink(a.sink)
+	for _, text := range []string{"Keep this model text", " and its final continuation."} {
+		raw, err := json.Marshal(map[string]any{
+			"type":    "stream_delta",
+			"runtime": map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"},
+			"delta":   map[string]any{"message_type": "assistant_message", "content": text, "input": map[string]any{"opaque": true}, "output": map[string]any{"opaque": true}, "success": "opaque metadata"},
+		})
+		require.NoError(t, err)
+		a.HandleOutput(raw)
+	}
+	assert.Positive(t, sink.ProgressSnapshot().ThinkingTokens)
+	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	var content map[string]any
+	require.NoError(t, json.Unmarshal(messages[0].Content, &content))
+	assert.Equal(t, "Keep this model text and its final continuation.", content[contracts.AssembledMessageFieldText])
 }

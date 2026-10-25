@@ -1,12 +1,13 @@
 {
-  "_readme": "Dirac owns the session modes and tool names. Both languages read these values. The worker maps subagent cards to registry rows. The browser draws those cards and the plan toggle. Dirac identifies a tool through rawInput.tool or the native name field.\n\nDirac reports a saved command-log path in the original final result. The browser shows that path beside the original preview. LeapMux reads no command-log body. `notices` holds the exact text of the notice chunks Dirac emits beside the model stream: the retry notice, a cancelled hook, and the two shell-integration lines. The worker matches a chunk whose whole text equals one notice.",
+  "_readme": "Dirac owns the session modes and tool names. Both languages read these values. The worker maps subagent cards to registry rows. The browser draws those cards and the plan toggle. Dirac identifies a tool through rawInput.tool or the native name field.\n\nDirac reports a saved command-log path in the original final result. The browser shows that path beside the original preview. LeapMux reads no command-log body. `notices` holds the exact text of the notice chunks Dirac emits beside the model stream: the retry notice, a cancelled hook, and the two shell-integration lines. The worker matches a chunk whose whole text equals one notice. The Yolo config ID connects the browser Bypass preset to the worker policy for pending native tool approvals.",
   "modes": {
     "Act": "act",
     "Plan": "plan"
   },
   "defaultMode": "Act",
   "configIds": {
-    "ReasoningEffort": "reasoning_effort"
+    "ReasoningEffort": "reasoning_effort",
+    "Yolo": "yolo"
   },
   "toolNames": {
     "UseSubagents": "use_subagents",

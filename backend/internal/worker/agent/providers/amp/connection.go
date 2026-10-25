@@ -44,14 +44,19 @@ type launchConfig struct {
 	shellEnv func(ctx context.Context, names []string) (map[string]string, launch.ProbeResult)
 }
 
+// threadConfiguration captures the native choices before a new process starts.
+type threadConfiguration struct {
+	mode string
+	fast bool
+}
+
 // ampProcess is one `amp` process.
 type ampProcess struct {
 	providerkit.Process
 	// resumed states that the process continues an existing thread.
 	resumed bool
-	// mode is the agent mode that the process started its new thread in. It is
-	// empty for a resume, because Amp ignores --mode there.
-	mode string
+	// config holds the native choices for a new thread. A resume keeps its own choices.
+	config threadConfiguration
 	// exiting is true once the process is on its way out: it printed its
 	// `result`, an interrupt signalled it, or Stop runs. No new line goes to it.
 	exiting atomic.Bool
@@ -114,13 +119,15 @@ func (p *ampProcess) signalInterrupt() error {
 //     gets its first message. It also takes `--no-archive-after-execute`:
 //     execute mode archives a thread it created, and `threads continue` refuses
 //     an archived thread, so without it no thread could resume.
+//   - `--fast` selects fast serving for a new thread. Existing threads keep
+//     their creation features.
 //   - `threads continue <id>` resumes a thread. Amp ignores `--mode` there, and
 //     it archives only a thread it created.
 //   - No `--visibility`: a new thread takes the default visibility of the
 //     user's Amp account, the same default as a thread that the user starts
 //     with `amp` directly. An account of a team workspace can make that default
 //     visible to the team, and the choice stays with the account.
-func launchArgs(threadID, mode, settingsPath string) []string {
+func launchArgs(threadID string, config threadConfiguration, settingsPath string) []string {
 	var args []string
 	if threadID != "" {
 		args = append(args, "threads", "continue", threadID)
@@ -131,7 +138,10 @@ func launchArgs(threadID, mode, settingsPath string) []string {
 		"--no-ide", "--no-notifications", "--no-color", "--no-remote-control-terminal",
 	)
 	if threadID == "" {
-		args = append(args, "--mode", mode, "--no-archive-after-execute")
+		args = append(args, "--mode", config.mode, "--no-archive-after-execute")
+		if config.fast {
+			args = append(args, "--fast")
+		}
 	}
 	return args
 }
@@ -154,7 +164,7 @@ func (c launchConfig) setEnv() []string {
 // startProcess writes the settings file and starts one `amp` process, a new
 // thread in mode when threadID is empty and a resume otherwise. The caller holds
 // sendMu.
-func (a *Agent) startProcess(threadID, mode string) (*ampProcess, error) {
+func (a *Agent) startProcess(threadID string, config threadConfiguration) (*ampProcess, error) {
 	registration := Registration()
 	settingsPath, err := a.launch.writeSettings(a.userSettingsFile())
 	if err != nil {
@@ -168,7 +178,7 @@ func (a *Agent) startProcess(threadID, mode string) (*ampProcess, error) {
 		Launch:       a.launch.spec,
 		StripEnvKeys: ampIdentityEnvKeys,
 		SetEnv:       a.launch.setEnv(),
-		BaseArgs:     launchArgs(threadID, mode, settingsPath),
+		BaseArgs:     launchArgs(threadID, config, settingsPath),
 		WorkingDir:   a.launch.opts.WorkingDir,
 	})
 	cmd.Env = a.launch.processEnv(cmd.Environ())
@@ -184,7 +194,7 @@ func (a *Agent) startProcess(threadID, mode string) (*ampProcess, error) {
 		handled: make(chan struct{}),
 	}
 	if threadID == "" {
-		proc.mode = mode
+		proc.config = config
 	}
 	if err := proc.StartCmd(); err != nil {
 		return nil, err
@@ -348,12 +358,12 @@ func (a *Agent) resumeAfterError(exited *ampProcess) {
 	defer a.sendMu.Unlock()
 	a.mu.Lock()
 	skip := a.stopped || a.proc != nil || a.threadID == "" || a.turn.active
-	threadID, mode := a.threadID, a.agentMode
+	threadID, config := a.threadID, threadConfiguration{mode: a.agentMode, fast: a.fastMode == "true"}
 	a.mu.Unlock()
 	if skip {
 		return
 	}
-	if _, err := a.start(threadID, mode); err != nil {
+	if _, err := a.start(threadID, config); err != nil {
 		// Stop can overtake the start: the start then fails because the agent
 		// stopped, and a stopped agent reports nothing.
 		if a.IsStopped() || errors.Is(err, errAgentStopped) || errors.Is(err, context.Canceled) {

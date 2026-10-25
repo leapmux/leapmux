@@ -9,10 +9,100 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGoalsAreDisplayOnly(t *testing.T) {
+func TestGoalActions(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	assert.Empty(t, r.agent.SupportedGoalActions(), "omp's RPC reaches no goal runtime")
+	assert.ElementsMatch(t, []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear, agent.GoalActionPause, agent.GoalActionResume}, r.agent.SupportedGoalActions())
+	_, ok := any(r.agent).(agent.GoalWriter)
+	require.True(t, ok, "native goal commands require a GoalWriter")
+}
+
+func TestGoalActionsUseNativeCommands(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		action    agent.GoalAction
+		op        string
+		objective string
+	}{
+		{"set", agent.GoalActionSet, "create", "Ship the release"},
+		{"clear", agent.GoalActionClear, "drop", ""},
+		{"pause", agent.GoalActionPause, "pause", ""},
+		{"resume", agent.GoalActionResume, "resume", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			writer, ok := any(r.agent).(agent.GoalWriter)
+			require.True(t, ok)
+			r.respond(func(command recordedCommand) *rigReply {
+				// ClearContext uses this mutex too, so it cannot replace the session during a goal command.
+				unlocked := r.agent.sessionMu.TryLock()
+				if unlocked {
+					r.agent.sessionMu.Unlock()
+				}
+				assert.False(t, unlocked)
+				return nil
+			})
+			outcome, err := writer.PerformGoalAction(tc.action, tc.objective)
+			require.NoError(t, err)
+			assert.Empty(t, outcome.QueuedInput, "the native goal controller starts its own work")
+			commands := r.commandsOfType("goal")
+			require.Len(t, commands, 1)
+			assert.Equal(t, tc.op, commands[0].Payload["op"])
+			if tc.action == agent.GoalActionSet {
+				assert.Equal(t, tc.objective, commands[0].Payload["objective"])
+			} else {
+				assert.NotContains(t, commands[0].Payload, "objective")
+			}
+			_, reported := r.sink.LastGoal()
+			assert.False(t, reported, "only native goal events publish state")
+			assert.Zero(t, r.sink.GoalClears())
+		})
+	}
+}
+
+func TestGoalActionRejectionPreservesState(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	writer, ok := any(r.agent).(agent.GoalWriter)
+	require.True(t, ok)
+	r.emit(`{"type":"goal_updated","goal":{"id":"g1","objective":"Keep this goal","status":"paused"}}`)
+	r.respond(func(recordedCommand) *rigReply {
+		return &rigReply{Error: "Resume or drop the paused goal before creating another."}
+	})
+	outcome, err := writer.PerformGoalAction(agent.GoalActionSet, "Replace it")
+	require.ErrorContains(t, err, "Resume or drop the paused goal")
+	assert.Empty(t, outcome.QueuedInput)
+	goal, exists := r.sink.LastGoal()
+	require.True(t, exists)
+	assert.Equal(t, "Keep this goal", goal.Objective)
+	assert.Equal(t, agent.GoalStatusPaused, goal.Status)
+	assert.Zero(t, r.sink.GoalClears())
+}
+
+func TestGoalActionValidation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		action    agent.GoalAction
+		objective string
+	}{
+		{"empty objective", agent.GoalActionSet, ""},
+		{"blank objective", agent.GoalActionSet, " \n\t"},
+		{"negative action", agent.GoalAction(-1), "Ship"},
+		{"unknown action", agent.GoalAction(1000), "Ship"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			writer, ok := any(r.agent).(agent.GoalWriter)
+			require.True(t, ok)
+			_, err := writer.PerformGoalAction(tc.action, tc.objective)
+			require.Error(t, err)
+			assert.Empty(t, r.commandsOfType("goal"))
+		})
+	}
 }
 
 func TestGoalUpdatedReportsTheGoal(t *testing.T) {

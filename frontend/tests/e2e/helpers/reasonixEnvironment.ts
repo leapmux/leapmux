@@ -10,6 +10,8 @@ export interface ReasonixEnvironmentOptions {
   /** The OpenAI-compatible base URL of the mock, which ends in `/v1`. */
   baseURL: string
   modelKey: string
+  /** The native context window. Omit it for the standard 128000-token fixture. */
+  contextWindow?: number
   /** The model of the default provider, which also accepts image input. */
   modelID: string
   /** The second provider, so a spec can switch to a model of another provider. */
@@ -22,9 +24,12 @@ export interface ReasonixEnvironmentOptions {
 
 /** Point Reasonix at the mock through three providers of its own `config.toml`, and bind its key variable. */
 export function createReasonixEnvironment(options: ReasonixEnvironmentOptions): Record<string, string> {
+  const contextWindow = options.contextWindow === undefined ? 128000 : options.contextWindow
+  if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0)
+    throw new Error('The Reasonix context window must be a positive safe integer.')
   const reasonixHome = join(options.homeDir, '.reasonix')
   mkdirSync(reasonixHome, { recursive: true })
-  writeFileSync(join(reasonixHome, 'config.toml'), reasonixConfig(options), { mode: 0o600 })
+  writeFileSync(join(reasonixHome, 'config.toml'), reasonixConfig(options, contextWindow), { mode: 0o600 })
   writeFileSync(join(reasonixHome, '.env'), reasonixCredentials(options.modelKey), { mode: 0o600 })
   return { REASONIX_HOME: reasonixHome }
 }
@@ -41,7 +46,7 @@ function reasonixCredentials(modelKey: string): string {
   return `LEAPMUX_E2E_MODEL_API_KEY=${modelKey}\n`
 }
 
-function reasonixConfig(options: ReasonixEnvironmentOptions): string {
+function reasonixConfig(options: ReasonixEnvironmentOptions, contextWindow: number): string {
   return `default_model = "${REASONIX_PROVIDER_ID}/${options.modelID}"
 
 [[providers]]
@@ -50,7 +55,7 @@ kind = "openai"
 base_url = "${options.baseURL}"
 model = "${options.modelID}"
 api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"
-context_window = 128000
+context_window = ${contextWindow}
 max_output_tokens = 16000
 reasoning_protocol = "openai"
 supported_efforts = ["low", "medium", "high"]
@@ -63,7 +68,7 @@ kind = "openai"
 base_url = "${options.baseURL}"
 model = "${options.alternateModelID}"
 api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"
-context_window = 128000
+context_window = ${contextWindow}
 max_output_tokens = 16000
 reasoning_protocol = "openai"
 supported_efforts = ["low", "medium", "high"]
@@ -75,7 +80,7 @@ kind = "openai"
 base_url = "${options.baseURL}"
 model = "${options.plainModelID}"
 api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"
-context_window = 128000
+context_window = ${contextWindow}
 max_output_tokens = 16000
 `
 }

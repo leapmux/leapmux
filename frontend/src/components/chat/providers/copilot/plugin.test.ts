@@ -1,12 +1,14 @@
 import type { ControlAnswerState } from '../../controls/types'
 import { describe, expect, it, vi } from 'vitest'
 import { COPILOT_EVENT, COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
+import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
 import { providerQuotableText } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
+import { WORKSPACE_TRUST_OPTION } from '../workspaceTrust'
 
 import './plugin'
 
@@ -17,8 +19,8 @@ function frame(type: string, data: Record<string, unknown> = {}): Record<string,
 describe('copilot provider', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
-  it('accepts text and image attachments', () => {
-    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, binary: false })
+  it('accepts text, image and PDF attachments, and refuses a binary file', () => {
+    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, binary: false })
   })
 
   // The tool result already states the completion, so the Worker drops this announcement.
@@ -198,5 +200,53 @@ describe('copilot question answers', () => {
       type: 'control_response',
       response: { subtype: 'success', request_id: 'req-1', response: answer },
     })
+  })
+})
+
+// The Worker asks Copilot's folder-trust question itself, in LeapMux's neutral shape.
+describe('copilotControls workspace trust', () => {
+  const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
+  const question = { type: WORKSPACE_TRUST_CONTROL_TYPE.Question, path: '/work/project', configuration: ['MCP servers'] }
+
+  it('draws the question with the name of the agent', () => {
+    expect(plugin.controls?.extractControl?.({ payload: question })).toEqual({
+      kind: 'permission',
+      permission: {
+        title: 'Trust the folder /work/project',
+        reason: 'GitHub Copilot loads the MCP servers of a project only from a folder that you trust, and it keeps your answer for the folder.',
+        options: [
+          { optionId: 'workspace-trust', kind: 'allow_once', name: 'Trust this folder' },
+          { optionId: 'workspace-reject', kind: 'reject_once', name: 'Do not trust' },
+        ],
+      },
+    })
+  })
+
+  it('still draws a native permission request', () => {
+    const permission = frame(COPILOT_EVENT.PermissionRequested, { requestId: 'r-1', permissionRequest: { kind: 'read', path: '/work/project/a.go' } })
+    expect(plugin.controls?.extractControl?.({ payload: permission })).toMatchObject({ kind: 'permission', permission: { options: expect.arrayContaining([expect.objectContaining({ name: 'Allow once' })]) } })
+  })
+
+  it('sends Trust as an allow decision, and a native option through its own envelope', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    await plugin.controls?.sendPermissionOption?.(onRespond, 'workspace-trust:session-1', WORKSPACE_TRUST_OPTION.Trust)
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0] as Uint8Array))).toEqual({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'workspace-trust:session-1', response: { behavior: 'allow' } },
+    })
+    await plugin.controls?.sendPermissionOption?.(onRespond, 'copilot-request', 'session')
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[1]?.[0] as Uint8Array))).toEqual({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'copilot-request', response: { behavior: 'allow', scope: 'session' } },
+    })
+  })
+
+  it('reads the saved answer', () => {
+    expect(plugin.controls?.controlResponseDisplay?.({
+      requestId: 'workspace-trust:session-1',
+      claimToken: '',
+      request: question,
+      response: { type: 'control_response', response: { request_id: 'workspace-trust:session-1', response: { decision: WORKSPACE_TRUST_DECISION.Reject } } },
+    })).toEqual({ kind: 'label', text: 'Did not trust this folder' })
   })
 })

@@ -2,6 +2,8 @@ package zcode
 
 import (
 	"encoding/json"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -676,4 +678,259 @@ func TestZCodeSubagent_ABatchErrorStopsTheRowRatherThanClaimingAnOutcome(t *test
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	assert.Equal(t, bgtask.StatusStopped, rows[0].Status)
+}
+
+// --- subagent interrupt ---
+
+// zcodeBackgroundSubagentTask is the background-task update of the spawn's
+// subagent, as ZCode 3.16.3 states it: the task id is the subagent's agent id.
+func zcodeBackgroundSubagentTask(status string) string {
+	return `{"taskId":"agent_1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","childSessionId":"sess_subagent_agent_1","description":"file census","status":"` + status + `"}`
+}
+
+// newZCodeBackgroundChild starts the spawn's subagent in the background.
+func newZCodeBackgroundChild(t *testing.T) (*Agent, *agenttest.ControlSink, *zcodeRecordedStdin) {
+	t.Helper()
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+	return a, sink, stdin
+}
+
+func TestZCodeChildCapabilitiesAcceptAnInterrupt(t *testing.T) {
+	t.Parallel()
+	capabilities := zcodeProvider{}.ChildCapabilities(nil)
+	assert.True(t, capabilities.AcceptsInterrupt)
+	assert.False(t, capabilities.AcceptsMessages)
+}
+
+// The Interrupt of a background subagent's tab cancels its task alone, and the
+// cancellation closes the row as interrupted.
+func TestZCodeInterruptChildCancelsTheBackgroundTask(t *testing.T) {
+	t.Parallel()
+	for name, closing := range map[string]func(a *Agent){
+		"by the task": func(a *Agent) {
+			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("cancelled")))
+		},
+		"by the subagent": func(a *Agent) {
+			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+				`{"agentId":"agent_1","agentType":"general-purpose","parentToolCallId":"spawn-1","status":"cancelled"}`))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newZCodeBackgroundChild(t)
+			go func() {
+				req := waitZCodeRequest(t, stdin, MethodSessionCancelBackgroundTask)
+				// ZCode reports the cancellation before it answers the request.
+				closing(a)
+				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(
+					`{"cancelled":true,"snapshot":{"taskId":"agent_1","toolCallId":"spawn-1","taskKind":"subagent","status":"cancelled"}}`)))
+			}()
+			require.NoError(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+			req := waitZCodeRequest(t, stdin, MethodSessionCancelBackgroundTask)
+			assert.JSONEq(t, `{"sessionId":"sess-1","taskId":"agent_1"}`, string(req.Params))
+			row, ok := sink.BackgroundTask("spawn-1")
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusInterrupted, row.Status)
+		})
+	}
+}
+
+// A task that the model stopped is stopped, not interrupted.
+func TestZCodeCancelledSubagentWithoutAnInterruptIsStopped(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newZCodeBackgroundChild(t)
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("cancelled")))
+	row, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusStopped, row.Status)
+}
+
+// A cancel that finds the task ended stops nothing and succeeds. Any other
+// refusal fails, and a later cancellation is no interrupt of LeapMux's.
+func TestZCodeInterruptChildRefusals(t *testing.T) {
+	t.Parallel()
+	t.Run("an ended task", func(t *testing.T) {
+		t.Parallel()
+		a, _, stdin := newZCodeBackgroundChild(t)
+		answerZCodeRequest(t, a, stdin, MethodSessionCancelBackgroundTask, `{"cancelled":false,"reason":"background_task_not_running","status":"completed","taskId":"agent_1"}`)
+		require.NoError(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+	})
+	for name, answer := range map[string]func(a *Agent, stdin *zcodeRecordedStdin){
+		"a refused cancel": func(a *Agent, stdin *zcodeRecordedStdin) {
+			answerZCodeRequest(t, a, stdin, MethodSessionCancelBackgroundTask, `{"cancelled":false,"reason":"background_task_not_cancellable","status":"running"}`)
+		},
+		"an app-server error": func(a *Agent, stdin *zcodeRecordedStdin) {
+			refuseZCodeRequest(t, a, stdin, MethodSessionCancelBackgroundTask, ErrRuntimeUnavailable, "Background task cancellation is not supported by this session runtime")
+		},
+		"an unreadable answer": func(a *Agent, stdin *zcodeRecordedStdin) {
+			answerZCodeRequest(t, a, stdin, MethodSessionCancelBackgroundTask, `"cancelled"`)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newZCodeBackgroundChild(t)
+			answer(a, stdin)
+			require.Error(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("cancelled")))
+			row, ok := sink.BackgroundTask("spawn-1")
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusStopped, row.Status, "the refused interrupt leaves no mark")
+		})
+	}
+}
+
+// A foreground subagent runs inside its parent's turn, so its tab has no stop of
+// its own; an unknown row identifies no subagent.
+func TestZCodeInterruptChildWithoutABackgroundTask(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
+	require.ErrorIs(t, a.InterruptChild("spawn-1", agent.StopContext{}), agent.ErrChildOperationUnsupported)
+	err := a.InterruptChild("spawn-unknown", agent.StopContext{})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, agent.ErrChildOperationUnsupported)
+	assert.Empty(t, stdin.Requests(t), "no cancel reaches ZCode")
+}
+
+// --- the end of a background subagent ---
+
+// zcodeChildLifecycleCalls records the transcript creations and cleanups that the
+// agent asks the sink for, in order.
+type zcodeChildLifecycleCalls struct {
+	agent.ProviderServices
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *zcodeChildLifecycleCalls) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	c.mu.Lock()
+	c.calls = append(c.calls, "ensure")
+	c.mu.Unlock()
+	return c.ProviderServices.EnsureChildAgent(spec)
+}
+
+func (c *zcodeChildLifecycleCalls) CleanupChildAgent(childAgentID string) {
+	c.mu.Lock()
+	c.calls = append(c.calls, "cleanup")
+	c.mu.Unlock()
+	c.ProviderServices.CleanupChildAgent(childAgentID)
+}
+
+func (c *zcodeChildLifecycleCalls) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.calls...)
+}
+
+// zcodeBackgroundLifecycleStart is the lifecycle event that ZCode 3.16.3 sends when
+// the spawn starts a background subagent.
+const zcodeBackgroundLifecycleStart = `{"agentId":"agent_1","agentType":"general-purpose","background":true,"childSessionId":"sess_subagent_agent_1","description":"file census","prompt":"Count the files.","parentToolCallId":"spawn-1"}`
+
+// newZCodeLifecycleChild starts a background subagent that reports lifecycle
+// events, in the order ZCode 3.16.3 sends them.
+func newZCodeLifecycleChild(t *testing.T) (*Agent, *agenttest.ControlSink, *zcodeChildLifecycleCalls, *zcodeRecordedStdin) {
+	t.Helper()
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	calls := &zcodeChildLifecycleCalls{ProviderServices: agent.NewProviderServices(sink)}
+	a := newZCodeTestAgentWithStdin(t, calls, stdin)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleStart))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent_1"}}`))
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+	return a, sink, calls, stdin
+}
+
+// requireOneEndWithoutRebirth requires that the transcript ended once, and that
+// nothing created it again after its end.
+func requireOneEndWithoutRebirth(t *testing.T, calls []string) {
+	t.Helper()
+	require.Contains(t, calls, "cleanup")
+	end := slices.Index(calls, "cleanup")
+	assert.Equal(t, []string{"cleanup"}, calls[end:], "the transcript ends once, and nothing creates it again: %v", calls)
+}
+
+// zcodeBackgroundLifecycleEnd is the lifecycle event that ends the subagent.
+const zcodeBackgroundLifecycleEnd = `{"agentId":"agent_1","agentType":"general-purpose","background":true,"parentToolCallId":"spawn-1","status":"completed","message":"There are 42 files."}`
+
+// ZCode sends the task's final status before the subagent's final lifecycle
+// event, which carries the report. The report lands in the transcript, and the
+// transcript ends once, after it.
+func TestZCodeBackgroundSubagentEndsAfterItsReport(t *testing.T) {
+	t.Parallel()
+	a, sink, calls, _ := newZCodeLifecycleChild(t)
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+	assert.NotContains(t, calls.snapshot(), "cleanup", "the task's final status leaves the transcript to the lifecycle event")
+	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
+
+	requireOneEndWithoutRebirth(t, calls.snapshot())
+	row, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.Len(t, sink.ChildAgentIDs(), 1, "one subagent has one transcript")
+	require.Len(t, sink.LeapMuxNotifications(), 1, "the parent reads the report of its background run")
+}
+
+// The end in the other order ends the transcript once too.
+func TestZCodeBackgroundSubagentEndsOnceWhenTheLifecycleComesFirst(t *testing.T) {
+	t.Parallel()
+	a, sink, calls, _ := newZCodeLifecycleChild(t)
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
+	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+	requireOneEndWithoutRebirth(t, calls.snapshot())
+	row, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+// A subagent that sends no lifecycle event (an earlier build) ends with its task,
+// and a late update of the ended subagent creates no transcript again.
+func TestZCodeBackgroundSubagentWithoutLifecycleEndsWithItsTask(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	calls := &zcodeChildLifecycleCalls{ProviderServices: agent.NewProviderServices(sink)}
+	a := newZCodeTestAgentWithStdin(t, calls, &zcodeRecordedStdin{})
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+	requireOneEndWithoutRebirth(t, calls.snapshot())
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
+	requireOneEndWithoutRebirth(t, calls.snapshot())
+}
+
+// An interrupt that LeapMux sent ends the subagent as interrupted, and its stop
+// message reads as an interruption, not an error.
+func TestZCodeInterruptedSubagentEndsAsInterrupted(t *testing.T) {
+	t.Parallel()
+	a, sink, calls, stdin := newZCodeLifecycleChild(t)
+	go func() {
+		req := waitZCodeRequest(t, stdin, MethodSessionCancelBackgroundTask)
+		a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("cancelled")))
+		a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated,
+			`{"agentId":"agent_1","agentType":"general-purpose","background":true,"parentToolCallId":"spawn-1","status":"stopped","error":"Background agent task stopped."}`))
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(`{"cancelled":true}`)))
+	}()
+	require.NoError(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+
+	requireOneEndWithoutRebirth(t, calls.snapshot())
+	row, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
+	childIDs := sink.ChildAgentIDs()
+	require.Len(t, childIDs, 1)
+	messages := sink.Child(childIDs[0]).Messages()
+	require.NotEmpty(t, messages)
+	var last map[string]string
+	require.NoError(t, json.Unmarshal(messages[len(messages)-1].Content, &last))
+	assert.Equal(t, "Background agent task stopped.", last[contracts.AssembledMessageFieldText])
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), last[contracts.AssembledMessageFieldCompletion])
 }

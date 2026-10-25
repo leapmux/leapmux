@@ -65,10 +65,10 @@ func TestHelperProcessCursorCLI(*testing.T) {
 		case acp.MethodInitialize:
 			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false, true
 		case acp.MethodSessionNew:
-			return `{"sessionId":"cursor-new","models":{"currentModelId":"default[]","availableModels":[{"modelId":"default[]","name":"Auto"},{"modelId":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]},"modes":{"currentModeId":"agent","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]},"configOptions":[{"id":"mode","currentValue":"agent","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"},{"value":"ask","name":"Ask"}]},{"id":"model","currentValue":"default[]","options":[{"value":"default[]","name":"Auto"},{"value":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]}]}`, false, true
+			return `{"sessionId":"cursor-new","models":{"currentModelId":"default","availableModels":[{"modelId":"default","name":"Auto"},{"modelId":"gpt-5.4","name":"GPT-5.4"}]},"modes":{"currentModeId":"agent","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]},"configOptions":[{"id":"mode","currentValue":"agent","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"},{"value":"ask","name":"Ask"}]},{"id":"model","currentValue":"default","options":[{"value":"default","name":"Auto"},{"value":"gpt-5.4","name":"GPT-5.4"}]}]}`, false, true
 		case acp.MethodSessionLoad:
 			if scenario == "load" {
-				return `{"models":{"currentModelId":"gpt-5.4[reasoning=medium]","availableModels":[{"modelId":"default[]","name":"Auto"},{"modelId":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]}}`, false, true
+				return `{"models":{"currentModelId":"gpt-5.4","availableModels":[{"modelId":"default","name":"Auto"},{"modelId":"gpt-5.4","name":"GPT-5.4"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]}}`, false, true
 			}
 			return "", false, false
 		case acp.MethodSessionSetConfigOption, acp.MethodSessionSetModel, acp.MethodSessionSetMode, acp.MethodSessionPrompt:
@@ -108,10 +108,13 @@ func TestStartCursorCLI_NewSessionHandshake(t *testing.T) {
 }
 
 func TestStartCursorCLI_LoadSessionUsesResumeID(t *testing.T) {
+	home := t.TempDir()
+	writeCursorACPPolicyFixture(t, home, "cursor-resume", `{"agentId":"cursor-resume","isRunEverything":false}`)
 	installFakeCursorCLI(t, "load")
 
 	provider, err := Start(context.Background(), agent.Options{
 		AgentID:         "cursor-load",
+		HomeDir:         home,
 		WorkingDir:      t.TempDir(),
 		ResumeSessionID: "cursor-resume",
 		Shell:           testutil.TestShell(),
@@ -127,7 +130,7 @@ func TestStartCursorCLI_LoadSessionUsesResumeID(t *testing.T) {
 	})
 
 	assert.Equal(t, "cursor-resume", agent.SessionIDForTest())
-	assert.Equal(t, "gpt-5.4[reasoning=medium]", agent.ModelForTest())
+	assert.Equal(t, "gpt-5.4", agent.ModelForTest())
 	assert.Equal(t, ModePlan, agent.PermissionModeForTest())
 }
 
@@ -157,6 +160,44 @@ func TestCursorUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 	assert.Equal(t, ModePlan, recorded[1].Params["modeId"])
 }
 
+func TestCursorBypassChangePrecedesLiveSettingsWrites(t *testing.T) {
+	t.Parallel()
+	a, requests := newCursorAgentForRPC(t)
+	a.SetModelForTest("auto")
+	result := a.UpdateSettings(map[string]string{"bypassPermissions": "true", agent.OptionIDModel: "gpt-5.4"})
+	assert.False(t, result.AppliedLive)
+	assert.Empty(t, requests(), "a restart-required policy change must not partially apply a model change")
+	assert.Equal(t, "auto", a.ModelForTest())
+}
+
+func TestCursorModelParametersUseIndependentNativeSetters(t *testing.T) {
+	t.Parallel()
+	a, requests := newCursorAgentForRPC(t)
+	a.SetModelForTest("mock-sonnet")
+	a.Mu.Lock()
+	a.ApplyOptionGroupsLockedForTest([]acp.ConfigOption{
+		{ID: "thinking", Category: "thought_level", CurrentValue: "false", Options: []acp.ConfigOptionValue{{Value: "false"}, {Value: "true"}}},
+		{ID: "effort", Category: "thought_level", CurrentValue: "low", Options: []acp.ConfigOptionValue{{Value: "low"}, {Value: "high"}}},
+		{ID: "fast", Category: "model_config", CurrentValue: "false", Options: []acp.ConfigOptionValue{{Value: "false"}, {Value: "true"}}},
+	})
+	a.Mu.Unlock()
+	a.ApplyStartupOptionsForTest(agent.Options{Options: map[string]string{"effort": "high"}})
+	recorded := requests()
+	require.Len(t, recorded, 1)
+	assert.Equal(t, "effort", recorded[0].Params["configId"])
+	assert.Equal(t, "high", recorded[0].Params["value"])
+	result := a.UpdateSettings(map[string]string{"thinking": "true", "fast": "true"})
+	require.True(t, result.AppliedLive)
+	recorded = requests()
+	require.Len(t, recorded, 3)
+	for _, request := range recorded {
+		assert.Equal(t, acp.MethodSessionSetConfigOption, request.Method)
+		assert.NotEqual(t, "model", request.Params["configId"])
+	}
+	assert.ElementsMatch(t, []any{"thinking", "fast"}, []any{recorded[1].Params["configId"], recorded[2].Params["configId"]})
+	assert.Equal(t, "mock-sonnet", a.ModelForTest())
+}
+
 // TestCursorUpdateSettingsSkipsUnchangedModelAndMode verifies the redundant-re-push guard:
 // the service hands UpdateSettings the FULL merged options map on every change, so when the
 // requested model/mode already match the current selection (e.g. only another axis moved),
@@ -171,7 +212,7 @@ func TestCursorUpdateSettingsSkipsUnchangedModelAndMode(t *testing.T) {
 	})
 	// Seed the current selection as a real apply would: model stored in its normalized
 	// form, mode at a concrete value.
-	const requestedModel = "gpt-5.4[reasoning=medium]"
+	const requestedModel = "gpt-5.4"
 	ag.SetModelForTest(normalizeCursorModelID(requestedModel))
 	ag.SetPermissionModeForTest(ModePlan)
 
@@ -225,7 +266,7 @@ func TestBuildCursorCLIModelsNormalizesAuto(t *testing.T) {
 
 	models := []acp.ModelInfo{
 		{ModelID: cursorCLIModelAutoWire, Name: "Auto"},
-		{ModelID: "gpt-5.4[reasoning=medium]", Name: "GPT-5.4"},
+		{ModelID: "gpt-5.4", Name: "GPT-5.4"},
 	}
 	result := acp.BuildModelsForTest(models, cursorCLIModelAutoWire, normalizeCursorModelID)
 	require.Len(t, result, 2)
@@ -239,155 +280,21 @@ func TestCursorDefaultModelIsAuto(t *testing.T) {
 	assert.Equal(t, "auto", Registration().DefaultModel())
 }
 
-// decorateCursorModel surfaces the effort/thinking/context metadata Cursor bakes into a
-// model id's brackets (which the bare server-reported name omits) as the model's
-// ContextWindow and Description, humanizes the bare-id display name, and keeps the wire id.
-func TestDecorateCursorModel_ParsesBracketMetadata(t *testing.T) {
+func TestDecorateCursorModelKeepsNativeNames(t *testing.T) {
 	t.Parallel()
-
-	m := &agent.ModelInfo{Id: "claude-fable-5[thinking=true,context=300k,effort=high]", DisplayName: "claude-fable-5"}
-	decorateCursorModel(m)
-
-	assert.Equal(t, int64(300000), m.ContextWindow)
-	assert.Contains(t, m.Description, "Extended thinking")
-	assert.Contains(t, m.Description, "High effort")
-	assert.Equal(t, "Claude Fable 5 High", m.DisplayName, "the humanized name carries the effort level")
-	assert.Equal(t, "claude-fable-5[thinking=true,context=300k,effort=high]", m.Id, "the wire id keeps its brackets")
-}
-
-func TestDecorateCursorModel_ReasoningAndFastFlags(t *testing.T) {
-	t.Parallel()
-
-	m := &agent.ModelInfo{Id: "gpt-5.5[context=272k,reasoning=medium,fast=false]"}
-	decorateCursorModel(m)
-
-	assert.Equal(t, int64(272000), m.ContextWindow)
-	assert.Equal(t, "GPT 5.5 Medium", m.DisplayName, "GPT's reasoning level is appended like effort")
-	assert.Contains(t, m.Description, "Medium reasoning")
-	assert.NotContains(t, m.Description, "Fast", "fast=false is omitted")
-
-	fast := &agent.ModelInfo{Id: "composer-2.5[fast=true]"}
-	decorateCursorModel(fast)
-	assert.Contains(t, fast.Description, "Fast")
-	assert.Equal(t, "Composer 2.5 Fast", fast.DisplayName, "a fast-only variant is disambiguated by a Fast suffix")
-}
-
-// TestDecorateCursorModel_DisambiguatesThinkingFastVariants verifies that two variants of
-// the same base model that differ only in their thinking/fast flag (no effort/reasoning)
-// get distinct display names instead of colliding -- and that a real server-provided name
-// is left untouched rather than double-suffixed.
-func TestDecorateCursorModel_DisambiguatesThinkingFastVariants(t *testing.T) {
-	t.Parallel()
-
-	thinking := &agent.ModelInfo{Id: "claude-opus-4-8[thinking=true]"}
-	decorateCursorModel(thinking)
-	assert.Equal(t, "Claude Opus 4.8 Thinking", thinking.DisplayName)
-
-	fast := &agent.ModelInfo{Id: "claude-opus-4-8[fast=true]"}
-	decorateCursorModel(fast)
-	assert.Equal(t, "Claude Opus 4.8 Fast", fast.DisplayName)
-	assert.NotEqual(t, thinking.DisplayName, fast.DisplayName, "variants must not collide")
-
-	// A real server name already disambiguates; it must not gain a second "Fast".
-	named := &agent.ModelInfo{Id: "composer-2.5[fast=true]", DisplayName: "Composer 2.5 (Fast)"}
-	decorateCursorModel(named)
-	assert.Equal(t, "Composer 2.5 (Fast)", named.DisplayName)
-}
-
-// TestDecorateCursorModel_EffortLevelInName covers the effort-level suffix across
-// the levels Cursor surfaces. The suffix reads the SHARED label table, so an id
-// spells the same here as it does in every other provider's effort picker --
-// "xhigh" used to render "XHigh" only in this one place.
-func TestDecorateCursorModel_EffortLevelInName(t *testing.T) {
-	t.Parallel()
-
-	xhigh := &agent.ModelInfo{Id: "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]"}
-	decorateCursorModel(xhigh)
-	assert.Equal(t, "Claude Opus 4.7 "+providerkit.EffortLabel(agent.EffortXHigh), xhigh.DisplayName)
-	assert.Equal(t, "Claude Opus 4.7 Extra High", xhigh.DisplayName)
-
-	opus := &agent.ModelInfo{Id: "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]"}
-	decorateCursorModel(opus)
-	assert.Equal(t, "Claude Opus 4.8 High", opus.DisplayName)
-
-	// An id no provider declares still reads as a label, not a raw token.
-	unknown := &agent.ModelInfo{Id: "some-model[thinking=true,context=300k,effort=turbo,fast=false]"}
-	decorateCursorModel(unknown)
-	assert.Equal(t, "Some Model Turbo", unknown.DisplayName)
-}
-
-// TestDecorateCursorModel_EffortAndReasoningCollapseToOne is the [G4/S11] guard: "effort"
-// (Claude) and "reasoning" (GPT) are the same concept (cursorReasoningLevel), so a model that
-// reports BOTH renders the level ONCE in the Description -- effort-preferred -- matching the
-// single level the name suffix uses, rather than disagreeing ("High effort · Medium reasoning"
-// in the tooltip vs just "High" in the name).
-func TestDecorateCursorModel_EffortAndReasoningCollapseToOne(t *testing.T) {
-	t.Parallel()
-
-	m := &agent.ModelInfo{Id: "weird-model[effort=high,reasoning=medium]"}
-	decorateCursorModel(m)
-	assert.Contains(t, m.Description, "High effort")
-	assert.NotContains(t, m.Description, "Medium reasoning",
-		"the tooltip shows the level once (effort-preferred), matching the name suffix")
-	assert.Contains(t, m.DisplayName, "High")
-	assert.NotContains(t, m.DisplayName, "Medium", "the name suffix likewise collapses to the single level")
-}
-
-// TestDecorateCursorModel_ReasoningEffortKey covers the THIRD spelling Cursor uses for
-// the same concept. Its catalogue reports a level under "effort" (Claude), "reasoning"
-// (GPT) and "reasoning_effort" (Grok). The last one used to parse as no level at all, so
-// every Grok variant humanized to the same bare name -- "Grok 4.7" four times over, which
-// is the collision cursorModelNameSuffix exists to prevent.
-func TestDecorateCursorModel_ReasoningEffortKey(t *testing.T) {
-	t.Parallel()
-
-	low := &agent.ModelInfo{Id: "grok-4.7[context=256k,reasoning_effort=low,fast=false]"}
-	decorateCursorModel(low)
-	assert.Equal(t, int64(256000), low.ContextWindow)
-	assert.Equal(t, "Grok 4.7 Low", low.DisplayName)
-	assert.Contains(t, low.Description, "Low effort", "reasoning_effort reads as an effort level")
-
-	high := &agent.ModelInfo{Id: "grok-4.7[context=500k,reasoning_effort=xhigh,fast=true]"}
-	decorateCursorModel(high)
-	assert.Equal(t, "Grok 4.7 "+providerkit.EffortLabel(agent.EffortXHigh), high.DisplayName)
-	assert.NotEqual(t, low.DisplayName, high.DisplayName, "variants must not collide")
-	assert.Contains(t, high.Description, "Fast")
-
-	// The three keys stay one concept: a model that reports more than one renders the
-	// level ONCE, and the name suffix agrees with the tooltip.
-	both := &agent.ModelInfo{Id: "weird-model[effort=high,reasoning_effort=low]"}
-	decorateCursorModel(both)
-	assert.Contains(t, both.Description, "High effort")
-	assert.NotContains(t, both.Description, "Low effort", "effort wins over reasoning_effort")
-	assert.Contains(t, both.DisplayName, "High")
-	assert.NotContains(t, both.DisplayName, "Low")
-}
-
-func TestDecorateCursorModel_NoBracketOrEmptyAddsNoMetadata(t *testing.T) {
-	t.Parallel()
-
-	// A bracketless / empty-bracket id carries no metadata, so ContextWindow and
-	// Description are left alone -- but the bare-id display name is still humanized.
-	plain := &agent.ModelInfo{Id: "auto", DisplayName: "Auto", Description: "Automatically selects"}
-	decorateCursorModel(plain)
-	assert.Equal(t, int64(0), plain.ContextWindow)
-	assert.Equal(t, "Automatically selects", plain.Description, "a bracketless id adds no metadata")
-	assert.Equal(t, "Auto", plain.DisplayName, "a real server name (Auto) is preserved")
-
-	empty := &agent.ModelInfo{Id: "gemini-3.1-pro[]", DisplayName: "gemini-3.1-pro"}
-	decorateCursorModel(empty)
-	assert.Empty(t, empty.Description, "an empty bracket adds no metadata")
-	assert.Equal(t, "Gemini 3.1 Pro", empty.DisplayName, "but the bare-id name is humanized even for empty brackets")
-}
-
-// TestDecorateCursorModel_PreservesRealServerName verifies a genuinely friendly server
-// name (not equal to the bare id) is kept rather than re-humanized.
-func TestDecorateCursorModel_PreservesRealServerName(t *testing.T) {
-	t.Parallel()
-
-	m := &agent.ModelInfo{Id: "composer-2.5[fast=true]", DisplayName: "Composer 2.5 (Fast)"}
-	decorateCursorModel(m)
-	assert.Equal(t, "Composer 2.5 (Fast)", m.DisplayName, "a real server name is left untouched")
+	for _, tc := range []struct{ id, supplied, want string }{
+		{"gpt-5.5", "", "GPT 5.5"},
+		{"claude-opus-5", "claude-opus-5", "Claude Opus 5"},
+		{"gpt-5.5", "Native model name", "Native model name"},
+		{"auto", "Auto", "Auto"},
+		{"", "", ""},
+	} {
+		model := &agent.ModelInfo{Id: tc.id, DisplayName: tc.supplied}
+		decorateCursorModel(model)
+		assert.Equal(t, tc.want, model.DisplayName)
+		assert.Equal(t, tc.id, model.Id)
+		assert.Empty(t, model.Description)
+	}
 }
 
 // TestHumanizeModelID covers the Cursor model ids surfaced by the live ACP server (whose
@@ -396,51 +303,24 @@ func TestHumanizeModelID(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"composer-2.5[fast=true]":                                 "Composer 2.5",
-		"claude-opus-4-8[thinking=true,context=300k,effort=high]": "Claude Opus 4.8",
-		"claude-fable-5[thinking=true]":                           "Claude Fable 5",
-		"claude-sonnet-4-6[context=200k]":                         "Claude Sonnet 4.6",
-		"gpt-5.5[context=272k]":                                   "GPT 5.5",
-		"gpt-5.3-codex[reasoning=medium]":                         "GPT 5.3 Codex",
-		"gpt-5.1-codex-max[reasoning=medium]":                     "GPT 5.1 Codex Max",
-		"gpt-5.4-mini[reasoning=medium]":                          "GPT 5.4 Mini",
-		"gemini-3.1-pro[]":                                        "Gemini 3.1 Pro",
-		"gemini-3-flash[]":                                        "Gemini 3 Flash",
-		"grok-build-0.1[context=200k]":                            "Grok Build 0.1",
-		"kimi-k2.5[]":                                             "Kimi K2.5",
-		"default[]":                                               "Default",
-		"":                                                        "",
+		"composer-2.5":      "Composer 2.5",
+		"claude-opus-4-8":   "Claude Opus 4.8",
+		"claude-fable-5":    "Claude Fable 5",
+		"claude-sonnet-4-6": "Claude Sonnet 4.6",
+		"gpt-5.5":           "GPT 5.5",
+		"gpt-5.3-codex":     "GPT 5.3 Codex",
+		"gpt-5.1-codex-max": "GPT 5.1 Codex Max",
+		"gpt-5.4-mini":      "GPT 5.4 Mini",
+		"gemini-3.1-pro":    "Gemini 3.1 Pro",
+		"gemini-3-flash":    "Gemini 3 Flash",
+		"grok-build-0.1":    "Grok Build 0.1",
+		"kimi-k2.5":         "Kimi K2.5",
+		"default":           "Default",
+		"":                  "",
 	}
 	for id, want := range cases {
 		assert.Equal(t, want, humanizeModelID(id), "humanizeModelID(%q)", id)
 	}
-}
-
-func TestParseCursorContextWindow(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, int64(300000), parseCursorContextWindow("300k"))
-	assert.Equal(t, int64(272000), parseCursorContextWindow("272K"))
-	assert.Equal(t, int64(1_000_000), parseCursorContextWindow("1m"))
-	assert.Equal(t, int64(200000), parseCursorContextWindow("200000"))
-	assert.Equal(t, int64(0), parseCursorContextWindow(""))
-	assert.Equal(t, int64(0), parseCursorContextWindow("huge"))
-	// strconv.ParseFloat accepts "inf"/"nan"; converting those to int64 is
-	// implementation-defined, so they must be rejected (0), not surfaced as a
-	// garbage context window. The "k"/"m" suffix strip also routes "infk" -> "inf".
-	assert.Equal(t, int64(0), parseCursorContextWindow("inf"))
-	assert.Equal(t, int64(0), parseCursorContextWindow("Inf"))
-	assert.Equal(t, int64(0), parseCursorContextWindow("nan"))
-	assert.Equal(t, int64(0), parseCursorContextWindow("-1"))
-	assert.Equal(t, int64(0), parseCursorContextWindow("infk"))
-	// A finite but out-of-int64-range value (after the multiplier) converts to an
-	// implementation-defined garbage int64 (saturates to MaxInt64 on arm64, wraps to
-	// MinInt64 on amd64), so it must be rejected (0) rather than surfacing garbage.
-	assert.Equal(t, int64(0), parseCursorContextWindow("99999999999999999999k"))
-	assert.Equal(t, int64(0), parseCursorContextWindow("1e30"))
-	assert.Equal(t, int64(0), parseCursorContextWindow("99999999999999999999999m"))
-	// Just below the int64 ceiling still converts (no overflow).
-	assert.Equal(t, int64(9_000_000_000_000_000_000), parseCursorContextWindow("9000000000000000000"))
 }
 
 // providerkit.EffortLabel is the one place a reasoning-effort id becomes text. Every
@@ -540,17 +420,10 @@ func TestCursorFailedClearContextKeepsTheTaskToolNotes(t *testing.T) {
 	assert.Equal(t, 1, after, "the session was not replaced, so the note still applies")
 }
 
-// Cursor reads its effort out of its model ids, and labels it from the shared
-// table too.
-func TestCursorEffortLabelUsesTheSharedTable(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "Extra High", cursorEffortLabel("xhigh"))
-}
-
 // Cursor's registration hands the registry the same normalizer the live agent
-// uses, which maps the wire "default[]" sentinel to "auto".
+// uses, which maps the wire "default" sentinel to "auto".
 func TestCursorNormalizeModelIDFromRegistry(t *testing.T) {
 	t.Parallel()
 	registry := agenttest.MustNewRegistry(Registration())
-	assert.Equal(t, "auto", registry.NormalizeModelID(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "default[]"))
+	assert.Equal(t, "auto", registry.NormalizeModelID(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "default"))
 }

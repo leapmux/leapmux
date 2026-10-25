@@ -31,6 +31,31 @@ const (
 // lettaBinaryName is the program the provider launches.
 const lettaBinaryName = "letta"
 
+// lettaExecuteCommand addresses a native slash command instead of the model.
+const lettaExecuteCommand = "execute_command"
+
+const (
+	lettaChatGPTUsageRead     = "chatgpt_usage_read"
+	lettaListConnectProviders = "list_connect_providers"
+)
+
+type lettaRequest interface {
+	requestEnvelope() lettaCommand
+}
+
+func (command lettaCommand) requestEnvelope() lettaCommand { return command }
+
+type lettaReplyHeader struct {
+	Type    string `json:"type"`
+	Success *bool  `json:"success"`
+}
+
+type lettaReply interface {
+	replyEnvelope() lettaReplyHeader
+}
+
+func (reply *lettaReplyHeader) replyEnvelope() lettaReplyHeader { return *reply }
+
 // lettaServerArgs start the App Server.
 //
 //   - `--listen ws://127.0.0.1:0` binds a free loopback port and prints two
@@ -66,6 +91,8 @@ type lettaCommand struct {
 	CreateAgent        map[string]any `json:"create_agent,omitempty"`
 	CreateConversation map[string]any `json:"create_conversation,omitempty"`
 	Mode               string         `json:"mode,omitempty"`
+	CommandID          string         `json:"command_id,omitempty"`
+	Args               string         `json:"args,omitempty"`
 }
 
 // newLettaCommand builds a command with the correlation fields the envelope

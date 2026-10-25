@@ -36,14 +36,13 @@ describe('zcode plugin metadata', () => {
     expect(plugin).toBeDefined()
   })
 
-  // Text is inlined into the prompt and an image rides `session/send.attachments`. A
-  // PDF and a binary are refused: the app-server's normalizer has no PDF kind, so one
-  // arrives as a generic file, is decoded as text when small and dropped when large.
-  it('advertises text and image attachments only', () => {
+  // Text is inlined into the prompt, and an image and a PDF ride `session/send.attachments`. A binary is refused:
+  // the app-server's normalizer has no kind that keeps its bytes.
+  it('advertises text, image and PDF attachments, and refuses a binary file', () => {
     expect(plugin?.configuration?.attachments).toEqual({
       text: true,
       image: true,
-      pdf: false,
+      pdf: true,
       binary: false,
     })
   })

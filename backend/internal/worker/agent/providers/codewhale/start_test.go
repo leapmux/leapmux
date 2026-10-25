@@ -6,13 +6,26 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
+
+func TestStartRefusesUnknownOutputStyleBeforeLaunch(t *testing.T) {
+	t.Parallel()
+	for _, style := range []string{"unknown", "CONCISE", "concise\nCODEWHALE_OTHER=1"} {
+		home := t.TempDir()
+		opts := agent.Options{HomeDir: home, Shell: filepath.Join(home, "absent-shell"), Options: optionmap.Map{"outputStyle": style}}
+		started, err := startWith(t.Context(), opts, agent.NewProviderServices(&agenttest.ControlSink{}), quartz.NewReal())
+		assert.Nil(t, started)
+		require.ErrorContains(t, err, "unsupported Codewhale output style")
+	}
+}
 
 func TestOpenThreadCreatesAThreadWithTheLaunchSettings(t *testing.T) {
 	t.Parallel()

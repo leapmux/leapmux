@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -76,6 +79,9 @@ func serveNativeSettings(t *testing.T, a *Agent) *nativeCalls {
 			value = nil
 		case "commands/execute":
 			value = map[string]any{"commandId": "cmd-1", "result": map[string]any{"kind": "success", "text": "done"}}
+		case "session/projections":
+			// A refused update reads the native values back. An empty projection keeps every value.
+			value = map[string]any{"values": map[string]any{}}
 		default:
 			t.Errorf("unexpected native method %s", method)
 		}
@@ -127,4 +133,78 @@ func TestUpdateSettingsKeepsTheCurrentSelectionForAnEffortThatTheModelDoesNotOff
 
 	assert.Equal(t, "deepseek-official/deepseek-flash", result.ConfirmedOptions()[agent.OptionIDModel], "a refused update keeps the confirmed selection")
 	assert.Empty(t, calls.methods(), "a refused update sends no native request")
+}
+
+func optionIDs(group *leapmuxv1.AvailableOptionGroup) []string {
+	ids := make([]string, 0, len(group.GetOptions()))
+	for _, option := range group.GetOptions() {
+		ids = append(ids, option.GetId())
+	}
+	return ids
+}
+
+func TestPermissionGroupListsAutoOnlyWhileTheNativeCatalogOffersIt(t *testing.T) {
+	t.Parallel()
+	base := []string{contracts.DeepseekHarnessPermissionPresetReadOnly, contracts.DeepseekHarnessPermissionPresetWorkspaceWrite, contracts.DeepseekHarnessPermissionPresetDangerFullAccess}
+	assert.Equal(t, append(slices.Clone(base), contracts.DeepseekHarnessPermissionPresetAuto), optionIDs(permissionGroup("", true)))
+	assert.Equal(t, base, optionIDs(permissionGroup("", false)))
+	assert.Len(t, nativePermissions, 4, "the filter leaves the shared list intact")
+	// The launch overlay loads the layer, so the static groups offer Auto before an agent runs.
+	var static *leapmuxv1.AvailableOptionGroup
+	for _, group := range Registration().OptionGroups {
+		if group.GetId() == contracts.DeepseekHarnessOptionPermissions {
+			static = group
+		}
+	}
+	require.NotNil(t, static)
+	assert.Contains(t, optionIDs(static), contracts.DeepseekHarnessPermissionPresetAuto)
+}
+
+func TestOptionGroupsOmitsAutoWithoutNativeAutoReview(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	a.autoReview = false
+
+	var permissions *leapmuxv1.AvailableOptionGroup
+	for _, group := range a.OptionGroups() {
+		if group.GetId() == contracts.DeepseekHarnessOptionPermissions {
+			permissions = group
+		}
+	}
+	require.NotNil(t, permissions)
+	assert.Equal(t, []string{
+		contracts.DeepseekHarnessPermissionPresetReadOnly,
+		contracts.DeepseekHarnessPermissionPresetWorkspaceWrite,
+		contracts.DeepseekHarnessPermissionPresetDangerFullAccess,
+	}, optionIDs(permissions))
+}
+
+func TestUpdateSettingsSelectsAutoWhileTheNativeCatalogOffersIt(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	catalog, err := convertModelCatalog(decodeNativeCatalog(t, twoReasoningModelsFixture))
+	require.NoError(t, err)
+	a.catalog, a.selection, a.autoReview = catalog, catalog.defaultSelection, true
+	calls := serveNativeSettings(t, a)
+
+	result := a.UpdateSettings(optionmap.Map{contracts.DeepseekHarnessOptionPermissions: contracts.DeepseekHarnessPermissionPresetAuto})
+
+	assert.Equal(t, contracts.DeepseekHarnessPermissionPresetAuto, result.ConfirmedOptions()[contracts.DeepseekHarnessOptionPermissions])
+	assert.Equal(t, "/permission "+contracts.DeepseekHarnessPermissionPresetAuto, calls.first("commands/execute")["line"])
+	assert.Contains(t, optionIDs(permissionGroup(a.permissions, a.autoReview)), contracts.DeepseekHarnessPermissionPresetAuto)
+}
+
+func TestUpdateSettingsRefusesAutoWithoutTheNativeCatalog(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	catalog, err := convertModelCatalog(decodeNativeCatalog(t, twoReasoningModelsFixture))
+	require.NoError(t, err)
+	a.catalog, a.selection = catalog, catalog.defaultSelection
+	calls := serveNativeSettings(t, a)
+
+	result := a.UpdateSettings(optionmap.Map{contracts.DeepseekHarnessOptionPermissions: contracts.DeepseekHarnessPermissionPresetAuto})
+
+	assert.Equal(t, contracts.DeepseekHarnessPermissionPresetWorkspaceWrite, result.ConfirmedOptions()[contracts.DeepseekHarnessOptionPermissions], "a refused preset keeps the confirmed one")
+	assert.Equal(t, []string{"session/projections"}, calls.methods(), "the refusal sends no native setting")
+	assert.NotContains(t, optionIDs(permissionGroup(a.permissions, a.autoReview)), contracts.DeepseekHarnessPermissionPresetAuto)
 }

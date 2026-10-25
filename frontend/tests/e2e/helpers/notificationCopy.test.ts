@@ -14,6 +14,10 @@ describe('expectSettingsNotificationEnvelope', () => {
     expectSettingsNotificationEnvelope(JSON.stringify({ content: entry }), change)
   })
 
+  it('accepts the null supplement that Copy emits when the notification has none', () => {
+    expectSettingsNotificationEnvelope(JSON.stringify({ content: thread, supplemental_content: null }), change, true)
+  })
+
   it('refuses a single entry when the scenario requires consolidation', () => {
     expect(() => expectSettingsNotificationEnvelope(JSON.stringify({ content: entry }), change, true)).toThrow('Copy must return a consolidated notification thread.')
   })
@@ -41,7 +45,9 @@ describe('expectSettingsNotificationEnvelope', () => {
   })
 
   it.each([
-    [null, 'The copied supplement must be an object.'],
+    ['opaque', 'The copied supplement must be an object.'],
+    [0, 'The copied supplement must be an object.'],
+    [[], 'The copied supplement must be an object.'],
     [{ metadata: null }, 'The copied supplement metadata must be an object.'],
     [{ metadata: { notification_entries: [] } }, 'Copy must not synthesize notification entries.'],
     [{ metadata: { notification_reduction: {} } }, 'Copy must not synthesize notification reduction.'],

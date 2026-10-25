@@ -2,12 +2,14 @@ package letta
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // OptionGroups returns the live configuration axes.
@@ -17,7 +19,6 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	catalog := a.catalog
 	a.Mu.Unlock()
 
-	groups := make([]*leapmuxv1.AvailableOptionGroup, 0, 2)
 	// The model group is always present: the settings menu offers it even when
 	// the session reported no catalog yet. The option list must HOLD the
 	// current value, because the chip resolves its label by looking that value
@@ -34,7 +35,19 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	if len(models) == 0 {
 		models = []lettaModel{{id: defaultModels[0].Id, displayName: defaultModels[0].DisplayName}}
 	}
-	groups = append(groups, lettaModelGroup(models, settings.model))
+	infos := make([]*agent.ModelInfo, 0, len(models))
+	for _, model := range models {
+		infos = append(infos, lettaModelInfo(model))
+	}
+	currentModel := settings.model
+	if currentModel == "" {
+		currentModel = models[0].id
+	}
+	effort := settings.reasoningLevel
+	if effort == "" {
+		effort = agent.EffortAuto
+	}
+	groups := providerkit.ModelAndEffortGroups(infos, currentModel, effort, agent.EffortGroupLabel, nil)
 	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
 		Id:           agent.OptionIDPermissionMode,
 		Label:        PermissionModeLabel,
@@ -83,6 +96,9 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	}
 	model, modelPresent := options[agent.OptionIDModel]
 	effort, effortPresent := options[agent.OptionIDEffort]
+	if effort == "" {
+		effort = agent.EffortAuto
+	}
 	if !modelPresent && !effortPresent {
 		if modeRequested {
 			return agent.ConfirmedSettings(map[string]string{agent.OptionIDPermissionMode: previous.permissionMode})
@@ -102,57 +118,28 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	if model == "" {
 		return agent.RestartRequiredSettings(options)
 	}
-	patch := map[string]any{"model_handle": model}
-	if effortPresent {
-		if effort == "" {
-			patch["reasoning_effort"] = nil
-		} else {
-			patch["reasoning_effort"] = effort
-		}
+	// Keep a newly submitted input outside the native settings transaction.
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
+	var err error
+	if model != previous.model {
+		err = a.applyNativeModel(model, effort)
+	} else if effortPresent && effort != previous.reasoningLevel {
+		err = a.applyNativeEffort(effort)
 	}
-	cmd := newLettaCommand("update_model", a.nextRequestID())
-	scope := a.runtime()
-	cmd.Runtime = &scope
-	cmd.Payload = patch
-	pending := &lettaModelUpdatePending{requestID: cmd.RequestID, model: model, effort: effort, effortPresent: effortPresent, waiter: newRuntimeWaiter()}
-	a.Mu.Lock()
-	a.modelPending = pending
-	a.Mu.Unlock()
-	if err := a.sendCommand(cmd); err != nil {
-		a.clearModelPending(pending)
-		return agent.RestartRequiredSettings(options)
-	}
-	if err := pending.waiter.wait(a.Context(), a.Clock(), a.ProcessDone(), lettaSendWait); err != nil {
-		a.clearModelPending(pending)
-		a.Mu.Lock()
-		current := a.settings
-		a.Mu.Unlock()
-		confirmed := map[string]string{}
-		if _, ok := options[agent.OptionIDModel]; ok {
-			confirmed[agent.OptionIDModel] = current.model
+	if err != nil {
+		slog.Warn("letta model settings did not settle", "agent_id", a.AgentID(), "error", err)
+		if !errors.Is(err, errLettaSettingsRefused) {
+			return agent.RestartRequiredSettings(options)
 		}
-		if _, ok := options[agent.OptionIDEffort]; ok {
-			confirmed[agent.OptionIDEffort] = current.reasoningLevel
-		}
-		if modeRequested {
-			confirmed[agent.OptionIDPermissionMode] = current.permissionMode
-		}
-		return agent.ConfirmedSettings(confirmed)
 	}
 	a.Mu.Lock()
-	current := a.settings
+	modelChanged := a.settings.model != previous.model
 	a.Mu.Unlock()
-	confirmed := map[string]string{}
-	if _, ok := options[agent.OptionIDModel]; ok {
-		confirmed[agent.OptionIDModel] = current.model
+	if modelChanged {
+		a.requestQuotaRefresh()
 	}
-	if _, ok := options[agent.OptionIDEffort]; ok {
-		confirmed[agent.OptionIDEffort] = current.reasoningLevel
-	}
-	if modeRequested {
-		confirmed[agent.OptionIDPermissionMode] = current.permissionMode
-	}
-	return agent.ConfirmedSettings(confirmed)
+	return a.SettingsSnapshot()
 }
 
 type lettaModePending struct {

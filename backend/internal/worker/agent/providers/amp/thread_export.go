@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,10 +27,14 @@ const (
 	AmpExportIntervalTag = "amp-export-interval"
 )
 
-// ampThreadExport reads only the native fields needed to identify delivered messages.
+// ampThreadExport reads native thread settings and the identities of delivered messages.
 // The recorded shape comes from .tmp/verify-c29/amp/run2-export/export-before.json.
 type ampThreadExport struct {
-	ID       string             `json:"id"`
+	ID        string `json:"id"`
+	AgentMode string `json:"agentMode"`
+	Meta      struct {
+		Features *[]string `json:"features"`
+	} `json:"meta"`
 	Messages []ampExportMessage `json:"messages"`
 }
 
@@ -69,6 +74,9 @@ func parseThreadExport(raw []byte, threadID string) (*ampThreadExport, error) {
 	if exported.ID != threadID || exported.Messages == nil {
 		return nil, errors.New("the Amp export does not identify the requested thread history")
 	}
+	if exported.Meta.Features != nil && slices.Contains(*exported.Meta.Features, "") {
+		return nil, errors.New("the Amp export has an empty or null thread feature")
+	}
 	seen := make(map[string]bool, len(exported.Messages))
 	for _, message := range exported.Messages {
 		if message.ID == "" || seen[message.ID] {
@@ -77,6 +85,29 @@ func parseThreadExport(raw []byte, threadID string) (*ampThreadExport, error) {
 		seen[message.ID] = true
 	}
 	return &exported, nil
+}
+
+// refreshThreadSettings reads immutable native choices before a resumed agent publishes its catalog.
+// An absent feature list is unknown; an explicit empty list confirms standard speed.
+func (a *Agent) refreshThreadSettings(ctx context.Context, threadID string) error {
+	raw, err := a.exportThread(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	exported, err := parseThreadExport(raw, threadID)
+	if err != nil {
+		return err
+	}
+	fast := ""
+	if exported.Meta.Features != nil {
+		features := *exported.Meta.Features
+		fast = strconv.FormatBool(slices.Contains(features, "fast") || slices.Contains(features, "plaid"))
+	}
+	a.mu.Lock()
+	a.agentMode = exported.AgentMode
+	a.fastMode = fast
+	a.mu.Unlock()
+	return nil
 }
 
 func (exported *ampThreadExport) identities() map[string]bool {

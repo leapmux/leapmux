@@ -15,6 +15,26 @@ beforeEach(() => {
 afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createCodebuddyEnvironment', () => {
+  it('declares reasoning independently for each native model', () => {
+    const configured = {
+      ...options(),
+      primaryReasoning: { supported: true as const, defaultEffort: 'medium' },
+      alternateReasoning: { supported: false as const },
+    }
+    createCodebuddyEnvironment(configured)
+    const models = JSON.parse(readFileSync(join(homeDir, '.codebuddy', 'models.json'), 'utf8'))
+    expect(models.models[0]).toMatchObject({ supportsReasoning: true, reasoning: { defaultEffort: 'medium' } })
+    expect(models.models[1]).toHaveProperty('supportsReasoning', false)
+    expect(models.models[1]).not.toHaveProperty('reasoning')
+  })
+
+  it('preserves an explicit false thinking preference in the private profile', () => {
+    const configured = { ...options(), thinkingEnabled: false }
+    createCodebuddyEnvironment(configured)
+    expect(JSON.parse(readFileSync(join(homeDir, '.codebuddy', 'settings.json'), 'utf8')))
+      .toEqual({ model: 'custom-local:unit-model', alwaysThinkingEnabled: false })
+  })
+
   it('writes both models with the chat completions URL that CodeBuddy requires, and starts on the given model', () => {
     const env = createCodebuddyEnvironment(options())
     expect(env.CODEBUDDY_CONFIG_DIR).toBe(join(homeDir, '.codebuddy'))
@@ -24,6 +44,10 @@ describe('createCodebuddyEnvironment', () => {
       expect.objectContaining({ id: 'unit-alt', name: 'Alternate Mock Model', url: 'http://127.0.0.1:4567/v1/chat/completions' }),
     ])
     expect(models.availableModels).toEqual(['unit-model', 'unit-alt'])
+    for (const model of models.models) {
+      expect(model).not.toHaveProperty('supportsReasoning')
+      expect(model).not.toHaveProperty('reasoning')
+    }
     expect(JSON.parse(readFileSync(join(env.CODEBUDDY_CONFIG_DIR!, 'settings.json'), 'utf8'))).toEqual({ model: 'custom-local:unit-model' })
   })
 
