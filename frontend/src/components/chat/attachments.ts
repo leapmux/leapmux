@@ -4,6 +4,7 @@ import type { AttachmentCapabilities } from './providers/registry'
 import { MAX_AGENT_INPUT_ITEM_BYTES } from '~/generated/contracts/agent-input'
 import { randomUUID } from '~/lib/idGenerator'
 import { extname } from '~/lib/paths'
+import { queueEditDraftKeyPrefix } from './composer/draftIdentity'
 
 const LEADING_SLASHES = /^\/+/
 
@@ -344,21 +345,6 @@ export async function collectDroppedAttachmentFiles(
 
 const attachmentCache = new Map<string, FileAttachment[]>()
 const pastedImageCounters = new Map<string, number>()
-
-/**
- * The key prefix that every per-queue-item draft and attachment set of one
- * agent shares. `forgetAgentAttachments` sweeps by this prefix, and the
- * composer composes each item key from it, so the separator has exactly one
- * definition. A second spelling makes a lookup miss without a message.
- */
-export function queueEditDraftKeyPrefix(agentId: string): string {
-  return `${agentId}-queue-`
-}
-
-/** The draft and attachment key for one queued input of one agent. */
-export function queueEditDraftKey(agentId: string, inputId: string): string {
-  return `${queueEditDraftKeyPrefix(agentId)}${inputId}`
-}
 
 export function getAttachments(agentId: string): FileAttachment[] {
   return attachmentCache.get(agentId) ?? []

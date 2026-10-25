@@ -117,6 +117,7 @@ export const KEY_CHANNEL_RELAY_SEQ = 'channel-relay-seq'
 
 /** Dynamic key prefixes — single source of truth for all consumers. */
 export const PREFIX_EDITOR_DRAFT = 'editor-draft:'
+export const PREFIX_COMPOSER_SCHEDULE_DRAFT = 'composer-schedule-draft:'
 export const PREFIX_EDITOR_MIN_HEIGHT = 'editor-min-height:'
 export const PREFIX_AGENT_SESSION = 'agent-session:'
 export const PREFIX_CONTROL_STATE = 'control-state:'
@@ -159,6 +160,7 @@ export const KEY_CLIENT_ID = 'client-id'
 export const KEY_TAB_MRU = 'tab-mru'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const EDITOR_DRAFT_TTL_MS = 7 * DAY_MS
 const HOUR_MS = 60 * 60 * 1000
 const MINUTE_MS = 60 * 1000
 const REFRESH_THRESHOLD_MS = 3 * HOUR_MS
@@ -324,7 +326,8 @@ export const LOCAL_KEY_SPECS = {
   // exists: mirroring them would read a user's whole draft and row-height
   // history into every tab on the sign-in path, which is exactly the cost the
   // move off localStorage was meant to stop paying.
-  [PREFIX_EDITOR_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+  [PREFIX_EDITOR_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: EDITOR_DRAFT_TTL_MS, access: 'async' },
+  [PREFIX_COMPOSER_SCHEDULE_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: EDITOR_DRAFT_TTL_MS, access: 'async' },
   [PREFIX_EDITOR_MIN_HEIGHT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
   [PREFIX_AGENT_SESSION]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
   [PREFIX_CONTROL_STATE]: { match: 'prefix', scope: 'account', ttlMs: 1 * DAY_MS, access: 'async' },
@@ -1274,10 +1277,53 @@ export function localStorageStore(name: AsyncLocalKey, value: unknown): StorageW
   return enqueueKvPut({ k: key, v: snapshot.value, e: Date.now() + ttl }, { publish: false })
 }
 
+/** One value in a coordinated write to the asynchronous storage tier. */
+export interface StorageEntryWrite {
+  name: AsyncLocalKey
+  value: unknown
+}
+
+/**
+ * Prepare every value before enqueueing any of them. The complete collection
+ * enters one write batch with one captured clock, so related records commit
+ * together and equal retention policies give them equal expiration times.
+ */
+export function localStorageStoreMany(entries: readonly StorageEntryWrite[]): StorageWrite {
+  const account = storageAccount
+  const rows = []
+  for (const { name, value } of entries) {
+    const { key, ttl } = resolveLocalKey(name, 'async')
+    const snapshot = snapshotValue(name, value)
+    if (!snapshot.ok)
+      return REFUSED_WRITE
+    rows.push({ key, ttl, value: snapshot.value })
+  }
+  if (storageAccount !== account)
+    throw new Error('Cannot store related values after the storage account changes.')
+  const now = Date.now()
+  const writes = rows.map(({ key, ttl, value }) => enqueueKvPut({ k: key, v: value, e: now + ttl }, { publish: false }))
+  return { durable: Promise.all(writes.map(write => write.durable)).then(results => results.every(Boolean)) }
+}
+
 /** Remove an unmirrored value. See {@link localStorageRemove}. */
 export function localStorageDrop(name: AsyncLocalKey): StorageWrite {
   const { key } = resolveLocalKey(name, 'async')
   return enqueueKvDelete(key, { publish: false })
+}
+
+/**
+ * Remove a retired family's entries, including writes that have not flushed.
+ * Resolve the account before awaiting, so a later account change cannot move
+ * the deletion into another account. Callers stop writing the retired family
+ * before calling this function.
+ */
+export async function localStorageDropPrefix(prefix: AsyncLocalKey): Promise<void> {
+  const { key } = resolveLocalKey(prefix, 'async')
+  await flushKvWrites()
+  const rows = await readKvPrefix(key)
+  for (const row of rows)
+    enqueueKvDelete(row.k, { publish: false })
+  await flushKvWrites()
 }
 
 /** Wait for every queued write to reach disk. For a teardown, and for tests. */

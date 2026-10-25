@@ -16,12 +16,12 @@ type providerTurnAdmission struct {
 	state     agent.TurnState
 }
 
-type providerTurnLease struct {
+type providerMutationLease struct {
 	once     sync.Once
 	mutation *sync.RWMutex
 }
 
-func (lease *providerTurnLease) Release() {
+func (lease *providerMutationLease) Release() {
 	if lease != nil {
 		lease.once.Do(lease.mutation.RUnlock)
 	}
@@ -64,7 +64,7 @@ func (admission *providerTurnAdmission) Acquire() (agent.TurnState, agent.TurnSt
 		mutation.RUnlock()
 		return agent.TurnState{}, nil
 	}
-	return admission.state, &providerTurnLease{mutation: mutation}
+	return admission.state, &providerMutationLease{mutation: mutation}
 }
 
 func (admission *providerTurnAdmission) IsCurrent() bool {

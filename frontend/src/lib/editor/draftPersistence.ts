@@ -1,4 +1,8 @@
-import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_EDITOR_DRAFT } from '~/lib/browserStorage'
+import type { StorageEntryWrite } from '~/lib/browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStoreMany, PREFIX_EDITOR_DRAFT } from '~/lib/browserStorage'
+
+/** Metadata records that share the text draft's persistence lifetime. */
+export type DraftMetadataRecord = StorageEntryWrite
 
 export interface Draft {
   content: string
@@ -21,11 +25,12 @@ export async function loadDraft(agentId: string): Promise<Draft> {
   return { content: '', cursor: -1 }
 }
 
-export function saveDraft(agentId: string, content: string, cursor: number): void {
+export function saveDraft(agentId: string, content: string, cursor: number, metadata: readonly DraftMetadataRecord[] = []): void {
   if (content) {
-    localStorageStore(`${PREFIX_EDITOR_DRAFT}${agentId}`, { content, cursor })
+    localStorageStoreMany([{ name: `${PREFIX_EDITOR_DRAFT}${agentId}`, value: { content, cursor } }, ...metadata])
   }
   else {
+    localStorageStoreMany(metadata)
     localStorageDrop(`${PREFIX_EDITOR_DRAFT}${agentId}`)
   }
 }

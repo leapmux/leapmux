@@ -278,8 +278,14 @@ func TestClearContextRefusesToStopAnAgentInsideATurn(t *testing.T) {
 
 	adapter := &agentInputQueueAdapter{svc: svc}
 	_, err := adapter.Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: newTestAgentInputID(), AgentID: agentID, Text: "/clear",
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      newTestAgentInputID(),
+				AgentID: agentID,
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+			},
+		},
+		Text: "/clear",
 	}})
 	assert.Equal(t, inputqueue.DispatchBusy, dispatchOutcomeOf(t, err),
 		"the flag itself says a turn runs, so the clear waits for it")
@@ -288,8 +294,14 @@ func TestClearContextRefusesToStopAnAgentInsideATurn(t *testing.T) {
 	// And once the turn ends, the same clear goes through.
 	sink.publish(false)
 	_, err = adapter.Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: newTestAgentInputID(), AgentID: agentID, Text: "/clear",
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      newTestAgentInputID(),
+				AgentID: agentID,
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+			},
+		},
+		Text: "/clear",
 	}})
 	require.NoError(t, err)
 }

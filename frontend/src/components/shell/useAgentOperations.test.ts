@@ -1,13 +1,12 @@
 import type { CloseAgentResponse } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ControlRequest } from '~/stores/control.store'
-
 import { create } from '@bufbuild/protobuf'
+
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { queueEditDraftKey } from '~/components/chat/attachments'
 import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from '~/components/chat/composer/scheduleDrafts'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentActivityState, AgentInfoSchema, AgentProvider, ControlResponseState, SendControlResponseResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -25,6 +24,7 @@ import { emitAddTab } from '~/stores/tabOps'
 import { deferred, flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
+import { queueEditDraftKey } from '../chat/composer/draftIdentity'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
 const mockOpenAgent = vi.fn()

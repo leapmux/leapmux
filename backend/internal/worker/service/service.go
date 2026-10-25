@@ -676,9 +676,9 @@ func New(cfg Config) *Service {
 			logAutoRetryError("schedule an automatic retry", agentID,
 				svc.InputQueue.ScheduleAutoRetry(bgCtx(), agentID, schedule), "kind", schedule.Kind.String())
 		},
-		func(agentID string, kind leapmuxv1.AgentInputKind) {
+		func(agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) {
 			logAutoRetryError("cancel an automatic retry", agentID,
-				svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind), "kind", kind.String())
+				svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind, admission), "kind", kind.String())
 		},
 		func(agentID string) {
 			logAutoRetryError("cancel the automatic retries", agentID, svc.InputQueue.CancelAutoRetries(bgCtx(), agentID))

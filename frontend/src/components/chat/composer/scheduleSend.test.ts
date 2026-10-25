@@ -162,6 +162,20 @@ describe('checkSchedule', () => {
     expect(checkSchedule('2029-12-31T00:00', now, '')).toEqual({ verdict: 'notFuture', wire: '2029-12-31T05:00:00.000Z' })
   })
 
+  it('refuses instants whose UTC year cannot pass the worker parser', () => {
+    expect(checkSchedule('10000-06-01T12:00', now)).toEqual({ verdict: 'invalid' })
+    expect(checkSchedule('9999-12-31T20:00', now)).toEqual({ verdict: 'invalid' })
+    expect(checkSchedule('9999-12-31T18:59:59.999', now)).toEqual({ verdict: 'valid', wire: '9999-12-31T23:59:59.999Z' })
+  })
+
+  it('keeps the later repeated-hour instant when the browser shortens the displayed value', () => {
+    const stored = '2030-11-03T06:30:00.000Z'
+    for (const instant of ['2030-11-03T04:00:00.000Z', '2030-11-03T06:00:00.000Z'])
+      expect(checkSchedule('2030-11-03T01:30', new Date(instant), stored)).toEqual({ verdict: 'unchanged', wire: stored })
+    const fractional = '2030-11-03T06:30:30.100Z'
+    expect(checkSchedule('2030-11-03T01:30:30.1', now, fractional)).toEqual({ verdict: 'unchanged', wire: fractional })
+  })
+
   it('refuses malformed input and carries no wire value', () => {
     expect(checkSchedule('next tuesday', now)).toEqual({ verdict: 'invalid' })
     expect(checkSchedule('2030-03-10T02:30', now)).toEqual({ verdict: 'invalid' })

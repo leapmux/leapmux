@@ -2,13 +2,16 @@ import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentTab } from '~/stores/tab.types'
 import type { TabView } from '~/stores/tabView'
 import { create } from '@bufbuild/protobuf'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AgentInputKind,
   AgentInputQueueSnapshotSchema,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ChannelError } from '~/lib/channelError'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
+import { deferred } from '~/test-support/async'
 import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 
 /**
@@ -303,31 +306,71 @@ describe('agent input queue operations schedule', () => {
   })
 })
 
-// A send whose answer was lost may have reached the Worker. The composer asks
-// whether a re-send matches such an attempt, so that an expired schedule does
-// not force a changed payload, which would mint a second input ID.
-describe('createAgentInputQueueOperations isPendingMessage', () => {
+// An expired schedule is valid only for an exact unanswered delivery.
+describe('createAgentInputQueueOperations retryPendingMessage', () => {
   const at = '2030-01-01T09:00:00.000Z'
 
-  it('reports a message whose answer was lost until a re-send of it lands', async () => {
-    const { ops } = setup()
-    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
-    await expect(ops.sendMessage('later', undefined, at)).rejects.toThrow('answer lost')
-
-    expect(ops.isPendingMessage('later', undefined, at)).toBe(true)
-    expect(ops.isPendingMessage('later', [], at)).toBe(true)
-    expect(ops.isPendingMessage('later')).toBe(false)
-    expect(ops.isPendingMessage('other', undefined, at)).toBe(false)
-
-    enqueueAgentInput.mockResolvedValueOnce({ snapshot: snapshotOf('agent-1', 1n, []) })
-    await ops.sendMessage('later', undefined, at)
-    const [first, second] = enqueueAgentInput.mock.calls.map(call => (call[1] as { inputId: string }).inputId)
-    expect(second).toBe(first)
-    expect(ops.isPendingMessage('later', undefined, at)).toBe(false)
+  it.each([
+    new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument }),
+    new ChannelError('rpc', 'refused', { code: Code.FailedPrecondition }),
+    new ConnectError('not authorized', Code.PermissionDenied),
+  ])('keeps a definitive refusal out of the unanswered-attempt exception: %s', async (error) => {
+    const { ops, forceScrollToBottom } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(error)
+    await expect(ops.sendMessage('later', [], at)).rejects.toThrow(error.message)
+    forceScrollToBottom.mockClear()
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(false)
+    expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
+    expect(forceScrollToBottom).not.toHaveBeenCalled()
   })
 
-  it('reports nothing while no agent has focus', () => {
+  it.each([
+    new Error('answer lost'),
+    new ChannelError('transport', 'disconnected'),
+    new ChannelError('rpc', 'commit uncertain', { code: Code.Internal }),
+  ])('reuses the original id and schedule for an unanswered attempt: %s', async (error) => {
+    const { ops } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(error)
+    await expect(ops.sendMessage('later', undefined, at)).rejects.toThrow(error.message)
+    expect(await ops.retryPendingMessage('later')).toBe(false)
+    expect(await ops.retryPendingMessage('other', [], at)).toBe(false)
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: snapshotOf('agent-1', 1n, []) })
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(true)
+    const [first, second] = enqueueAgentInput.mock.calls.map(call => (call[1] as { inputId: string }).inputId)
+    expect(second).toBe(first)
+    expect(enqueueAgentInput.mock.calls[1]?.[1]).toMatchObject({ scheduledAt: at, text: 'later' })
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(false)
+  })
+
+  it.each([new Error('answer lost'), new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument })])('shares one in-flight request across identical sends: %s', async (error) => {
+    const { ops } = setup()
+    const response = deferred<{ snapshot: undefined }>()
+    enqueueAgentInput.mockReturnValue(response.promise)
+    const settled = Promise.allSettled([ops.sendMessage('later', [], at), ops.sendMessage('later', [], at)])
+    try {
+      expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      response.reject(error)
+      await settled
+    }
+  })
+
+  it('keeps earlier uncertainty when a later attempt receives a refusal', async () => {
+    const { ops } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
+    await expect(ops.sendMessage('later', [], at)).rejects.toThrow('answer lost')
+    enqueueAgentInput.mockRejectedValueOnce(new ChannelError('rpc', 'not authorized', { code: Code.PermissionDenied }))
+    await expect(ops.retryPendingMessage('later', [], at)).rejects.toThrow('not authorized')
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: undefined })
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(true)
+    const ids = enqueueAgentInput.mock.calls.map(call => (call[1] as { inputId: string }).inputId)
+    expect(new Set(ids).size).toBe(1)
+  })
+
+  it('sends nothing while no agent has focus', async () => {
     const { ops } = setup({ focusedAgentId: null })
-    expect(ops.isPendingMessage('later', undefined, at)).toBe(false)
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(false)
+    expect(enqueueAgentInput).not.toHaveBeenCalled()
   })
 })

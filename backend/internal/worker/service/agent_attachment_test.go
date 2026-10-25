@@ -175,6 +175,6 @@ func TestEnqueueAgentInput_TextOnlyHasNoAttachmentMetadata(t *testing.T) {
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-6")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
-	assert.Equal(t, "just text", snapshot.Items[0].Text)
+	assert.Equal(t, "just text", snapshot.Items[0].TextPreview)
 	assert.Empty(t, snapshot.Items[0].Metadata)
 }

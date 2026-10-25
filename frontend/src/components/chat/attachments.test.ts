@@ -14,12 +14,11 @@ import {
   isImageMimeType,
   MAX_TOTAL_ATTACHMENT_SIZE,
   nextPastedImageName,
-  queueEditDraftKey,
-  queueEditDraftKeyPrefix,
   readFileAsAttachment,
   setAttachments,
   totalAttachmentSize,
 } from './attachments'
+import { queueEditDraftKey } from './composer/draftIdentity'
 
 const claudeCapabilities: AttachmentCapabilities = {
   text: true,
@@ -170,12 +169,6 @@ describe('attachment cache', () => {
 })
 
 describe('queueEditDraftKey', () => {
-  it('composes the item key from the agent prefix', () => {
-    expect(queueEditDraftKeyPrefix('agent-1')).toBe('agent-1-queue-')
-    expect(queueEditDraftKey('agent-1', 'input-9')).toBe('agent-1-queue-input-9')
-    expect(queueEditDraftKey('agent-1', 'input-9').startsWith(queueEditDraftKeyPrefix('agent-1'))).toBe(true)
-  })
-
   it('produces a key that the agent sweep forgets', () => {
     const key = queueEditDraftKey('agent-sweep', 'input-1')
     setAttachments(key, [{ id: 'queued' } as FileAttachment])

@@ -417,13 +417,32 @@ func (m *Manager) refuseUnacceptedKind(agentID string, kind leapmuxv1.AgentInput
 // unlocks. scheduleDrain takes this same non-reentrant mutex, so a drain from
 // inside the locked section deadlocks the Worker.
 func (m *Manager) mutateLocked(agentID string, mutate func() (Snapshot, bool, error)) (Snapshot, error) {
+	return m.mutateAdmitted(agentID, nil, mutate)
+}
+
+// mutateAdmitted keeps a captured provider owner current through the commit.
+// Observer delivery runs after both the coordinator and owner lease release.
+func (m *Manager) mutateAdmitted(agentID string, admission agent.AutoRetryAdmission, mutate func() (Snapshot, bool, error)) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
+	var lease agent.AutoRetryLease
+	if admission != nil {
+		lease = admission.Acquire()
+		if lease == nil {
+			return Snapshot{}, nil
+		}
+	}
 	c := m.coordinator(agentID)
 	c.mu.Lock()
-	defer m.unlockAndPublish(c)
+	defer func() {
+		c.mu.Unlock()
+		if lease != nil {
+			lease.Release()
+		}
+		m.drainPublications(c)
+	}()
 	snapshot, changed, err := mutate()
 	if err == nil && changed {
 		m.enqueueSnapshotLocked(c, snapshot)
@@ -502,19 +521,19 @@ func (m *Manager) BeginEdit(ctx context.Context, agentID, inputID, clientID stri
 	return snapshot, text, attachments, err
 }
 
-func (m *Manager) Update(ctx context.Context, agentID, inputID, clientID string, expectedVersion uint64, text string, attachments []Attachment, schedule ScheduleEdit) (Snapshot, error) {
+func (m *Manager) Update(ctx context.Context, request UpdateRequest) (Snapshot, error) {
 	// An edit can reclassify the item, so the new text can carry a kind this
 	// agent cannot take. Store.Update refuses it below on a stale read only;
 	// this refuses it before the write transaction opens.
-	kind, err := m.store.KindAfterEdit(ctx, agentID, inputID, text)
+	kind, err := m.store.KindAfterEdit(ctx, request.AgentID, request.InputID, request.Text)
 	if err == nil {
-		err = m.refuseUnacceptedKind(agentID, kind)
+		err = m.refuseUnacceptedKind(request.AgentID, kind)
 	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Snapshot{}, err
 	}
-	return m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
-		return m.store.Update(ctx, agentID, inputID, clientID, expectedVersion, text, attachments, schedule)
+	return m.mutateAndDrain(request.AgentID, alwaysChanged(func() (Snapshot, error) {
+		return m.store.Update(ctx, request)
 	}))
 }
 
@@ -1086,19 +1105,22 @@ func (m *Manager) RecoverState(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Install every hold before any timer or observer can start a drain.
+	// Release lifecycleMu before taking a coordinator lock.
+	m.lifecycleMu.Lock()
+	if !m.stopped {
+		for _, snapshot := range snapshots {
+			if !snapshot.Paused {
+				m.recovered[snapshot.AgentID] = struct{}{}
+			}
+		}
+	}
+	m.lifecycleMu.Unlock()
 	for i := range snapshots {
 		c := m.coordinator(snapshots[i].AgentID)
 		c.mu.Lock()
 		m.enqueueSnapshotLocked(c, snapshots[i])
 		m.unlockAndPublish(c)
-		if snapshots[i].Paused {
-			continue
-		}
-		m.lifecycleMu.Lock()
-		if !m.stopped {
-			m.recovered[snapshots[i].AgentID] = struct{}{}
-		}
-		m.lifecycleMu.Unlock()
 	}
 	return nil
 }

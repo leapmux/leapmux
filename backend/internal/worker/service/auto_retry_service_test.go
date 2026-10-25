@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
@@ -102,4 +104,123 @@ func TestCleanupWorkspace_CancelsScheduledRetries(t *testing.T) {
 	}, w)
 	require.Empty(t, w.errors)
 	assertRetriesCancelled(t, svc, "agent-1")
+}
+
+// A provider report can wait in the worker's retained output queue while its
+// process is replaced. Its original authority must survive that wait.
+func TestAutoRetryRejectsAnOldProviderMutationAfterCleanup(t *testing.T) {
+	t.Parallel()
+	for _, cancel := range []bool{false, true} {
+		t.Run(map[bool]string{false: "schedule", true: "cancel"}[cancel], func(t *testing.T) {
+			t.Parallel()
+			ctx := testutil.DeadlineContext(t)
+			svc, sink, agentID, _ := setupBgTaskTestWithService(t)
+			entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			releaseMutation := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseMutation()
+			if cancel {
+				original := svc.Output.cancelAutoRetry
+				svc.Output.cancelAutoRetry = func(id string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) {
+					close(entered)
+					<-release
+					original(id, kind, admission)
+				}
+			} else {
+				original := svc.Output.scheduleAutoRetry
+				svc.Output.scheduleAutoRetry = func(id string, schedule agent.AutoRetrySchedule) {
+					close(entered)
+					<-release
+					original(id, schedule)
+				}
+			}
+			ordered := agent.NewOrderedProviderServices(&agent.OutputQueue{}, sink)
+			go func() {
+				if cancel {
+					ordered.CancelUsageLimitRetry()
+				} else {
+					ordered.ScheduleUsageLimitRetry(time.Now().Add(time.Hour), []byte(`{"old":true}`))
+				}
+				close(finished)
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("the old provider mutation did not reach queue admission")
+			}
+			svc.Output.CleanupAgent(agentID)
+			// A new process can now report a retry for the same open agent.
+			if cancel {
+				require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID, retrySchedule(
+					leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, time.Now().Add(time.Hour))))
+			}
+			before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			releaseMutation()
+			select {
+			case <-finished:
+			case <-ctx.Done():
+				t.Fatal("the old provider mutation did not finish")
+			}
+			after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "a retired provider must not change the replacement queue")
+		})
+	}
+}
+
+func TestCapturedAutoRetryRefusesReplacedOwnersWithoutResettingBackoff(t *testing.T) {
+	t.Parallel()
+	for _, replacement := range []string{"session", "process", "cleanup"} {
+		t.Run(replacement, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			svc, _, _ := setupTestService(t, withClock(clock))
+			agentID := "agent-1"
+			seedAgent(t, svc, agentID)
+			sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			writer := sink.CaptureAutoRetry()
+			switch replacement {
+			case "session":
+				sink.UpdateSessionID("replacement-session")
+			case "process":
+				svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			case "cleanup":
+				svc.Output.CleanupAgent(agentID)
+			}
+			kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+			require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID, retrySchedule(kind, time.Time{})))
+			before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			writer.CancelServerErrorRetry()
+			writer.ScheduleServerErrorRetry([]byte(`{"old":true}`))
+			after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+			var delay int64
+			require.NoError(t, svc.DB.QueryRowContext(t.Context(), `SELECT auto_retry_server_error_delay_ms FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&delay))
+			assert.Equal(t, int64(20000), delay, "a stale cancellation must not reset the replacement backoff")
+		})
+	}
+}
+
+func TestCapturedAutoRetryLeaseProtectsTheOwnerUntilRelease(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, _ := setupBgTaskTestWithService(t)
+	writer := sink.CaptureAutoRetry().(*capturedAutoRetryWriter)
+	lease := writer.Acquire()
+	require.NotNil(t, lease)
+	mutation := svc.Output.transcriptMutationMutex(agentID)
+	locked := mutation.TryLock()
+	if locked {
+		mutation.Unlock()
+	}
+	assert.False(t, locked, "context cleanup must wait while the admitted retry mutates its queue")
+	lease.Release()
+	lease.Release()
+	locked = mutation.TryLock()
+	require.True(t, locked, "the lease must release the context mutation lock")
+	mutation.Unlock()
+	sink.UpdateSessionID("replacement-session")
+	assert.Nil(t, writer.Acquire(), "a released writer cannot renew an expired owner")
 }

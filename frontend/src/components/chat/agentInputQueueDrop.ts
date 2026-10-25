@@ -75,7 +75,7 @@ export interface QueueMove {
  * the moved item and its target must share one. A downward move whose
  * follower is outside that segment -- absent, locked, or in another group --
  * takes the SEGMENT END (an empty `beforeInputId`), which the Worker resolves
- * as the end of the moved item's segment, not the queue's end. Naming a locked
+ * as the end of the moved item's segment, not the queue's end. Specifying a locked
  * follower would be refused.
  */
 export function resolveQueueMove(

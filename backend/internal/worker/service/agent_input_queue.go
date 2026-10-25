@@ -47,7 +47,8 @@ func queuedInputTextPreview(value string) string {
 // immediate; anything else parses as RFC3339, normalizes to UTC, and floors to
 // the millisecond so the wire instant survives the canonical DATETIME column
 // byte-exactly. A malformed value is ErrInvalidInput, and a past value stays
-// valid queue data: the queue counts it immediate.
+// valid queue data: the queue counts it immediate. The normalized UTC instant
+// must still fit the RFC3339 year range.
 func parseQueueSchedule(value string) (*time.Time, error) {
 	if value == "" {
 		return nil, nil
@@ -57,6 +58,9 @@ func parseQueueSchedule(value string) (*time.Time, error) {
 		return nil, fmt.Errorf("%w: scheduled_at is not an RFC3339 timestamp", inputqueue.ErrInvalidInput)
 	}
 	at = sqltime.FloorMillis(at.UTC())
+	if _, err := at.MarshalText(); err != nil {
+		return nil, fmt.Errorf("%w: scheduled_at is outside the UTC RFC3339 range", inputqueue.ErrInvalidInput)
+	}
 	return &at, nil
 }
 
@@ -510,7 +514,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 			}
 		}
 		result.Items[i] = &leapmuxv1.QueuedAgentInput{
-			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.Text),
+			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.TextPreview),
 			Attachments: attachments, Order: item.Position, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
 			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt,
@@ -576,7 +580,15 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 				}
 				schedule = inputqueue.ReplaceSchedule(scheduledAt)
 			}
-			snapshot, err := svc.InputQueue.Update(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetClientId(), r.GetExpectedVersion(), r.GetText(), queueAttachments(r.GetAttachments()), schedule)
+			snapshot, err := svc.InputQueue.Update(bgCtx(), inputqueue.UpdateRequest{
+				AgentID:         r.GetAgentId(),
+				InputID:         r.GetInputId(),
+				ClientID:        r.GetClientId(),
+				ExpectedVersion: r.GetExpectedVersion(),
+				Text:            r.GetText(),
+				Attachments:     queueAttachments(r.GetAttachments()),
+				Schedule:        schedule,
+			})
 			if sendQueueError(sender, err) {
 				return
 			}

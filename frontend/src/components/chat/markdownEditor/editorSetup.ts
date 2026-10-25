@@ -3,7 +3,7 @@ import type { Node, NodeType, Schema } from '@milkdown/prose/model'
 import type { EditorView } from '@milkdown/prose/view'
 import type { TrailingDebounced } from '~/lib/debounce'
 import type { CodeLangHandlers } from '~/lib/editor/codeLangPlugin'
-import type { Draft } from '~/lib/editor/draftPersistence'
+import type { Draft, DraftMetadataRecord } from '~/lib/editor/draftPersistence'
 import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
 import type { LinkClickHandlers } from '~/lib/editor/linkPlugin'
 import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
@@ -178,6 +178,8 @@ export interface EditorSetupOptions {
    * incoming key's saved draft with the outgoing document.
    */
   getDocumentDraftKey: () => string | undefined
+  /** Metadata belongs to the document key, including during a key swap. */
+  getDraftMetadataRecords?: (key: string) => readonly DraftMetadataRecord[]
   /** Mutable ref holding the debounced draft-save handle (cancellable on cleanup). */
   draftSaveDebounce: { current: TrailingDebounced | undefined }
   /** Getter for the current editor instance. The debounced draft save reads its live document. */
@@ -296,7 +298,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
           // fails is not hidden.
           return
         }
-        saveDraft(draftKey, draft.content, draft.cursor)
+        saveDraft(draftKey, draft.content, draft.cursor, opts.getDraftMetadataRecords?.(draftKey))
       }, 500)
       ctx.get(listenerCtx).markdownUpdated((context, raw) => {
         if (typeof raw !== 'string')

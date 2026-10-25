@@ -2,6 +2,7 @@ package inputqueue
 
 import (
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -170,28 +171,35 @@ func TestPriorityReorderSegments(t *testing.T) {
 	now := priorityBaseTime()
 	later := now.Add(time.Hour)
 	queued := leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
-	item := func(id string, at *time.Time, state leapmuxv1.AgentInputState) StoredItem {
-		return StoredItem{ID: id, ScheduledAt: at, State: state}
+	item := func(id string, at *time.Time, state leapmuxv1.AgentInputState) OrderingMetadata {
+		return OrderingMetadata{ID: id, ScheduledAt: at, State: state}
 	}
 	for _, tc := range []struct {
 		name  string
-		items []StoredItem
+		items []OrderingMetadata
 		want  []uint32
 	}{
 		{"an empty queue", nil, []uint32{}},
-		{"a locked row after the segment", []StoredItem{
-			item("a", nil, queued), item("b", nil, queued), item("d", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING),
+		{"a locked row after the segment", []OrderingMetadata{
+			item("a", nil, queued),
+			item("b", nil, queued),
+			item("d", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING),
 		}, []uint32{1, 1, 0}},
-		{"a group change and a lock inside one group", []StoredItem{
-			item("now", nil, queued), item("t1-a", &later, queued), item("t1-b", &later, queued),
-			item("echo", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO), item("t1-c", &later, queued),
+		{"a group change and a lock inside one group", []OrderingMetadata{
+			item("now", nil, queued),
+			item("t1-a", &later, queued),
+			item("t1-b", &later, queued),
+			item("echo", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO),
+			item("t1-c", &later, queued),
 		}, []uint32{1, 2, 2, 0, 3}},
-		{"a leading lock", []StoredItem{
-			item("echo", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO), item("a", nil, queued),
+		{"a leading lock", []OrderingMetadata{
+			item("echo", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO),
+			item("a", nil, queued),
 		}, []uint32{0, 1}},
-		{"failed and uncertain rows are unlocked", []StoredItem{
+		{"failed and uncertain rows are unlocked", []OrderingMetadata{
 			item("failed", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED),
-			item("uncertain", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN), item("a", nil, queued),
+			item("uncertain", nil, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN),
+			item("a", nil, queued),
 		}, []uint32{1, 1, 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -319,7 +327,15 @@ func TestPriorityScheduledAndSourcePayloadRoundTrip(t *testing.T) {
 	// An edit moves the schedule and keeps the payload. The moved deadline is
 	// still ahead of the clock, so the item stays queued until it matures.
 	moved := priorityBaseTime().Add(2 * time.Hour)
-	snapshot, err = store.Update(ctx, "agent-1", retryID, "client", snapshot.Items[0].Version, "Continue.", nil, ReplaceSchedule(&moved))
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         retryID,
+		ClientID:        "client",
+		ExpectedVersion: snapshot.Items[0].Version,
+		Text:            "Continue.",
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(&moved),
+	})
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	require.NotNil(t, snapshot.Items[0].ScheduledAt)
@@ -627,8 +643,15 @@ func TestPrioritySnapshotCarriesNoSourcePayload(t *testing.T) {
 	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
 	snapshot := scheduleRetry(t, store, kind, time.Time{}, []byte(`{"error":"overloaded"}`))
 	require.Len(t, snapshot.Items, 1)
-	assert.Empty(t, snapshot.Items[0].SourcePayload)
-	snapshot, err := store.Snapshot(t.Context(), "agent-1")
+	read, err := store.Snapshot(t.Context(), "agent-1")
 	require.NoError(t, err)
-	assert.Empty(t, snapshot.Items[0].SourcePayload)
+	for _, result := range []Snapshot{snapshot, read} {
+		encoded, err := json.Marshal(result)
+		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), "overloaded")
+	}
+	stored, _, found, err := getItem(t.Context(), store.db, "agent-1", snapshot.Items[0].ID, false)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.JSONEq(t, `{"error":"overloaded"}`, string(stored.SourcePayload))
 }

@@ -4,20 +4,21 @@ import type { Node as ProseMirrorNode } from '@milkdown/prose/model'
 import type { Component, JSX } from 'solid-js'
 import type { EnterKeyMode } from '~/lib/browserPreferences'
 import type { TrailingDebounced } from '~/lib/debounce'
+import type { Draft, DraftMetadataRecord } from '~/lib/editor/draftPersistence'
 import type { LinkRange } from '~/lib/editor/linkPlugin'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { replaceAll } from '@milkdown/utils'
-import { children, createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
+import { children, createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner, Show, untrack } from 'solid-js'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
-import { loadDraft } from '~/lib/editor/draftPersistence'
+import { loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createLogger } from '~/lib/logger'
 import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { errorText } from '~/styles/shared.css'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { serializeEditorDocument } from './documentMarkdown'
-import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
+import { clearDraft, createDraftSwapper, readDraftFromEditor, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { createEditorLayout } from './editorLayout'
 import { setupEditorRefHandlers } from './editorRefHandlers'
@@ -120,6 +121,8 @@ export interface MarkdownEditorAttachments {
 
 /** Imperative escape hatches for the editor (refs and the ready callback). */
 export interface MarkdownEditorImperative {
+  /** Persist only when the editor holds this key; update metadata after reading its document. */
+  persistDraftRef?: (persist: (key: string, updateMetadata?: () => void) => boolean) => void
   sendRef?: (send: () => void | Promise<void>) => void
   focusRef?: (focus: () => void) => void
   contentRef?: (get: () => string, set: (text: string) => void) => void
@@ -145,6 +148,10 @@ interface MarkdownEditorProps {
    */
   suppressAutoFocus?: () => boolean
   draftKey?: MarkdownEditorDraftKey
+  /** Complete per-key metadata hydration before constructing or replacing a document. */
+  prepareDraft?: (key: string) => Promise<void>
+  draftMetadataRecords?: (key: string) => readonly DraftMetadataRecord[]
+  onDocumentDraftReady?: (key: string | null) => void
   attachments?: MarkdownEditorAttachments
   imperative?: MarkdownEditorImperative
   onSend: (markdown: string) => boolean | void | Promise<boolean | void>
@@ -269,7 +276,12 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // `createDraftSwapper` for why the token lives there and not here. Declared
   // with the other per-editor state, because `onMount` runs its own initial
   // replace through it: every path to a document replacement takes one token.
-  const swapDraft = createDraftSwapper()
+  const loadPreparedDraft = async (key: string) => {
+    await untrack(() => props.prepareDraft?.(key))
+    return loadDraft(key)
+  }
+  const metadataRecords = (key: string) => untrack(() => props.draftMetadataRecords?.(key))
+  const swapDraft = createDraftSwapper(loadPreparedDraft)
 
   /**
    * The box's expand/collapse decision and the three DOM measurements it needs.
@@ -636,7 +648,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // Awaited here, ahead of `buildEditor`, so the editor is still constructed
     // with its content in hand. The draft read is asynchronous now, and this
     // `onMount` already awaits `buildEditor`, so it costs no extra round trip.
-    const initialDraft = initialDraftKey ? await loadDraft(initialDraftKey) : { content: '', cursor: -1 }
+    const initialDraft = initialDraftKey ? await loadPreparedDraft(initialDraftKey) : { content: '', cursor: -1 }
     // `initialMarkdown` WINS over a stored draft -- see the prop. A host that
     // states the starting text is editing a specific document, and a draft is
     // the text it abandoned last time; showing the draft would silently edit
@@ -674,6 +686,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // The key of the document on screen, which `prevDraftKey` states and the
       // key props do not: see `EditorSetupOptions.getDocumentDraftKey`.
       getDocumentDraftKey: () => prevDraftKey ?? undefined,
+      getDraftMetadataRecords: key => metadataRecords(key) ?? [],
       draftSaveDebounce,
       getEditorInstance: () => editorInstance,
     })
@@ -816,6 +829,22 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       handleSend,
     })
 
+    props.imperative?.persistDraftRef?.((key, updateMetadata) => {
+      if (disposed || !editorInstance || prevDraftKey !== key)
+        return false
+      let draft: Draft
+      try {
+        draft = readDraftFromEditor(editorInstance)
+      }
+      catch {
+        return false
+      }
+      updateMetadata?.()
+      saveDraft(key, draft.content, draft.cursor, metadataRecords(key))
+      return true
+    })
+    props.onDocumentDraftReady?.(prevDraftKey ?? null)
+
     // Signal that the editor is fully initialized with draft content.
     props.imperative?.onReady?.()
 
@@ -897,7 +926,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // OUTGOING document on screen while the props name the incoming key.
     if (editorInstance && prevDraftKey) {
       try {
-        saveDraftFromEditor(editorInstance, prevDraftKey)
+        saveDraftFromEditor(editorInstance, prevDraftKey, metadataRecords(prevDraftKey))
       }
       catch { /* editor may not be ready */ }
     }
@@ -927,7 +956,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // Save current content under the previous draft key.
       if (prevDraftKey) {
         try {
-          saveDraftFromEditor(editorInstance, prevDraftKey)
+          saveDraftFromEditor(editorInstance, prevDraftKey, metadataRecords(prevDraftKey))
         }
         catch { /* editor may not be ready */ }
       }
@@ -964,6 +993,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // one announcement reached the current host and the other reached the
       // host that was current when the read began.
       const notifyDraftKeyChanged = props.onDraftKeyChanged
+      const notifyDocumentDraftReady = props.onDocumentDraftReady
       void swapDraft(newDraftKey, (draft) => {
         // The component unmounted while the read was in flight. `onCleanup`
         // destroyed `swapTarget` and cancelled the draft debounce, so replacing
@@ -985,6 +1015,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         // for a freshly opened queue edit is empty. The read is asynchronous,
         // so "notify first" is no longer the same instant as "document ready";
         // it was, when the draft load was synchronous.
+        notifyDocumentDraftReady?.(newDraftKey)
         notifyDraftKeyChanged?.(newDraftKey)
       })
     },

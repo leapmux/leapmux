@@ -589,7 +589,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   const retireAgentTabLocally = (agentId: string) => {
     props.controlStore.clearAgent(agentId)
     forgetAgentAttachments(agentId)
-    forgetAgentScheduleDrafts(agentId)
+    void forgetAgentScheduleDrafts(agentId)
     props.agentInputQueueStore.clearAgent(agentId)
     props.chatStore.forgetAgent(agentId)
     // The activity flag goes with the tab, the way the Worker drops its own

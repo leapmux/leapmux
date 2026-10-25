@@ -156,14 +156,12 @@ type AttachmentMetadata struct {
 	Order    int32
 }
 
-type StoredItem struct {
-	ID               string
-	AgentID          string
-	Kind             leapmuxv1.AgentInputKind
-	Text             string
-	TargetMode       string
-	PrepareContext   bool
-	ReclassifyOnEdit bool
+// OrderingMetadata is the projection used to order and admit queued input.
+// It carries no message content.
+type OrderingMetadata struct {
+	ID      string
+	AgentID string
+	Kind    leapmuxv1.AgentInputKind
 	// Order is the durable order_index slot. It breaks ties inside one reorder
 	// group; it is not the item's position in the effective order, which
 	// SnapshotItem.Position states.
@@ -171,20 +169,36 @@ type StoredItem struct {
 	// ScheduledAt is the durable send-not-before instant. Nil means immediate;
 	// a past value is immediate at read time. The reorder group derives from
 	// this field and the Worker's clock.
-	ScheduledAt   *time.Time
-	SourcePayload []byte
-	State         leapmuxv1.AgentInputState
-	Error         string
-	EditOwner     string
-	Version       uint64
-	ReservedSeq   int64
-	CreatedAt     string
-	UpdatedAt     string
+	ScheduledAt    *time.Time
+	State          leapmuxv1.AgentInputState
+	EditOwner      string
+	PrepareContext bool
 }
 
+func (item OrderingMetadata) priorityMetadata() OrderingMetadata { return item }
+
 // requiresContextReplacement identifies a plan approval that replaces the blocked provider turn.
-func (item StoredItem) requiresContextReplacement() bool {
+func (item OrderingMetadata) requiresContextReplacement() bool {
 	return item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION && item.PrepareContext
+}
+
+// ItemMetadata adds the complete row metadata to its ordering projection.
+type ItemMetadata struct {
+	OrderingMetadata
+	TargetMode       string
+	ReclassifyOnEdit bool
+	Error            string
+	Version          uint64
+	ReservedSeq      int64
+	CreatedAt        string
+	UpdatedAt        string
+}
+
+// StoredItem contains the complete text and provider source used for delivery.
+type StoredItem struct {
+	ItemMetadata
+	Text          string
+	SourcePayload []byte
 }
 
 type DispatchItem struct {
@@ -192,9 +206,11 @@ type DispatchItem struct {
 	Attachments []Attachment
 }
 
+// SnapshotItem contains a preview, never dispatchable stored content.
 type SnapshotItem struct {
-	StoredItem
-	Metadata []AttachmentMetadata
+	ItemMetadata
+	TextPreview string
+	Metadata    []AttachmentMetadata
 	// Position is the item's 1-based place in the effective order at the
 	// snapshot's instant. The wire's order field carries it.
 	Position int64
@@ -262,6 +278,17 @@ func KeepSchedule() ScheduleEdit { return ScheduleEdit{} }
 
 // ReplaceSchedule writes at as the new schedule, or clears it when at is nil.
 func ReplaceSchedule(at *time.Time) ScheduleEdit { return ScheduleEdit{Replace: true, At: at} }
+
+// UpdateRequest describes one owned queue edit and its schedule decision.
+type UpdateRequest struct {
+	AgentID         string
+	InputID         string
+	ClientID        string
+	ExpectedVersion uint64
+	Text            string
+	Attachments     []Attachment
+	Schedule        ScheduleEdit
+}
 
 type NewItem struct {
 	ID               string

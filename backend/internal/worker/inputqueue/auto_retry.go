@@ -23,8 +23,9 @@ import (
 // exactly like any other input.
 
 const (
-	// autoRetryText is the synthetic turn every automatic retry sends.
-	autoRetryText = "Continue."
+	// Automatic retry messages tell the agent why its work was interrupted.
+	autoRetryUsageLimitText  = "You were temporarily interrupted due to usage limit, but the usage limit has been cleared. Please continue working."
+	autoRetryServerErrorText = "You were temporarily interrupted due to an infra issue, but the infra issue is now gone. Please continue working."
 
 	// Server-error backoff. Consecutive retries multiply the delay up to the
 	// cap; success, cancellation, deletion, or runtime cleanup resets it.
@@ -33,8 +34,8 @@ const (
 	autoRetryMultiplier   = 2
 	autoRetryJitterFrac   = 0.2
 
-	// Usage-limit jitter, added to the provider's own reset instant so a
-	// horde of clients does not stampede the moment the window lifts.
+	// Usage-limit jitter delays retries after the provider's reset instant
+	// so many clients do not retry simultaneously.
 	rateLimitJitterMin = 5 * time.Second
 	rateLimitJitterMax = 30 * time.Second
 	rateLimitJitterPct = 0.05
@@ -141,7 +142,7 @@ func (m *Manager) ScheduleAutoRetry(ctx context.Context, agentID string, schedul
 		return err
 	}
 	schedule.SourcePayload = storableSourcePayload(agentID, schedule)
-	snapshot, err := m.mutateLocked(agentID, func() (Snapshot, bool, error) {
+	snapshot, err := m.mutateAdmitted(agentID, schedule.Admission, func() (Snapshot, bool, error) {
 		snapshot, err := m.store.scheduleAutoRetry(ctx, agentID, schedule)
 		return snapshot, true, err
 	})
@@ -165,19 +166,21 @@ func (m *Manager) ScheduleAutoRetry(ctx context.Context, agentID string, schedul
 // CancelAutoRetry removes the pending retry of one kind. A server-error
 // cancellation also resets the backoff: the provider cancels exactly when the
 // cycle ended without another retryable failure.
-func (m *Manager) CancelAutoRetry(ctx context.Context, agentID string, kind leapmuxv1.AgentInputKind) error {
-	_, err := m.mutateAndDrain(agentID, func() (Snapshot, bool, error) {
+func (m *Manager) CancelAutoRetry(ctx context.Context, agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) error {
+	snapshot, err := m.mutateAdmitted(agentID, admission, func() (Snapshot, bool, error) {
 		return m.store.cancelAutoRetries(ctx, agentID, kind)
 	})
+	if err == nil {
+		m.drainIfReleased(agentID, snapshot)
+	}
 	return err
 }
 
 // CancelAutoRetries removes the pending items of both retry kinds and resets
 // the backoff, in one transaction. Runtime cleanup (an agent close, a
 // workspace archive, a context clear) calls it, so no schedule outlives the
-// lifecycle that created it. It drains nothing: removing a pending retry
-// releases no other item, and a drain must not reach an agent that is
-// closing.
+// lifecycle that created it. It drains nothing because cleanup must not
+// dispatch another item while an agent closes or replaces its context.
 func (m *Manager) CancelAutoRetries(ctx context.Context, agentID string) error {
 	_, err := m.mutateLocked(agentID, func() (Snapshot, bool, error) {
 		return m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)

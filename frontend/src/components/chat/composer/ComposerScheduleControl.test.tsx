@@ -50,6 +50,14 @@ describe('ComposerScheduleControl', () => {
     expect(screen.getByTestId('schedule-send-popover').classList).toContain('card')
   })
 
+  it('initializes the field before the native popover becomes visible', () => {
+    renderControl({ value: '2030-01-01T18:45' })
+    const event = new Event('beforetoggle')
+    Object.defineProperty(event, 'newState', { value: 'open' })
+    fireEvent(screen.getByTestId('schedule-send-popover'), event)
+    expect(fieldInput()).toHaveValue('2030-01-01T18:45')
+  })
+
   it('opens with the draft value and applies a future time', () => {
     const { onApply } = renderControl()
     open()
@@ -85,6 +93,18 @@ describe('ComposerScheduleControl', () => {
     open()
     fireEvent.click(screen.getByTestId('schedule-send-clear'))
     expect(onApply).toHaveBeenCalledWith('')
+  })
+
+  it('clears a schedule explicitly while the native date input is incomplete', () => {
+    const { onApply } = renderControl({ value: '2030-01-01T18:45' })
+    open()
+    vi.spyOn(fieldInput().validity, 'badInput', 'get').mockReturnValue(true)
+    fireEvent.input(fieldInput(), { target: { value: '' } })
+    expect(screen.getByTestId('schedule-send-apply')).toBeDisabled()
+    expect(screen.getByTestId('schedule-send-clear')).not.toBeDisabled()
+    fireEvent.click(screen.getByTestId('schedule-send-clear'))
+    expect(onApply).toHaveBeenCalledExactlyOnceWith('')
+    expect(screen.getByTestId('schedule-send-popover')).not.toHaveAttribute('data-popover-open')
   })
 
   it('disables Clear schedule when no schedule is set', () => {
@@ -150,6 +170,22 @@ describe('ComposerScheduleControl', () => {
     fireEvent.click(screen.getByTestId('schedule-send-apply'))
     expect(onApply).not.toHaveBeenCalled()
     expect(screen.getByTestId('schedule-send-error')).toHaveTextContent('Pick a time in the future.')
+  })
+
+  it('refuses native partial input, then accepts a corrected date', () => {
+    const { onApply } = renderControl({ value: '2030-01-01T18:45' })
+    open()
+    const validity = vi.spyOn(fieldInput().validity, 'badInput', 'get').mockReturnValue(true)
+    fireEvent.input(fieldInput(), { target: { value: '' } })
+    expect(screen.getByTestId('schedule-send-apply')).toBeDisabled()
+    fireEvent.keyDown(fieldInput(), { key: 'Enter' })
+    expect(onApply).not.toHaveBeenCalled()
+    expect(screen.getByTestId('schedule-send-error')).toHaveTextContent('Enter a real local date and time.')
+    validity.mockReturnValue(false)
+    fireEvent.input(fieldInput(), { target: { value: '2030-01-02T18:45' } })
+    expect(screen.getByTestId('schedule-send-apply')).not.toBeDisabled()
+    fireEvent.keyDown(fieldInput(), { key: 'Enter' })
+    expect(onApply).toHaveBeenCalledWith('2030-01-02T18:45')
   })
 
   it('runs its clock only while the popover is open', () => {

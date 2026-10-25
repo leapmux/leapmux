@@ -52,8 +52,9 @@ func TestQueueSnapshotFitsDefaultWireBudgetWithLargeTextItems(t *testing.T) {
 	items := make([]inputqueue.SnapshotItem, inputqueue.MaxItems)
 	for i := range items {
 		items[i] = inputqueue.SnapshotItem{
-			StoredItem: inputqueue.StoredItem{ID: fmt.Sprintf("input-%d", i), AgentID: "agent-1", Text: largeText},
-			Metadata:   metadata,
+			ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{ID: fmt.Sprintf("input-%d", i), AgentID: "agent-1"}},
+			TextPreview:  largeText,
+			Metadata:     metadata,
 		}
 	}
 	snapshot := queueSnapshotProto(inputqueue.Snapshot{AgentID: "agent-1", Items: items})
@@ -468,8 +469,16 @@ func TestCompactOperationFallsBackToProviderInputWhenNativeCompactionIsUnsupport
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
 	result, err := (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.DispatchItem{
-		StoredItem: inputqueue.StoredItem{ID: "compact", AgentID: "agent-1", Text: "/compact",
-			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT},
+		StoredItem: inputqueue.StoredItem{
+			ItemMetadata: inputqueue.ItemMetadata{
+				OrderingMetadata: inputqueue.OrderingMetadata{
+					ID:      "compact",
+					AgentID: "agent-1",
+					Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT,
+				},
+			},
+			Text: "/compact",
+		},
 	})
 	require.NoError(t, err)
 	assert.True(t, result.StartsTurn)
@@ -951,7 +960,12 @@ func TestChildSteerReturnsOwnerDeliveryError(t *testing.T) {
 
 	svc, _, childID, _ := setupChildAgentTest(t)
 	_, err := (&agentInputQueueAdapter{svc: svc}).Steer(inputqueue.DispatchItem{
-		StoredItem: inputqueue.StoredItem{ID: "input-1", AgentID: childID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "guide"},
+		StoredItem: inputqueue.StoredItem{
+			ItemMetadata: inputqueue.ItemMetadata{
+				OrderingMetadata: inputqueue.OrderingMetadata{ID: "input-1", AgentID: childID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE},
+			},
+			Text: "guide",
+		},
 	})
 	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
@@ -1034,9 +1048,13 @@ func TestAutoRetryProducersUseGeneratedQueueKinds(t *testing.T) {
 	kinds := []leapmuxv1.AgentInputKind{snapshot.Items[0].Kind, snapshot.Items[1].Kind}
 	assert.Contains(t, kinds, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
 	assert.Contains(t, kinds, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+	expectedMessages := map[leapmuxv1.AgentInputKind]string{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT:  "You were temporarily interrupted due to usage limit, but the usage limit has been cleared. Please continue working.",
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR: "You were temporarily interrupted due to an infra issue, but the infra issue is now gone. Please continue working.",
+	}
 	for _, item := range snapshot.Items {
 		assert.NotEmpty(t, item.ScheduledAt, "a retry always carries its deadline")
-		assert.Equal(t, "Continue.", item.Text)
+		assert.Equal(t, expectedMessages[item.Kind], item.TextPreview)
 	}
 
 	// Each cancel removes its own kind only.
@@ -1071,7 +1089,7 @@ func TestSyntheticUserInputEnqueuesAUserMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.Items[0].Kind)
-	assert.Equal(t, "/goal finish the migration", snapshot.Items[0].Text)
+	assert.Equal(t, "/goal finish the migration", snapshot.Items[0].TextPreview)
 }
 
 func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
@@ -1113,7 +1131,7 @@ func TestUpdateAgentGoalQueuesTextUntilDelivery(t *testing.T) {
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
-	assert.Equal(t, "/goal ship the release", snapshot.Items[0].Text)
+	assert.Equal(t, "/goal ship the release", snapshot.Items[0].TextPreview)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.Items[0].Kind)
 	before, err := svc.Output.LoadGoal(ctx, "agent-1")
 	require.NoError(t, err)
@@ -1209,7 +1227,7 @@ func TestPlanExecutionProducerPreservesItsQueueSemantics(t *testing.T) {
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, item.Kind)
 	assert.Equal(t, "acceptEdits", item.TargetMode)
 	assert.True(t, item.PrepareContext)
-	assert.Contains(t, item.Text, "# Safe plan")
+	assert.Contains(t, item.TextPreview, "# Safe plan")
 }
 
 // The accepted input's live row must carry the same passthrough span column
@@ -1238,9 +1256,9 @@ func TestQueueSnapshotProtoCapsAnUntruncatedItem(t *testing.T) {
 
 	snapshot := queueSnapshotProto(inputqueue.Snapshot{
 		AgentID: "agent-1",
-		Items: []inputqueue.SnapshotItem{{StoredItem: inputqueue.StoredItem{
-			ID: "one", AgentID: "agent-1", Text: strings.Repeat("x", inputqueue.MaxItemBytes),
-		}}},
+		Items: []inputqueue.SnapshotItem{
+			{ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{ID: "one", AgentID: "agent-1"}}, TextPreview: strings.Repeat("x", inputqueue.MaxItemBytes)},
+		},
 	})
 	require.Len(t, snapshot.GetItems(), 1)
 	assert.LessOrEqual(t, len(snapshot.GetItems()[0].GetText()), inputqueue.SnapshotTextPreviewBytes+len("…"))
@@ -1649,10 +1667,15 @@ func TestDispatchRefusesAnAgentThatFailedToStartInMemory(t *testing.T) {
 
 	adapter := &agentInputQueueAdapter{svc: svc}
 	result, err := adapter.Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: newTestAgentInputID(), AgentID: failedAgentID, Text: "hello",
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
-	},
-	})
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      newTestAgentInputID(),
+				AgentID: failedAgentID,
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+			},
+		},
+		Text: "hello",
+	}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent failed to start")
 	assert.False(t, result.StartsTurn, "a refused dispatch must claim no turn")
@@ -1660,8 +1683,14 @@ func TestDispatchRefusesAnAgentThatFailedToStartInMemory(t *testing.T) {
 	// The same fixture without the failed startup delivers, so the refusal
 	// above comes from the registry and not from the process the test started.
 	healthy, err := adapter.Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: newTestAgentInputID(), AgentID: healthyAgentID, Text: "hello",
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      newTestAgentInputID(),
+				AgentID: healthyAgentID,
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+			},
+		},
+		Text: "hello",
 	}})
 	require.NoError(t, err)
 	assert.True(t, healthy.StartsTurn)
@@ -1719,8 +1748,8 @@ func TestPlanExecutionQueuesThePlanStoredThroughTheSink(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, snapshot.Items, 1)
 		item := snapshot.Items[0]
-		assert.Contains(t, item.Text, "Execute the following plan:\n\n---\n\n"+plan)
-		assert.Contains(t, item.Text, "The plan is stored at ")
+		assert.Contains(t, item.TextPreview, "Execute the following plan:\n\n---\n\n"+plan)
+		assert.Contains(t, item.TextPreview, "The plan is stored at ")
 		assert.True(t, item.PrepareContext)
 		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, item.Kind)
 	}
@@ -1747,7 +1776,7 @@ func TestPlanExecutionWithoutASavedPlanQueuesTheNeutralTurn(t *testing.T) {
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, item.Kind)
 	assert.Equal(t, "acceptEdits", item.TargetMode)
 	assert.True(t, item.PrepareContext, "the approved plan still runs in a fresh context")
-	assert.Equal(t, planExecutionPromptText, item.Text)
+	assert.Equal(t, planExecutionPromptText, item.TextPreview)
 }
 
 // A path that EXISTS and cannot be read is the opposite case: the plan text is
@@ -1790,7 +1819,14 @@ func TestControlInputWaitsForAnApprovalThatIsStillPending(t *testing.T) {
 	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: "feedback-input", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "feedback",
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      "feedback-input",
+				AgentID: "agent-1",
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
+			},
+		},
+		Text: "feedback",
 	}}
 	adapter := &agentInputQueueAdapter{svc: svc}
 	for _, tc := range []struct {
@@ -1878,8 +1914,12 @@ func TestDispatchClassifiesAStoreFaultRatherThanFailingTheInput(t *testing.T) {
 	require.NoError(t, svc.DB.Close())
 
 	_, err := (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.DispatchItem{
-		StoredItem: inputqueue.StoredItem{ID: "one", AgentID: "agent-1", Text: "one",
-			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE},
+		StoredItem: inputqueue.StoredItem{
+			ItemMetadata: inputqueue.ItemMetadata{
+				OrderingMetadata: inputqueue.OrderingMetadata{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE},
+			},
+			Text: "one",
+		},
 	})
 	var delivery *inputqueue.DeliveryError
 	require.ErrorAs(t, err, &delivery)
@@ -1910,8 +1950,12 @@ func TestResolveControlInputStatesAStoreFaultAsItsPauseReason(t *testing.T) {
 	require.NoError(t, svc.DB.Close())
 
 	_, err = svc.resolveControlInput(inputqueue.DispatchItem{
-		StoredItem: inputqueue.StoredItem{ID: "one", AgentID: "agent-1", Text: "one",
-			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION},
+		StoredItem: inputqueue.StoredItem{
+			ItemMetadata: inputqueue.ItemMetadata{
+				OrderingMetadata: inputqueue.OrderingMetadata{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION},
+			},
+			Text: "one",
+		},
 	}, dbAgent)
 	var delivery *inputqueue.DeliveryError
 	require.ErrorAs(t, err, &delivery)
@@ -2039,7 +2083,7 @@ func TestRequeueDroppedInputQueuesTheInputAndStatesWhyOnce(t *testing.T) {
 	item := snapshot.Items[0]
 	assert.Equal(t, droppedInputID("agent-1", "turn-1/1"), item.ID)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, item.Kind)
-	assert.Equal(t, "Also check the tests.", item.Text)
+	assert.Equal(t, "Also check the tests.", item.TextPreview)
 	assert.True(t, item.ReclassifyOnEdit, "an edit of the hand-back reads its text again, as an edit of a typed message does")
 	require.Len(t, item.Metadata, 1)
 	assert.Equal(t, "notes.txt", item.Metadata[0].Filename)
@@ -2056,7 +2100,7 @@ func TestRequeueDroppedInputQueuesTheInputAndStatesWhyOnce(t *testing.T) {
 	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 2)
-	assert.Equal(t, "And the docs.", snapshot.Items[1].Text, "the queue appends a hand-back behind what it holds")
+	assert.Equal(t, "And the docs.", snapshot.Items[1].TextPreview, "the queue appends a hand-back behind what it holds")
 	assert.Equal(t, 2, requeuedNotices(t, svc))
 }
 
@@ -2210,7 +2254,7 @@ func TestReportSteersUncertainPausesWithoutARow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
-	assert.Equal(t, "Read this once", snapshot.Items[0].Text)
+	assert.Equal(t, "Read this once", snapshot.Items[0].TextPreview)
 	assert.True(t, snapshot.Paused)
 	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
 	require.NoError(t, err)
@@ -2398,7 +2442,7 @@ func TestUpdateQueuedAgentInputRefusesAMalformedSchedule(t *testing.T) {
 	after, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, after.Items, 1)
-	assert.Equal(t, "later", after.Items[0].Text)
+	assert.Equal(t, "later", after.Items[0].TextPreview)
 	require.NotNil(t, after.Items[0].ScheduledAt)
 	assert.True(t, at.Equal(*after.Items[0].ScheduledAt))
 }
@@ -2461,4 +2505,29 @@ func TestMoveQueuedAgentInputMapsAGroupViolationToFailedPrecondition(t *testing.
 	require.Len(t, writer.errors, 1)
 	assert.Equal(t, int32(codes.FailedPrecondition), writer.errors[0].code)
 	assert.Contains(t, writer.errors[0].message, "reorder groups")
+}
+
+func TestParseQueueScheduleRequiresARepresentableUTCYear(t *testing.T) {
+	t.Parallel()
+	for _, wire := range []string{"9999-12-31T23:59:59-23:59", "0000-01-01T00:00:00+23:59"} {
+		t.Run(wire, func(t *testing.T) {
+			t.Parallel()
+			at, err := parseQueueSchedule(wire)
+			require.ErrorIs(t, err, inputqueue.ErrInvalidInput)
+			assert.Nil(t, at)
+		})
+	}
+	for wire, canonical := range map[string]string{
+		"9999-12-31T23:59:59.999Z":         "9999-12-31T23:59:59.999Z",
+		"0000-01-01T00:00:00Z":             "0000-01-01T00:00:00.000Z",
+		"2030-01-01T12:00:00.123456+09:00": "2030-01-01T03:00:00.123Z",
+	} {
+		t.Run(wire, func(t *testing.T) {
+			t.Parallel()
+			at, err := parseQueueSchedule(wire)
+			require.NoError(t, err)
+			require.NotNil(t, at)
+			assert.Equal(t, canonical, timefmt.Format(*at))
+		})
+	}
 }

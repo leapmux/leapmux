@@ -84,7 +84,11 @@ export function datetimeLocalOf(stored: string): string {
  * that the draft is unchanged.
  */
 function holdsStoredSchedule(draft: string, stored: string): boolean {
-  return draft === datetimeLocalOf(stored) || parseLocalSchedule(draft)?.getTime() === Date.parse(stored)
+  const rendered = datetimeLocalOf(stored)
+  if (draft === rendered)
+    return true
+  const at = parseLocalSchedule(draft)
+  return at !== undefined && localFieldValueOf(at) === rendered
 }
 
 /**
@@ -123,6 +127,10 @@ export function checkSchedule(draft: string, now: Date, existingStored?: string)
     return { verdict: 'empty', wire: '' }
   const at = parseLocalSchedule(draft)
   if (at === undefined)
+    return { verdict: 'invalid' }
+  // RFC3339 requires four UTC year digits. A valid local year can cross
+  // that limit when its timezone offset converts the instant to UTC.
+  if (at.getUTCFullYear() < 0 || at.getUTCFullYear() > 9999)
     return { verdict: 'invalid' }
   const wire = at.toISOString()
   return at.getTime() > now.getTime() ? { verdict: 'valid', wire } : { verdict: 'notFuture', wire }

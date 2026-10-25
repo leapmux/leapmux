@@ -3,8 +3,11 @@ package inputqueue
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +80,79 @@ func storedServerErrorDelay(t *testing.T, database *sql.DB) int64 {
 	require.NoError(t, database.QueryRowContext(t.Context(),
 		`SELECT auto_retry_server_error_delay_ms FROM agent_input_queue_state WHERE agent_id = 'agent-1'`).Scan(&delay))
 	return delay
+}
+
+func TestAutoRetryMessageDescribesItsCauseThroughDispatchAndTranscript(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind leapmuxv1.AgentInputKind
+		want string
+	}{
+		{leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, "You were temporarily interrupted due to usage limit, but the usage limit has been cleared. Please continue working."},
+		{leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, "You were temporarily interrupted due to an infra issue, but the infra issue is now gone. Please continue working."},
+	} {
+		t.Run(tc.kind.String(), func(t *testing.T) {
+			t.Parallel()
+			clock, _, store := newPriorityFixture(t)
+			snapshot := scheduleRetry(t, store, tc.kind, clock.Now().Add(time.Hour), nil)
+			require.Len(t, snapshot.Items, 1)
+			firstID := snapshot.Items[0].ID
+			assert.Equal(t, tc.want, snapshot.Items[0].TextPreview)
+			snapshot = scheduleRetry(t, store, tc.kind, clock.Now().Add(2*time.Hour), nil)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, firstID, snapshot.Items[0].ID)
+			assert.Equal(t, tc.want, snapshot.Items[0].TextPreview)
+			clock.Set(*snapshot.Items[0].ScheduledAt)
+			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared)
+			assert.Equal(t, tc.want, prepared.Item.Text)
+			accepted, _, err := store.Accept(t.Context(), *prepared, DispatchResult{})
+			require.NoError(t, err)
+			content, err := msgcodec.Decompress(accepted.Content, accepted.ContentCompression)
+			require.NoError(t, err)
+			var body struct {
+				Content string `json:"content"`
+			}
+			require.NoError(t, json.Unmarshal(content, &body))
+			assert.Equal(t, tc.want, body.Content)
+		})
+	}
+}
+
+func TestAutoRetryReschedulingPreservesEditedMessageText(t *testing.T) {
+	t.Parallel()
+	for _, kind := range autoRetryKinds {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			clock, _, store := newPriorityFixture(t)
+			snapshot := scheduleRetry(t, store, kind, clock.Now().Add(time.Hour), nil)
+			id := snapshot.Items[0].ID
+			defaultText := snapshot.Items[0].TextPreview
+			snapshot, _, _, err := store.BeginEdit(t.Context(), "agent-1", id, "client", false)
+			require.NoError(t, err)
+			_, err = store.Update(t.Context(), UpdateRequest{
+				AgentID: "agent-1", InputID: id, ClientID: "client", ExpectedVersion: snapshot.Items[0].Version,
+				Text: "Resume the verification from its last completed step.", Schedule: KeepSchedule(),
+			})
+			require.NoError(t, err)
+			snapshot = scheduleRetry(t, store, kind, clock.Now().Add(2*time.Hour), nil)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, id, snapshot.Items[0].ID)
+			assert.Equal(t, "Resume the verification from its last completed step.", snapshot.Items[0].TextPreview)
+			clock.Set(*snapshot.Items[0].ScheduledAt)
+			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared)
+			assert.Equal(t, "Resume the verification from its last completed step.", prepared.Item.Text)
+			_, _, err = store.Accept(t.Context(), *prepared, DispatchResult{})
+			require.NoError(t, err)
+			next := scheduleRetry(t, store, kind, clock.Now().Add(time.Hour), nil)
+			require.Len(t, next.Items, 1)
+			assert.NotEqual(t, id, next.Items[0].ID, "a new cycle receives its own input identity")
+			assert.Equal(t, defaultText, next.Items[0].TextPreview, "an edit belongs to its completed cycle")
+		})
+	}
 }
 
 func TestAutoRetryRepeatedSchedulingUpdatesOneRowAndKeepsItsPosition(t *testing.T) {
@@ -295,7 +371,7 @@ func TestAutoRetryCancelForAnAgentWithoutQueueStateSucceeds(t *testing.T) {
 	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
 	t.Cleanup(manager.StopAndWait)
 
-	require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR))
+	require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, nil))
 	require.NoError(t, manager.CancelAutoRetries(t.Context(), "agent-1"))
 }
 
@@ -431,7 +507,15 @@ func TestAutoRetryEditCanClearTheSchedule(t *testing.T) {
 
 	snapshot, _, _, err := store.BeginEdit(t.Context(), "agent-1", retryID, "client", false)
 	require.NoError(t, err)
-	snapshot, err = store.Update(t.Context(), "agent-1", retryID, "client", snapshot.Items[0].Version, autoRetryText, nil, ReplaceSchedule(nil))
+	snapshot, err = store.Update(t.Context(), UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         retryID,
+		ClientID:        "client",
+		ExpectedVersion: snapshot.Items[0].Version,
+		Text:            snapshot.Items[0].TextPreview,
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(nil),
+	})
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Nil(t, snapshot.Items[0].ScheduledAt)
@@ -638,8 +722,8 @@ func TestAutoRetryBusyRefusalAbsorbsTheRetryScheduledDuringTheDispatch(t *testin
 }
 
 // The user's Retry of a failed retry, with a newer retry of its kind queued,
-// sends the user's row now and removes the newer one. One "Continue." goes
-// out, and the backoff of the live cycle stays.
+// sends the user's row now and removes the newer one. Only the user's retry
+// message is sent, and the live cycle keeps its backoff.
 func TestAutoRetryUserRetryAbsorbsTheQueuedRetryOfItsKind(t *testing.T) {
 	t.Parallel()
 	clock, database, store := newPriorityFixture(t)
@@ -678,12 +762,20 @@ func TestAutoRetryEditSaveOfAFailedRetryAbsorbsTheQueuedRetryOfItsKind(t *testin
 	}
 	chosen := clock.Now().Add(2 * time.Hour)
 
-	snapshot, err = store.Update(ctx, "agent-1", failedID, "client", version, "Continue, carefully.", nil, ReplaceSchedule(&chosen))
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         failedID,
+		ClientID:        "client",
+		ExpectedVersion: version,
+		Text:            "Continue, carefully.",
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(&chosen),
+	})
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	item := snapshot.Items[0]
 	assert.Equal(t, failedID, item.ID)
-	assert.Equal(t, "Continue, carefully.", item.Text)
+	assert.Equal(t, "Continue, carefully.", item.TextPreview)
 	require.NotNil(t, item.ScheduledAt)
 	assert.True(t, chosen.Equal(*item.ScheduledAt), "the user's schedule wins")
 	assert.Equal(t, int64(40000), storedServerErrorDelay(t, database))
@@ -736,7 +828,15 @@ func TestAutoRetryEditSaveKeepsAScheduleThatMovedDuringTheEdit(t *testing.T) {
 	require.Len(t, moved.Items, 1)
 	movedAt := *moved.Items[0].ScheduledAt
 
-	snapshot, err = store.Update(ctx, "agent-1", retryID, "client", version, autoRetryText, nil, KeepSchedule())
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         retryID,
+		ClientID:        "client",
+		ExpectedVersion: version,
+		Text:            snapshot.Items[0].TextPreview,
+		Attachments:     nil,
+		Schedule:        KeepSchedule(),
+	})
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.True(t, movedAt.Equal(*snapshot.Items[0].ScheduledAt), "a save that kept the schedule keeps the provider's new deadline")
@@ -744,7 +844,108 @@ func TestAutoRetryEditSaveKeepsAScheduleThatMovedDuringTheEdit(t *testing.T) {
 	snapshot, _, _, err = store.BeginEdit(ctx, "agent-1", retryID, "client", false)
 	require.NoError(t, err)
 	chosen := clock.Now().Add(5 * time.Hour)
-	snapshot, err = store.Update(ctx, "agent-1", retryID, "client", snapshot.Items[0].Version, autoRetryText, nil, ReplaceSchedule(&chosen))
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         retryID,
+		ClientID:        "client",
+		ExpectedVersion: snapshot.Items[0].Version,
+		Text:            snapshot.Items[0].TextPreview,
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(&chosen),
+	})
 	require.NoError(t, err)
 	assert.True(t, chosen.Equal(*snapshot.Items[0].ScheduledAt))
+}
+
+type retryTestAdmission struct {
+	held     atomic.Bool
+	acquired atomic.Int32
+	released atomic.Int32
+	refused  bool
+}
+
+type retryTestLease struct {
+	admission *retryTestAdmission
+	once      sync.Once
+}
+
+func (admission *retryTestAdmission) Acquire() agent.AutoRetryLease {
+	admission.acquired.Add(1)
+	if admission.refused {
+		return nil
+	}
+	admission.held.Store(true)
+	return &retryTestLease{admission: admission}
+}
+
+func (lease *retryTestLease) Release() {
+	lease.once.Do(func() {
+		lease.admission.held.Store(false)
+		lease.admission.released.Add(1)
+	})
+}
+
+func TestAutoRetryAdmissionReleasesBeforeObserversAndOnEveryExit(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"schedule", "cancel without a row", "store failure", "retired owner", "stopped manager"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			admission := &retryTestAdmission{refused: operation == "retired owner"}
+			var manager *Manager
+			var publications atomic.Int32
+			observer := &reentryQueueObserver{changed: func(Snapshot) {
+				publications.Add(1)
+				assert.False(t, admission.held.Load(), "observer delivery must release provider admission")
+				c := manager.coordinator("agent-1")
+				unlocked := c.mu.TryLock()
+				assert.True(t, unlocked, "observer delivery must release the coordinator")
+				if unlocked {
+					c.mu.Unlock()
+					_, err := manager.Snapshot(t.Context(), "agent-1")
+					assert.NoError(t, err)
+				}
+			}}
+			manager = NewManager(store, &recordingDispatcher{}, observer)
+			t.Cleanup(manager.StopAndWait)
+			if operation == "store failure" {
+				_, err := database.ExecContext(t.Context(), `CREATE TRIGGER refuse_retry BEFORE INSERT ON agent_input_queue_items BEGIN SELECT RAISE(ABORT, 'refuse retry'); END`)
+				require.NoError(t, err)
+			}
+			if operation == "stopped manager" {
+				manager.StopAndWait()
+			}
+			kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
+			var err error
+			if operation == "cancel without a row" {
+				err = manager.CancelAutoRetry(t.Context(), "agent-1", kind, admission)
+			} else {
+				err = manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind, ResetAt: time.Now().Add(time.Hour), Admission: admission})
+			}
+			switch operation {
+			case "store failure":
+				require.ErrorContains(t, err, "refuse retry")
+			case "stopped manager":
+				require.ErrorIs(t, err, ErrManagerStopped)
+			default:
+				require.NoError(t, err)
+			}
+			assert.False(t, admission.held.Load())
+			if operation == "stopped manager" {
+				assert.Zero(t, admission.acquired.Load())
+			} else {
+				assert.Equal(t, int32(1), admission.acquired.Load())
+			}
+			if operation == "retired owner" || operation == "stopped manager" {
+				assert.Zero(t, admission.released.Load())
+			} else {
+				assert.Equal(t, int32(1), admission.released.Load())
+			}
+			if operation == "schedule" {
+				assert.Equal(t, int32(1), publications.Load())
+			} else {
+				assert.Zero(t, publications.Load())
+			}
+		})
+	}
 }

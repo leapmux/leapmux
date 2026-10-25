@@ -14,10 +14,13 @@ import (
 // becomes immediate when its deadline passes and priority must follow the
 // Worker's clock, never a frozen column.
 
+type priorityItem interface{ priorityMetadata() OrderingMetadata }
+
 // scheduledFuture reports whether an item's send-not-before instant is still
 // ahead of the captured now. A nil or past scheduled_at is immediate.
-func scheduledFuture(item StoredItem, now time.Time) bool {
-	return item.ScheduledAt != nil && item.ScheduledAt.After(now)
+func scheduledFuture[T priorityItem](item T, now time.Time) bool {
+	metadata := item.priorityMetadata()
+	return metadata.ScheduledAt != nil && metadata.ScheduledAt.After(now)
 }
 
 // reorderGroup states which reorder group the item belongs to at the captured
@@ -25,11 +28,11 @@ func scheduledFuture(item StoredItem, now time.Time) bool {
 // canonical scheduled_at, so only items with exactly the same scheduled
 // instant share a group. The Worker derives it; clients compare it and never
 // calculate it, because a browser clock can disagree with the Worker's.
-func reorderGroup(item StoredItem, now time.Time) string {
+func reorderGroup[T priorityItem](item T, now time.Time) string {
 	if !scheduledFuture(item, now) {
 		return ""
 	}
-	return timefmt.Format(*item.ScheduledAt)
+	return timefmt.Format(*item.priorityMetadata().ScheduledAt)
 }
 
 // reorderSegments states the reorder segment of each prioritized item at the
@@ -42,12 +45,12 @@ func reorderGroup(item StoredItem, now time.Time) string {
 // It is the one definition of the rule: Store.Move refuses a move across
 // segments, and each snapshot sends every item's segment, so a client offers
 // exactly the moves that Move accepts.
-func reorderSegments(items []StoredItem, now time.Time) []uint32 {
+func reorderSegments[T priorityItem](items []T, now time.Time) []uint32 {
 	segments := make([]uint32, len(items))
 	var segment uint32
 	previous := -1 // the previous item of the current run, or -1 after a lock
 	for i := range items {
-		if lockedInputState(items[i].State) {
+		if lockedInputState(items[i].priorityMetadata().State) {
 			previous = -1
 			continue
 		}
@@ -71,7 +74,8 @@ func reorderSegments(items []StoredItem, now time.Time) []uint32 {
 //
 // Instants compare with Before/After, never ==, which a mixed-location or
 // monotonic-clock pair would silently misjudge.
-func compareItemPriority(a, b StoredItem, now time.Time) int {
+func compareItemPriority[T priorityItem](first, second T, now time.Time) int {
+	a, b := first.priorityMetadata(), second.priorityMetadata()
 	aFuture, bFuture := scheduledFuture(a, now), scheduledFuture(b, now)
 	if aFuture != bFuture {
 		if aFuture {
@@ -94,11 +98,12 @@ func compareItemPriority(a, b StoredItem, now time.Time) int {
 // still future at the given instant, or zero when none is. It examines every
 // item, not only the head, because immediate work may dispatch first and the
 // maturity timer must still fire when the future item matures.
-func nextScheduledAt(items []StoredItem, now time.Time) time.Time {
+func nextScheduledAt[T priorityItem](items []T, now time.Time) time.Time {
 	var earliest time.Time
 	for i := range items {
-		if scheduledFuture(items[i], now) && (earliest.IsZero() || items[i].ScheduledAt.Before(earliest)) {
-			earliest = *items[i].ScheduledAt
+		item := items[i].priorityMetadata()
+		if scheduledFuture(item, now) && (earliest.IsZero() || item.ScheduledAt.Before(earliest)) {
+			earliest = *item.ScheduledAt
 		}
 	}
 	return earliest
@@ -107,8 +112,8 @@ func nextScheduledAt(items []StoredItem, now time.Time) time.Time {
 // prioritizedItems sorts one read of queue rows into effective order. The
 // caller supplies the now its operation captured; the 100-item queue cap keeps
 // the sort small.
-func prioritizedItems(items []StoredItem, now time.Time) []StoredItem {
-	slices.SortStableFunc(items, func(a, b StoredItem) int {
+func prioritizedItems[T priorityItem](items []T, now time.Time) []T {
+	slices.SortStableFunc(items, func(a, b T) int {
 		return compareItemPriority(a, b, now)
 	})
 	return items

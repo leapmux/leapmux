@@ -983,6 +983,50 @@ func (s *Sink) GoalClears() int {
 	return s.goalClears
 }
 
+// CaptureAutoRetry freezes the fake's publication owner like the worker sink.
+func (s *Sink) CaptureAutoRetry() agent.AutoRetryWriter {
+	content := s.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	return &capturedAutoRetryWriter{owner: content.Publication.Owner().(*testTranscriptOwner)}
+}
+
+type capturedAutoRetryWriter struct{ owner *testTranscriptOwner }
+
+func (writer *capturedAutoRetryWriter) schedule(kind leapmuxv1.AgentInputKind, resetAt time.Time, payload []byte) {
+	sink := writer.owner.sink
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if writer.owner.currentLocked() {
+		sink.autoSchedules = append(sink.autoSchedules, agent.AutoRetrySchedule{
+			Kind: kind, ResetAt: resetAt, SourcePayload: slices.Clone(payload),
+		})
+	}
+}
+
+func (writer *capturedAutoRetryWriter) cancel(kind leapmuxv1.AgentInputKind) {
+	sink := writer.owner.sink
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if writer.owner.currentLocked() {
+		sink.autoCancels = append(sink.autoCancels, kind)
+	}
+}
+
+func (writer *capturedAutoRetryWriter) ScheduleUsageLimitRetry(resetAt time.Time, payload []byte) {
+	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, resetAt, payload)
+}
+
+func (writer *capturedAutoRetryWriter) ScheduleServerErrorRetry(payload []byte) {
+	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, payload)
+}
+
+func (writer *capturedAutoRetryWriter) CancelUsageLimitRetry() {
+	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+}
+
+func (writer *capturedAutoRetryWriter) CancelServerErrorRetry() {
+	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+}
+
 // The four retry methods record the request that the production sink sends,
 // so a provider test asserts the kind, the instant, and the payload.
 func (s *Sink) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
@@ -1778,6 +1822,7 @@ func (nop) PublishGoalCapabilities()                                            
 func (nop) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
 	return nil, errors.New("the nop sink captures no goal authority")
 }
+func (nop) CaptureAutoRetry() agent.AutoRetryWriter               { return nop{} }
 func (nop) ScheduleUsageLimitRetry(time.Time, []byte)             {}
 func (nop) ScheduleServerErrorRetry([]byte)                       {}
 func (nop) CancelUsageLimitRetry()                                {}

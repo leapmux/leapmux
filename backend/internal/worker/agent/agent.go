@@ -30,12 +30,23 @@ type SpanInfo struct {
 	NoSpan bool
 }
 
+// AutoRetryLease keeps a provider owner current through one queue mutation.
+// Release it before observer delivery or provider calls.
+type AutoRetryLease interface{ Release() }
+
+// AutoRetryAdmission retains the owner that observed a retry operation.
+// A nil lease refuses an operation from a retired owner.
+type AutoRetryAdmission interface{ Acquire() AutoRetryLease }
+
 // AutoRetrySchedule is the request that reaches the input queue for one
 // automatic retry. The AutoRetryServices methods build it, so a provider never
 // writes one: each method fixes the kind, and only a usage limit carries a
 // reset instant. The queue, not the provider, owns the retry deadline policy:
 // it adds jitter and, for a server error, applies the durable backoff.
 type AutoRetrySchedule struct {
+	// Admission is absent for trusted worker operations, and present for a
+	// provider report whose original owner must remain current.
+	Admission AutoRetryAdmission
 	// Kind is one of the two automatic-retry AgentInputKind values.
 	Kind leapmuxv1.AgentInputKind
 	// ResetAt is the provider's reset instant of a usage limit. The queue
@@ -409,6 +420,14 @@ type CapturedGoalWriter interface {
 // for a kind that is not a retry kind, and a server-error retry carries no
 // reset instant.
 type AutoRetryServices interface {
+	AutoRetryWriter
+	// CaptureAutoRetry retains the current provider owner before an output
+	// queue can delay the operation.
+	CaptureAutoRetry() AutoRetryWriter
+}
+
+// AutoRetryWriter applies retry operations for one captured provider owner.
+type AutoRetryWriter interface {
 	// ScheduleUsageLimitRetry asks for a retry a jittered moment after the
 	// provider's usage limit resets at resetAt.
 	ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte)

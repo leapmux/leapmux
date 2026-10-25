@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { useTestStorage } from '~/test-support/persistentStorage'
-import { queueEditDraftKey } from './attachments'
+import { queueEditDraftKey } from './composer/draftIdentity'
 import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from './composer/scheduleDrafts'
 import { createQueueEditSession } from './queueEditSession'
 

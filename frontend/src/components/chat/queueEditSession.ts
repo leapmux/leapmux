@@ -4,7 +4,7 @@ import type { AgentInputQueueSnapshot, Attachment, QueuedAgentInput } from '~/ge
 import { createEffect, createSignal, untrack } from 'solid-js'
 import { clearDraft, loadDraft } from '~/lib/editor/draftPersistence'
 import { randomUUID } from '~/lib/idGenerator'
-import { queueEditDraftKey } from './attachments'
+import { queueEditDraftKey } from './composer/draftIdentity'
 import { clearScheduleDraft } from './composer/scheduleDrafts'
 
 /**

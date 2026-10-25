@@ -387,6 +387,79 @@ async function scheduleNextSend(page: Page, offsetMs: number) {
 }
 
 test.describe('scheduled input', () => {
+  test('restores the schedule of an unsent draft after a reload', async ({ page, authenticatedWorkspace, separateHubWorker }) => {
+    void authenticatedWorkspace
+    await scheduleNextSend(page, 300_000)
+    await composerEditor(page).fill('unsent scheduled draft')
+    const userId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+    await waitForEditorDraft(page, userId, 'unsent scheduled draft')
+    await page.reload()
+    await expect(composerEditor(page)).toHaveText('unsent scheduled draft')
+    await expect(page.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+  })
+
+  for (const clear of [false, true]) {
+    test(`restores an unsaved ${clear ? 'cleared' : 'replacement'} schedule in a queue edit after a reload`, async ({ page, authenticatedWorkspace, separateHubWorker }) => {
+      void authenticatedWorkspace
+      await pauseQueue(page)
+      await scheduleNextSend(page, 300_000)
+      await sendMessage(page, 'stored scheduled input')
+      const row = queuedInputRow(page, 'stored scheduled input')
+      await row.getByRole('button', { name: 'Edit', exact: true }).click()
+      await expect(composerEditor(page)).toHaveText('stored scheduled input')
+      if (clear) {
+        await page.getByTestId('schedule-send-trigger').click()
+        await page.getByTestId('schedule-send-clear').click()
+      }
+      else {
+        await scheduleNextSend(page, 600_000)
+      }
+      if (clear)
+        await expect(page.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+      await page.getByTestId('schedule-send-trigger').click()
+      await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+      const expected = clear ? '' : await page.getByTestId('schedule-send-field').inputValue()
+      await page.getByTestId('schedule-send-cancel').click()
+      const text = `unsaved ${clear ? 'cleared' : 'replacement'} edit`
+      await composerEditor(page).fill(text)
+      const userId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+      await waitForEditorDraft(page, userId, text)
+      await page.reload()
+      await expect(composerEditor(page)).toHaveText(text)
+      if (clear)
+        await expect(page.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+      await page.getByTestId('schedule-send-trigger').click()
+      await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+      await expect(page.getByTestId('schedule-send-field')).toHaveValue(expected)
+    })
+  }
+
+  test('refuses an incomplete native date without clearing the existing schedule', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await scheduleNextSend(page, 300_000)
+    await page.getByTestId('schedule-send-trigger').click()
+    const field = page.getByTestId('schedule-send-field')
+    await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+    const original = await field.inputValue()
+    await field.evaluate((element: HTMLInputElement) => {
+      element.addEventListener('input', () => {
+        element.dataset.nativeBadInput = String(element.validity.badInput)
+      }, { capture: true })
+    })
+    // The first date segment is incomplete after Backspace. Its native value
+    // is empty, but badInput distinguishes that state from deliberate clearing.
+    const box = (await field.boundingBox())!
+    await field.click({ position: { x: 8, y: box.height / 2 } })
+    await field.press('Backspace')
+    await expect(field).toHaveAttribute('data-native-bad-input', 'true')
+    await expect(page.getByTestId('schedule-send-apply')).toBeDisabled()
+    await field.press('Enter')
+    await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+    await page.getByTestId('schedule-send-cancel').click()
+    await page.getByTestId('schedule-send-trigger').click()
+    await expect(field).toHaveValue(original)
+  })
+
   test('keeps a scheduled message through a reload, then reschedules and clears it in an edit', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     // Establish a live provider session first, as the file's first test does:

@@ -42,6 +42,7 @@ export interface ComposerScheduleControlProps {
 export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = (props) => {
   const fieldId = createUniqueId()
   const [field, setField] = createSignal(EMPTY_SCHEDULE)
+  const [badInput, setBadInput] = createSignal(false)
   // The instant that the verdict compares the field against. It ticks only
   // while the popover is open.
   const [now, setNow] = createSignal(new Date())
@@ -56,6 +57,19 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
   }
   onCleanup(stopClock)
 
+  const initializeField = () => {
+    setBadInput(false)
+    setField(props.value)
+    setNow(new Date())
+  }
+  const handleBeforeToggle = (event: ToggleEvent) => {
+    if (event.newState === 'open')
+      initializeField()
+    else
+      stopClock()
+  }
+  onCleanup(() => popover?.removeEventListener('beforetoggle', handleBeforeToggle))
+
   // Each opening starts from the panel's draft. A value typed before a Cancel
   // or a light dismiss is not applied, so it must not come back, and the panel
   // can replace the draft while the popover is shut (an edit starts or ends).
@@ -63,8 +77,6 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
     stopClock()
     if (!open)
       return
-    setField(props.value)
-    setNow(new Date())
     clockTimer = setInterval(() => setNow(new Date()), SCHEDULE_CLOCK_TICK_MS)
   }
 
@@ -73,6 +85,8 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
 
   /** Why the field cannot be applied, or undefined when it can. */
   const refusal = () => {
+    if (badInput())
+      return scheduleRefusalMessage('invalid')
     const { verdict } = checkSchedule(field(), now(), props.existingStored)
     return verdict === 'invalid' || verdict === 'notFuture' ? scheduleRefusalMessage(verdict) : undefined
   }
@@ -95,7 +109,10 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
   return (
     <DropdownMenu
       as="card"
-      popoverRef={(el) => { popover = el }}
+      popoverRef={(el) => {
+        popover = el
+        el.addEventListener('beforetoggle', handleBeforeToggle)
+      }}
       onToggle={handleToggle}
       class={styles.schedulePopover}
       data-testid="schedule-send-popover"
@@ -126,7 +143,12 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
             value={field()}
             data-testid="schedule-send-field"
             aria-invalid={refusal() !== undefined ? 'true' : undefined}
-            onInput={(e) => { setField(e.currentTarget.value) }}
+            onInput={(e) => {
+              // A partial native date has an empty value and badInput=true.
+              // Capture validity before the controlled value resets the field.
+              setBadInput(e.currentTarget.validity.badInput)
+              setField(e.currentTarget.value)
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault()

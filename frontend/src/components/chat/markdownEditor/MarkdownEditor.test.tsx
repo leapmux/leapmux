@@ -2,8 +2,9 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { flushStorageWrites } from '~/lib/browserStorage'
+import { flushStorageWrites, localStorageLoad, PREFIX_COMPOSER_SCHEDULE_DRAFT } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
+import { deferred, flush } from '~/test-support/async'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { MarkdownEditor } from './MarkdownEditor'
 
@@ -989,5 +990,78 @@ describe('MarkdownEditor surface', () => {
     // No report from the disposed editor: the reset never ran.
     expect(seen.length).toBe(before)
     expect(await loadDraft(KEY)).toEqual({ content: '', cursor: -1 })
+  })
+})
+
+describe('MarkdownEditor draft metadata', () => {
+  it('waits for metadata preparation before exposing a persistent document', async () => {
+    vi.useRealTimers()
+    const key = 'prepared-draft'
+    const preparation = deferred<void>()
+    let prepared = false
+    let persist: ((key: string, update?: () => void) => boolean) | undefined
+    saveDraft(key, 'prepared text', -1)
+    const prepare = vi.fn(() => preparation.promise.then(() => {
+      prepared = true
+    }))
+    const metadata = vi.fn((draftKey: string) => {
+      expect(prepared).toBe(true)
+      return [{ name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${draftKey}` as const, value: 'schedule' }]
+    })
+    const view = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="chat" draftKey={{ key }} prepareDraft={prepare} draftMetadataRecords={metadata} onSend={() => {}} imperative={{ persistDraftRef: fn => persist = fn }} />
+      </PreferencesProvider>
+    ))
+    await flush()
+    expect(prepare).toHaveBeenCalledWith(key)
+    expect(persist).toBeUndefined()
+    expect(view.getByTestId('composer-editor').querySelector('.ProseMirror')).toBeNull()
+    preparation.resolve()
+    await waitFor(() => expect(persist).toBeTypeOf('function'))
+    expect(persist?.(key)).toBe(true)
+    await flushStorageWrites()
+    expect((await loadDraft(key)).content).toBe('prepared text')
+    expect(await localStorageLoad(`${PREFIX_COMPOSER_SCHEDULE_DRAFT}${key}`)).toBe('schedule')
+    view.unmount()
+    const update = vi.fn()
+    expect(persist?.(key, update)).toBe(false)
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('persists the actual outgoing key and refuses an incoming key while its read is pending', async () => {
+    vi.useRealTimers()
+    const [key, setKey] = createSignal('metadata-a')
+    saveDraft('metadata-a', 'text a', -1)
+    saveDraft('metadata-b', 'text b', -1)
+    const preparation = deferred<void>()
+    const prepare = vi.fn((draftKey: string) => draftKey === 'metadata-b' ? preparation.promise : Promise.resolve())
+    const metadataValues: Record<string, string> = { 'metadata-a': 'schedule a', 'metadata-b': 'schedule b' }
+    let persist: ((key: string, update?: () => void) => boolean) | undefined
+    const ready = vi.fn()
+    const view = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="chat" draftKey={{ key: key() }} prepareDraft={prepare} draftMetadataRecords={draftKey => [{ name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${draftKey}`, value: metadataValues[draftKey] }]} onDocumentDraftReady={ready} onSend={() => {}} imperative={{ persistDraftRef: fn => persist = fn }} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(persist).toBeTypeOf('function'))
+    setKey('metadata-b')
+    await waitFor(() => expect(prepare).toHaveBeenCalledWith('metadata-b'))
+    const update = vi.fn()
+    expect(persist?.('metadata-b', update)).toBe(false)
+    expect(update).not.toHaveBeenCalled()
+    expect(persist?.('metadata-a')).toBe(true)
+    expect(await localStorageLoad(`${PREFIX_COMPOSER_SCHEDULE_DRAFT}metadata-a`)).toBe('schedule a')
+    expect(await localStorageLoad(`${PREFIX_COMPOSER_SCHEDULE_DRAFT}metadata-b`)).toBeUndefined()
+    expect((await loadDraft('metadata-b')).content).toBe('text b')
+    preparation.resolve()
+    await waitFor(() => expect(ready).toHaveBeenLastCalledWith('metadata-b'))
+    expect(persist?.('metadata-b', () => {
+      metadataValues['metadata-b'] = 'changed schedule b'
+    })).toBe(true)
+    await flushStorageWrites()
+    expect((await loadDraft('metadata-b')).content).toBe('text b')
+    expect(await localStorageLoad(`${PREFIX_COMPOSER_SCHEDULE_DRAFT}metadata-b`)).toBe('changed schedule b')
+    view.unmount()
   })
 })

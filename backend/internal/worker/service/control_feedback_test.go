@@ -17,7 +17,14 @@ func TestControlFeedbackInputPreservesTextAndIdentifiesTheRejection(t *testing.T
 	svc, _, _ := setupTestService(t)
 	for _, original := range []string{"approve", "/goal clear", "  +---+\n\t| A |\n"} {
 		item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-			AgentID: "agent-1", ID: "feedback", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: original,
+			ItemMetadata: inputqueue.ItemMetadata{
+				OrderingMetadata: inputqueue.OrderingMetadata{
+					AgentID: "agent-1",
+					ID:      "feedback",
+					Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
+				},
+			},
+			Text: original,
 		}}
 		resolved, err := svc.resolveControlInput(item, db.Agent{})
 		require.NoError(t, err)
@@ -36,7 +43,14 @@ func TestControlFeedbackInputRetainsDatabaseErrors(t *testing.T) {
 	_, err := svc.DB.ExecContext(t.Context(), "DROP TABLE control_response_payloads")
 	require.NoError(t, err)
 	resolved, err := svc.resolveControlInput(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		AgentID: "agent-1", ID: "feedback", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "keep this text",
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				AgentID: "agent-1",
+				ID:      "feedback",
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
+			},
+		},
+		Text: "keep this text",
 	}}, db.Agent{})
 	require.Error(t, err)
 	assert.Empty(t, resolved.text)
@@ -68,7 +82,8 @@ func TestApprovalLinkedInputKeepsItsProviderSession(t *testing.T) {
 				require.NoError(t, err)
 				original := "  Keep the approved text.\n"
 				resolved, err := svc.resolveControlInput(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-					AgentID: "agent-1", ID: "input", Kind: kind, Text: original,
+					ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{AgentID: "agent-1", ID: "input", Kind: kind}},
+					Text:         original,
 				}}, db.Agent{AgentSessionID: tc.session, AgentProvider: tc.provider})
 				if tc.wantError {
 					require.Error(t, err)

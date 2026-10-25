@@ -397,17 +397,21 @@ func (services *orderedProviderServices) ReportSteersUncertain(count int) {
 }
 func (services *orderedProviderServices) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
 	sourcePayload = slices.Clone(sourcePayload)
-	services.after("schedule usage-limit retry", func() { services.ProviderServices.ScheduleUsageLimitRetry(resetAt, sourcePayload) })
+	writer := services.CaptureAutoRetry()
+	services.after("schedule usage-limit retry", func() { writer.ScheduleUsageLimitRetry(resetAt, sourcePayload) })
 }
 func (services *orderedProviderServices) ScheduleServerErrorRetry(sourcePayload []byte) {
 	sourcePayload = slices.Clone(sourcePayload)
-	services.after("schedule server-error retry", func() { services.ProviderServices.ScheduleServerErrorRetry(sourcePayload) })
+	writer := services.CaptureAutoRetry()
+	services.after("schedule server-error retry", func() { writer.ScheduleServerErrorRetry(sourcePayload) })
 }
 func (services *orderedProviderServices) CancelUsageLimitRetry() {
-	services.after("cancel usage-limit retry", func() { services.ProviderServices.CancelUsageLimitRetry() })
+	writer := services.CaptureAutoRetry()
+	services.after("cancel usage-limit retry", func() { writer.CancelUsageLimitRetry() })
 }
 func (services *orderedProviderServices) CancelServerErrorRetry() {
-	services.after("cancel server-error retry", func() { services.ProviderServices.CancelServerErrorRetry() })
+	writer := services.CaptureAutoRetry()
+	services.after("cancel server-error retry", func() { writer.CancelServerErrorRetry() })
 }
 
 // ChildSink gives each child a stable queue and retains the child's original writer.

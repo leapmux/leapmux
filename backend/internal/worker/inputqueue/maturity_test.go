@@ -165,6 +165,35 @@ func TestMaturityWaitsForDrainRecoveredAfterRecovery(t *testing.T) {
 	eventuallyDispatches(t, dispatcher, []string{"recovered"})
 }
 
+// Publication can run a deadline callback before RecoverState returns.
+// Recovery admission must already hold when that callback starts.
+func TestMaturityWaitsForRecoveryAdmissionDuringPublication(t *testing.T) {
+	t.Parallel()
+	clock, _, first, store := newSkewedDeadlineFixture(t)
+	enqueueScheduled(t, first, "recovered", 10*time.Minute)
+	waitForDrainToSettle(t, first, "agent-1")
+	first.StopAndWait()
+
+	dispatcher := &recordingDispatcher{}
+	var manager *Manager
+	var published bool
+	observer := &reentryQueueObserver{changed: func(Snapshot) {
+		if published {
+			return
+		}
+		published = true
+		advanceClock(t, clock.Mock, 10*time.Minute)
+		waitForDrainToSettle(t, manager, "agent-1")
+	}}
+	manager = NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	require.NoError(t, manager.RecoverState(t.Context()))
+	require.True(t, published)
+	assert.Empty(t, dispatchedIDs(dispatcher), "publication must not dispatch before owner reconciliation")
+	require.NoError(t, manager.DrainRecovered(t.Context()))
+	eventuallyDispatches(t, dispatcher, []string{"recovered"})
+}
+
 // A closed agent takes no input, so its scheduled item never dispatches, and
 // the queue neither fails the item nor pauses.
 func TestMaturityNeverDispatchesToAClosedAgent(t *testing.T) {
@@ -353,7 +382,15 @@ func TestMaturityRescheduleStopsTheFirstTimer(t *testing.T) {
 	defer stops.Close()
 	updated := make(chan error, 1)
 	go func() {
-		_, err := manager.Update(t.Context(), "agent-1", "moved", "client", snapshot.Items[0].Version, "moved", nil, ReplaceSchedule(scheduled(t, 3*time.Hour)))
+		_, err := manager.Update(t.Context(), UpdateRequest{
+			AgentID:         "agent-1",
+			InputID:         "moved",
+			ClientID:        "client",
+			ExpectedVersion: snapshot.Items[0].Version,
+			Text:            "moved",
+			Attachments:     nil,
+			Schedule:        ReplaceSchedule(scheduled(t, 3*time.Hour)),
+		})
 		updated <- err
 	}()
 	stops.MustWait(t.Context()).MustRelease(t.Context())

@@ -1338,7 +1338,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         queueClientId={opts.clientId()}
         repoGitStore={repoGitStore}
         onSendMessage={queueOps.sendMessage}
-        isPendingSend={queueOps.isPendingMessage}
+        onRetryPendingSend={queueOps.retryPendingMessage}
         onSendControlFeedback={queueOps.sendControlFeedback}
         onBeginQueueEdit={queueOps.beginQueueEdit}
         onUpdateQueueItem={queueOps.updateQueueItem}

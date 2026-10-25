@@ -411,9 +411,15 @@ func TestStoreMoveRefusesToPlaceAnItemBeforeAnAwaitingEchoItem(t *testing.T) {
 func TestSnapshotHeadSkipsAwaitingEcho(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, -1, (Snapshot{}).HeadIndex())
-	snapshot := Snapshot{Items: []SnapshotItem{{StoredItem: StoredItem{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO}}}}
+	snapshot := Snapshot{Items: []SnapshotItem{
+		{ItemMetadata: ItemMetadata{
+			OrderingMetadata: OrderingMetadata{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO},
+		}},
+	}}
 	assert.Equal(t, -1, snapshot.HeadIndex())
-	snapshot.Items = append(snapshot.Items, SnapshotItem{StoredItem: StoredItem{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}})
+	snapshot.Items = append(snapshot.Items, SnapshotItem{
+		ItemMetadata: ItemMetadata{OrderingMetadata: OrderingMetadata{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}},
+	})
 	assert.Equal(t, 1, snapshot.HeadIndex())
 }
 
@@ -703,7 +709,7 @@ func TestStoreTruncatesSnapshotTextButEditReturnsFullText(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
-	assert.Less(t, len(snapshot.Items[0].Text), len(fullText))
+	assert.Less(t, len(snapshot.Items[0].TextPreview), len(fullText))
 
 	_, editText, _, err := store.BeginEdit(ctx, "agent-1", "input-1", "client", false)
 	require.NoError(t, err)
@@ -865,9 +871,25 @@ func TestStoreEditBarrierTakeoverAndAtomicUpdate(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEditOwned)
 	snapshot, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "client-b", true)
 	require.NoError(t, err)
-	_, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version+1, "stale", nil, ReplaceSchedule(nil))
+	_, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         "one",
+		ClientID:        "client-b",
+		ExpectedVersion: snapshot.Items[0].Version + 1,
+		Text:            "stale",
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(nil),
+	})
 	assert.ErrorIs(t, err, ErrVersionConflict)
-	snapshot, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version, "/summarize", nil, ReplaceSchedule(nil))
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         "one",
+		ClientID:        "client-b",
+		ExpectedVersion: snapshot.Items[0].Version,
+		Text:            "/summarize",
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(nil),
+	})
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, snapshot.Items[0].Kind)
 	assert.Empty(t, snapshot.Items[0].EditOwner)
@@ -914,7 +936,15 @@ func TestStoreEditPreservesGeneratedOperationKind(t *testing.T) {
 	require.NoError(t, err)
 	snapshot, _, _, err := store.BeginEdit(ctx, "agent-1", "generated", "client", false)
 	require.NoError(t, err)
-	snapshot, err = store.Update(ctx, "agent-1", "generated", "client", snapshot.Items[0].Version, "/compact", []Attachment{{Filename: "plan.txt", Data: []byte("changed")}}, ReplaceSchedule(nil))
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         "generated",
+		ClientID:        "client",
+		ExpectedVersion: snapshot.Items[0].Version,
+		Text:            "/compact",
+		Attachments:     []Attachment{{Filename: "plan.txt", Data: []byte("changed")}},
+		Schedule:        ReplaceSchedule(nil),
+	})
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, snapshot.Items[0].Kind)
 	require.Len(t, snapshot.Items[0].Metadata, 1)
@@ -1249,7 +1279,8 @@ func TestStorePreparationReturnsTheCommittedItem(t *testing.T) {
 			assert.Equal(t, prepared.ReservedSeq, stored.ReservedSeq)
 			assert.Greater(t, prepared.ReservedSeq, first.ReservedSeq)
 			require.Len(t, snapshot.Items, 1)
-			assert.Equal(t, stored, snapshot.Items[0].StoredItem)
+			assert.Equal(t, stored.ItemMetadata, snapshot.Items[0].ItemMetadata)
+			assert.Equal(t, stored.Text, snapshot.Items[0].TextPreview)
 			assert.True(t, snapshot.ActiveTurn)
 			assert.Equal(t, operation == "retry", snapshot.Paused)
 			assert.Equal(t, operation == "steer", snapshot.ActiveTurnSteerable)
@@ -1287,7 +1318,7 @@ END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
 	assert.Equal(t, input.Attachments, attachments)
 	assert.Equal(t, attachments, prepared.Item.Attachments)
 	require.Len(t, snapshot.Items, 1)
-	assert.Equal(t, strings.Repeat("x", snapshotTextPreviewCharacters)+"…", snapshot.Items[0].Text)
+	assert.Equal(t, strings.Repeat("x", snapshotTextPreviewCharacters)+"…", snapshot.Items[0].TextPreview)
 	assert.Equal(t, stored.UpdatedAt, snapshot.Items[0].UpdatedAt)
 }
 
@@ -1576,7 +1607,12 @@ func TestStoreRetryKeepsAManualPause(t *testing.T) {
 func TestStoreAcceptKeepsThePlanMarkerWithAttachments(t *testing.T) {
 	t.Parallel()
 
-	item := StoredItem{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: "run it"}
+	item := StoredItem{
+		ItemMetadata: ItemMetadata{
+			OrderingMetadata: OrderingMetadata{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION},
+		},
+		Text: "run it",
+	}
 	withAttachment, err := transcriptContent(item, []Attachment{{Filename: "a.png", MimeType: "image/png"}})
 	require.NoError(t, err)
 	withoutAttachment, err := transcriptContent(item, nil)
