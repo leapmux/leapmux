@@ -14,7 +14,7 @@ import (
 
 // Cline's settings.
 //
-// Four axes:
+// Five axes:
 //
 //   - The model, within the provider that the user's Cline settings select.
 //     session.update_connection changes it between two model calls.
@@ -24,6 +24,8 @@ import (
 //   - Extended thinking. Off preserves the chosen effort locally while the
 //     native runtime clears it. On restores a concrete effort live, or reloads
 //     configured defaults when effort is Auto. Auto thinking also rebuilds.
+//   - Agent teams. A change rebuilds the session to change the coordination
+//     tools of future turns without cancelling existing teammate work.
 //   - The mode, on LeapMux's permission-mode axis. Plan and Act are Cline's own
 //     session modes, with Cline's own approval policy: Cline's interactive CLI
 //     runs the tools that only read without asking and asks before every other
@@ -70,6 +72,21 @@ func thinkingGroup(current string) *leapmuxv1.AvailableOptionGroup {
 	return agent.SelectGroup(OptionThinking, "Extended Thinking", agent.OptionOrderProviderFirst, thinkingValue(current), thinkingModes)
 }
 
+func agentTeamsValue(value string) string {
+	if value == "" {
+		return agentTeamsOn
+	}
+	return value
+}
+
+func validAgentTeams(value string) bool {
+	return slices.ContainsFunc(agentTeamsModes, func(def agent.OptionDef) bool { return def.Id == value })
+}
+
+func agentTeamsGroup(current string) *leapmuxv1.AvailableOptionGroup {
+	return agent.SelectGroup(OptionAgentTeams, "Agent Teams", agent.OptionOrderProviderSecond, agentTeamsValue(current), agentTeamsModes)
+}
+
 // validPermissionMode reports whether mode is a value of the axis.
 func validPermissionMode(mode string) bool {
 	return slices.ContainsFunc(permissionModes, func(def agent.OptionDef) bool { return def.Id == mode })
@@ -83,8 +100,15 @@ type clineSettings struct {
 	effort string
 	// thinking is the independent Auto, Off or On preference.
 	thinking string
+	// agentTeams controls the team coordination tools of future turns.
+	agentTeams string
 	// permissionMode is a value of the permission-mode axis.
 	permissionMode string
+}
+
+// agentTeamsEnabled reports whether the session offers native team tools.
+func (s clineSettings) agentTeamsEnabled() bool {
+	return agentTeamsValue(s.agentTeams) == agentTeamsOn
 }
 
 // sessionMode is Cline's session mode for the settings.
@@ -107,14 +131,15 @@ func (s clineSettings) configExtensions() []string {
 }
 
 // needsRebuild reports whether moving the session from s to next needs a new
-// runtime: a change of Cline's session mode, a reset of reasoning defaults, or
-// extensions of next that differ from loaded, the ones that the runtime loaded
-// (Agent.loadedExtensions). The extensions are compared with the runtime's and
-// not with s's, because a move between Act and Auto-approve during a turn
-// applies its approval policy at once and leaves the extensions for the turn's
-// end.
+// runtime: a change of Cline's session mode, team tools, a reset of reasoning
+// defaults, or extensions of next that differ from loaded, the ones that the
+// runtime loaded (Agent.loadedExtensions). The extensions are compared with the
+// runtime's and not with s's, because a move between Act and Auto-approve during
+// a turn applies its approval policy at once and leaves the extensions for the
+// turn's end.
 func (s clineSettings) needsRebuild(next clineSettings, loaded []string) bool {
 	return s.sessionMode() != next.sessionMode() ||
+		s.agentTeamsEnabled() != next.agentTeamsEnabled() ||
 		!slices.Equal(loaded, next.configExtensions()) ||
 		s.needsReasoningRebuild(next)
 }
@@ -213,7 +238,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	settings := a.settings
 	a.Mu.Unlock()
 	groups := providerkit.ModelAndEffortGroups(a.sessionModels(), settings.model, settings.effort, agent.EffortGroupLabel, nil)
-	return append(groups, permissionGroup(settings.permissionMode), thinkingGroup(settings.thinking))
+	return append(groups, permissionGroup(settings.permissionMode), thinkingGroup(settings.thinking), agentTeamsGroup(settings.agentTeams))
 }
 
 // SettingsSnapshot confirms every current value.
@@ -241,6 +266,9 @@ func (a *Agent) settingsFromOptions(base clineSettings, options optionmap.Map) c
 	}
 	if thinking := options.Get(OptionThinking); validThinking(thinking) {
 		out.thinking = thinking
+	}
+	if teams := options.Get(OptionAgentTeams); validAgentTeams(teams) {
+		out.agentTeams = teams
 	}
 	return out
 }
@@ -341,18 +369,23 @@ func (a *Agent) pendingSets(key, value string) bool {
 		return pending.permissionMode == value
 	case OptionThinking:
 		return thinkingValue(pending.thinking) == value
+	case OptionAgentTeams:
+		return agentTeamsValue(pending.agentTeams) == value
 	default:
 		return false
 	}
 }
 
-// livePart retains reasoning resets and native mode changes until the rebuild.
-// Other settings, including the worker's approval policy, can apply live.
+// livePart retains reasoning resets, team tools and native mode changes until
+// the rebuild. Other settings, including the worker's approval policy, can apply live.
 func livePart(have, want clineSettings) clineSettings {
 	live := want
 	if have.needsReasoningRebuild(want) {
 		live.effort = have.effort
 		live.thinking = have.thinking
+	}
+	if have.agentTeamsEnabled() != want.agentTeamsEnabled() {
+		live.agentTeams = have.agentTeams
 	}
 	if want.sessionMode() != have.sessionMode() {
 		live.permissionMode = have.permissionMode

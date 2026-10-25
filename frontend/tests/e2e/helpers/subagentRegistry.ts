@@ -227,6 +227,11 @@ export interface HeldChildCase {
   heldAnswer?: MockModelStep
   /** The root's turns after the turn that spawns the child, in order. */
   rootTurnsAfterSpawn: MockModelStep[]
+  /**
+   * Spawn the child in the background (see `SubagentRequest.background`), for a provider whose Interrupt stops only a
+   * background child. The absent value keeps the spawn builder's own default.
+   */
+  background?: boolean
 }
 
 /**
@@ -290,6 +295,7 @@ export async function openHeldChildTab(context: HeldChildContext, test: HeldChil
         toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-held-child', {
           description: HELD_CHILD_TITLE,
           prompt: modelScript.prompt(`${HELD_CHILD_TASK}.`),
+          ...(test.background === undefined ? {} : { background: test.background }),
         })],
       },
       ...test.rootTurnsAfterSpawn,
@@ -354,6 +360,11 @@ export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'> & {
    * Pass stopped when the provider reports a plain stop instead.
    */
   finalStatus?: 'stopped' | 'interrupted'
+  /**
+   * The root's turns that run before the stop. A background spawn returns at once, so the root answers before the
+   * child ends, and the stop's notice then runs the root's last turn.
+   */
+  rootTurnsBeforeStop?: MockModelStep[]
 }
 
 /**
@@ -371,7 +382,7 @@ export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'> & {
  */
 export async function exerciseChildInterrupt(context: HeldChildContext, test: ChildInterruptCase): Promise<void> {
   const { page, modelScript } = context
-  const child = await openHeldChildTab(context, { ...test, rootTurnsAfterSpawn: [{ text: ROOT_AFTER_CHILD_STOP }] })
+  const child = await openHeldChildTab(context, { ...test, rootTurnsAfterSpawn: [...test.rootTurnsBeforeStop ?? [], { text: ROOT_AFTER_CHILD_STOP }] })
   // A failed stop leaves the child answer held. The release lets the child end, so the stop failure stays the report.
   await cleanupOnFailure(async () => {
     // The held answer never arrives. Registry status and activity report the stop.

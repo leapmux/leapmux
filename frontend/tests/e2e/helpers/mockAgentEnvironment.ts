@@ -156,11 +156,18 @@ export const MOCK_PROVIDER_IDS = {
  * - `alternateThinking` thinks and takes the same effort ladder as `thinking`, but starts at
  *   another default level, so a switch that keeps a level differs from a switch
  *   that takes the default.
+ *
+ * A fourth alias, `account`, is the model of the mocked Kimi Code account.
  */
 export const KIMI_MOCK_MODELS = {
   thinking: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.zai}`,
   plain: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.pi}`,
   alternateThinking: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.deepseek}`,
+  /**
+   * The model of the mocked Kimi Code account, whose plan limits its turns. Kimi Code keys an account's model
+   * `kimi-code/<model>`. See ./kimiEnvironment.
+   */
+  account: `kimi-code/${MOCK_MODELS.zai}`,
 } as const
 
 /** The private omp profile. See `ohMyPiAgentDirectory` for why omp needs one. */
@@ -364,19 +371,19 @@ export async function createMockAgentEnvironment(
 
       ...createClaudeEnvironment({ homeDir, modelURL: origin, modelKey: MODEL_KEY }),
       ...createCodexEnvironment({ homeDir, baseURL: openAIBaseURL, defaultModelID: CODEX_NATIVE_DEFAULT_MODEL }),
-      ...createOpenCodeEnvironment(openCodeFamily),
+      ...createOpenCodeEnvironment({ ...openCodeFamily, kiloCloud: { origin, identityToken: MOCK_IDENTITY_TOKEN } }),
       ...createGooseEnvironment({ homeDir, modelID: MOCK_MODELS.goose }),
       ...createReasonixEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateProviderID: REASONIX_ALT_PROVIDER_ID, alternateModelID: MOCK_MODELS.pi, plainProviderID: REASONIX_PLAIN_PROVIDER_ID, plainModelID: MOCK_MODELS.zai }),
       ...createPiEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.pi, flashModelID: MOCK_MODELS.zai, plainModelID: PI_PLAIN_MODEL_ID, mcpEchoServer, realHomeDir: options.realHomeDir, shimsDirectory: cliShimsDir }),
       ...createOhMyPiEnvironment({ homeDir, origin, baseURL: openAIBaseURL, profile: OH_MY_PI_PROFILE, providerID: MOCK_PROVIDER_IDS.ohMyPi, modelID: MOCK_MODELS.ohMyPi, alternateModelID: OH_MY_PI_ALT_MODEL_WIRE_ID, mcpEchoServer }),
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
-      ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
+      ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN, runDirectory: runDir }),
       ...createGrokEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.grok, alternateModelID: GROK_ALT_MODEL_ID, reasoningModelID: GROK_REASONING_MODEL_ID }),
       ...createQwenEnvironment({ homeDir, baseURL: openAIBaseURL, modelID: MOCK_MODELS.qwen, alternateModelID: QWEN_ALT_MODEL_WIRE_ID, plainModelID: QWEN_PLAIN_MODEL_WIRE_ID, mcpEchoServer }),
       ...createKiroEnvironment({ runDirectory: runDir, homeDir, origin, apiKey: KIRO_E2E_API_KEY }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
       ...createCodewhaleEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, visionModelID: CODEWHALE_VISION_MODEL_ID, mcpEchoServer }),
-      ...createKimiEnvironment({ homeDir, baseURL: openAIBaseURL, providerID: MOCK_PROVIDER_IDS.kimi, thinking: { alias: KIMI_MOCK_MODELS.thinking, model: MOCK_MODELS.zai }, plain: { alias: KIMI_MOCK_MODELS.plain, model: MOCK_MODELS.pi }, alternateThinking: { alias: KIMI_MOCK_MODELS.alternateThinking, model: MOCK_MODELS.deepseek }, mcpEchoServer }),
+      ...createKimiEnvironment({ homeDir, baseURL: openAIBaseURL, providerID: MOCK_PROVIDER_IDS.kimi, thinking: { alias: KIMI_MOCK_MODELS.thinking, model: MOCK_MODELS.zai }, plain: { alias: KIMI_MOCK_MODELS.plain, model: MOCK_MODELS.pi }, alternateThinking: { alias: KIMI_MOCK_MODELS.alternateThinking, model: MOCK_MODELS.deepseek }, mcpEchoServer, account: { origin, accessToken: MOCK_IDENTITY_TOKEN, model: { alias: KIMI_MOCK_MODELS.account, model: MOCK_MODELS.zai } } }),
       ...createMimoEnvironment({ ...openCodeFamily, runDirectory: runDir }),
       ...createAmpEnvironment({ origin, modelKey: MODEL_KEY }),
       ...createClineEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: CLINE_PROVIDER_ID, modelID: MOCK_MODELS.cline, mcpEchoServer }),

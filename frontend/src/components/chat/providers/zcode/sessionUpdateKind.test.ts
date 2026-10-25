@@ -27,7 +27,7 @@ const ROWS: { name: string, payload: Record<string, unknown>, row: ZCodeSessionU
   { name: 'a microcompact boundary', payload: { strategy: ZCODE_MICROCOMPACT_STRATEGY.LocalToolResultClear }, row: 'notification' },
   { name: 'a model switch', payload: { modelSelection: { modelId: 'm1' } }, row: 'notification' },
   { name: 'a hook run', payload: { hookRunId: 'h1', hookInvocationId: 'i1' }, row: 'notification' },
-  { name: 'a workspace hook admission', payload: { pendingCount: 2, bundleDigest: 'abc' }, row: 'notification' },
+  { name: 'a workspace hook admission', payload: { pendingCount: 2, bundleDigest: 'abc' }, row: 'unknown' },
   { name: 'a discarded queued input', payload: { pendingInputIds: ['p1'], reason: 'user_removed', targetTurnId: 'turn_1' }, row: 'notification' },
   { name: 'a telemetry shape', payload: { messageCount: 3 }, row: 'unknown' },
 ]

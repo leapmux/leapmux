@@ -34,8 +34,24 @@ func (reasonixProvider) Classify(content json.RawMessage) agent.NotificationClas
 	return agent.NotificationClassification{}
 }
 
+// PlanModePermissionMode gives Reasonix's modes. An approved plan leaves Plan
+// mode for Normal, which the native runtime also selects itself.
+func (reasonixProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
+	switch kind {
+	case agent.PlanModeControlEnter:
+		return contracts.ReasonixModePlan
+	case agent.PlanModeControlExit:
+		return contracts.ReasonixModeNormal
+	default:
+		return ""
+	}
+}
+
 // ResolveControlResponse answers Reasonix's MCP request on its own method.
 func (p reasonixProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+	if len(ctx.RequestPayload) > 0 && isPlanApproval(ctx.RequestPayload) && !isReasonixJSONRPCReply(ctx.ResponseContent) {
+		return resolvePlanApproval(ctx)
+	}
 	if result, ok := providerkit.ResolveMCPElicitationResponse(ctx, contracts.ReasonixMethodMcpRequestInteraction, nil); ok {
 		return result
 	}
@@ -49,7 +65,8 @@ func (reasonixProvider) ListStoredSessions(ctx context.Context, q agent.StoredSe
 
 // ValidateAttachment enforces Reasonix's text-only policy: it advertises
 // image:false/audio:false and drops any non-text content block, so reject
-// everything but text up front.
+// everything but text up front. A shared handoff of a PDF as a file path:
+// https://github.com/leapmux/leapmux/issues/537.
 func (reasonixProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind != agent.AttachmentKindText {
 		return fmt.Errorf("reasonix only supports text attachments: %s", attachment.Filename)

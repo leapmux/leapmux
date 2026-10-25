@@ -851,6 +851,105 @@ func TestNewInboxMessageStoresNoRow(t *testing.T) {
 	assert.Empty(t, sink.PersistedNotifications())
 }
 
+// copilotEchoAttachment is one attachment of a `user.message` echo, as Copilot
+// states it.
+func copilotEchoAttachment(name, mimeType string) map[string]any {
+	return map[string]any{"type": "blob", "displayName": name, "mimeType": mimeType, "data": "JVBERg=="}
+}
+
+// copilotUserMessageEcho frames the echo of a root message. A nil supported list
+// leaves the field out.
+func copilotUserMessageEcho(t *testing.T, attachments []map[string]any, supported []string) []byte {
+	t.Helper()
+	data := map[string]any{"content": "Read the attachments.", "attachments": attachments}
+	if supported != nil {
+		data["supportedNativeDocumentMimeTypes"] = supported
+	}
+	return nativeCopilotEvent(t, "", contracts.CopilotEventUserMessage, data)
+}
+
+// Copilot sends a PDF to a model on Chat Completions as its file name alone, and
+// the echo of the message states that no document type went to the model as a
+// file. The reader learns it from one notice that names each such PDF.
+func TestUserMessageEchoReportsAPDFThatTheModelReadsAsAName(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		attachments []map[string]any
+		supported   []string
+		want        string
+	}{
+		{name: "one PDF", attachments: []map[string]any{copilotEchoAttachment("report.pdf", "application/pdf")}, supported: []string{},
+			want: "Copilot sent only the file name of report.pdf to the model, because the selected model does not read PDF files. Choose another model to send the file itself."},
+		{name: "two PDFs beside an image", supported: []string{}, attachments: []map[string]any{
+			copilotEchoAttachment("first.pdf", "application/pdf"),
+			copilotEchoAttachment("diagram.png", "image/png"),
+			copilotEchoAttachment("second.pdf", "Application/PDF"),
+		}, want: "Copilot sent only the file names of first.pdf, second.pdf to the model, because the selected model does not read PDF files. Choose another model to send the files themselves."},
+		{name: "an unnamed PDF", attachments: []map[string]any{copilotEchoAttachment("", "application/pdf")}, supported: []string{"image/png"},
+			want: "Copilot sent only the file name of a PDF file to the model, because the selected model does not read PDF files. Choose another model to send the file itself."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			a.HandleOutput(copilotUserMessageEcho(t, test.attachments, test.supported))
+			assert.Equal(t, []map[string]interface{}{{
+				contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
+				contracts.NotificationFieldText: test.want,
+			}}, sink.LeapMuxNotifications())
+			assert.Empty(t, sink.Messages(), "the queue owns the user transcript row")
+		})
+	}
+}
+
+// No notice follows a message whose PDFs reached the model as files, a message
+// without a PDF, an echo that does not state the native document types, a
+// subagent's echo, or an echo that does not decode.
+func TestUserMessageEchoWithoutAnUnreadPDFStatesNothing(t *testing.T) {
+	t.Parallel()
+	pdf := copilotEchoAttachment("report.pdf", "application/pdf")
+	for _, test := range []struct {
+		name string
+		raw  func(t *testing.T) []byte
+	}{
+		{"a PDF that the model reads", func(t *testing.T) []byte {
+			return copilotUserMessageEcho(t, []map[string]any{pdf}, []string{"application/pdf"})
+		}},
+		{"an image and a text file", func(t *testing.T) []byte {
+			return copilotUserMessageEcho(t, []map[string]any{copilotEchoAttachment("a.png", "image/png"), copilotEchoAttachment("a.txt", "text/plain")}, []string{})
+		}},
+		{"no attachment", func(t *testing.T) []byte { return copilotUserMessageEcho(t, nil, []string{}) }},
+		{"no native document types", func(t *testing.T) []byte { return copilotUserMessageEcho(t, []map[string]any{pdf}, nil) }},
+		{"a PDF as a file path", func(t *testing.T) []byte {
+			return copilotUserMessageEcho(t, []map[string]any{{"type": "file", "path": "/tmp/report.pdf", "displayName": "report.pdf", "mimeType": "application/pdf"}}, []string{})
+		}},
+		{"a subagent's echo", func(t *testing.T) []byte {
+			return nativeCopilotEvent(t, "agent-1", contracts.CopilotEventUserMessage, map[string]any{
+				"content": "Work.", "attachments": []map[string]any{pdf}, "supportedNativeDocumentMimeTypes": []string{},
+			})
+		}},
+		{"attachments that do not decode", func(t *testing.T) []byte {
+			return nativeCopilotEvent(t, "", contracts.CopilotEventUserMessage, map[string]any{"content": "Hi.", "attachments": "report.pdf", "supportedNativeDocumentMimeTypes": []string{}})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			a.HandleOutput(test.raw(t))
+			assert.Empty(t, sink.LeapMuxNotifications())
+		})
+	}
+}
+
+// The steer echo still settles when the echo also states its attachments.
+func TestUserMessageEchoWithAttachmentsStillSettlesTheSteer(t *testing.T) {
+	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
+	require.NoError(t, a.SteerInput("Read the attachments.", nil))
+	a.HandleOutput(copilotUserMessageEcho(t, []map[string]any{copilotEchoAttachment("report.pdf", "application/pdf")}, []string{"application/pdf"}))
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
 func TestRetryAttemptDiscardsTheFailedText(t *testing.T) {
 	t.Parallel()
 	// The fixture trims .tmp/verify-c29/copilot/round2/mid/frames.jsonl.

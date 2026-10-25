@@ -43,8 +43,10 @@ export interface CodebuddyEnvironmentOptions {
  * AGENTS.mdc, and the same names in `.codebuddy/`. A git repository does not stop that walk, so
  * the agent would read the sentinel files of the run root (./ancestorInstructions.ts). The variable
  * is CodeBuddy's one switch for that memory, and no spec relies on a memory file. Two other readers
- * of the memory send no sentinel file: the auto-mode classifier, which LeapMux never selects, and the
- * conditional rules, which take only a file with a `paths` frontmatter.
+ * of the memory ignore the variable:
+ * - The classifier of the Auto permission mode quotes the memory in a context message of its own. No setting turns that message off, so the mock lets it through when it quotes
+ *   only the sentinel files (./codebuddySurface.ts).
+ * - The conditional rules take only a file with a `paths` frontmatter, so they send no sentinel file.
  */
 export function createCodebuddyEnvironment(options: CodebuddyEnvironmentOptions): Record<string, string> {
   const configDir = join(options.homeDir, '.codebuddy')

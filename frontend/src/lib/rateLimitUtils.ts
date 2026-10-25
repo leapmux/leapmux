@@ -5,11 +5,13 @@ import { formatLocalDateTime } from '~/lib/dateFormat'
 const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
   [RATE_LIMIT_TYPE.FiveHour]: '5-hour',
   [RATE_LIMIT_TYPE.SevenDay]: '7-day',
+  [RATE_LIMIT_TYPE.OneMonth]: 'Monthly',
 }
 
 const RATE_LIMIT_POPOVER_LABELS: Record<string, string> = {
   [RATE_LIMIT_TYPE.FiveHour]: '5-Hour Rate Limit',
   [RATE_LIMIT_TYPE.SevenDay]: '7-Day Rate Limit',
+  [RATE_LIMIT_TYPE.OneMonth]: 'Monthly Rate Limit',
 }
 
 const RATE_LIMIT_STATUS_LABELS: Record<string, string> = {

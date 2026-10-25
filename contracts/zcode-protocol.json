@@ -33,7 +33,8 @@
     "Question": "Review this implementation plan."
   },
   "interactions": {
-    "PlanApproval": "plan_approval"
+    "PlanApproval": "plan_approval",
+    "McpElicitation": "mcp_elicitation"
   },
   "events": {
     "SessionCreated": "session.created",
@@ -44,6 +45,7 @@
     "TurnStarted": "turn.started",
     "TurnSteerQueued": "turn.steerQueued",
     "TurnSteerDrained": "turn.steerDrained",
+    "TurnSteerDeliveryChanged": "turn.steerDeliveryChanged",
     "TurnCompleted": "turn.completed",
     "TurnFailed": "turn.failed",
     "MessageUpserted": "message.upserted",

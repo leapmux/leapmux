@@ -8,7 +8,7 @@ import { chooseSettingsOption, expectPermissionShortcuts, expectSettingsChip, ex
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest('offers Bypass but no Smart shortcut and runs a native tool after Bypass', async ({ native }) => {
+  codebuddyTest('offers both shortcuts and runs a native tool after Bypass', async ({ native }) => {
     const { page } = native
     await exerciseBypassPermissions(native, {
       // The workspace opens in Bypass. Default asks before a tool, so the shortcut must change the native behavior.
@@ -17,7 +17,7 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
         await chooseSettingsOption(page, `permissionMode-${CODEBUDDY_MODE.Default}`)
         await waitForSettingsIdle(page)
         await expectSettingsOptionChosen(page, `permissionMode-${CODEBUDDY_MODE.Default}`)
-        await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
+        await expectPermissionShortcuts(page, { smart: 'offered', bypass: 'offered' })
       },
       settingsProof: agent => expect(nativeOptionValue(agent, 'permissionMode')).toBe(CODEBUDDY_MODE.BypassPermissions),
     })

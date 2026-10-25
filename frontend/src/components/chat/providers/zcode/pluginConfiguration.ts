@@ -3,11 +3,11 @@ import { ZCODE_DEFAULT_MODE, ZCODE_MODE } from '~/generated/contracts/zcode-prot
 
 /** The complete ZCode configuration channel, separate from registration. */
 export const zcodeConfiguration: ProviderConfigurationCapability = {
-  // Text is inlined into the prompt and images use session/send.attachments. The
-  // app-server recognizes images, videos, files, and audio, but not PDF files. A
-  // PDF would arrive as a generic file and become binary text or disappear when
-  // too large, so LeapMux refuses it.
-  attachments: { text: true, image: true, pdf: false, binary: false },
+  // Text is inlined into the prompt, and images and PDFs use session/send.attachments.
+  // The worker refuses an image or a PDF that the current model declares no input
+  // for. The app-server has no kind that keeps a binary file's bytes, so LeapMux
+  // refuses a binary file.
+  attachments: { text: true, image: true, pdf: true, binary: false },
   triggerModeGroupKey: 'permissionMode',
   planMode: {
     groupKey: 'permissionMode',

@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -40,6 +41,17 @@ type zcodeSpawnRecord struct {
 	title        string
 	toolCallIDs  map[string]struct{}
 	background   bool
+	// taskID is the background task that runs the subagent, which addresses
+	// session/cancelBackgroundTask. A foreground subagent has none.
+	taskID string
+	// interrupted is true once LeapMux's own Interrupt cancelled the task, so the
+	// cancellation closes the row as interrupted rather than stopped.
+	interrupted bool
+	// lifecycle is true once a lifecycle event of the subagent arrived. Such a
+	// subagent also ends with a lifecycle event, which ZCode sends AFTER the
+	// background task's final status, and which carries the report. So that
+	// event, not the task's, ends the transcript.
+	lifecycle bool
 }
 
 // zcodeChildIndex remembers which transcript a subagent's rows belong to.
@@ -59,6 +71,11 @@ type zcodeChildIndex struct {
 	toolSpawns map[string]string
 	// sessionSpawns preserves the child route after an individual tool call ends.
 	sessionSpawns map[string]string
+	// ended holds the spawns whose subagent ended. A later event of such a spawn
+	// creates no transcript again: a transcript that the end tore down and an
+	// event re-created would stay open, and the tab would show the subagent
+	// working for good.
+	ended map[string]struct{}
 }
 
 func (i *zcodeChildIndex) rememberSession(spawnToolCallID, childSessionID string) {
@@ -152,6 +169,10 @@ func (i *zcodeChildIndex) forgetTool(toolCallID string) {
 func (i *zcodeChildIndex) takeChild(spawnToolCallID string) (string, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.ended == nil {
+		i.ended = make(map[string]struct{})
+	}
+	i.ended[spawnToolCallID] = struct{}{}
 	record := i.spawns[spawnToolCallID]
 	if record == nil {
 		return "", false
@@ -211,12 +232,83 @@ func (i *zcodeChildIndex) isBackground(spawnToolCallID string) bool {
 	return record != nil && record.background
 }
 
+// hasEnded reports whether a spawn's subagent ended.
+func (i *zcodeChildIndex) hasEnded(spawnToolCallID string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, ended := i.ended[spawnToolCallID]
+	return ended
+}
+
+// rememberLifecycle records that a spawn's subagent reports lifecycle events.
+func (i *zcodeChildIndex) rememberLifecycle(spawnToolCallID string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ended := i.ended[spawnToolCallID]; !ended {
+		i.spawnLocked(spawnToolCallID).lifecycle = true
+	}
+}
+
+// reportsLifecycle reports whether a spawn's subagent ends with a lifecycle event.
+func (i *zcodeChildIndex) reportsLifecycle(spawnToolCallID string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	record := i.spawns[spawnToolCallID]
+	return record != nil && record.lifecycle
+}
+
+// rememberTask records the background task that runs a spawn's subagent.
+func (i *zcodeChildIndex) rememberTask(spawnToolCallID, taskID string) {
+	if spawnToolCallID == "" || taskID == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ended := i.ended[spawnToolCallID]; !ended {
+		i.spawnLocked(spawnToolCallID).taskID = taskID
+	}
+}
+
+// task returns the background task of a spawn's subagent. known is false for a
+// spawn the index does not hold.
+func (i *zcodeChildIndex) task(spawnToolCallID string) (taskID string, known bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	record := i.spawns[spawnToolCallID]
+	if record == nil {
+		return "", false
+	}
+	return record.taskID, true
+}
+
+// setInterrupted marks or clears LeapMux's own interrupt of a spawn's subagent.
+func (i *zcodeChildIndex) setInterrupted(spawnToolCallID string, interrupted bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if record := i.spawns[spawnToolCallID]; record != nil {
+		record.interrupted = interrupted
+	}
+}
+
+// cancelledStatus is the final status of a spawn's cancelled subagent:
+// interrupted when LeapMux's own Interrupt cancelled it, and stopped otherwise,
+// such as when the model stopped the task.
+func (i *zcodeChildIndex) cancelledStatus(spawnToolCallID string) bgtask.Status {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if record := i.spawns[spawnToolCallID]; record != nil && record.interrupted {
+		return bgtask.StatusInterrupted
+	}
+	return bgtask.StatusStopped
+}
+
 func (i *zcodeChildIndex) clear() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	clear(i.spawns)
 	clear(i.toolSpawns)
 	clear(i.sessionSpawns)
+	clear(i.ended)
 }
 
 // zcodeToolSpawnsSubagent reports whether a tool call STARTS a subagent.
@@ -338,6 +430,7 @@ func (a *Agent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	if !ok {
 		return
 	}
+	a.children.rememberLifecycle(transition.rowKey)
 	transition.report.Label = childTitle
 	if transition.report.Text != "" {
 		providerkit.PersistChildSubagentReport(a.sink, agent.ChildSubagentReportWrite{
@@ -355,8 +448,16 @@ func (a *Agent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 		}
 	}
 	if transition.final {
+		if transition.status == bgtask.StatusStopped {
+			transition.status = a.children.cancelledStatus(transition.rowKey)
+		}
 		if transition.failure != "" {
-			a.persistZCodeChildText(childID, transition.failure, agent.MessageCompletionError)
+			completion := agent.MessageCompletionError
+			if transition.status == bgtask.StatusInterrupted {
+				// The reader's own Interrupt stopped it: no error ended it.
+				completion = agent.MessageCompletionInterrupted
+			}
+			a.persistZCodeChildText(childID, transition.failure, completion)
 		}
 		providerkit.LogRegistryRefusal("zcode", "close", a.sink.CloseBackgroundTask(transition.rowKey, transition.status))
 		a.children.takeChild(transition.rowKey)
@@ -445,6 +546,9 @@ func (a *Agent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool) {
 // spawn gave the task its title ("file census"), while the subagent's own updates each
 // describe a COMMAND it runs and the background-task event says only "Agent".
 func (a *Agent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle string) (childAgentID, title string, ok bool) {
+	if a.children.hasEnded(rowKey) {
+		return "", "", false
+	}
 	title = a.children.title(rowKey)
 	if title == "" {
 		title = fallbackTitle
@@ -781,4 +885,57 @@ func zcodeSubagentTitle(payload zcodeToolUpdated) string {
 		return t
 	}
 	return payload.ToolName
+}
+
+var _ agent.ChildInterrupter = (*Agent)(nil)
+
+// zcodeCancelBackgroundTaskReply is the answer of session/cancelBackgroundTask.
+type zcodeCancelBackgroundTaskReply struct {
+	Cancelled bool   `json:"cancelled"`
+	Reason    string `json:"reason"`
+	Status    string `json:"status"`
+}
+
+// InterruptChild stops one subagent and leaves its parent running.
+//
+// A background subagent runs as a background task of the session, and
+// session/cancelBackgroundTask stops that task alone. ZCode then reports the task
+// cancelled, which closes the row as interrupted, and runs a parent turn for the
+// notification. A foreground subagent runs inside its parent's turn: it is no
+// background task, and ZCode stops it only with that turn.
+//
+// The mark precedes the cancel, because ZCode reports the cancellation before it
+// answers the request, and a refused cancel clears the mark again.
+func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
+	taskID, known := a.children.task(childKey)
+	switch {
+	case !known:
+		return fmt.Errorf("unknown ZCode subagent %q", childKey)
+	case taskID == "":
+		return fmt.Errorf("%w: this subagent runs inside its parent's turn, and ZCode stops it only with that turn",
+			agent.ErrChildOperationUnsupported)
+	}
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	a.Mu.Unlock()
+	a.children.setInterrupted(childKey, true)
+	raw, err := a.sendZCodeRequest(MethodSessionCancelBackgroundTask, map[string]string{"sessionId": sessionID, "taskId": taskID}, a.APITimeout())
+	if err != nil {
+		a.children.setInterrupted(childKey, false)
+		return fmt.Errorf("stop the ZCode subagent: %w", err)
+	}
+	var reply zcodeCancelBackgroundTaskReply
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		a.children.setInterrupted(childKey, false)
+		return fmt.Errorf("read the ZCode subagent stop: %w", err)
+	}
+	if reply.Cancelled {
+		return nil
+	}
+	a.children.setInterrupted(childKey, false)
+	if _, final := zcodeBackgroundStatus(reply.Status); final {
+		// The subagent ended before the cancel arrived, so nothing runs to stop.
+		return nil
+	}
+	return fmt.Errorf("ZCode did not stop the subagent: %s", reply.Reason)
 }

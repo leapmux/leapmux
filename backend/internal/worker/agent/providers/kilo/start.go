@@ -2,6 +2,7 @@ package kilo
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
@@ -22,7 +23,17 @@ var _ agent.StartFunc = Start
 
 // Start starts a Kilo ACP agent process and performs the handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
-	return opencode.StartFamily(ctx, opts, sink, Registration(), opencode.FamilySpec{
+	// kiloLaunchEnv below refuses the same invalid value, before the process starts.
+	swarm, err := kiloSwarmFromOptions(opts.Options)
+	if err != nil {
+		return nil, fmt.Errorf("kilo swarm: %w", err)
+	}
+	var started *Agent
+	create := func() *Agent {
+		started = newAgent(swarm)
+		return started
+	}
+	ag, err := opencode.StartFamily(ctx, opts, sink, Registration(), opencode.FamilySpec{
 		ProviderName:   "kilo",
 		RCMarkerEnvKey: "KILO_CLIENT",
 		// Kilo forks OpenCode and requires its own spelling of the flag for the same
@@ -32,5 +43,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		QuestionToolEnv:      kiloQuestionToolEnv,
 		DisableAutoUpdateEnv: kiloDisableAutoUpdateEnv,
 		DefaultPrimaryAgent:  PrimaryAgentCode,
-	}, newAgent, func(a *Agent) *opencode.FamilyBase { return &a.FamilyBase })
+		LaunchEnv:            kiloLaunchEnv,
+	}, create, func(a *Agent) *opencode.FamilyBase { return &a.FamilyBase })
+	if err != nil {
+		return nil, err
+	}
+	// The loop ends with the process. A request that the daemon address made
+	// before the loop started waits in the channel.
+	go started.refreshUsageLoop()
+	return ag, nil
 }

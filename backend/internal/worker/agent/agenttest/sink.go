@@ -563,6 +563,14 @@ func (s *Sink) TurnActives() []bool {
 	return append([]bool(nil), s.TurnActiveCalls...)
 }
 
+// TurnStates returns the published turn states in order, with their Steerable
+// flags.
+func (s *Sink) TurnStates() []agent.TurnState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.turnStates)
+}
+
 // LastTurnActive returns the last published turn state and whether any state exists.
 // A missing publish differs from an incorrect value.
 // A provider that never publishes a clear leaves the previous active flag in place.

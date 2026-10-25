@@ -3,6 +3,7 @@ package copilot
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -31,9 +32,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 }
 
 func startNativeCopilot(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	// Fleet is LeapMux's own setting, so its stored value is checked before the
+	// process starts: a value nobody can choose must not start the agent.
+	fleet, err := copilotFleetFromOptions(opts.Options)
+	if err != nil {
+		return nil, fmt.Errorf("copilot fleet: %w", err)
+	}
 	a := &Agent{
 		sink: agent.NewModelProgressResetSink(sink), opts: opts,
-		options: make(optionmap.Map),
+		options: optionmap.Map{copilotOptionFleet: strconv.FormatBool(fleet)},
 	}
 	connection, err := startCopilotConnection(ctx, opts)
 	if err != nil {
@@ -117,5 +124,6 @@ func startNativeCopilot(ctx context.Context, opts agent.Options, sink agent.Prov
 	// broadcast so the goal card opens on the stored objective rather than empty.
 	a.refreshNativeGoal(opts.ResumeSessionID != "")
 	a.sink.BroadcastStatusActive(id)
+	a.checkFolderTrustInBackground()
 	return a, nil
 }

@@ -1,5 +1,6 @@
-import type { LettaQuotaHTTPResponse, LettaQuotaReceipt } from '../helpers/lettaSurface'
+import type { LettaQuotaReceipt } from '../helpers/lettaSurface'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
+import type { MockQuotaHTTPResponse } from '../helpers/scenarioQuota'
 import { expect } from '@playwright/test'
 import { LETTA_CHATGPT_ACCOUNT_ID, LETTA_CHATGPT_MODEL_ID } from '../helpers/lettaEnvironment'
 import { LETTA_QUOTA_CONTROL_PREFIX } from '../helpers/lettaSurface'
@@ -17,7 +18,7 @@ import { LETTA_AGENT, nativeContext } from './scenarios'
 
 type Fixtures = Omit<NativeContextFixtures, 'workspaceId'>
 
-function quotaResponse(used: number, resetsAt = Math.floor(Date.now() / 1000) + 3600, weekly?: { used: number, resetsAt: number }): LettaQuotaHTTPResponse {
+function quotaResponse(used: number, resetsAt = Math.floor(Date.now() / 1000) + 3600, weekly?: { used: number, resetsAt: number }): MockQuotaHTTPResponse {
   return { status: 200, body: { plan_type: 'plus', rate_limit: {
     limit_reached: false,
     primary_window: { used_percent: used, limit_window_seconds: 18_000, reset_at: resetsAt },
@@ -29,7 +30,7 @@ function controlURL(scenarioId: string): URL {
   return new URL(`${LETTA_QUOTA_CONTROL_PREFIX}${encodeURIComponent(scenarioId)}`, getGlobalState().mockModelUrl)
 }
 
-async function configureQuota(scenarioId: string, profile: LettaQuotaHTTPResponse): Promise<void> {
+async function configureQuota(scenarioId: string, profile: MockQuotaHTTPResponse): Promise<void> {
   const response = await fetch(controlURL(scenarioId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
   expect(response.status, await response.text()).toBe(200)
 }
@@ -41,7 +42,7 @@ async function quotaReceipts(scenarioId: string): Promise<LettaQuotaReceipt[]> {
   return state.receipts
 }
 
-async function withQuotaWorkspace(fixtures: Fixtures, profile: LettaQuotaHTTPResponse, run: (context: ManagedNativeScenarioContext) => Promise<void>): Promise<void> {
+async function withQuotaWorkspace(fixtures: Fixtures, profile: MockQuotaHTTPResponse, run: (context: ManagedNativeScenarioContext) => Promise<void>): Promise<void> {
   await configureQuota(fixtures.modelScript.id, profile)
   await withTestWorkspace(fixtures.leapmuxServer, 'letta-quota', async ({ workspaceId }) => {
     await openProviderAgent(fixtures.leapmuxServer, workspaceId, LETTA_AGENT, { model: LETTA_CHATGPT_MODEL_ID })

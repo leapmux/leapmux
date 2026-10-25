@@ -3,6 +3,8 @@ package qoder
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -84,6 +86,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 
 	effort := opts.Effort()
+	thinking := qoderThinkingValue(opts.Get(OptionThinking))
+	outputStyle := opts.Get(OptionOutputStyle)
 	baseArgs := []string{
 		"--config-dir", qoderConfigRoot(opts),
 		"-w", opts.WorkingDir,
@@ -103,7 +107,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if model := opts.Model(); model != "" {
 		baseArgs = append(baseArgs, "-m", model)
 	}
-	baseArgs = append(baseArgs, qoderEffortArgs(effort)...)
+	baseArgs = append(baseArgs, qoderReasoningArgs(effort, thinking)...)
+	baseArgs = append(baseArgs, qoderOutputStyleArgs(outputStyle)...)
 	baseArgs = append(baseArgs, sessionArgs...)
 
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
@@ -132,6 +137,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		model:          opts.Model(),
 		permissionMode: permissionModeWire(opts.PermissionMode()),
 		effort:         effort,
+		thinking:       thinking,
+		outputStyle:    outputStyle,
+		usageRefresh:   make(chan struct{}, 1),
 	}
 	if opts.ResumeSessionID != "" {
 		a.sessionID = opts.ResumeSessionID
@@ -145,18 +153,51 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	scanner := agent.NewStdoutScanner(stdout)
 	go a.readOutputLoop(scanner)
 
-	// The stream-json channel answers nothing until initialize succeeds. Run
-	// the handshake here, so a returned agent accepts input and a failed one
-	// fails startup with the reason instead of cancelling the first turn.
-	if err := a.initializeStream(); err != nil {
+	if err := a.startStream(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("initialize Qoder stream: %w", err)
+		return nil, err
 	}
+	// The account quota arrives in the background, so it delays no startup.
+	go a.refreshUsageLoop()
+	a.requestUsageRefresh()
 
 	if a.sessionID != "" {
 		a.sink.UpdateSessionID(a.sessionID)
 	}
 	return a, nil
+}
+
+// startStream prepares the stream-json channel before Start returns, so a
+// returned agent accepts input and a failed one fails startup with the reason
+// instead of cancelling the first turn.
+//
+// The channel answers nothing until initialize succeeds. The MCP registration
+// follows, so input forms work from the first turn. Without that registration
+// the agent still works, and only its MCP servers cannot ask for a form. Its
+// failure therefore ends startup only when the process ended.
+func (a *Agent) startStream() error {
+	if err := a.initializeStream(); err != nil {
+		return fmt.Errorf("initialize Qoder stream: %w", err)
+	}
+	if err := a.registerMcpServersForForms(); err != nil {
+		if a.processEnded() {
+			return fmt.Errorf("register Qoder MCP servers for input forms: %w", err)
+		}
+		slog.Warn("qoder could not register its MCP servers for input forms", "agent_id", a.AgentID(), "error", err)
+	}
+	return nil
+}
+
+// processEnded reports whether the process exited or its context ended.
+func (a *Agent) processEnded() bool {
+	select {
+	case <-a.ProcessDone():
+		return true
+	case <-a.Context().Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // qoderConfigRoot states the per-agent config directory. Qoder's --config-dir
@@ -169,16 +210,47 @@ func qoderConfigRoot(opts agent.Options) string {
 	return ".qoder"
 }
 
-// qoderEffortArgs returns the `--reasoning-effort` pair for one level.
+// qoderReasoningArgs returns the effort and thinking flags of one launch.
 //
-// Auto and the empty value send no flag at all, so the CLI keeps whatever
-// default the model resolves. Every other level is one of the words Qoder's own
-// effort validator admits.
-func qoderEffortArgs(effort string) []string {
-	if effort == "" || effort == agent.EffortAuto {
+// Every launch states `--reasoning-effort`. On `--resume`, Qoder CLI 1.1.78
+// restores the reasoning settings that the session stored, unless the launch
+// states an effort: without one, the new process keeps the effort and the
+// thinking state of the previous process, and Qoder ignores `--thinking` alone.
+// LeapMux's Auto therefore sends Qoder's own word `auto`, which states no
+// level, so the model's default applies again.
+//
+// Qoder turns thinking back on for any explicit effort other than `none`, so
+// thinking Off sends `--thinking disabled` with the effort `none`. The selected
+// effort stays in the options and applies again when thinking returns to Auto
+// or On. On sends `--thinking adaptive`, because `--thinking enabled` also
+// needs a fixed token budget. Auto sends no `--thinking` flag, so Qoder
+// decides.
+func qoderReasoningArgs(effort, thinking string) []string {
+	level := effort
+	if level == "" || level == agent.EffortAuto {
+		level = contracts.QoderEffortLevelAuto
+	}
+	switch qoderThinkingValue(thinking) {
+	case qoderThinkingOff:
+		return []string{"--thinking", "disabled", "--reasoning-effort", contracts.QoderEffortLevelNone}
+	case qoderThinkingOn:
+		return []string{"--thinking", "adaptive", "--reasoning-effort", level}
+	default:
+		return []string{"--reasoning-effort", level}
+	}
+}
+
+// qoderOutputStyleArgs returns the `--output-style` pair of one launch.
+//
+// Qoder stores no style in the session, so a launch without the flag, also on
+// `--resume`, runs the style of Qoder's own settings. That is LeapMux's Auto.
+// Qoder runs `default` for a name that it does not know, and its initialize
+// reply then reports `default`.
+func qoderOutputStyleArgs(style string) []string {
+	if strings.TrimSpace(style) == "" || style == qoderOutputStyleAuto {
 		return nil
 	}
-	return []string{"--reasoning-effort", effort}
+	return []string{"--output-style", style}
 }
 
 // qoderPermissionFlag maps the wire mode onto the snake_case flag vocabulary.
@@ -192,6 +264,12 @@ func qoderPermissionFlag(mode string) string {
 		return "plan"
 	case contracts.QoderModeAuto:
 		return "auto"
+	case contracts.QoderModeBypassPermissions:
+		// Qoder runs this mode as its internal `yolo`. A disableYoloMode
+		// setting, or an untrusted folder while Qoder's folder trust is on,
+		// starts the session in Default, and the init frame then reports that
+		// mode. Qoder refuses a live change to this mode in the same cases.
+		return "bypass_permissions"
 	default:
 		return "default"
 	}

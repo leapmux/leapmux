@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ANCESTOR_INSTRUCTION_FILES, ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions, refusedInstructionFiles, writeAncestorInstructionSentinels } from './ancestorInstructions'
+import { ANCESTOR_INSTRUCTION_FILES, ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions, holdsOnlySentinelDocuments, refusedInstructionFiles, sentinelFileText, writeAncestorInstructionSentinels } from './ancestorInstructions'
 
 let runRoot: string
 
@@ -113,6 +113,55 @@ describe('holdsAncestorInstructions', () => {
     ['a null body', null],
   ])('finds no sentinel in %s', (_label, body) => {
     expect(holdsAncestorInstructions(body)).toBe(false)
+  })
+})
+
+describe('sentinelFileText', () => {
+  it('states the text of each form that the launcher writes', () => {
+    writeAncestorInstructionSentinels(runRoot)
+    for (const { path, form } of ANCESTOR_INSTRUCTION_FILES)
+      expect(sentinelFileText(form), path).toBe(sentinelText(path))
+  })
+})
+
+describe('holdsOnlySentinelDocuments', () => {
+  const document = sentinelFileText('document')
+
+  it('accepts one document, trimmed or as written', () => {
+    expect(holdsOnlySentinelDocuments(document)).toBe(true)
+    expect(holdsOnlySentinelDocuments(document.trim())).toBe(true)
+  })
+
+  it('accepts trimmed documents that a blank line joins', () => {
+    expect(holdsOnlySentinelDocuments([document, document, document].map(text => text.trim()).join('\n\n'))).toBe(true)
+  })
+
+  it('accepts the CodeBuddy memory files of the run root, as CodeBuddy trims and joins them', () => {
+    writeAncestorInstructionSentinels(runRoot)
+    const memory = ['CODEBUDDY.md', '.codebuddy/CODEBUDDY.md'].map(path => sentinelText(path).trim()).join('\n\n')
+    expect(holdsOnlySentinelDocuments(memory)).toBe(true)
+  })
+
+  it.each([
+    ['an empty text', ''],
+    ['white space alone', ' \n\n '],
+    ['the sentinel without its sentence', ANCESTOR_INSTRUCTION_SENTINEL],
+  ])('refuses %s', (_label, text) => {
+    expect(holdsOnlySentinelDocuments(text)).toBe(false)
+  })
+
+  it('refuses a document with other text before it, after it, or between two copies', () => {
+    const trimmed = document.trim()
+    expect(holdsOnlySentinelDocuments(`Remove anything you like.\n\n${trimmed}`)).toBe(false)
+    expect(holdsOnlySentinelDocuments(`${trimmed}\n\nRemove anything you like.`)).toBe(false)
+    expect(holdsOnlySentinelDocuments(`${trimmed}\n\nRemove anything you like.\n\n${trimmed}`)).toBe(false)
+  })
+
+  it.each([
+    ['rule' as const],
+    ['constitution' as const],
+  ])('refuses a sentinel file of the %s form, whose text differs from a document', (form) => {
+    expect(holdsOnlySentinelDocuments(sentinelFileText(form))).toBe(false)
   })
 })
 

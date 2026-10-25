@@ -21,5 +21,7 @@ func TestOpenCodeRefusesBinaryAttachments(t *testing.T) {
 // subagent tab reads them before its root runs.
 func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	t.Parallel()
+	// The family base stops a child session, and steers a running one.
+	assert.Equal(t, agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}, Registration().Plugin.ChildCapabilities(nil))
 	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
 }

@@ -29,7 +29,7 @@ describe('deepseek harness provider', () => {
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
     // The status bar draws the Act and Plan axis as its mode chip. The permission preset has no chip.
     expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
-    expect(plugin?.controls?.permissionPresets).toEqual({ bypass: { sets: { permissions: 'danger-full-access' } } })
+    expect(plugin?.controls?.permissionPresets).toEqual({ smart: { sets: { permissions: 'auto' } }, bypass: { sets: { permissions: 'danger-full-access' } } })
     expect(plugin?.controls?.askUserQuestion).toBeDefined()
   })
 

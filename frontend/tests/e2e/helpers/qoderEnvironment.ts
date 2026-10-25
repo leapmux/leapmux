@@ -8,6 +8,12 @@ import { writePrivateJSON } from './privateConfigFile'
 import { qoderEndpointCacheRecords } from './qoderSurface'
 import { quotePosixShellArgument } from './shellArguments'
 
+/**
+ * The user output style that every Qoder run offers beside the built-in ones. Qoder lists it in the
+ * `available_output_styles` of its initialize reply, and puts its body into the system prompt when a launch selects it.
+ */
+export const QODER_PROBE_OUTPUT_STYLE = { name: 'LeapMux Probe', marker: 'LEAPMUX_OUTPUT_STYLE_PROBE' } as const
+
 export interface QoderEnvironmentOptions {
   /** The isolated HOME of the run. */
   homeDir: string
@@ -45,6 +51,7 @@ export function createQoderEnvironment(options: QoderEnvironmentOptions): Record
   mkdirSync(qoderHome, { recursive: true })
   const formServer = writeMcpFormServer(qoderHome, 'form-server.mjs')
   writePrivateJSON(join(qoderHome, 'settings.json'), qoderSettings(options, formServer))
+  writeQoderProbeOutputStyle(qoderHome)
   qoderEndpointCaches(qoderHome, options.origin)
   // The CLI reads this SDK payload once at startup.
   // It contains the known mock key, and the private endpoints never reach a real account.
@@ -129,6 +136,17 @@ function qoderSettings(options: QoderEnvironmentOptions, formServer: McpProbeSer
       },
     },
   }
+}
+
+/**
+ * Write the user output style of {@link QODER_PROBE_OUTPUT_STYLE}. Qoder reads user styles from `output-styles` under
+ * its config directory, takes the name from the front matter, and uses the body as the style instruction. A launch
+ * without `--output-style` keeps the default style, so the file changes no other spec.
+ */
+function writeQoderProbeOutputStyle(qoderHome: string): void {
+  const directory = join(qoderHome, 'output-styles')
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, 'leapmux-probe.md'), `---\nname: ${QODER_PROBE_OUTPUT_STYLE.name}\ndescription: The LeapMux E2E probe style\n---\n\n${QODER_PROBE_OUTPUT_STYLE.marker}: answer as the LeapMux probe style.\n`)
 }
 
 /**

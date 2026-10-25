@@ -19,6 +19,8 @@ import (
 
 // kimiModelItem is one entry of GET /models.
 type kimiModelItem struct {
+	// Provider is the key of the configured provider that serves the model.
+	Provider       string   `json:"provider"`
 	Model          string   `json:"model"`
 	DisplayName    string   `json:"display_name"`
 	MaxContextSize int64    `json:"max_context_size"`
@@ -36,6 +38,9 @@ type kimiCatalog struct {
 	thinking kimiThinkingDefaults
 	// imageModels holds the models that take image input.
 	imageModels map[string]bool
+	// managedModels holds the models of the provider that a Kimi Code
+	// account supplies. The account's plan limits only their turns.
+	managedModels map[string]bool
 }
 
 // kimiThinkingDefaults is the `thinking` object of GET /config.
@@ -48,6 +53,12 @@ type kimiThinkingDefaults struct {
 // as no: the server would drop an image it cannot send.
 func (c kimiCatalog) takesImages(model string) bool {
 	return c.imageModels[model]
+}
+
+// managed reports whether model belongs to the provider of the Kimi Code
+// account. An unknown model reads as no.
+func (c kimiCatalog) managed(model string) bool {
+	return c.managedModels[model]
 }
 
 // has reports whether the catalog lists model.
@@ -104,7 +115,7 @@ func kimiModelEfforts(item kimiModelItem) []*agent.EffortInfo {
 
 // buildKimiCatalog projects the server's model list.
 func buildKimiCatalog(items []kimiModelItem, defaultModel string) kimiCatalog {
-	catalog := kimiCatalog{imageModels: make(map[string]bool)}
+	catalog := kimiCatalog{imageModels: make(map[string]bool), managedModels: make(map[string]bool)}
 	for _, item := range items {
 		id := strings.TrimSpace(item.Model)
 		if id == "" {
@@ -120,6 +131,9 @@ func buildKimiCatalog(items []kimiModelItem, defaultModel string) kimiCatalog {
 		})
 		if slices.Contains(item.Capabilities, kimiCapabilityImageIn) {
 			catalog.imageModels[id] = true
+		}
+		if strings.TrimSpace(item.Provider) == kimiManagedProvider {
+			catalog.managedModels[id] = true
 		}
 	}
 	if catalog.has(defaultModel) {

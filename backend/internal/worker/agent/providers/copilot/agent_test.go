@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -213,6 +215,95 @@ type copilotSteerScript struct {
 	withdrawResult json.RawMessage
 }
 
+// copilotRuntimeHarness is an agent whose requests reach a fake runtime that
+// answers each method from a table.
+type copilotRuntimeHarness struct {
+	agent *Agent
+	sink  *agenttest.Sink
+	// requests holds every request that reached the runtime, in order.
+	requests *[]copilotSteerRequest
+	// stop stops the process. The cleanup calls it too.
+	stop func()
+}
+
+// copilotRuntimeResponseLost accepts a request and then stops the fake process
+// without answering it.
+const copilotRuntimeResponseLost = "response lost"
+
+// copilotRuntimeEchoSessionID answers session.create with the requested ID.
+const copilotRuntimeEchoSessionID = "echo session ID"
+
+// newCopilotRuntimeHarness answers each request with answers[method], or with
+// `{}` for a method that the table does not list. An answer that starts with
+// `{"error"` answers with that error. before, when it is not nil, runs before
+// each answer.
+func newCopilotRuntimeHarness(t *testing.T, answers map[string]string, before func(a *Agent, method string)) copilotRuntimeHarness {
+	t.Helper()
+	a, sink := newNativeCopilotForEvents(t)
+	var requests []copilotSteerRequest
+	done := make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(done) }) }
+	var stop func()
+	writer := copilotRequestWriter(func(raw []byte) (int, error) {
+		var request copilotSteerRequest
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return 0, err
+		}
+		requests = append(requests, request)
+		if before != nil {
+			before(a, request.Method)
+		}
+		answer, known := answers[request.Method]
+		if !known {
+			answer = `{}`
+		}
+		if answer == copilotRuntimeResponseLost {
+			finish()
+			return len(raw), nil
+		}
+		if answer == copilotRuntimeEchoSessionID {
+			var config copilotSessionConfig
+			if err := json.Unmarshal(request.Params, &config); err != nil {
+				return 0, err
+			}
+			encoded, err := json.Marshal(copilotSessionInfo{SessionID: config.SessionID})
+			if err != nil {
+				return 0, err
+			}
+			answer = string(encoded)
+		}
+		if strings.HasPrefix(answer, `{"error"`) {
+			a.Deliver(request.ID, []byte(answer))
+			return len(raw), nil
+		}
+		a.Deliver(request.ID, []byte(`{"result":`+answer+`}`))
+		return len(raw), nil
+	})
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), Stdin: agenttest.NopStdin(writer), ProcessDone: done})
+	stop = func() { finish(); a.Process.Stop() }
+	t.Cleanup(stop)
+	return copilotRuntimeHarness{agent: a, sink: sink, requests: &requests, stop: stop}
+}
+
+// methods returns the method of each request that reached the runtime.
+func (h copilotRuntimeHarness) methods() []string {
+	methods := make([]string, 0, len(*h.requests))
+	for _, request := range *h.requests {
+		methods = append(methods, request.Method)
+	}
+	return methods
+}
+
+// lastParams decodes the parameters of the last request.
+func (h copilotRuntimeHarness) lastParams(t *testing.T) map[string]any {
+	t.Helper()
+	require.NotEmpty(t, *h.requests)
+	var params map[string]any
+	require.NoError(t, json.Unmarshal((*h.requests)[len(*h.requests)-1].Params, &params))
+	return params
+}
+
 func newCopilotSteeringAgent(t *testing.T, script copilotSteerScript) (*Agent, *agenttest.Sink, *[]copilotSteerRequest) {
 	t.Helper()
 	a, sink := newNativeCopilotForEvents(t)
@@ -262,6 +353,104 @@ func newCopilotSteeringAgent(t *testing.T, script copilotSteerScript) (*Agent, *
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), Stdin: agenttest.NopStdin(writer), ProcessDone: done})
 	t.Cleanup(func() { close(done); a.Process.Stop() })
 	return a, sink, &calls
+}
+
+// newCopilotFleetHarness starts a fake runtime that answers a send and a fleet
+// request, with Fleet set to fleet.
+func newCopilotFleetHarness(t *testing.T, fleet string, fleetAnswer string) copilotRuntimeHarness {
+	t.Helper()
+	h := newCopilotRuntimeHarness(t, map[string]string{
+		"session.send":        `{"messageId":"message-1"}`,
+		"session.fleet.start": fleetAnswer,
+	}, nil)
+	h.agent.options[copilotOptionFleet] = fleet
+	return h
+}
+
+// While Fleet is on, each new turn goes through Copilot's fleet request, which
+// tells the model to dispatch subagents in parallel. While it is off, a turn
+// goes through the plain send.
+func TestFleetSendsEachNewTurnAsAFleetRequest(t *testing.T) {
+	t.Parallel()
+	attachment := []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("notes")}}
+	for _, test := range []struct {
+		fleet  string
+		method string
+	}{
+		{"true", "session.fleet.start"},
+		{"false", "session.send"},
+		{"", "session.send"},
+	} {
+		t.Run(fmt.Sprintf("fleet %q", test.fleet), func(t *testing.T) {
+			t.Parallel()
+			h := newCopilotFleetHarness(t, test.fleet, `{"started":true}`)
+			require.NoError(t, h.agent.SendInput("Split the work.", attachment))
+			assert.Equal(t, []string{test.method}, h.methods())
+			params := h.lastParams(t)
+			assert.Equal(t, "Split the work.", params["prompt"])
+			assert.Equal(t, []any{map[string]any{
+				"type": "blob", "displayName": "notes.txt", "mimeType": "text/plain", "data": "bm90ZXM=",
+			}}, params["attachments"])
+			active, published := h.sink.LastTurnActive()
+			assert.True(t, published && active, "the turn runs")
+		})
+	}
+}
+
+// A fleet request that Copilot refuses or does not start ends the turn that the
+// send began, so the queue keeps the message.
+func TestFleetRequestFailures(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		answer     string
+		wantErr    error
+		wantText   string
+		wantActive bool
+	}{
+		{name: "not started", answer: `{"started":false}`, wantText: "did not start the fleet request"},
+		{name: "refused", answer: `{"error":{"code":-32602,"message":"fleet refused"}}`, wantText: "fleet refused"},
+		{name: "an answer without the outcome", answer: `{}`, wantErr: agent.ErrDeliveryUncertain, wantActive: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h := newCopilotFleetHarness(t, "true", test.answer)
+			err := h.agent.SendInput("Split the work.", nil)
+			require.Error(t, err)
+			if test.wantErr != nil {
+				require.ErrorIs(t, err, test.wantErr)
+			}
+			assert.Contains(t, err.Error(), test.wantText)
+			active, published := h.sink.LastTurnActive()
+			require.True(t, published)
+			assert.Equal(t, test.wantActive, active)
+		})
+	}
+}
+
+// A fleet request whose write transfers no bytes definitely did not start, so
+// the turn returns to inactive just as it does after a JSON-RPC refusal.
+func TestFleetPreWriteFailureRejectsTheTurn(t *testing.T) {
+	t.Parallel()
+	h := newCopilotFleetHarness(t, "true", `{"started":true}`)
+	h.agent.SetStdinForTest(agenttest.FailingStdin{})
+	err := h.agent.SendInput("Split the work.", nil)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+	assert.False(t, h.agent.PublishTurnActive().Active)
+	active, published := h.sink.LastTurnActive()
+	require.True(t, published)
+	assert.False(t, active)
+}
+
+// A steer joins the running turn, so it uses the plain send while Fleet is on.
+func TestFleetSteerUsesThePlainSend(t *testing.T) {
+	t.Parallel()
+	h := newCopilotFleetHarness(t, "true", `{"started":true}`)
+	h.agent.active = true
+	require.NoError(t, h.agent.SteerInput("Also check the docs.", nil))
+	assert.Equal(t, []string{"session.send"}, h.methods())
+	assert.Equal(t, "immediate", h.lastParams(t)["mode"])
 }
 
 func TestSteerEchoAtUserMessage(t *testing.T) {

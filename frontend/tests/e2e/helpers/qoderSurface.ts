@@ -1,10 +1,41 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { MockModelScriptHost, MockSurface } from './mockModelRequest'
 import { isObject } from '../../../src/lib/jsonPick'
 import { readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
+import { createScenarioQuota } from './scenarioQuota'
 
 export interface QoderSurfaceOptions {
   origin: () => string
   identityToken: string
+}
+
+/** The account quota service that Qoder's `get_usage_info` control request reads. */
+export const QODER_QUOTA_PATH = '/api/v2/quota/usage'
+
+/** The control route that sets the quota answer of the active scenario. See ./scenarioQuota. */
+export const QODER_QUOTA_CONTROL_PREFIX = '/__e2e/qoder/quota/'
+
+/**
+ * Serve Qoder's native account services, and the account quota that one model scenario owns.
+ * The quota service accepts only the mocked account's own credential.
+ */
+export function createQoderSurface(host: Pick<MockModelScriptHost, 'hasScenario'>, options: QoderSurfaceOptions): MockSurface {
+  const quota = createScenarioQuota<Record<string, never>>(host, QODER_QUOTA_CONTROL_PREFIX, 'Qoder account')
+  return {
+    async handleHttp(request, response, url) {
+      if (await quota.handleControl(request, response, url))
+        return true
+      if (request.method === 'GET' && url.pathname === QODER_QUOTA_PATH) {
+        const authorized = !!options.identityToken && request.headers.authorization === `Bearer ${options.identityToken}`
+        quota.answer(response, authorized, {}, 'The Qoder quota credential does not belong to this test.')
+        return true
+      }
+      return handleQoderHttp(request, response, url, options)
+    },
+    clearScenario(scenarioId) {
+      quota.clearScenario(scenarioId)
+    },
+  }
 }
 
 const CONFIG_NAMESPACE = 'qodercli-feature-gates'

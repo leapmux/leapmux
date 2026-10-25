@@ -1196,6 +1196,7 @@ describe('generate', () => {
       'backend/generated/contracts/validate.go',
       'backend/generated/contracts/wire.go',
       'backend/generated/contracts/worker-vocab.go',
+      'backend/generated/contracts/workspace-trust.go',
       'backend/generated/contracts/zcode-protocol.go',
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/acp-protocol.ts',
@@ -1250,6 +1251,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/validate.ts',
       'frontend/src/generated/contracts/wire.ts',
       'frontend/src/generated/contracts/worker-vocab.ts',
+      'frontend/src/generated/contracts/workspace-trust.ts',
       'frontend/src/generated/contracts/zcode-protocol.ts',
     ])
   })

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type lettaQuotaOwner struct {
@@ -333,14 +334,9 @@ func lettaQuotaWindowInfo(window *lettaQuotaWindow, label string) map[string]any
 	}
 	info := map[string]any{}
 	if window.UsedPercent != nil && lettaQuotaFinite(*window.UsedPercent) && *window.UsedPercent >= 0 {
-		info[contracts.RateLimitFieldUtilization] = *window.UsedPercent / 100
-		status := contracts.RateLimitStatusAllowed
-		if *window.UsedPercent >= 100 {
-			status = contracts.RateLimitStatusExceeded
-		} else if *window.UsedPercent >= 80 {
-			status = contracts.RateLimitStatusAllowedWarning
-		}
-		info[contracts.RateLimitFieldStatus] = status
+		utilization := *window.UsedPercent / 100
+		info[contracts.RateLimitFieldUtilization] = utilization
+		info[contracts.RateLimitFieldStatus] = providerkit.RateLimitStatusForUtilization(utilization)
 	}
 	if reset := window.ResetsAt; reset != nil && lettaQuotaFinite(*reset) && *reset >= 0 && *reset <= 253402300799 && math.Trunc(*reset) == *reset {
 		info[contracts.RateLimitFieldResetsAt] = int64(*reset)

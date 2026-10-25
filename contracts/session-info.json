@@ -35,7 +35,8 @@
   },
   "rateLimitTypes": {
     "FiveHour": "five_hour",
-    "SevenDay": "seven_day"
+    "SevenDay": "seven_day",
+    "OneMonth": "one_month"
   },
   "rateLimitStatuses": {
     "Allowed": "allowed",

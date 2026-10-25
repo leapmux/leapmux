@@ -1,8 +1,11 @@
 import type { ProviderControlCapability } from '../capabilities'
+import { PROVIDER_DISPLAY_NAME } from '~/generated/contracts/providers'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { buildControlResponseEnvelope, buildDenyResponse } from '~/utils/controlResponse'
 
 import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { sendResponse } from '../../controls/types'
+import { withWorkspaceTrustControl, withWorkspaceTrustOptions, withWorkspaceTrustResponse } from '../workspaceTrust'
 import { copilotControlResponseSummary } from './controlResponse'
 import { copilotElicitation } from './elicitation'
 import { copilotExtractControl, copilotIsQuestion, copilotQuestions } from './extractControl'
@@ -12,12 +15,13 @@ import { copilotPermissionPresets } from './permissionPresets'
 /** The complete Copilot control channel, separate from provider registration. */
 export const copilotControls: ProviderControlCapability = {
   permissionPresets: copilotPermissionPresets,
-  controlResponseDisplay: withElicitationResponse(copilotElicitation, copilotControlResponseSummary),
+  controlResponseDisplay: withWorkspaceTrustResponse(withElicitationResponse(copilotElicitation, copilotControlResponseSummary)),
   elicitation: copilotElicitation,
   // The composer's send is a rejection. Allow lives on its own button.
   buildControlResponse: (_payload, content, requestId) => buildDenyResponse(requestId, content),
-  extractControl: copilotExtractControl,
-  sendPermissionOption: sendCopilotPermissionResponse,
+  // The Worker asks Copilot's folder-trust question itself (providerkit.WorkspaceTrust).
+  extractControl: withWorkspaceTrustControl(copilotExtractControl, PROVIDER_DISPLAY_NAME[AgentProvider.GITHUB_COPILOT] ?? 'The agent'),
+  sendPermissionOption: withWorkspaceTrustOptions(sendCopilotPermissionResponse),
   askUserQuestion: {
     isRequest: copilotIsQuestion,
     extractQuestions: copilotQuestions,

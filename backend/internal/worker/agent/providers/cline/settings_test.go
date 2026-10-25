@@ -30,6 +30,7 @@ func TestOptionGroupsStateEveryAxis(t *testing.T) {
 	assert.Equal(t, testModel, current[agent.OptionIDModel])
 	assert.Equal(t, agent.EffortAuto, current[agent.OptionIDEffort])
 	assert.Equal(t, contracts.ClinePermissionModeAct, current[agent.OptionIDPermissionMode])
+	assert.Equal(t, "true", current["agentTeams"])
 	snapshot := r.agent.SettingsSnapshot()
 	assert.True(t, snapshot.AppliedLive)
 	assert.Equal(t, current, map[string]string(snapshot.SurfacedOptions))
@@ -329,6 +330,10 @@ func TestNeedsRebuild(t *testing.T) {
 	auto.permissionMode = contracts.ClinePermissionModeAutoApprove
 	high := act
 	high.effort = "high"
+	withoutTeams := act
+	withoutTeams.agentTeams = agentTeamsOff
+	assert.True(t, act.needsRebuild(withoutTeams, act.configExtensions()))
+	assert.True(t, withoutTeams.needsRebuild(act, act.configExtensions()))
 	assert.True(t, act.needsRebuild(plan, act.configExtensions()))
 	assert.True(t, plan.needsRebuild(auto, plan.configExtensions()))
 	assert.True(t, act.needsRebuild(auto, act.configExtensions()), "Auto-approve loads other extensions")

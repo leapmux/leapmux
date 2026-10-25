@@ -15,7 +15,13 @@ import (
 )
 
 // Stream-json exposes AskUserQuestion only after the host declares support.
-// Declare no MCP form capability until this adapter can serve that protocol.
+//
+// The form capability (`elicitation.form`) stays undeclared. It makes CodeBuddy
+// send its own form cards (the AskUserForStructuredInput tool, and payment and
+// A2A cards) as `elicitation_create` control requests, which this adapter does
+// not draw. It does not reach an MCP server: CodeBuddy 2.174.0 builds each MCP
+// client without form support, so the client answers a server's form with
+// -32601 whatever the host declares.
 func (a *Agent) initializeCapabilities(timeout time.Duration) (codebuddyControlResult, error) {
 	return a.sendControlAndWait(`{"subtype":"initialize","capabilities":{"askUserQuestion":true}}`, timeout)
 }

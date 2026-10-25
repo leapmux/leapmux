@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -194,7 +195,15 @@ func (qoderProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	return count, true
 }
 
-// ChildCapabilities.AcceptsMessages reports false: the Agent implements InputSteerer for the
-// parent turn, not ChildSteerer for a subagent's conversation.
+// ChildCapabilities states what a child tab offers.
+//
+// AcceptsMessages reports false: the Agent implements InputSteerer for the
+// parent turn, not ChildSteerer for a subagent's conversation. AcceptsInterrupt
+// reports true for a child that an Agent tool call started, because Qoder's
+// stop_task stops that task alone. A Workflow script's child is not a task of
+// the session, and stop_task leaves it running.
+func (qoderProvider) ChildCapabilities(options optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsInterrupt: options[qoderOptionChildKind] == qoderChildKindTask}
+}
 
 // controlRequestSubtype extracts the subtype of a control request payload.

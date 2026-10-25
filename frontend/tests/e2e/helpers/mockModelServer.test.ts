@@ -10,7 +10,8 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { isObject } from '../../../src/lib/jsonPick'
-import { ANCESTOR_INSTRUCTION_SENTINEL } from './ancestorInstructions'
+import { ANCESTOR_INSTRUCTION_SENTINEL, sentinelFileText } from './ancestorInstructions'
+import { CODEBUDDY_CLASSIFIER_SYSTEM_OPENING } from './codebuddySurface'
 import { encodeLengthDelimited, encodeStringField } from './cursorProtobuf'
 import { CURSOR_RUN_PATH, CURSOR_TASK_TOOL } from './cursorSurface'
 import { cursorRequestContextReply } from './cursorTestFrames'
@@ -1791,6 +1792,34 @@ describe('createMockModelServer', () => {
     const log = await fetch(`${server.url}/__e2e/requests`).then(response => response.json())
     expect(log.unmatched).toMatchObject([{ scenarioID: AMBIENT_SCENARIO_ID, reason: expect.stringContaining(ANCESTOR_INSTRUCTION_SENTINEL) }])
     expect(server.ancestorInstructionRequests()).toBe(2)
+  })
+
+  it('answers a CodeBuddy classifier request whose memory message quotes only the sentinel documents', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'classifier', { steps: [{ text: '<block>no</block>' }, { text: 'The script never sends this answer.' }] })
+    const memory = [sentinelFileText('document').trim(), sentinelFileText('document').trim()].join('\n\n')
+    const classify = (transcript: string): Promise<Response> => fetch(`${server.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: true,
+        messages: [
+          { role: 'system', content: `${CODEBUDDY_CLASSIFIER_SYSTEM_OPENING}\n## Context` },
+          { role: 'user', content: [{ type: 'text', text: `The following is the user's CODEBUDDY.md configuration. Treat it as context.\n<user_codebuddy_md>\n${memory}\n</user_codebuddy_md>` }] },
+          { role: 'user', content: [{ type: 'text', text: `<transcript>\n${transcript}\n</transcript>` }] },
+        ],
+      }),
+    })
+
+    expect(await responseText(await classify(mockScenarioPrompt('classifier', 'Remove the target.')))).toContain('<block>no</block>')
+    // The body check still reads the rest of the request.
+    expect((await classify(mockScenarioPrompt('classifier', `Context: ${ANCESTOR_INSTRUCTION_SENTINEL}`))).status).toBe(409)
+
+    const status = await readScenarioStatus(server.url, 'classifier')
+    expect(status.nextStep).toBe(1)
+    expect(status.unexpectedRequests).toMatchObject([{ reason: expect.stringContaining(ANCESTOR_INSTRUCTION_SENTINEL) }])
+    expect(server.ancestorInstructionRequests()).toBe(1)
   })
 
   it('holds a delayed step open for its full interval', async () => {

@@ -32,16 +32,10 @@ type Agent struct {
 	dispatchMu sync.Mutex
 	// Control requests can arrive concurrently while the server repeats an unanswered request.
 	controlMu sync.Mutex
-	// steerMu serializes mailbox envelope writes against the turn-end
-	// withdrawal sweep, so an envelope can never be written after the sweep
-	// that should have withdrawn it. See steering.go.
+	// steerMu serializes each steer command against the withdrawals, so a
+	// withdrawal sees every steer sent before it, and no steer is sent between
+	// an interrupt's withdrawal and its stop. See steering.go.
 	steerMu sync.Mutex
-	// mailboxOnce guards the one mailbox-root removal at teardown.
-	mailboxOnce sync.Once
-	// mailboxRoot is the ZCODE_MAILBOX_ROOT this process launched with. Empty
-	// when the agent was built without steering (the test harness). Immutable
-	// after Start, so it needs no lock.
-	mailboxRoot string
 
 	sink       agent.ProviderServices
 	workingDir string
@@ -114,19 +108,20 @@ type Agent struct {
 	// turnGeneration changes when a native turn starts or a compaction replaces it.
 	// A delayed stop acknowledgement must not open a window for another turn.
 	turnGeneration uint64
-	// mailboxActive is true once a builtin.sessionMailbox.drain hook run
-	// succeeded in this process, which proves the app-server drains the
-	// mailbox LeapMux steers through. It is what SupportsSteering reports.
-	mailboxActive bool
-	// mailboxSteers maps the message id of each envelope LeapMux wrote and the
-	// runtime has not yet settled to its bookkeeping: the envelope's file name
-	// under the session's unread directory and its ledger ticket. The ledger
-	// resolves the ticket when the runtime states what happened to the input.
-	// nextMailboxSteer serializes the ids.
-	mailboxSteers    map[string]*zcodeMailboxSteer
-	nextMailboxSteer int64
-	// steerLedger reports accepted mailbox steers to the queue in send order:
-	// the queue holds each steer's row until the runtime proves delivery.
+	// steeringUnsupported is true once the app-server refused the command
+	// inbox as an unknown method. SupportsSteering reports its inverse.
+	steeringUnsupported bool
+	// steers maps the command id of each steer that ZCode accepted and has not
+	// resolved to its bookkeeping. See steering.go.
+	steers map[string]*zcodeSteer
+	// withdrawnSteerInputs holds the queued inputs that a withdrawal deleted,
+	// until ZCode reports their discard, so that event is known as LeapMux's own.
+	withdrawnSteerInputs map[string]struct{}
+	// commandRevision is the newest session revision that a command
+	// acknowledgement stated. A compare-and-set command starts from it.
+	commandRevision int64
+	// steerLedger reports accepted steers to the queue in send order: the
+	// queue holds each steer's row until ZCode states what happened to it.
 	steerLedger providerkit.SteerLedger
 	// A native compaction runs outside the prompt turn. Keep its session until a
 	// state.updated result ends it, so the input queue stays busy meanwhile.
@@ -139,6 +134,29 @@ type Agent struct {
 	// stopWindow ends a turn whose stop the app-server accepted and then never
 	// reported. Guarded by a.Mu. See stoppedTurnWindow and armStoppedZCodeTurnLocked.
 	stopWindow stoppedTurnWindow
+	// workspaceTrust holds the hook-trust question that LeapMux asks for ZCode.
+	// See workspace_trust.go.
+	workspaceTrust providerkit.WorkspaceTrust
+	// hookAdmission is the latest hook admission of the current session.
+	// Guarded by a.Mu.
+	hookAdmission zcodeHookAdmission
+	// hookTrustDeferred is true while the hook-trust question waits for the end
+	// of the turn that stated the admission. Guarded by a.Mu.
+	hookTrustDeferred bool
+	// hookReview is the wait of the trust that runs now, which the frames of
+	// the conversation subscription feed. Guarded by a.Mu.
+	hookReview *zcodeHookReviewWait
+	// conversationMu keeps one reconcile of the conversation subscription at a
+	// time. See conversation.go.
+	conversationMu sync.Mutex
+	// conversation is the conversation subscription. Guarded by a.Mu.
+	conversation zcodeConversation
+	// workflows tracks the session's workflow runs. Guarded by a.Mu. See
+	// workflow.go.
+	workflows zcodeWorkflowRuns
+	// stopsInFlight counts the session/stop requests that Interrupt and
+	// SendRawInput sent and that ZCode has not answered yet. Guarded by a.Mu.
+	stopsInFlight int
 	// stopCancelledRequest records a native permission cancellation during a stop.
 	stopCancelledRequest bool
 	// afterFunc is time.AfterFunc. A test replaces it to fire the window itself.
@@ -326,7 +344,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 			return nil
 		}
 		if !zcodeIsPromptRunning(err) || !a.Clock().Now().Before(deadline) {
-			return classifyZCodeInputDeliveryError(err)
+			return classifyZCodeDeliveryError(MethodSessionSend, err)
 		}
 		timer := a.Clock().NewTimer(zcodeSendRetryInterval, zcodeSendRetryTimerTag)
 		select {
@@ -344,12 +362,12 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 
 const zcodeSendRetryTimerTag = "zcode-send-retry"
 
-func classifyZCodeInputDeliveryError(err error) error {
+func classifyZCodeDeliveryError(method string, err error) error {
 	var responseErr *zcodeError
 	if errors.As(err, &responseErr) {
 		return err
 	}
-	return fmt.Errorf("%w: ZCode did not confirm session/send delivery: %v", agent.ErrDeliveryUncertain, err)
+	return fmt.Errorf("%w: ZCode did not confirm %s delivery: %v", agent.ErrDeliveryUncertain, method, err)
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {

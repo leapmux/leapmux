@@ -1,9 +1,11 @@
 package zcode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -34,6 +36,12 @@ const zcodeControlPlanApproval = contracts.ZCodeToolNameExitPlanMode
 // zcodeControlAskUserQuestion is the tool name recorded for a question, matching the
 // name every provider's shared AskUserQuestion control recognizes.
 const zcodeControlAskUserQuestion = contracts.ZCodeToolNameAskUserQuestion
+
+// zcodeControlMCPElicitation is the tool name recorded for an MCP server's input
+// form: ZCode's own name for the interaction (`toolName` of the request). It keeps
+// the form off the question surface, because the browser draws it as a typed MCP
+// form instead. See zcodeMCPElicitationResult.
+const zcodeControlMCPElicitation = "McpElicitation"
 
 // zcodePermissionRequest is the interaction/requestPermission params.
 type zcodePermissionRequest struct {
@@ -171,6 +179,12 @@ func (r zcodeUserInputRequest) isPlanApproval() bool {
 	return r.Schema.Interaction == contracts.ZCodeInteractionPlanApproval
 }
 
+// isMCPElicitation reports whether this request is an MCP server's input form,
+// which ZCode also states as questions.
+func (r zcodeUserInputRequest) isMCPElicitation() bool {
+	return r.Schema.Interaction == contracts.ZCodeInteractionMcpElicitation
+}
+
 // planText reads the native tool input first, then context, then the prompt fallback.
 func (r zcodeUserInputRequest) planText() string {
 	for _, data := range []json.RawMessage{r.Input, r.Context} {
@@ -272,6 +286,9 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 
 	planText := req.planText()
 	toolName := zcodeControlAskUserQuestion
+	if req.isMCPElicitation() {
+		toolName = zcodeControlMCPElicitation
+	}
 	if req.isPlanApproval() {
 		toolName = zcodeControlPlanApproval
 		if strings.TrimSpace(planText) != "" {
@@ -904,4 +921,182 @@ func zcodeAnswersFromResponse(content []byte) map[string]string {
 		return nil
 	}
 	return env.Response.Response.UpdatedInput.Answers
+}
+
+// --- MCP input forms ---
+
+// zcodeResolveMCPElicitation answers an MCP server's input form with the browser's
+// MCP form answer. ZCode states the form as a user-input request, so the reply is
+// the user-input reply that ZCode turns back into the form's content.
+func zcodeResolveMCPElicitation(stored zcodeControlRequestPayload, responseContent []byte, res agent.ControlResponseResolution) agent.ControlResponseResolution {
+	var response providerkit.MCPElicitationControlResponse
+	if json.Unmarshal(responseContent, &response) != nil {
+		res.Refuse(agent.RefusalUnreadableAnswer)
+		return res
+	}
+	if response.Response.RequestID != stored.RequestID {
+		res.Refuse(agent.RefusalOtherRequest)
+		return res
+	}
+	if len(stored.WireID) == 0 {
+		res.Refuse(agent.RefusalUnreadableRequest)
+		return res
+	}
+	answer := response.Response.Response
+	if len(answer.Meta) > 0 {
+		// ZCode's form offers no choice that an answer persists.
+		res.Refuse("the answer persists a choice the request did not offer")
+		return res
+	}
+	reply, err := zcodeMCPElicitationResult(stored.Params, answer.Action, answer.Content)
+	if err != nil {
+		slog.Warn("zcode build MCP form reply failed", "request_id", stored.RequestID, "error", err)
+		res.Refuse(agent.RefusalUnreadableAnswer)
+		return res
+	}
+	encoded, err := json.Marshal(zcodeReplyFrame{ID: stored.WireID, Result: reply})
+	if err != nil {
+		res.Refuse(agent.RefusalUnencodableReply)
+		return res
+	}
+	res.Content = encoded
+	return res
+}
+
+// zcodeMCPElicitationResult builds the user-input reply to an MCP form from the
+// answer's action and content.
+//
+// ZCode reads an accepted form positionally: `answer_<i>` is the text of the i-th
+// field that it carries (zcodeElicitationFields), and it types the text from the
+// field (a boolean is "true", a number is parsed). So each value goes out as that
+// text, and a value that ZCode cannot carry (null, an array, an object) is left
+// out. Decline and cancel carry no content.
+func zcodeMCPElicitationResult(params json.RawMessage, action string, content json.RawMessage) (map[string]any, error) {
+	switch action {
+	case contracts.MCPElicitationActionDecline:
+		return map[string]any{contracts.ZCodeReplyFieldAction: contracts.ZCodeActionDecline}, nil
+	case contracts.MCPElicitationActionCancel:
+		return map[string]any{contracts.ZCodeReplyFieldAction: contracts.ZCodeActionCancel}, nil
+	case contracts.MCPElicitationActionAccept:
+	default:
+		return nil, fmt.Errorf("the MCP form answer states the action %q", action)
+	}
+	values := map[string]json.RawMessage{}
+	if len(content) > 0 && string(content) != "null" {
+		if err := json.Unmarshal(content, &values); err != nil {
+			return nil, fmt.Errorf("read the MCP form content: %w", err)
+		}
+	}
+	var request struct {
+		Schema struct {
+			RequestedSchema json.RawMessage `json:"requestedSchema"`
+		} `json:"schema"`
+		Input struct {
+			RequestedSchema json.RawMessage `json:"requestedSchema"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(params, &request); err != nil {
+		return nil, fmt.Errorf("read the stored MCP form request: %w", err)
+	}
+	schema := request.Schema.RequestedSchema
+	if len(schema) == 0 {
+		schema = request.Input.RequestedSchema
+	}
+	answers := map[string]any{}
+	for i, field := range zcodeElicitationFields(schema) {
+		if text, ok := zcodeElicitationAnswerText(values[field]); ok {
+			answers[fmt.Sprintf("%s%d", contracts.ZCodeAnswerFieldIndexedPrefix, i)] = text
+		}
+	}
+	return map[string]any{
+		contracts.ZCodeReplyFieldAction:  contracts.ZCodeActionAccept,
+		contracts.ZCodeReplyFieldContent: answers,
+	}, nil
+}
+
+// zcodeElicitationFields lists the fields of a form schema that ZCode carries, in
+// the order of `properties`: a property with an `enum` array, or of the type
+// number, integer, boolean or string. ZCode skips every other property, and its
+// positional answers count only these fields (readMcpElicitationFields in
+// zcode.cjs 3.16.3). A property that the object states twice keeps its first
+// place and its last definition, as a JavaScript object does.
+func zcodeElicitationFields(schema json.RawMessage) []string {
+	var root struct {
+		Properties json.RawMessage `json:"properties"`
+	}
+	if len(schema) == 0 || json.Unmarshal(schema, &root) != nil || len(root.Properties) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(root.Properties))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return nil
+	}
+	var order []string
+	carried := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil
+		}
+		name, _ := token.(string)
+		var property json.RawMessage
+		if err := decoder.Decode(&property); err != nil {
+			return nil
+		}
+		if _, seen := carried[name]; !seen {
+			order = append(order, name)
+		}
+		carried[name] = zcodeElicitationCarries(property)
+	}
+	var fields []string
+	for _, name := range order {
+		if carried[name] {
+			fields = append(fields, name)
+		}
+	}
+	return fields
+}
+
+// zcodeElicitationCarries reports whether ZCode carries a value for one property
+// of a form schema.
+func zcodeElicitationCarries(property json.RawMessage) bool {
+	var definition map[string]json.RawMessage
+	if json.Unmarshal(property, &definition) != nil || definition == nil {
+		return false
+	}
+	if enum := bytes.TrimSpace(definition["enum"]); len(enum) > 0 && enum[0] == '[' {
+		return true
+	}
+	var kind string
+	if json.Unmarshal(definition["type"], &kind) != nil {
+		return false
+	}
+	switch kind {
+	case "number", "integer", "boolean", "string":
+		return true
+	default:
+		return false
+	}
+}
+
+// zcodeElicitationAnswerText is the text that ZCode reads back as the value: a
+// string as it is, a number as its JSON text, and a boolean as "true" or
+// "false". Any other value cannot pass through ZCode's text answer.
+func zcodeElicitationAnswerText(value json.RawMessage) (string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if len(bytes.TrimSpace(value)) == 0 || decoder.Decode(&decoded) != nil {
+		return "", false
+	}
+	switch typed := decoded.(type) {
+	case string:
+		return typed, true
+	case json.Number:
+		return typed.String(), true
+	case bool:
+		return strconv.FormatBool(typed), true
+	default:
+		return "", false
+	}
 }

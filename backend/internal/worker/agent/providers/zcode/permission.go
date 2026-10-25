@@ -227,4 +227,6 @@ func (a *Agent) withdrawPendingControls() {
 	for requestID, instanceID := range canceled {
 		a.sink.CancelControlRequestInstance(requestID, instanceID)
 	}
+	// The hook-trust question belongs to the session too.
+	a.workspaceTrust.Retire(a.sink)
 }

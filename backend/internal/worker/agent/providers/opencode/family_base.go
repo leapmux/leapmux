@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -24,17 +25,50 @@ type FamilyBase struct {
 	acp.Base
 	Questions openCodeQuestions
 	// MemberEvents receives native session metadata. Set it before the daemon reader starts.
-	MemberEvents    func(eventType string, properties json.RawMessage)
+	MemberEvents func(eventType string, properties json.RawMessage)
+	// DaemonReady runs once the address of the daemon's HTTP server is known,
+	// so ReadDaemon can reach it. Its context ends with the daemon bridge. It
+	// runs before the bridge reads events, so it must not wait. Set it before
+	// the start. It may be nil.
+	DaemonReady func(ctx context.Context)
+	// TurnEnded runs after each prompt ends, also after a failure or a stop. Set
+	// it before the start. It may be nil.
+	TurnEnded func()
+	// MemberOptionGroups returns the option groups that one member keeps
+	// beside the family's own, each with its current value. The member applies
+	// a change of one of them in its own UpdateSettings. Set it before the
+	// start. It may be nil.
+	MemberOptionGroups func() []*leapmuxv1.AvailableOptionGroup
+
 	daemonMu        sync.Mutex
 	daemonMessages  map[string]*openCodeMessageState
 	daemonParts     map[string]string
 	lastAssistant   string
 	retryResolution providerkit.RetryResolution
+	// autoApprove is the current value of the Auto-approve option. Guarded by
+	// the base's settings lock, Base.Mu, which an automatic approval also holds.
+	autoApprove bool
+	childStopMu sync.Mutex
+	// stoppedChildren holds the task calls whose subagent the user stopped, until
+	// the close of that subagent's row reads the stop. Guarded by childStopMu.
+	stoppedChildren map[string]struct{}
+	childSessionsMu sync.Mutex
+	// childSessions holds the session of each running subagent, by the task
+	// call that started it. Guarded by childSessionsMu.
+	childSessions map[string]*openCodeChildSession
 }
 
 func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {
 	b.Questions.Configure(sink)
 	b.Questions.observe = b.handleDaemonEvent
+	b.Questions.ready = b.DaemonReady
+}
+
+// ReadDaemon GETs one route of the daemon's HTTP server, such as a route that
+// one member of the family serves alone, and returns its body.
+func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, error) {
+	raw, _, err := b.Questions.readRoute(ctx, route)
+	return raw, err
 }
 
 // SendRawInput answers a question through the daemon's HTTP server, and sends every

@@ -185,6 +185,8 @@ func (a *Agent) reportSettingsChange(before, after kimiSettings) {
 	refresh := optionmap.Map{}
 	if before.model != after.model {
 		refresh[agent.OptionIDModel] = after.model
+		// The plan limits only its own models, so the windows follow the model.
+		a.requestUsageRefresh()
 	}
 	if before.effort != after.effort {
 		refresh[agent.OptionIDEffort] = after.effort
@@ -332,6 +334,10 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 		return result
 	}
 	a.applyStatus(status)
+	if status.Model != "" && status.Model != have.model {
+		// The plan limits only its own models, so the windows follow the model.
+		a.requestUsageRefresh()
+	}
 	result.SurfacedOptions = agent.CurrentOptions(a.OptionGroups())
 	for key := range result.Settlements {
 		value := result.SurfacedOptions[key]

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workspace-trust.schema.json",
+  "title": "Workspace trust vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "controlTypes",
+    "fields",
+    "decisions"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unread": {
+      "description": "Each key requires a reader on every declared side. _unread.<table>.<Key>.sides lists sides that do not read that key. The why field identifies its remaining reader. The key stays in the contract because that reader still needs updates. The consumption test rejects obsolete exemptions.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
+    },
+    "controlTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "fields": {
+      "$ref": "#/$defs/table"
+    },
+    "decisions": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

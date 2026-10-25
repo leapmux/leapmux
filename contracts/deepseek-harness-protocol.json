@@ -1,5 +1,5 @@
 {
-  "_readme": "DeepSeek Harness owns these Web Remote event and tool values. The Worker preserves native Session events. The browser reads those same events. LeapMux owns the plan selector values because the native plan state is a boolean. LeapMux image receipts preserve native image identity and order without storing complete text or subprocess output. The Worker adds the native context window to the supplement of each assistant block, because the native usage states no window. notificationEvents lists the Session events that the Worker persists as notifications. A compaction start is live session state, not a row. hookDecisions lists the native decisions that prevent continued work. Both sides read these decisions to identify a hook failure.",
+  "_readme": "DeepSeek Harness owns these Web Remote event and tool values. The Worker preserves native Session events. The browser reads those same events. LeapMux owns the plan selector values because the native plan state is a boolean. LeapMux image receipts preserve native image identity and order without storing complete text or subprocess output. The Worker adds the native context window to the supplement of each assistant block, because the native usage states no window. notificationEvents lists the Session events that the Worker persists as notifications. A compaction start is live session state, not a row. hookDecisions lists the native decisions that prevent continued work. Both sides read these decisions to identify a hook failure. The Auto permission preset exists only while the experimental Auto review layer is loaded; the Worker loads that layer into each DeepSeek Harness process through a launch overlay of its own.",
   "events": {
     "AssistantMessage": "assistant/message",
     "UserMessage": "user/message",
@@ -48,7 +48,8 @@
   "permissionPresets": {
     "ReadOnly": "read-only",
     "WorkspaceWrite": "workspace-write",
-    "DangerFullAccess": "danger-full-access"
+    "DangerFullAccess": "danger-full-access",
+    "Auto": "auto"
   },
   "options": {
     "Permissions": "permissions",

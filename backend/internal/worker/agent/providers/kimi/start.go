@@ -102,6 +102,8 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	a.persistSessionWarnings(ctx, sessionID)
 	a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
 	a.sink.BroadcastStatusActive(sessionID)
+	go a.checkWorkspaceTrust()
+	a.requestUsageRefresh()
 	return a, nil
 }
 

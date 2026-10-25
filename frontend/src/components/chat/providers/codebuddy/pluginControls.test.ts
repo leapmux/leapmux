@@ -54,14 +54,15 @@ describe('codebuddyControls', () => {
 })
 
 describe('codebuddyControls permissionPresets', () => {
-  // CodeBuddy's bypassPermissions is a real, advertised, live-switchable mode,
-  // so the plus-menu and banner can switch the session onto it. There is no
-  // smart mode to pair with it.
-  it('offers a bypass shortcut and no smart one', () => {
+  // CodeBuddy's bypassPermissions and auto are live-switchable modes, so the plus menu and the banner can switch the
+  // session onto either. Smart selects Auto, whose classifier decides each call that would prompt.
+  it('offers a smart shortcut onto Auto and a bypass shortcut', () => {
+    expect(codebuddyControls.permissionPresets?.smart).toStrictEqual({
+      sets: { permissionMode: CODEBUDDY_MODE.Auto },
+    })
     expect(codebuddyControls.permissionPresets?.bypass).toStrictEqual({
       sets: { permissionMode: CODEBUDDY_MODE.BypassPermissions },
     })
-    expect(codebuddyControls.permissionPresets?.smart).toBeUndefined()
   })
 })
 

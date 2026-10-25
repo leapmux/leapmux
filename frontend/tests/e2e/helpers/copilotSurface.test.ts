@@ -3,7 +3,7 @@ import { Socket } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
 import { copilotCatalogMetadata, copilotModelCapabilities, copilotRateLimitHeaders, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
 
-const options = { sessionToken: 'mock-session', defaultModelId: 'model-default', reasoningModelId: 'model-reasoning' }
+const options = { sessionToken: 'mock-session', defaultModelId: 'model-default', reasoningModelId: 'model-reasoning', messagesModelId: 'model-messages' }
 
 function exchange(method: string, pathname: string, host?: string) {
   const request = new IncomingMessage(new Socket())
@@ -74,6 +74,13 @@ describe('copilotCatalogMetadata', () => {
     expect(copilotCatalogMetadata('model-reasoning', options)).toEqual({
       supported_endpoints: ['/responses'],
       capabilities: { supports: { vision: true, reasoning_effort: ['low', 'high'] }, limits: { max_context_window_tokens: 128_000 } },
+    })
+  })
+
+  it('routes the Messages model through the native Anthropic endpoint', () => {
+    expect(copilotCatalogMetadata('model-messages', options)).toEqual({
+      supported_endpoints: ['/v1/messages'],
+      capabilities: { supports: { vision: true }, limits: { max_context_window_tokens: 128_000 } },
     })
   })
 

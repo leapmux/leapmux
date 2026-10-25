@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD, ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ControlDeliveryState } from '../../../src/generated/proto/leapmux/v1/hub_storage_pb'
 import { RAIL } from '../helpers/chatScrollRail'
 import { withCleanup } from '../helpers/cleanup'
@@ -56,13 +56,15 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   await expectSettingsChip(page, 'Plan')
   const database = join(leapmuxServer.dataDir, 'worker', 'worker.db')
   const agent = `'${agentId.replaceAll('\'', '\'\'')}'`
-  const rows = JSON.parse(execFileSync('sqlite3', ['-json', database, `SELECT state, feedback, hex(resolved_content) AS content FROM control_response_answers WHERE agent_id=${agent} AND feedback='approve'`], { encoding: 'utf8' }) || '[]') as Array<{ state: number, feedback: string, content: string }>
+  // The native decline cannot carry the feedback, so the answer queues it as a follow-up input of its own.
+  const rows = JSON.parse(execFileSync('sqlite3', ['-json', database, `SELECT state, follow_up_kind, hex(resolved_content) AS content FROM control_response_answers WHERE agent_id=${agent} AND follow_up='approve'`], { encoding: 'utf8' }) || '[]') as Array<{ state: number, follow_up_kind: number, content: string }>
   expect(rows).toHaveLength(1)
   const [row] = rows
   if (row === undefined)
     throw new Error('expected exactly one stored approval feedback row')
   // This view exposes the delivery enum stored in control_deliveries, not the public response enum.
   expect(row.state).toBe(ControlDeliveryState.COMPLETED)
+  expect(row.follow_up_kind).toBe(AgentInputKind.CONTROL_FEEDBACK)
   expect(JSON.parse(Buffer.from(row.content, 'hex').toString()).result.action).toBe('decline')
   expect(errors).toEqual([])
 })

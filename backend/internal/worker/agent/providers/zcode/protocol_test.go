@@ -145,7 +145,7 @@ func TestZCodeRuntimeUnavailable_IsPermanentAndKeepsItsMessage(t *testing.T) {
 	assert.False(t, zcodeIsPromptRunning(wire), "a permanent failure must never be retried")
 	assert.False(t, zcodeIsMethodNotFound(wire), "it states a runtime that cannot act, not an absent method")
 
-	classified := classifyZCodeInputDeliveryError(wire)
+	classified := classifyZCodeDeliveryError(MethodSessionSend, wire)
 	assert.ErrorIs(t, classified, error(wire), "the wire error must reach the caller unchanged")
 	assert.NotErrorIs(t, classified, agent.ErrDeliveryUncertain, "the app-server answered, so the delivery is certain")
 	assert.Contains(t, classified.Error(), "the workspace moved")

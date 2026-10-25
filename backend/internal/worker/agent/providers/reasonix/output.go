@@ -51,3 +51,38 @@ func (a *Agent) observeReasonixNotice(updateType string, metadata map[string]jso
 	}
 	return true
 }
+
+// observeSessionMetadata keeps native notices out of the model stream and the
+// current proposal candidate. The candidate is operational data for a possible
+// fresh-context execution, not a second transcript row.
+func (a *Agent) observeSessionMetadata(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool {
+	if a.observeReasonixNotice(updateType, metadata, update) {
+		return true
+	}
+	if updateType != contracts.ACPUpdateUserMessageChunk && updateType != contracts.ACPUpdateAgentMessageChunk {
+		return false
+	}
+	var chunk struct {
+		Content struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(update, &chunk) != nil {
+		return false
+	}
+	a.Mu.Lock()
+	if updateType == contracts.ACPUpdateUserMessageChunk {
+		a.planDraft = ""
+	} else {
+		a.planDraft += chunk.Content.Text
+	}
+	a.Mu.Unlock()
+	return false
+}
+
+// resetPlanDraft drops the candidate of the session that ended.
+func (a *Agent) resetPlanDraft() {
+	a.Mu.Lock()
+	a.planDraft = ""
+	a.Mu.Unlock()
+}

@@ -45,7 +45,8 @@ export const ZCODE_SESSION_UPDATE_ROWS: Readonly<Record<ZCodeSessionUpdateKind, 
   // `drop` carries telemetry. A background task belongs to the registry, and a
   // subagent update to its own transcript. The goal change drives the goal card,
   // and the worker writes the neutral `goal_updated` row for its transition. The
-  // mode change drives the settings.
+  // mode change drives the settings. The hook admission drives the shared
+  // workspace-trust question, which states the hooks that wait for trust.
   drop: 'unknown',
   networkStatus: 'notification',
   backgroundTask: 'unknown',
@@ -58,7 +59,7 @@ export const ZCODE_SESSION_UPDATE_ROWS: Readonly<Record<ZCodeSessionUpdateKind, 
   microcompact: 'notification',
   modelSelected: 'notification',
   hookRun: 'notification',
-  hookAdmission: 'notification',
+  hookAdmission: 'unknown',
   steerDiscarded: 'notification',
 }
 

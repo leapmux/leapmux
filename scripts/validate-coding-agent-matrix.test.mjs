@@ -424,6 +424,324 @@ describe('validateCodingAgentMatrix', () => {
       })
     })
 
+    it('records native Agent Teams support for Cline', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['swarm-mode'].cline).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/cline/swarm-mode.spec.ts',
+      })
+    })
+
+    it('records native plan approval support for Reasonix', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['plan-approval-banner'].reasonix).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/reasonix/plan-approval-banner.spec.ts',
+      })
+    })
+
+    it('records native token progress support for Qoder CLI', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['generation-progress']['qoder-cli']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qoder-cli/generation-progress.spec.ts',
+      })
+    })
+
+    it('records native Kilo Swarm support for Kilo', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['swarm-mode'].kilo).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/kilo/swarm-mode.spec.ts',
+      })
+    })
+
+    it('records native subagent live transcript and send support for OpenCode and Kilo', () => {
+      const { checklist } = readCodingAgentMatrix()
+      for (const feature of ['subagent-live-transcript', 'send-to-a-subagent']) {
+        for (const provider of ['opencode', 'kilo']) {
+          expect(checklist.cells[feature][provider]).toMatchObject({
+            support: 'supported',
+            audit: 'source-verified',
+            testStatus: 'passed',
+            verified: true,
+            spec: `frontend/tests/e2e/${provider}/${feature}.spec.ts`,
+          })
+        }
+      }
+    })
+
+    it('records native plan usage support for Kilo', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['rate-limit-state'].kilo).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/kilo/rate-limit-state.spec.ts',
+      })
+    })
+
+    it('records native Bypass permissions support for OpenCode and Kilo', () => {
+      const { checklist } = readCodingAgentMatrix()
+      for (const provider of ['opencode', 'kilo']) {
+        expect(checklist.cells['bypass-permissions-shortcut'][provider]).toMatchObject({
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: `frontend/tests/e2e/${provider}/bypass-permissions-shortcut.spec.ts`,
+        })
+      }
+    })
+
+    it('records native subagent interrupt support for OpenCode and Kilo', () => {
+      const { checklist } = readCodingAgentMatrix()
+      for (const provider of ['opencode', 'kilo']) {
+        expect(checklist.cells['interrupt-a-subagent'][provider]).toMatchObject({
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: `frontend/tests/e2e/${provider}/interrupt-a-subagent.spec.ts`,
+        })
+      }
+    })
+
+    it('records the native Smart permissions shortcut for CodeBuddy Code', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['smart-permissions-shortcut']['codebuddy-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codebuddy-code/smart-permissions-shortcut.spec.ts',
+      })
+    })
+
+    it('records the Auto review Smart permissions shortcut for DeepSeek Harness', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['smart-permissions-shortcut']['deepseek-harness']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/deepseek-harness/smart-permissions-shortcut.spec.ts',
+      })
+    })
+
+    it('records the CodeBuddy Code MCP form refusal as an agent limit', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['mcp-input-request']['codebuddy-code']).toMatchObject({
+        support: 'agent-limit',
+        audit: 'unsupported',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codebuddy-code/mcp-input-request.spec.ts',
+      })
+    })
+
+    it('records native workflow grouping for ZCode', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['workflow-grouping'].zcode).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/zcode/workflow-grouping.spec.ts',
+      })
+    })
+
+    it('records hosted hook trust for ZCode', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['workspace-trust'].zcode).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/zcode/workspace-trust.spec.ts',
+      })
+    })
+
+    it('records native PDF attachment support for ZCode', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['pdf-attachments'].zcode).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/zcode/pdf-attachments.spec.ts',
+      })
+    })
+
+    it('records background subagent interrupt support for ZCode', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['interrupt-a-subagent'].zcode).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/zcode/interrupt-a-subagent.spec.ts',
+      })
+    })
+
+    it('records typed MCP form support for ZCode', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['mcp-input-request'].zcode).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/zcode/mcp-input-request.spec.ts',
+      })
+    })
+
+    it('records native steering support for ZCode', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['steer-mid-turn'].zcode).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/zcode/steer-mid-turn.spec.ts',
+      })
+    })
+
+    it('records plan usage support for Kimi Code', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['rate-limit-state']['kimi-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/kimi-code/rate-limit-state.spec.ts',
+      })
+    })
+
+    it('records hosted workspace trust support for Kimi Code', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['workspace-trust']['kimi-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/kimi-code/workspace-trust.spec.ts',
+      })
+    })
+
+    it('records hosted workspace trust support for GitHub Copilot', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['workspace-trust']['github-copilot']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/github-copilot/workspace-trust.spec.ts',
+      })
+    })
+
+    it('records native Fleet support for GitHub Copilot', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['swarm-mode']['github-copilot']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/github-copilot/swarm-mode.spec.ts',
+      })
+    })
+
+    it('records native PDF attachment support for GitHub Copilot', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['pdf-attachments']['github-copilot']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/github-copilot/pdf-attachments.spec.ts',
+      })
+    })
+
+    it('records native subagent send and interrupt support for GitHub Copilot', () => {
+      const { checklist } = readCodingAgentMatrix()
+      for (const feature of ['send-to-a-subagent', 'interrupt-a-subagent']) {
+        expect(checklist.cells[feature]['github-copilot']).toMatchObject({
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: `frontend/tests/e2e/github-copilot/${feature}.spec.ts`,
+        })
+      }
+    })
+
+    it('records native subagent interrupt support for Qoder CLI', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['interrupt-a-subagent']['qoder-cli']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qoder-cli/interrupt-a-subagent.spec.ts',
+      })
+    })
+
+    it('records native account quota support for Qoder CLI', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['rate-limit-state']['qoder-cli']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qoder-cli/rate-limit-state.spec.ts',
+      })
+    })
+
+    it('records native output style support for Qoder CLI', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['output-style']['qoder-cli']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qoder-cli/output-style.spec.ts',
+      })
+    })
+
+    it('records native extended thinking support for Qoder CLI', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['extended-thinking']['qoder-cli']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qoder-cli/extended-thinking.spec.ts',
+      })
+    })
+
+    it('records native Bypass permissions support for Qoder CLI', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['bypass-permissions-shortcut']['qoder-cli']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qoder-cli/bypass-permissions-shortcut.spec.ts',
+      })
+    })
+
     it('records the audited support totals and the native question and compaction corrections', () => {
       const { features, checklist, providerContract } = readCodingAgentMatrix()
       expect(validateCodingAgentMatrix(features, checklist, providerContract)).toEqual([])
@@ -454,7 +772,7 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1123, 'agent-limit': 419, 'leapmux-limit': 48 })
+      expect(counts).toEqual({ 'supported': 1156, 'agent-limit': 419, 'leapmux-limit': 15 })
       expect(checklist.cells['agent-questions']['codebuddy-code']).toMatchObject({
         support: 'supported',
         audit: 'source-verified',

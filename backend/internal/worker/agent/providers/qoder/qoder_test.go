@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -58,7 +59,7 @@ func TestQoderProviderFacts(t *testing.T) {
 	agenttest.AssertTokenResumeRule(t, qoderProvider{})
 	agenttest.AssertWithholdsTheResponseForAMalformedRequest(t, qoderProvider{})
 	agenttest.AssertPreservesTheResponseWithoutARequest(t, qoderProvider{})
-	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
+	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil), optionmap.Map{qoderOptionChildKind: qoderChildKindTask})
 }
 
 func TestQoderRegistration(t *testing.T) {

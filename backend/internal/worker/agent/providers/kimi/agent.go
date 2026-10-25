@@ -47,6 +47,9 @@ type Agent struct {
 	// A caller must not acquire it while it holds Mu.
 	sessionMu    sync.Mutex
 	approvalWork providerkit.CoalescingWork
+	// usageWork reads the plan usage of the Kimi Code account. See
+	// rate_limits.go.
+	usageWork providerkit.CoalescingWork
 
 	// --- guarded by Mu ---
 
@@ -85,9 +88,17 @@ type Agent struct {
 	tasks map[string]*kimiTask
 	// goal is the last goal the session reported. See goal.go.
 	goal kimiGoalState
+	// trustRestartRequired is true once the reader trusted the workspace: the
+	// session that runs loads the project's configuration only in a new process.
+	// See workspace_trust.go.
+	trustRestartRequired bool
 
 	// children maps a subagent to its child transcript. See subagent.go.
 	children kimiChildIndex
+
+	// workspaceTrust holds the workspace-trust question that LeapMux asks for
+	// Kimi Code. See workspace_trust.go.
+	workspaceTrust providerkit.WorkspaceTrust
 
 	// descendantGroups is the Stop hook that lists the process groups the
 	// server's tools run in. A test replaces it.
@@ -290,6 +301,10 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	}
 	if isKimiRawAbort(data) {
 		return a.Interrupt(stop)
+	}
+	// LeapMux asked the workspace-trust question, so no server request waits for its answer.
+	if handled, err := a.workspaceTrust.Answer(a.sink, kimiWorkspaceTrustHost{a}, data); handled {
+		return err
 	}
 	return a.deliverControlResponse(data)
 }

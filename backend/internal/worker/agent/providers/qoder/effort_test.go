@@ -21,8 +21,9 @@ func TestQoderEffortsUseSharedLabels(t *testing.T) {
 	}
 }
 
-// The menu states every level the CLI admits and nothing else. Auto is not one
-// of them: it is LeapMux's own sentinel for "send no level", so it sits ahead of
+// The menu states the levels that the CLI admits, except `none`, which the
+// Extended Thinking Off choice replaces, and nothing else. Auto is not one of
+// them: it is LeapMux's own sentinel for "send no level", so it sits ahead of
 // the wire vocabulary rather than inside it.
 func TestQoderEffortLevelsAreTheWireVocabulary(t *testing.T) {
 	t.Parallel()
@@ -33,7 +34,6 @@ func TestQoderEffortLevelsAreTheWireVocabulary(t *testing.T) {
 		contracts.QoderEffortLevelHigh,
 		contracts.QoderEffortLevelMedium,
 		contracts.QoderEffortLevelLow,
-		contracts.QoderEffortLevelNone,
 	}
 	var offered []string
 	for _, tier := range qoderEffortLevels {
@@ -46,15 +46,14 @@ func TestQoderEffortLevelsAreTheWireVocabulary(t *testing.T) {
 	assert.True(t, qoderEffortLevels[0].Default, "Auto is the default a new session starts on")
 }
 
-// Auto and an unset effort send no flag, so the CLI keeps the model's own
-// default. Every other level is one flag pair.
+// Auto and an unset effort send Qoder's own `auto`, so the CLI keeps the
+// model's own default, also on a resume. Every other level is its own word.
 func TestQoderEffortArgs(t *testing.T) {
 	t.Parallel()
 
-	assert.Nil(t, qoderEffortArgs(""))
-	assert.Nil(t, qoderEffortArgs(agent.EffortAuto))
-	assert.Equal(t, []string{"--reasoning-effort", "high"}, qoderEffortArgs(contracts.QoderEffortLevelHigh))
-	assert.Equal(t, []string{"--reasoning-effort", "none"}, qoderEffortArgs(contracts.QoderEffortLevelNone))
+	assert.Equal(t, []string{"--reasoning-effort", "auto"}, qoderReasoningArgs("", qoderThinkingAuto))
+	assert.Equal(t, []string{"--reasoning-effort", "auto"}, qoderReasoningArgs(agent.EffortAuto, qoderThinkingAuto))
+	assert.Equal(t, []string{"--reasoning-effort", "high"}, qoderReasoningArgs(contracts.QoderEffortLevelHigh, qoderThinkingAuto))
 }
 
 func TestQoderRegistrationOffersTheEffortAxis(t *testing.T) {
@@ -79,8 +78,7 @@ func TestQoderRegistrationOffersTheEffortAxis(t *testing.T) {
 		contracts.QoderEffortLevelHigh,
 		contracts.QoderEffortLevelMedium,
 		contracts.QoderEffortLevelLow,
-		contracts.QoderEffortLevelNone,
-	}, ids)
+	}, ids, "Extended Thinking Off replaces the native none level")
 }
 
 // An effort change takes the launch flag, so it settles only after a restart
@@ -103,7 +101,7 @@ func TestQoderSettingsSnapshotCarriesTheEffort(t *testing.T) {
 	snapshot := a.SettingsSnapshot()
 
 	assert.Equal(t, contracts.QoderEffortLevelXhigh, snapshot.SurfacedOptions[agent.OptionIDEffort])
-	assert.Len(t, a.OptionGroups(), 2)
+	assert.Len(t, a.OptionGroups(), 4, "effort, Extended Thinking, Output Style and permissions")
 }
 
 // An agent that opens without an effort runs at Auto: the launch sends no

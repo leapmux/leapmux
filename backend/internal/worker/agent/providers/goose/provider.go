@@ -14,7 +14,8 @@ type gooseProvider struct {
 	acp.Provider
 }
 
-// ValidateAttachment refuses embedded blobs that Goose's ACP bridge drops.
+// ValidateAttachment refuses embedded blobs that Goose's ACP bridge drops. A
+// shared handoff of a PDF as a file path: https://github.com/leapmux/leapmux/issues/537.
 func (gooseProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == agent.AttachmentKindPDF || attachment.Kind == agent.AttachmentKindBinary {
 		return fmt.Errorf("goose does not support %s attachments: %s", attachment.Kind, attachment.Filename)

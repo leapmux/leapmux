@@ -35,7 +35,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				},
 				PermissionAllowsBypass: permissionAllowsBypass,
 				Sink:                   transcript,
-				ClearProviderState:     transcript.Reset,
+				ClearProviderState: func() {
+					transcript.Reset()
+					a.resetPlanDraft()
+				},
 				AdvertisedSteerMethod: func(response []byte) string {
 					return acp.ParseAdvertisedMethod(response, reasonixSteerNamespace, reasonixSteerMethod)
 				},
@@ -47,10 +50,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				SubagentFromToolCall:       reasonixSubagentFromToolCall,
 				SubagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
 				// Reasonix sends goal state outside standard ACP session updates.
-				ExtraMethod: a.handleExtraMethod,
+				ExtraMethod:            a.handleExtraMethod,
+				ControlRequestObserver: a.observeControlRequest,
 				// A notice chunk splits from the model's own stream by its
 				// prefix.
-				SessionMetadataHandler: a.observeReasonixNotice,
+				SessionMetadataHandler: a.observeSessionMetadata,
 			}
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {

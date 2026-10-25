@@ -34,13 +34,17 @@ func TestNormalizeAttachmentsForProvider_CopilotRejectsBinary(t *testing.T) {
 	require.ErrorContains(t, err, "binary")
 }
 
-func TestNormalizeAttachmentsForProvider_CopilotRejectsPDF(t *testing.T) {
+// Copilot gives a PDF to a model on the Responses or the Messages API as a
+// file. On Chat Completions it sends the file name alone, and the echo of the
+// message states that (TestUserMessageEchoReportsAPDFThatTheModelReadsAsAName).
+func TestNormalizeAttachmentsForProvider_CopilotAcceptsPDF(t *testing.T) {
 	t.Parallel()
 
 	attachments := []*leapmuxv1.Attachment{{
 		Filename: "report.pdf", MimeType: "application/pdf", Data: []byte("%PDF"),
 	}}
-	_, err := agenttest.MustNewRegistry(Registration()).NormalizeAttachments(
+	normalized, err := agenttest.MustNewRegistry(Registration()).NormalizeAttachments(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, attachments)
-	require.ErrorContains(t, err, "pdf")
+	require.NoError(t, err)
+	require.Len(t, normalized, 1)
 }

@@ -41,6 +41,7 @@ func zcodeTurnFrameCases() []agenttest.TurnFrameCase {
 
 		{Name: contracts.ZCodeEventTurnSteerQueued, Line: `{"inputId":"i1"}`},
 		{Name: contracts.ZCodeEventTurnSteerDrained, Line: `{"inputId":"i1"}`},
+		{Name: contracts.ZCodeEventTurnSteerDeliveryChanged, Line: `{"pendingInputId":"i1","admittedDelivery":"queue"}`},
 		{Name: contracts.ZCodeEventSessionCreated, Line: `{"sessionId":"sess-1"}`},
 		{Name: contracts.ZCodeEventSessionResumed, Line: `{"sessionId":"sess-1"}`},
 		{Name: contracts.ZCodeEventSessionUpdated, Line: `{"sessionId":"sess-1"}`},

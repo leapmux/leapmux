@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -50,6 +51,8 @@ func TestReasonixStoresThePlanBeforeItsExitPlanModeRequest(t *testing.T) {
 	a := &Agent{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetSessionIDForTest("plan-session")
+	a.HooksForTest().ControlRequestObserver = a.observeControlRequest
+	a.HooksForTest().SessionMetadataHandler = a.observeSessionMetadata
 
 	for _, frame := range []string{
 		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"plan-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Plan the inspection."}}}}`,
@@ -65,6 +68,42 @@ func TestReasonixStoresThePlanBeforeItsExitPlanModeRequest(t *testing.T) {
 	assert.Equal(t, []string{"reasoning:Plan the inspection.", "text:1. Inspect. 2. Report."}, sink.textsAtControl[0],
 		"the thought and the plan are in the transcript when the request reaches the reader")
 	assert.Equal(t, sink.textsAtControl[0], assembledTexts(sink.Messages()), "the request stores no text a second time")
+	require.Equal(t, 1, sink.PlanUpdateCount(), "the approval also preserves the operational plan")
+	plan := sink.LastPlanUpdate()
+	compressed, compression := msgcodec.Compress([]byte("1. Inspect. 2. Report."))
+	assert.Equal(t, compressed, plan.Content)
+	assert.Equal(t, compression, plan.Compression)
+	assert.NotEmpty(t, plan.Title)
+
+	for _, frame := range []string{
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"plan-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Revise the plan."}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"plan-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\n\n[warning] Not plan text"}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"plan-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\n\n[compacted 2 earlier messages to save context]"}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"plan-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1. Revise. 2. Execute."}}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"session/request_permission","params":{"sessionId":"plan-session","toolCall":{"toolCallId":"gate-2","title":"exit_plan_mode","kind":"other","status":"pending","_meta":{"reasonix.io":{"approvalId":"2","fresh":false,"subject":"","tool":"exit_plan_mode"}}},"options":[{"optionId":"allow_once","name":"Allow","kind":"allow_once"},{"optionId":"reject_once","name":"Reject","kind":"reject_once"}]}}`,
+	} {
+		a.HandleOutput([]byte(frame))
+	}
+	require.Equal(t, 2, sink.PlanUpdateCount(), "a new user turn replaces the candidate")
+	revised := sink.LastPlanUpdate()
+	compressed, compression = msgcodec.Compress([]byte("1. Revise. 2. Execute."))
+	assert.Equal(t, compressed, revised.Content, "notices and the previous plan stay out of the new candidate")
+	assert.Equal(t, compression, revised.Compression)
+	a.resetPlanDraft()
+	a.HandleOutput([]byte(reasonixPlanPayload))
+	assert.Equal(t, 2, sink.PlanUpdateCount(), "a cleared session cannot reuse its proposal")
+}
+
+func TestReasonixWritesNoPlanForBlankText(t *testing.T) {
+	sink := &agenttest.ControlSink{}
+	a := &Agent{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("plan-session")
+	a.HooksForTest().ControlRequestObserver = a.observeControlRequest
+	a.HooksForTest().SessionMetadataHandler = a.observeSessionMetadata
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"plan-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"  \n"}}}}`))
+	a.HandleOutput([]byte(reasonixPlanPayload))
+	assert.Zero(t, sink.PlanUpdateCount())
 }
 
 func TestReasonixControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T) {

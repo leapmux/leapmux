@@ -23,6 +23,7 @@ import { lettaPermissionPresets } from './letta/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
 import { musePermissionPresets } from './muse/permissionPresets'
 import { ohMyPiPermissionPresets } from './ohmypi/permissionPresets'
+import { openCodePermissionPresets } from './openCodePermissionPresets'
 import { qoderPermissionPresets } from './qoder/permissionPresets'
 import { qwenPermissionPresets } from './qwen/permissionPresets'
 import { reasonixPermissionPresets } from './reasonix/permissionPresets'
@@ -35,8 +36,8 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.CODEX]: codexPermissionPresets,
   [AgentProvider.CURSOR]: cursorPermissionPresets,
   [AgentProvider.GITHUB_COPILOT]: copilotPermissionPresets,
-  [AgentProvider.KILO]: undefined,
-  [AgentProvider.OPENCODE]: undefined,
+  [AgentProvider.KILO]: openCodePermissionPresets,
+  [AgentProvider.OPENCODE]: openCodePermissionPresets,
   [AgentProvider.GOOSE]: goosePermissionPresets,
   [AgentProvider.PI]: undefined,
   [AgentProvider.REASONIX]: reasonixPermissionPresets,

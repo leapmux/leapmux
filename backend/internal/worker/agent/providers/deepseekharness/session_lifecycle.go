@@ -9,7 +9,24 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
+// createSession opens a new native Session, or the stored Session resume.
+//
+// dsh 0.2.1-rc.2 resumes a stored Session inside each Session method, and its
+// `session/create` reuses a named Session only while that Session is blank: for
+// a Session that started a turn, it mints a new identity. A stored Session
+// therefore opens without `session/create`, and the first Session method of the
+// startup resumes it. `session/create` still creates a Session that no store
+// holds, under the requested identity.
 func (a *Agent) createSession(ctx context.Context, resume string) (string, error) {
+	if resume != "" {
+		stored, err := a.storedSession(ctx, resume)
+		if err != nil {
+			return "", err
+		}
+		if stored {
+			return resume, nil
+		}
+	}
 	request := map[string]any{"cwd": a.workingDir}
 	if resume != "" {
 		request["sessionId"] = resume
@@ -24,6 +41,26 @@ func (a *Agent) createSession(ctx context.Context, resume string) (string, error
 		return "", fmt.Errorf("DeepSeek Harness returned an invalid Session identity")
 	}
 	return created.ID, nil
+}
+
+// storedSession reports whether the native store holds sessionID. It refuses a
+// stored Session of another working directory, as `session/create` does.
+func (a *Agent) storedSession(ctx context.Context, sessionID string) (bool, error) {
+	var projections *struct {
+		Values struct {
+			WorkingDirectory *string `json:"workingDirectory"`
+		} `json:"values"`
+	}
+	if err := a.rpc.request(ctx, "session/projections", map[string]string{"sessionId": sessionID}, &projections); err != nil {
+		return false, err
+	}
+	if projections == nil {
+		return false, nil
+	}
+	if directory := projections.Values.WorkingDirectory; directory != nil && *directory != a.workingDir {
+		return false, fmt.Errorf("DeepSeek Harness stored the Session in another working directory")
+	}
+	return true, nil
 }
 
 type nativeCommandResult struct {

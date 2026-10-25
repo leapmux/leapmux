@@ -1,7 +1,9 @@
 package copilot
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -27,6 +29,82 @@ const (
 
 // copilotNewInboxMessage announces native inbox state that LeapMux does not display.
 const copilotNewInboxMessage = "new_inbox_message"
+
+// copilotPDFMIMEType is the one document type that LeapMux sends to Copilot.
+const copilotPDFMIMEType = "application/pdf"
+
+// copilotAttachmentBlob is the attachment type of the inline bytes that LeapMux
+// sends. A `file` attachment states a path, which LeapMux never sends.
+const copilotAttachmentBlob = "blob"
+
+// copilotUserMessageDocuments is the part of a root `user.message` echo that
+// states how Copilot gave the message's documents to the model.
+type copilotUserMessageDocuments struct {
+	Attachments []struct {
+		Type        string `json:"type"`
+		DisplayName string `json:"displayName"`
+		MimeType    string `json:"mimeType"`
+	} `json:"attachments"`
+	// SupportedNativeDocumentMimeTypes lists the document types that Copilot
+	// sent to the model as files. Copilot sends a document of any other type as
+	// its file name alone. Nil means that the echo does not state the list.
+	SupportedNativeDocumentMimeTypes *[]string `json:"supportedNativeDocumentMimeTypes"`
+}
+
+// reportUnreadDocuments tells the reader which PDFs of their message reached the
+// model as a file name alone.
+//
+// The model API decides it, and Copilot states no model's API before a send:
+// the Responses and the Messages APIs take a PDF as a file, and Chat Completions
+// does not. The echo of the message states the outcome, so the notice follows
+// the message instead of refusing the PDF. An echo that does not state the list
+// adds no notice. The caller holds outputMu.
+func (a *Agent) reportUnreadDocuments(data json.RawMessage) {
+	var documents copilotUserMessageDocuments
+	if err := json.Unmarshal(data, &documents); err != nil || documents.SupportedNativeDocumentMimeTypes == nil {
+		return
+	}
+	for _, mimeType := range *documents.SupportedNativeDocumentMimeTypes {
+		if copilotIsPDF(mimeType) {
+			return
+		}
+	}
+	var names []string
+	for _, attachment := range documents.Attachments {
+		if attachment.Type != copilotAttachmentBlob || !copilotIsPDF(attachment.MimeType) {
+			continue
+		}
+		names = append(names, cmp.Or(strings.TrimSpace(attachment.DisplayName), "a PDF file"))
+	}
+	if len(names) == 0 {
+		return
+	}
+	a.sink.PersistLeapMuxNotification(map[string]interface{}{
+		contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
+		contracts.NotificationFieldText: copilotUnreadDocumentsNotice(names),
+	})
+}
+
+// copilotIsPDF reports whether a MIME type is the PDF type, whatever its case.
+func copilotIsPDF(mimeType string) bool {
+	return strings.EqualFold(strings.TrimSpace(mimeType), copilotPDFMIMEType)
+}
+
+// copilotUnreadDocumentsNotice states which PDFs reached the model as their
+// file names alone, and the remedy.
+func copilotUnreadDocumentsNotice(names []string) string {
+	if len(names) == 1 {
+		return fmt.Sprintf("Copilot sent only the file name of %s to the model, because the selected model does not read PDF files. "+
+			"Choose another model to send the file itself.", names[0])
+	}
+	return fmt.Sprintf("Copilot sent only the file names of %s to the model, because the selected model does not read PDF files. "+
+		"Choose another model to send the files themselves.", strings.Join(names, ", "))
+}
+
+// copilotAgentIdle announces that a background subagent finished a turn and
+// waits for its next message. Copilot sends `subagent.completed` after the
+// first turn alone, so this notice is what states each later idle.
+const copilotAgentIdle = "agent_idle"
 
 // copilotRetry holds one native agent's retry state under outputMu.
 type copilotRetry struct {
@@ -225,11 +303,18 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 	if event.Type == contracts.CopilotEventSystemNotification {
 		var notice struct {
 			Kind struct {
-				Type string `json:"type"`
+				Type    string `json:"type"`
+				AgentID string `json:"agentId"`
 			} `json:"kind"`
 		}
-		if json.Unmarshal(event.Data, &notice) == nil && notice.Kind.Type == copilotNewInboxMessage {
-			return
+		if json.Unmarshal(event.Data, &notice) == nil {
+			switch notice.Kind.Type {
+			case copilotNewInboxMessage:
+				return
+			case copilotAgentIdle:
+				// The notice still reaches the parent's transcript below.
+				a.markNativeChildIdle(a.children[notice.Kind.AgentID])
+			}
 		}
 	}
 	switch event.Type {
@@ -259,6 +344,7 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 					a.steers.Settle(a.sink)
 				}
 			}
+			a.reportUnreadDocuments(event.Data)
 		}
 		return
 	case contracts.CopilotEventModelCallFailure:
@@ -275,6 +361,8 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		if child == nil && !a.closing {
 			a.setNativeTurnActive(true)
 		}
+		// A background subagent that a message woke starts its next turn.
+		a.resumeNativeChild(child)
 	case contracts.CopilotEventSessionIdle:
 		if child == nil {
 			a.endNativeTurn(raw, copilotTurnWasAborted(event.Data))

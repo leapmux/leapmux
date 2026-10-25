@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
@@ -30,9 +32,12 @@ func (copilotProvider) Classify(raw json.RawMessage) agent.NotificationClassific
 	return agent.NotificationClassification{}
 }
 
-// The native Copilot model request keeps only the filename of a PDF or binary blob.
+// ValidateAttachment refuses a binary file, whose file name alone reaches the
+// model. Copilot gives a PDF to a model on the Responses or the Messages API as a
+// file. On Chat Completions it sends the PDF's file name alone, which the echo of
+// the message states (reportUnreadDocuments).
 func (copilotProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindPDF || attachment.Kind == agent.AttachmentKindBinary {
+	if attachment.Kind == agent.AttachmentKindBinary {
 		return fmt.Errorf("copilot cannot deliver %s attachment %q to its model", attachment.Kind, attachment.Filename)
 	}
 	return nil
@@ -206,6 +211,9 @@ func parseCopilotChecklist(checklist string) []todoevents.Item {
 // Copilot's control requests carry no `tool_name` envelope, so the shared metadata
 // reader leaves ToolName empty and the payload is the only source.
 func (copilotProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+	if result, ok := providerkit.ResolveWorkspaceTrustResponse(ctx); ok {
+		return result
+	}
 	if result, ok := copilotResolveControlAnswer(ctx); ok {
 		return result
 	}
@@ -220,3 +228,14 @@ func (copilotProvider) ResolveControlResponse(ctx agent.ControlResponseContext) 
 // mode pushed from here would travel down the permission-mode axis, whose values are
 // manual, assisted and allow-all, and the runtime rejects every other word.
 func (copilotProvider) PlanModePermissionMode(agent.PlanModeControlKind) string { return "" }
+
+// ChildCapabilities states what a child tab offers. Copilot's task cancel
+// stops any subagent (Agent.InterruptChild). Copilot's task message reaches
+// only a subagent that runs in the background (Agent.SendChildInput): a
+// foreground subagent never reads it.
+func (copilotProvider) ChildCapabilities(options optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{
+		AcceptsMessages:  options[copilotOptionExecutionMode] == copilotExecutionBackground,
+		AcceptsInterrupt: true,
+	}
+}

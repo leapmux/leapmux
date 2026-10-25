@@ -6,15 +6,14 @@ import { expect } from '@playwright/test'
 import { SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
-import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
-import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
+import { exerciseMcpProbeFormRoundTrip } from '../helpers/mcpProbeForm'
+import { readMcpServerReceipt, waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { newNativeWorkingDir } from '../helpers/nativeAgentOpen'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { openWorkspace } from '../helpers/ui'
-import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
+import { answerControl, openWorkspace, waitForControlBanner } from '../helpers/ui'
 
 /** Build the installed app-server's native project MCP connection request. */
 export function zcodeMcpConnectFrame(requestId: string, workingDir: string): string {
@@ -23,8 +22,12 @@ export function zcodeMcpConnectFrame(requestId: string, workingDir: string): str
   return JSON.stringify({ id: requestId, method: 'mcp/list', params: { workspace: { workspacePath: workingDir, workspaceKey: workingDir }, mode: 'connect' } })
 }
 
-/** Prove the installed client's actual MCP form refusal through its native project configuration. */
-export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioContext): Promise<void> {
+/**
+ * Round-trip a project MCP server's form through ZCode. ZCode forwards the form as a user-input request, and the browser
+ * answers it with the typed MCP form, whose values the worker turns back into the text answers that ZCode reads. The
+ * tool asks for approval first, because the default mode asks before a tool with side effects runs.
+ */
+export async function exerciseZCodeMcpForm(context: ManagedNativeScenarioContext): Promise<void> {
   const directory = newNativeWorkingDir(context, 'zcode-native-mcp-')
   const receiptLog = join(directory, 'mcp-receipt.json')
   const formServer = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
@@ -41,8 +44,19 @@ export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioC
   })
   await waitForMcpToolListed(receiptLog, 'ask')
   const callId = 'zcode-native-form'
-  const call = { server: formServer.name, tool: 'ask', callId, input: {} }
+  const toolName = mcpToolCall(context.provider, callId, { server: formServer.name, tool: 'ask', input: {} }).name
   const catalog = await sendNativeAnswer(context, 'Reply once after the native MCP server connects.', 'The actual native MCP catalog reached the model.')
-  expect(nativeModelToolNames(catalog)).toContain(mcpToolCall(context.provider, callId, call).name)
-  await expectUnsupportedMcpInput(context, { receiptLog, callId, invoke: () => invokeNativeMcpTool(context, call) })
+  expect(nativeModelToolNames(catalog)).toContain(toolName)
+  await exerciseMcpProbeFormRoundTrip(context, {
+    callId,
+    reloadBeforeSubmit: true,
+    approveTool: async () => {
+      await expect(await waitForControlBanner(context.page)).toContainText(toolName)
+      await answerControl(context.page, 'allow')
+    },
+  })
+  const replies = readMcpServerReceipt(receiptLog).elicitationReplies
+  expect(replies.map(reply => reply.kind === 'result' ? reply.result : reply), 'the server received the accepted typed answers once').toEqual([
+    { action: 'accept', content: { count: 0, enabled: false, color: 'b' } },
+  ])
 }

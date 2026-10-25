@@ -40,6 +40,8 @@ var codebuddyLocator = launch.Binaries("codebuddy", "cbc")
 var codebuddyPermissionModes = []agent.OptionDef{
 	{Id: contracts.CodebuddyModeDefault, Name: "Default", Default: true, Description: "Prompts for dangerous operations."},
 	{Id: contracts.CodebuddyModeAcceptEdits, Name: "Accept Edits", Description: "Auto-accept file edit operations."},
+	// get_available_modes omits Auto, but set_permission_mode and --permission-mode accept it.
+	{Id: contracts.CodebuddyModeAuto, Name: "Auto", Description: "A classifier model approves or blocks each call that would prompt."},
 	{Id: contracts.CodebuddyModePlan, Name: "Plan", Description: "Plan the work without modifying files."},
 	{Id: contracts.CodebuddyModeBypassPermissions, Name: "Bypass Permissions", Description: "Bypass all permission checks."},
 }

@@ -2,6 +2,7 @@ package acp
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 //     Qwen Code supplies the spawning tool-call ID, and Hooks.ChildUpdateRoute identifies that tag.
 //   - A separate child session supplies its own updates.
 //     Grok Build streams under the child session ID, and AttachChildSession links that session to a registry row.
+//     OpenCode and Kilo stream a child session only after the client loads it (LoadChildSession).
 //
 // Both routes reach a child conversation that uses the same rendering code as the main conversation.
 // A provider that reads a subagent from storage instead of the stream constructs updates and passes them through FeedChildUpdate.
@@ -332,6 +334,28 @@ func (b *Base) AttachChildSession(sessionID, rowKey string) {
 		}
 	}
 	b.children.sessions[sessionID] = rowKey
+}
+
+// LoadChildSession asks the agent to load sessionID, a session that a subagent
+// runs in, so that the agent streams the updates of that session. An agent
+// that replays a loaded session sends its history first. The caller attaches
+// the session to the subagent's row before (AttachChildSession), so each
+// update reaches that transcript. The answer states the settings of the child
+// session, so the base applies none of it.
+func (b *Base) LoadChildSession(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("the subagent session has no ID")
+	}
+	params, err := json.Marshal(map[string]any{
+		"sessionId":  sessionID,
+		"cwd":        b.currentWorkingDir(),
+		"mcpServers": []any{},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal ACP session load params: %w", err)
+	}
+	_, err = b.SendRequest(MethodSessionLoad, params, b.APITimeout())
+	return err
 }
 
 // SessionOwner returns the services of the transcript that owns sessionID:

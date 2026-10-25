@@ -127,8 +127,8 @@ func (a *Agent) releaseClaims() {
 	a.claims = nil
 }
 
-// pendingModeChange is a change of settings that waits for the running turn's
-// end. continuePlan records that the change is the Act mode of an approved
+// pendingModeChange is a settings change that waits for the running turn's
+// end. continuePlan records that the change includes the Act mode of an approved
 // plan, after which the worker asks the model to go on with the plan.
 type pendingModeChange struct {
 	settings     clineSettings
@@ -180,7 +180,7 @@ func (a *Agent) createPayload(settings clineSettings, spec sessionSpec) map[stri
 	runtimeOptions := map[string]any{
 		"mode":                settings.sessionMode(),
 		"enableSpawn":         true,
-		"enableTeams":         true,
+		"enableTeams":         settings.agentTeamsEnabled(),
 		"clientContributions": contributions(settings.sessionMode()),
 	}
 	for key, value := range reasoningFields(settings) {

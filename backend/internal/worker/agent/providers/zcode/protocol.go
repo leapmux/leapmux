@@ -34,8 +34,20 @@ const (
 	MethodSessionStop    = "session/stop"
 	MethodSessionClose   = "session/close"
 	MethodSessionCompact = "session/compact"
+	// MethodSessionCancelBackgroundTask stops one background task of the session,
+	// such as a background subagent.
+	MethodSessionCancelBackgroundTask = "session/cancelBackgroundTask"
 
 	MethodSessionSubscribe = "session/subscribe"
+
+	// MethodConversationSubscribe and MethodConversationUnsubscribe open and
+	// close a subscription to the desktop protocol's view of one session. Its
+	// frames arrive as NotifyConversationFrame. See workspace_trust.go.
+	MethodConversationSubscribe   = "v4/conversation/subscribe"
+	MethodConversationUnsubscribe = "v4/conversation/unsubscribe"
+
+	// MethodCommand is the command inbox of ZCode's desktop protocol. See rpc.go.
+	MethodCommand = "v4/command"
 
 	MethodSetMode         = "session/setMode"
 	MethodSetModel        = "session/setModel"
@@ -64,6 +76,9 @@ const (
 	// {sessionId, seq, type, payload} envelope whose `type` is one of the
 	// ZCodeEvent* constants below.
 	NotifySessionEvent = "session/event"
+	// NotifyConversationFrame carries one frame of a MethodConversationSubscribe
+	// subscription.
+	NotifyConversationFrame = "v4/conversation/frame"
 )
 
 // ZCode session event types (the `type` field inside a session/event envelope).
@@ -220,7 +235,7 @@ const (
 	// LeapMux needs no branch for it, and that is deliberate. It is PERMANENT --
 	// a restoreWarning stays set on the session, so every later prompt raises the
 	// same code and a retry can never clear it -- and the app-server always states
-	// a human-readable `message`, which classifyZCodeInputDeliveryError already
+	// a human-readable `message`, which classifyZCodeDeliveryError already
 	// returns unchanged. The table lists it because the table documents the codes
 	// observed on the wire, so the next reader does not investigate it again.
 	ErrRuntimeUnavailable = -32031

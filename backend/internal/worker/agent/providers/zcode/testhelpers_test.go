@@ -247,8 +247,8 @@ func zcodeTestCatalog(t *testing.T, configJSON string) zcodeCatalog {
 }
 
 // zcodeTwoProviderConfig is the configuration most tests use: one enabled provider
-// with a reasoning-capable text model and an image-capable one, and one disabled
-// provider that still holds a key.
+// with a reasoning-capable text model and a model that reads images and PDFs, and
+// one disabled provider that still holds a key.
 const zcodeTwoProviderConfig = `{
   "provider": {
     "builtin:zai": {
@@ -267,7 +267,7 @@ const zcodeTwoProviderConfig = `{
         "GLM-5.3-Flash": {
           "name": "GLM-5.3 Flash",
           "limit": {"context": 128000, "output": 16000},
-          "modalities": {"input": ["text", "image"], "output": ["text"]}
+          "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}
         }
       }
     },

@@ -429,6 +429,41 @@ func TestCodebuddyUnchangedEffortIsConfirmedLive(t *testing.T) {
 	assert.Equal(t, "high", *result.Settlements[agent.OptionIDEffort].Value)
 }
 
+// get_available_modes omits Auto, but CodeBuddy accepts it, so the Permissions
+// group offers it beside the four advertised modes.
+func TestCodebuddyPermissionModesOfferAuto(t *testing.T) {
+	t.Parallel()
+	group := codebuddyPermissionModeGroup(contracts.CodebuddyModeAuto)
+	var ids []string
+	for _, option := range group.GetOptions() {
+		ids = append(ids, option.GetId())
+		if option.GetId() == contracts.CodebuddyModeAuto {
+			assert.Equal(t, "Auto", option.GetName())
+			assert.NotEmpty(t, option.GetDescription())
+		}
+	}
+	assert.Equal(t, []string{
+		contracts.CodebuddyModeDefault, contracts.CodebuddyModeAcceptEdits, contracts.CodebuddyModeAuto,
+		contracts.CodebuddyModePlan, contracts.CodebuddyModeBypassPermissions,
+	}, ids)
+	assert.Equal(t, contracts.CodebuddyModeAuto, group.GetCurrentValue())
+	assert.Equal(t, contracts.CodebuddyModeAuto, permissionModeFlag(contracts.CodebuddyModeAuto), "the launch flag takes the mode verbatim")
+}
+
+// A running session switches to Auto with set_permission_mode, and the mode
+// that CodeBuddy confirms is the one that LeapMux reports.
+func TestCodebuddySettingsApplyAutoLive(t *testing.T) {
+	a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{"mode":"auto"}`))
+	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodebuddyModeAuto})
+	assert.True(t, result.AppliedLive)
+	assert.Equal(t, contracts.CodebuddyModeAuto, result.ConfirmedOptions()[agent.OptionIDPermissionMode])
+	assert.Contains(t, peer.String(), `"subtype":"set_permission_mode"`)
+	assert.Contains(t, peer.String(), `"mode":"auto"`)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	assert.Equal(t, contracts.CodebuddyModeAuto, a.permissionMode)
+}
+
 func TestCodebuddySettingsReportTheNativePermissionMode(t *testing.T) {
 	a, _ := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{"mode":"default"}`))
 	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodebuddyModeBypassPermissions})

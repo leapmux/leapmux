@@ -3,7 +3,8 @@
   "toolNames": {
     "Task": "task",
     "ReadOnlyTask": "read_only_task",
-    "UseCapability": "use_capability"
+    "UseCapability": "use_capability",
+    "ExitPlanMode": "exit_plan_mode"
   },
   "capabilityActions": {
     "Call": "call"

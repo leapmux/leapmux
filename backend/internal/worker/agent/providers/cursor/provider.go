@@ -29,6 +29,9 @@ type cursorProvider struct {
 	acp.Provider
 }
 
+// ValidateAttachment refuses a PDF and a binary file, whose bytes Cursor's ACP
+// agent omits. A shared handoff of a PDF as a file path:
+// https://github.com/leapmux/leapmux/issues/537.
 func (cursorProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == agent.AttachmentKindPDF || attachment.Kind == agent.AttachmentKindBinary {
 		return fmt.Errorf("cursor ACP omits %s attachment %q", attachment.Kind, attachment.Filename)

@@ -33,7 +33,65 @@ func TestZCodeStop_ACancellationWithoutAStopDoesNotInterruptTheTurn(t *testing.T
 	assertZCodeApprovalStopCompletion(t, false, "Permission request cancelled", agent.MessageCompletionComplete)
 }
 
+// The read loop hands the stop reply to the waiting stop and goes on to the next
+// frames at once, so ZCode's report of the cancelled approval and of the turn end can
+// be handled before the stop arms its window. Delivering both before the reply puts
+// the agent in that state every time. The stop still ended the turn.
+func TestZCodeStop_ACancelledApprovalBeforeTheStopReplyEndsTheTurnAsInterrupted(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("raw=%v", raw), func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := startZCodeApprovalTurn(t)
+			done := make(chan error, 1)
+			go func() {
+				if raw {
+					done <- a.SendRawInput([]byte(`{"id":31,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+				} else {
+					done <- a.Interrupt(agent.StopContext{})
+				}
+			}()
+			req := waitZCodeRequest(t, stdin, MethodSessionStop)
+			endZCodeApprovalTurn(t, a, zcodePermissionCancelledReason)
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), nil))
+			require.NoError(t, <-done)
+
+			assertZCodeApprovalTurnCompletion(t, sink, agent.MessageCompletionInterrupted)
+			assert.False(t, a.stopWindow.armed(), "the turn already ended, so no window watches it")
+			a.Mu.Lock()
+			defer a.Mu.Unlock()
+			assert.Zero(t, a.stopsInFlight, "the answered stop is no longer in flight")
+		})
+	}
+}
+
+// A stop that ZCode refused stopped nothing, so a later cancellation is not its work.
+func TestZCodeStop_ARefusedStopLeavesNoStopInFlight(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := startZCodeApprovalTurn(t)
+	refuseZCodeRequest(t, a, stdin, MethodSessionStop, -32603, "the stop failed")
+	require.Error(t, a.Interrupt(agent.StopContext{}))
+	endZCodeApprovalTurn(t, a, zcodePermissionCancelledReason)
+	assertZCodeApprovalTurnCompletion(t, sink, agent.MessageCompletionComplete)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Zero(t, a.stopsInFlight)
+}
+
 func assertZCodeApprovalStopCompletion(t *testing.T, stop bool, reason string, completion agent.MessageCompletion) {
+	t.Helper()
+	a, sink, stdin := startZCodeApprovalTurn(t)
+	if stop {
+		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+	}
+	// Recorded order: run6, stop reply, cancelled permission, then a success end.
+	endZCodeApprovalTurn(t, a, reason)
+	assertZCodeApprovalTurnCompletion(t, sink, completion)
+}
+
+// startZCodeApprovalTurn starts a turn that streamed some text and waits for a
+// permission answer.
+func startZCodeApprovalTurn(t *testing.T) (*Agent, *agenttest.Sink, *zcodeRecordedStdin) {
 	t.Helper()
 	sink := &agenttest.Sink{}
 	stdin := &zcodeRecordedStdin{}
@@ -44,15 +102,23 @@ func assertZCodeApprovalStopCompletion(t *testing.T, stop bool, reason string, c
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
 		`{"kind":"text_delta","assistantMessageId":"m1","delta":"partial answer"}`))
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
-	if stop {
-		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-		require.NoError(t, a.Interrupt(agent.StopContext{}))
-	}
-	// Recorded order: run6, stop reply, cancelled permission, then a success end.
+	return a, sink, stdin
+}
+
+// endZCodeApprovalTurn sends what ZCode sends when the permission request ends: a
+// denial for the reason, then a success end of the turn.
+func endZCodeApprovalTurn(t *testing.T, a *Agent, reason string) {
+	t.Helper()
 	payload, err := json.Marshal(map[string]any{"requestId": "req-1", "decision": "deny", "reason": reason})
 	require.NoError(t, err)
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventPermissionResolved, string(payload)))
 	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+}
+
+// assertZCodeApprovalTurnCompletion requires the streamed text and the turn end to
+// end with the completion.
+func assertZCodeApprovalTurnCompletion(t *testing.T, sink *agenttest.Sink, completion agent.MessageCompletion) {
+	t.Helper()
 	rows := sink.Messages()
 	require.Len(t, rows, 2)
 	_, text, textCompletion, ok := agenttest.DecodeAssembledMessage(rows[0].Content)

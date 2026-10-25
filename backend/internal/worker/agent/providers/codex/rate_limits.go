@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // handleRateLimitsUpdated publishes account state to live session surfaces and
@@ -68,13 +69,14 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 			continue
 		}
 		rateLimitType := codexWindowToType(tier.WindowDurationMins)
-		status := codexTierStatus(tier.UsedPercent)
+		utilization := tier.UsedPercent / 100
+		status := providerkit.RateLimitStatusForUtilization(utilization)
 		if status == contracts.RateLimitStatusExceeded {
 			anyExceeded = true
 		}
 		info := map[string]interface{}{
 			contracts.RateLimitFieldRateLimitType: rateLimitType,
-			contracts.RateLimitFieldUtilization:   tier.UsedPercent / 100,
+			contracts.RateLimitFieldUtilization:   utilization,
 			contracts.RateLimitFieldStatus:        status,
 		}
 		var tierReset *time.Time
@@ -124,17 +126,6 @@ const codexRateLimitReachedTimeWindow = "rate_limit_reached"
 
 // codexRateLimitAccountBlockKey identifies a billing or workspace block independently from the rolling windows.
 const codexRateLimitAccountBlockKey = "account_block"
-
-func codexTierStatus(usedPercent float64) string {
-	switch {
-	case usedPercent >= 100:
-		return contracts.RateLimitStatusExceeded
-	case usedPercent >= 80:
-		return contracts.RateLimitStatusAllowedWarning
-	default:
-		return contracts.RateLimitStatusAllowed
-	}
-}
 
 func codexRateLimitResumeReset(reachedType string, summary codexRateLimitSummary) *time.Time {
 	switch reachedType {

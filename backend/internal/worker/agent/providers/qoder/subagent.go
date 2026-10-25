@@ -8,9 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -464,11 +466,20 @@ func (a *Agent) startChildTask(event *qoderTaskEvent) bool {
 	if title == "" {
 		title = "Subagent"
 	}
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: event.ToolUseID, ProviderChildKey: event.ToolUseID, Title: title})
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		SpawnSpanID: event.ToolUseID, ProviderChildKey: event.ToolUseID, Title: title,
+		Options: optionmap.Map{qoderOptionChildKind: qoderChildKindTask},
+	})
 	if err != nil {
 		providerkit.LogRegistryRefusal("qoder", "open child", err)
 		return true
 	}
+	a.mu.Lock()
+	if a.childTaskIDs == nil {
+		a.childTaskIDs = make(map[string]string)
+	}
+	a.childTaskIDs[event.ToolUseID] = event.TaskID
+	a.mu.Unlock()
 	if err := a.sink.PersistChildPrompt(childID, event.Prompt); err != nil {
 		slog.Error("qoder persist child prompt", "agent_id", a.AgentID(), "error", err)
 	}
@@ -480,6 +491,35 @@ func (a *Agent) startChildTask(event *qoderTaskEvent) bool {
 		Status:       bgtask.StatusRunning,
 	}))
 	return true
+}
+
+// childStopTimeout limits a stop_task request. Qoder answers once its task
+// registry has asked the child to stop.
+const childStopTimeout = 10 * time.Second
+
+// InterruptChild stops one task child with Qoder's stop_task, and leaves the
+// parent turn running: the parent reads the stopped child's tool result and
+// goes on. Qoder's own task notification then closes the child as stopped.
+//
+// childKey is the child's spawn tool_use_id. A child without a recorded task
+// ID is not running, or is a Workflow script's child, which ChildCapabilities
+// does not offer to interrupt.
+func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
+	a.mu.Lock()
+	taskID := a.childTaskIDs[childKey]
+	a.mu.Unlock()
+	if taskID == "" {
+		return agent.ErrChildRouteNotReady
+	}
+	body, err := json.Marshal(map[string]any{
+		"subtype": contracts.QoderControlRequestSubtypeStopTask,
+		"task_id": taskID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = a.sendControlAndWait(string(body), childStopTimeout)
+	return err
 }
 
 func qoderFinalChildStatus(status string) (bgtask.Status, bool) {
@@ -509,6 +549,9 @@ func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
 		slog.Warn("qoder child status is unknown", "agent_id", a.AgentID(), "status", event.Status)
 		return true
 	}
+	a.mu.Lock()
+	delete(a.childTaskIDs, event.ToolUseID)
+	a.mu.Unlock()
 	a.finishNotifications(a.sink.ChildSink(childID), event.ToolUseID, status == bgtask.StatusStopped)
 	if err := a.sink.CloseBackgroundTask(event.ToolUseID, status); err != nil {
 		providerkit.LogRegistryRefusal("qoder", "close child", err)

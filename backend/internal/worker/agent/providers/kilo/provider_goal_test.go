@@ -17,7 +17,7 @@ import (
 )
 
 func newKiloGoalAgent(sink *agenttest.Sink) *Agent {
-	a := newAgent()
+	a := newAgent(true)
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetSessionIDForTest("session-1")
 	return a
@@ -157,7 +157,7 @@ func TestKiloGoal_ReportsThroughTheDaemonBridge(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	sink := &agenttest.Sink{}
-	a := newAgent()
+	a := newAgent(true)
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetSessionIDForTest("session-1")
 	var reports atomic.Int64
@@ -191,7 +191,7 @@ func TestKiloGoal_QueuesTheAdvertisedGoalCommandForEveryVerb(t *testing.T) {
 	sink := &agenttest.Sink{}
 	// No current session: the advertised-command frame names no session, and
 	// the dispatcher refuses an unowned update once a session is current.
-	ag := newAgent()
+	ag := newAgent(true)
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 
 	assert.Empty(t, ag.SupportedGoalActions(), "a build that lists no goal command offers no goal control")

@@ -75,6 +75,9 @@ type Agent struct {
 
 	controlMu sync.Mutex
 	controls  map[string]*copilotPendingControl
+	// workspaceTrust holds the folder-trust question that LeapMux asks for
+	// Copilot (folder_trust.go).
+	workspaceTrust providerkit.WorkspaceTrust
 
 	// interestMu guards the event-log subscription handles of the CURRENT session.
 	// The runtime returns a distinct handle for each registration and keeps the
@@ -105,6 +108,7 @@ const (
 	copilotReadGoal           = "goal"
 	copilotReadSettings       = "settings"
 	copilotApprovePermissions = "approve-permissions"
+	copilotCheckFolderTrust   = "folder-trust"
 )
 
 // offReader runs work on its own goroutine, and keeps ONE run of each key in flight.
@@ -212,6 +216,21 @@ func (a *Agent) finishNativeCompaction(revision uint64) {
 	providerkit.PublishTurnStateTo(a.sink, state, sequence)
 }
 
+// copilotBlobAttachments encodes attachments as the inline `blob` attachments of
+// `session.send`. The echo of the message states them again
+// (reportUnreadDocuments).
+func copilotBlobAttachments(attachments []*leapmuxv1.Attachment) []map[string]string {
+	classified := agent.ClassifyAttachments(attachments)
+	blobs := make([]map[string]string, 0, len(classified))
+	for _, attachment := range classified {
+		blobs = append(blobs, map[string]string{
+			"type": copilotAttachmentBlob, "displayName": attachment.Filename, "mimeType": attachment.MIMEType,
+			"data": base64.StdEncoding.EncodeToString(attachment.Data),
+		})
+	}
+	return blobs
+}
+
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInputForSession(nil, content, attachments)
 }
@@ -307,18 +326,15 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	a.active = true
 	a.activityRevision++
 	revision := a.activityRevision
+	fleet := a.fleetOnLocked()
 	a.stateMu.Unlock()
 	a.PublishTurnActive()
 	values := map[string]any{"prompt": content}
 	if len(attachments) > 0 {
-		blobs := make([]map[string]string, 0, len(attachments))
-		for _, attachment := range agent.ClassifyAttachments(attachments) {
-			blobs = append(blobs, map[string]string{
-				"type": "blob", "displayName": attachment.Filename, "mimeType": attachment.MIMEType,
-				"data": base64.StdEncoding.EncodeToString(attachment.Data),
-			})
-		}
-		values["attachments"] = blobs
+		values["attachments"] = copilotBlobAttachments(attachments)
+	}
+	if fleet {
+		return a.startFleetTurn(values, revision)
 	}
 	raw, err := a.requestNativeSession("send", values)
 	if err != nil {
@@ -333,6 +349,32 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	}
 	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
 		return fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
+	}
+	return nil
+}
+
+// startFleetTurn starts a new turn as a fleet request, which tells the model to
+// dispatch subagents in parallel to do the work. Copilot answers whether the
+// request started; a request that did not start ends the turn that the send
+// began. The caller holds sessionMu for reading.
+func (a *Agent) startFleetTurn(values map[string]any, revision uint64) error {
+	raw, err := a.requestNativeSession("fleet.start", values)
+	if err != nil {
+		err = providerkit.ClassifyJSONRPCDeliveryError("session.fleet.start", err)
+		if !errors.Is(err, agent.ErrDeliveryUncertain) {
+			a.rejectNativeInput(revision)
+		}
+		return err
+	}
+	var response struct {
+		Started *bool `json:"started"`
+	}
+	if json.Unmarshal(raw, &response) != nil || response.Started == nil {
+		return fmt.Errorf("%w: Copilot omitted whether the fleet request started", agent.ErrDeliveryUncertain)
+	}
+	if !*response.Started {
+		a.rejectNativeInput(revision)
+		return fmt.Errorf("copilot did not start the fleet request")
 	}
 	return nil
 }
@@ -380,14 +422,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	}
 	values := map[string]any{"prompt": content, "mode": "immediate"}
 	if len(attachments) > 0 {
-		blobs := make([]map[string]string, 0, len(attachments))
-		for _, attachment := range agent.ClassifyAttachments(attachments) {
-			blobs = append(blobs, map[string]string{
-				"type": "blob", "displayName": attachment.Filename, "mimeType": attachment.MIMEType,
-				"data": base64.StdEncoding.EncodeToString(attachment.Data),
-			})
-		}
-		values["attachments"] = blobs
+		values["attachments"] = copilotBlobAttachments(attachments)
 	}
 	ticket := a.steers.Add(content)
 	accepted := false

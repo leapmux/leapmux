@@ -53,6 +53,8 @@ type fakeKapReply struct {
 	Code       int
 	Msg        string
 	Data       any
+	// BeforeReply runs after the fake records the request and before it writes the reply.
+	BeforeReply func()
 	// Drop, when set, closes the connection with no reply: a transport failure
 	// after the request left, whose outcome the client cannot know.
 	Drop bool
@@ -106,6 +108,9 @@ type fakeKap struct {
 	// models and config are the GET /models items and the GET /config data.
 	models []map[string]any
 	config map[string]any
+	// usage is the GET /oauth/usage data. By default it is the answer of a
+	// server with no Kimi Code account.
+	usage any
 	// features is the GET /meta feature list.
 	features []map[string]string
 	version  string
@@ -155,6 +160,7 @@ func newFakeKapState() *fakeKap {
 			{"model": "kimi-text", "display_name": "Kimi Text", "max_context_size": 131072, "capabilities": []string{}},
 		},
 		config: map[string]any{"default_model": "kimi-k2", "thinking": map[string]any{"enabled": true, "effort": "medium"}},
+		usage:  map[string]any{"kind": "error", "message": `No token for "managed:kimi-code". Run /login to authenticate.`},
 	}
 }
 
@@ -175,6 +181,13 @@ func (f *fakeKap) reply(route string, replies ...fakeKapReply) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.overrides[route] = replies
+}
+
+// setUsage replaces the GET /oauth/usage data.
+func (f *fakeKap) setUsage(usage any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usage = usage
 }
 
 // setAckFor replaces the subscribe answer. See fakeKap.ackFor.
@@ -344,6 +357,9 @@ func (f *fakeKap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 
 	if scripted != nil {
+		if scripted.BeforeReply != nil {
+			scripted.BeforeReply()
+		}
 		if scripted.Drop {
 			if hijacker, ok := w.(http.Hijacker); ok {
 				if conn, _, err := hijacker.Hijack(); err == nil {
@@ -374,6 +390,8 @@ func (f *fakeKap) defaultReply(request fakeKapRequest) any {
 		return map[string]any{"items": f.models}
 	case request.route() == "GET "+kimiRouteConfig:
 		return f.config
+	case request.route() == "GET "+kimiRouteManagedUsage:
+		return f.usage
 	case request.route() == "POST "+kimiRouteSessions:
 		f.nextSession++
 		id := fmt.Sprintf("session_%d", f.nextSession)

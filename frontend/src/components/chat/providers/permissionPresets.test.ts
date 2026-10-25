@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { OPENCODE_OPTION } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { permissionPresetsFor, PROVIDER_PERMISSION_PRESETS } from './permissionPresets'
 import { providerFor } from './registry'
@@ -30,8 +31,15 @@ describe('PROVIDER_PERMISSION_PRESETS', () => {
     expect(permissionPresetsFor(provider)).toBe(plugin?.controls?.permissionPresets)
   })
 
+  it('exposes the Auto-approve option of the OpenCode family as its bypass for both members', () => {
+    for (const provider of [AgentProvider.OPENCODE, AgentProvider.KILO]) {
+      expect(permissionPresetsFor(provider)?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })
+      expect(permissionPresetsFor(provider)?.smart).toBeUndefined()
+    }
+  })
+
   it('retains explicit absence for providers that offer no standard permission preset', () => {
-    for (const provider of [AgentProvider.UNSPECIFIED, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.KILO])
+    for (const provider of [AgentProvider.UNSPECIFIED, AgentProvider.PI])
       expect(permissionPresetsFor(provider)).toBeUndefined()
     expect(permissionPresetsFor(undefined)).toBeUndefined()
   })

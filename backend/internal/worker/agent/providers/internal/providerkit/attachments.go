@@ -16,6 +16,9 @@ func EncodeDataURI(mime string, data []byte) string {
 // RejectPDFAndBinaryAttachment enforces the "text and image only" policy of each provider that has no
 // input representation for a PDF or binary content block. label gives the provider name in the
 // rejection message, so every provider that calls this function shares one policy body.
+//
+// A shared handoff of a PDF as a file path, for the agents without PDF input:
+// https://github.com/leapmux/leapmux/issues/537.
 func RejectPDFAndBinaryAttachment(label string, attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == agent.AttachmentKindPDF {
 		return fmt.Errorf("%s does not support PDF attachments: %s", label, attachment.Filename)

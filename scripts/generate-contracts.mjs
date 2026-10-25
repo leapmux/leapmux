@@ -2506,6 +2506,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'daemon events that both sides read' },
       { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'OpenCodeStatusType', doc: 'status.type values of session.status that both sides read' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'OpenCodeOptionID', owner: 'LeapMux chose these', doc: 'option keys for the family settings both sides address' },
     ],
   },
   {
@@ -2654,6 +2655,21 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'McpElicitationAction', doc: 'response actions' },
       { key: 'approvalKinds', goTable: 'ApprovalKind', tsTable: 'APPROVAL_KIND', tsType: 'McpElicitationApprovalKind', doc: 'approval request kinds' },
       { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'McpElicitationApprovalScope', doc: 'approval duration values' },
+    ],
+  },
+  {
+    name: 'workspace-trust',
+    goPrefix: 'WorkspaceTrust',
+    tsPrefix: 'WORKSPACE_TRUST',
+    title: 'Workspace trust',
+    preamble: [
+      'LeapMux owns this vocabulary. The Go worker writes the trust question and reads the',
+      'saved answer; the browser draws the question and the saved answer.',
+    ].join('\n// '),
+    tables: [
+      { key: 'controlTypes', goTable: 'ControlType', tsTable: 'CONTROL_TYPE', tsType: 'WorkspaceTrustControlType', owner: 'LeapMux chose', doc: 'the type of the question payload that the worker writes' },
+      { key: 'fields', goTable: 'Field', tsTable: 'FIELD', tsType: 'WorkspaceTrustField', owner: 'LeapMux chose', doc: 'the fields of the question payload and of the saved answer' },
+      { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'WorkspaceTrustDecision', owner: 'LeapMux chose', doc: 'the decision words of the saved answer' },
     ],
   },
   {

@@ -23,6 +23,17 @@ var thinkingModes = []agent.OptionDef{
 	{Id: thinkingOn, Name: "On", Description: "Request extended thinking on supported models."},
 }
 
+const (
+	OptionAgentTeams = "agentTeams"
+	agentTeamsOff    = "false"
+	agentTeamsOn     = "true"
+)
+
+var agentTeamsModes = []agent.OptionDef{
+	{Id: agentTeamsOff, Name: "Off", Description: "Offer no team coordination tools on future turns. Existing teammate work continues."},
+	{Id: agentTeamsOn, Name: "On", Description: "Offer native team coordination tools on future turns.", Default: true},
+}
+
 // Registration states everything the worker knows about Cline before any of
 // its agents runs.
 func Registration() agent.Registration {
@@ -35,7 +46,7 @@ func Registration() agent.Registration {
 		// is the one entry that runs their selection. A running agent reports
 		// the models of its provider (catalog.go).
 		DefaultModels:       defaultModels,
-		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{permissionGroup(""), thinkingGroup("")},
+		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{permissionGroup(""), thinkingGroup(""), agentTeamsGroup("")},
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},
 		// Each model states its own reasoning efforts, and the static catalog
 		// holds none, because it holds no concrete model.

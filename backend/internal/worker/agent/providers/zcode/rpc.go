@@ -222,3 +222,125 @@ func (a *Agent) HandleOutput(content []byte) {
 	}
 	handleZCodeOutput(a, line)
 }
+
+// ZCode's v4 command inbox.
+//
+// The desktop application drives a session through `v4/command`, and the stdio
+// app-server serves the same inbox. A command states a client-chosen id, which
+// the session's events repeat (`inputId`, `queryIds`, `sourceCommandId`), so a
+// caller can match its own command in them. The reply is an acknowledgement:
+// `accepted` with a typed result, or a status that states why the inbox did not
+// act. Some commands are compare-and-set: they state the session revision they
+// were decided against, and a `stale` reply carries the current revision.
+
+// zcodeCommandClientID identifies LeapMux to the command inbox.
+const zcodeCommandClientID = "leapmux"
+
+// The command types that LeapMux sends.
+const (
+	zcodeCommandSendText                   = "sendText"
+	zcodeCommandDeleteQueueItem            = "deleteQueueItem"
+	zcodeCommandRequestWorkspaceHookReview = "requestWorkspaceHookReview"
+	zcodeCommandRespondWorkspaceHookReview = "respondWorkspaceHookReview"
+)
+
+// The statuses of a command acknowledgement that LeapMux reads.
+const (
+	zcodeCommandAccepted = "accepted"
+	zcodeCommandStale    = "stale"
+)
+
+// zcodeCommandEnvelope is one `v4/command` request.
+type zcodeCommandEnvelope struct {
+	CommandID string `json:"commandId"`
+	ClientID  string `json:"clientId"`
+	SessionID string `json:"sessionId"`
+	// BaseRevision is the session revision a compare-and-set command is
+	// decided against. Other commands state none.
+	BaseRevision *int64 `json:"baseRevision,omitempty"`
+	Type         string `json:"type"`
+	Payload      any    `json:"payload"`
+	IssuedAt     int64  `json:"issuedAt"`
+}
+
+// zcodeCommandAck is the acknowledgement of one command.
+type zcodeCommandAck struct {
+	CommandID          string              `json:"commandId"`
+	Status             string              `json:"status"`
+	ReasonCode         string              `json:"reasonCode"`
+	Message            string              `json:"message"`
+	RevisionAtDecision int64               `json:"revisionAtDecision"`
+	Result             *zcodeCommandResult `json:"result"`
+}
+
+// zcodeCommandResult is the typed result of an accepted command.
+type zcodeCommandResult struct {
+	Type     string `json:"type"`
+	Delivery string `json:"delivery"`
+	InputID  string `json:"inputId"`
+}
+
+// sendZCodeCommand sends one command to the session's inbox and returns its
+// acknowledgement. Each acknowledgement advances the newest session revision
+// the agent knows, which a later compare-and-set command starts from.
+func (a *Agent) sendZCodeCommand(envelope zcodeCommandEnvelope) (zcodeCommandAck, error) {
+	envelope.ClientID = zcodeCommandClientID
+	envelope.IssuedAt = a.Clock().Now().UnixMilli()
+	raw, err := a.sendZCodeRequest(MethodCommand, envelope, a.APITimeout())
+	if err != nil {
+		return zcodeCommandAck{}, err
+	}
+	var ack zcodeCommandAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		return zcodeCommandAck{}, fmt.Errorf("decode the %s acknowledgement: %w", envelope.Type, err)
+	}
+	if ack.CommandID != envelope.CommandID {
+		return zcodeCommandAck{}, fmt.Errorf("the %s acknowledgement is for command %q, not %q", envelope.Type, ack.CommandID, envelope.CommandID)
+	}
+	a.Mu.Lock()
+	a.commandRevision = max(a.commandRevision, ack.RevisionAtDecision)
+	a.Mu.Unlock()
+	return ack, nil
+}
+
+// zcodeCommandRefusal states why the inbox did not accept a command.
+func zcodeCommandRefusal(ack zcodeCommandAck) string {
+	reason := ack.Status
+	if ack.ReasonCode != "" {
+		reason += " (" + ack.ReasonCode + ")"
+	}
+	if ack.Message != "" {
+		reason += ": " + ack.Message
+	}
+	if ack.Status == zcodeCommandAccepted {
+		reason = "the acknowledgement states no accepted input"
+	}
+	return reason
+}
+
+// zcodeCompareAndSetAttempts limits how often a compare-and-set command is
+// sent again after a `stale` reply. Each reply states the current revision, so
+// only a session that changes between two replies needs another attempt.
+const zcodeCompareAndSetAttempts = 3
+
+// sendZCodeCompareAndSetCommand sends a compare-and-set command from the newest
+// session revision the agent knows, and sends it again with the revision of
+// each `stale` reply. It returns the last acknowledgement.
+func (a *Agent) sendZCodeCompareAndSetCommand(envelope zcodeCommandEnvelope) (zcodeCommandAck, error) {
+	a.Mu.Lock()
+	revision := a.commandRevision
+	a.Mu.Unlock()
+	commandID := envelope.CommandID
+	var ack zcodeCommandAck
+	for attempt := 1; attempt <= zcodeCompareAndSetAttempts; attempt++ {
+		envelope.BaseRevision = &revision
+		envelope.CommandID = fmt.Sprintf("%s-%d", commandID, attempt)
+		var err error
+		ack, err = a.sendZCodeCommand(envelope)
+		if err != nil || ack.Status != zcodeCommandStale {
+			return ack, err
+		}
+		revision = ack.RevisionAtDecision
+	}
+	return ack, nil
+}

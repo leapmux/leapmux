@@ -19,6 +19,15 @@ import (
 // errControlTimeout reports a control request that got no answer in time.
 var errControlTimeout = errors.New("the agent did not answer the control request in time")
 
+// qoderControlRefusal is a control request that Qoder answered with an error.
+// Qoder handled the request, unlike a request that timed out or a process that
+// exited, so its state can differ from the state before the request.
+type qoderControlRefusal struct {
+	message string
+}
+
+func (e *qoderControlRefusal) Error() string { return e.message }
+
 // initializeTimeout limits the handshake, including native runtime startup.
 // The limit permits slow startup on a loaded machine.
 const initializeTimeout = 30 * time.Second
@@ -447,6 +456,8 @@ func (a *Agent) handleResult(raw []byte) {
 	}
 	a.setTurnActive(false)
 	a.broadcastContextUsage(raw)
+	// A turn spends credits, so the account quota is read again.
+	a.requestUsageRefresh()
 }
 
 // qoderResultSucceeded reports whether a `result` states a turn that finished.
@@ -644,7 +655,7 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (q
 		if result.Error == "" {
 			result.Error = "Qoder refused the control request"
 		}
-		return result, errors.New(result.Error)
+		return result, &qoderControlRefusal{message: result.Error}
 	}
 	return result, nil
 }
@@ -674,5 +685,10 @@ func (a *Agent) initializeStream() error {
 		return fmt.Errorf("decode the Qoder initialize reply: %w", err)
 	}
 	a.applyModelCatalog(response.Models, "", true)
+	running, styles, malformed := qoderOutputStyleReport(response)
+	if malformed {
+		slog.Warn("qoder: unreadable output styles in the initialize reply", "agent_id", a.AgentID())
+	}
+	a.applyOutputStyles(running, styles)
 	return nil
 }

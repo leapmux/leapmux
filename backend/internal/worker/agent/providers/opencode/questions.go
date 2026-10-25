@@ -75,6 +75,142 @@ func (q *openCodeQuestions) readStoredMessage(ctx context.Context, clock quartz.
 	return *message.Parts, nil
 }
 
+const (
+	// openCodeTaskPartPageSize is how many stored messages one read of the
+	// parent's history takes, newest first.
+	openCodeTaskPartPageSize = 10
+	// openCodeTaskPartMaxPages limits that read to the newest hundred messages.
+	// A running task call sits in the parent's newest assistant message: that
+	// message waits for the task, and only a steered prompt can follow it.
+	openCodeTaskPartMaxPages = 10
+	// openCodeNextCursorHeader states the cursor of the next older page.
+	openCodeNextCursorHeader = "X-Next-Cursor"
+)
+
+// openCodeTaskPart is what LeapMux reads of one stored tool part.
+type openCodeTaskPart struct {
+	Type   string `json:"type"`
+	CallID string `json:"callID"`
+	Tool   string `json:"tool"`
+	State  struct {
+		Status   string `json:"status"`
+		Metadata struct {
+			// SessionID is the child session that a task call runs. The task
+			// tool states it before the child's first request.
+			SessionID string `json:"sessionId"`
+		} `json:"metadata"`
+	} `json:"state"`
+}
+
+// findTaskPart reads the stored task part of callID in the session sessionID.
+// It reads the stored history newest first, one page at a time, and stops at
+// the page that holds the part. found is false when the newest
+// openCodeTaskPartMaxPages pages hold no such part.
+func (q *openCodeQuestions) findTaskPart(ctx context.Context, sessionID, callID string) (part openCodeTaskPart, found bool, err error) {
+	cursor := ""
+	for range openCodeTaskPartMaxPages {
+		var parts []json.RawMessage
+		parts, cursor, err = q.readMessagePage(ctx, sessionID, cursor)
+		if err != nil {
+			return openCodeTaskPart{}, false, err
+		}
+		for _, raw := range parts {
+			var candidate openCodeTaskPart
+			// A part of another shape tells nothing about this call, so it
+			// does not fail the read.
+			if json.Unmarshal(raw, &candidate) != nil {
+				continue
+			}
+			if candidate.Type == openCodePartTypeTool && candidate.Tool == openCodeTaskTool && candidate.CallID == callID {
+				return candidate, true, nil
+			}
+		}
+		if cursor == "" {
+			break
+		}
+	}
+	return openCodeTaskPart{}, false, nil
+}
+
+// readMessagePage reads one page of stored messages of sessionID: the newest
+// page when before is empty, and the page older than before otherwise. It
+// returns every part of the page, and the cursor of the next older page, or ""
+// when no older page exists.
+func (q *openCodeQuestions) readMessagePage(ctx context.Context, sessionID, before string) ([]json.RawMessage, string, error) {
+	query := url.Values{"limit": {strconv.Itoa(openCodeTaskPartPageSize)}}
+	if before != "" {
+		query.Set("before", before)
+	}
+	raw, header, err := q.readRoute(ctx, "/session/"+url.PathEscape(sessionID)+"/message?"+query.Encode())
+	if err != nil {
+		return nil, "", err
+	}
+	var messages []struct {
+		Parts []json.RawMessage `json:"parts"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return nil, "", fmt.Errorf("decode the OpenCode session messages: %w", err)
+	}
+	var parts []json.RawMessage
+	for _, message := range messages {
+		parts = append(parts, message.Parts...)
+	}
+	return parts, header.Get(openCodeNextCursorHeader), nil
+}
+
+// readRoute GETs one route of the daemon. It returns the body and the headers
+// of the answer, which must be 200 OK and at most openCodeQuestionMaxEvent bytes.
+func (q *openCodeQuestions) readRoute(ctx context.Context, route string) ([]byte, http.Header, error) {
+	base := q.base()
+	if base == "" {
+		return nil, nil, fmt.Errorf("the OpenCode daemon address is unavailable")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+route, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	response, err := q.client.Do(request)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the OpenCode route %s: %w", route, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		detail, _ := io.ReadAll(io.LimitReader(response.Body, 1<<12))
+		return nil, nil, fmt.Errorf("the OpenCode route %s answered %s: %s", route, response.Status, bytes.TrimSpace(detail))
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, openCodeQuestionMaxEvent+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the OpenCode route %s: %w", route, err)
+	}
+	if len(raw) > openCodeQuestionMaxEvent {
+		return nil, nil, fmt.Errorf("the OpenCode route %s answered more than %d bytes", route, openCodeQuestionMaxEvent)
+	}
+	return raw, response.Header, nil
+}
+
+// abortSession asks the daemon to cancel the running work of sessionID.
+func (q *openCodeQuestions) abortSession(ctx context.Context, sessionID string) error {
+	base := q.base()
+	if base == "" {
+		return fmt.Errorf("the OpenCode daemon address is unavailable")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/session/"+url.PathEscape(sessionID)+"/abort", nil)
+	if err != nil {
+		return err
+	}
+	response, err := q.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send the OpenCode session abort: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		detail, _ := io.ReadAll(io.LimitReader(response.Body, 1<<12))
+		return fmt.Errorf("the OpenCode session abort answered %s: %s", response.Status, bytes.TrimSpace(detail))
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<12))
+	return nil
+}
+
 // The OpenCode family asks the reader a question through its `question` tool, and
 // that tool blocks until something answers it. The daemon states the question on its
 // own event stream and takes the answer over HTTP. Its Agent Client Protocol adapter
@@ -340,6 +476,9 @@ type openCodeQuestions struct {
 	sink    agent.ControlServices
 	agentID string
 	observe func(json.RawMessage)
+	// ready runs once the daemon address is known, before the event stream
+	// opens, with the context of the bridge. It may be nil.
+	ready func(context.Context)
 
 	// mu guards baseURL and pending. pending maps the LeapMux request id to the
 	// daemon's own question id: the reader answers with the first, and the daemon
@@ -388,8 +527,16 @@ func (q *openCodeQuestions) Begin(ctx context.Context, clock quartz.Clock, agent
 		q.mu.Lock()
 		q.baseURL = baseURL
 		q.mu.Unlock()
+		q.announceReady(ctx)
 		q.run(ctx, clock)
 	}()
+}
+
+// announceReady tells the owner that the daemon address is known.
+func (q *openCodeQuestions) announceReady(ctx context.Context) {
+	if q.ready != nil {
+		q.ready(ctx)
+	}
 }
 
 // beginAt reads a server whose address is already known. Discovery is what finds that
@@ -402,6 +549,7 @@ func (q *openCodeQuestions) beginAt(ctx context.Context, clock quartz.Clock, age
 	q.mu.Lock()
 	q.baseURL = baseURL
 	q.mu.Unlock()
+	q.announceReady(ctx)
 	go q.run(ctx, clock)
 }
 

@@ -206,7 +206,13 @@ func (a *Agent) cancelStoppedZCodeTurnLocked() {
 // A no-op when no turn is active, so a caller need not probe first. session/stop
 // is the same request Stop issues; the app-server aborts the turn's controller and
 // replies with an empty object.
+//
+// A steer still queued for the turn is taken back first: the stop would drain it
+// into the conversation, where no model request reads it. The queue then runs it
+// as the next turn. steerMu holds every new steer until the stop is sent.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
 	a.Mu.Lock()
 	stopped, turnActive, sessionID := a.StoppedLocked(), a.turnActive || a.compactionSessionID != "", a.sessionID
 	generation := a.turnGeneration
@@ -217,28 +223,56 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if !turnActive || sessionID == "" {
 		return nil
 	}
-	if _, err := a.sendZCodeRequest(MethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout); err != nil {
+	a.withdrawZCodeSteersLocked()
+	a.beginZCodeStop()
+	_, err := a.sendZCodeRequest(MethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
+	// The end of the request, the open and the arm share ONE critical section. Split
+	// in two, a reader that ran between them saw a fresh armedAt with no window
+	// armed -- the half-applied state that stopProvenIgnoredLocked must never
+	// observe -- or a cancellation that it could attribute to no stop.
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	a.stopsInFlight--
+	if err != nil {
 		// The stop stopped nothing, so the turn is still running. Reporting it
 		// finished would hide a live agent behind an idle chat.
 		return err
 	}
-	// The open and the arm share ONE critical section. Split in two, a reader that
-	// ran between them saw a fresh armedAt with no window armed -- the half-applied
-	// state that stopProvenIgnoredLocked must never observe.
-	a.Mu.Lock()
 	if a.turnGeneration != generation || a.sessionID != sessionID || (!a.turnActive && a.compactionSessionID == "") {
-		a.Mu.Unlock()
 		return nil
 	}
 	a.stopWindow.open(time.Now(), stop)
 	a.armStoppedZCodeTurnLocked()
-	a.Mu.Unlock()
 	return nil
+}
+
+// beginZCodeStop counts a session/stop that is about to be sent.
+//
+// ZCode can report what the stop cut before LeapMux reads the stop's reply: the
+// read loop hands the reply to the waiting stop and handles the next frames at
+// once, before the stop takes a.Mu to arm its window. A cancellation that arrives
+// in that gap is still the stop's work, and stopCanCancelLocked counts it so.
+func (a *Agent) beginZCodeStop() {
+	a.Mu.Lock()
+	a.stopsInFlight++
+	a.Mu.Unlock()
+}
+
+// stopCanCancelLocked reports whether a stop of LeapMux's can explain a native
+// cancellation now: a stop waits for its reply, or the window watches one that
+// ZCode accepted. The caller holds a.Mu.
+func (a *Agent) stopCanCancelLocked() bool {
+	return a.stopsInFlight > 0 || a.stopWindow.armed()
 }
 
 // SendRawInput observes native stop replies without changing the caller's frame.
 // A stop request requires its native integer ID and the current native session.
+// It takes the queued steers back first, as Interrupt does. The answer to the
+// hook-trust question goes to the question, because no ZCode request waits for it.
 func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+	if handled, err := a.workspaceTrust.Answer(a.sink, zcodeWorkspaceTrustHost{a}, data); handled {
+		return err
+	}
 	var method struct {
 		Method string `json:"method"`
 	}
@@ -268,15 +302,25 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	if _, err := a.sendZCodeFrame(*frame.ID, MethodSessionStop, data, zcodeStopTimeout); err != nil {
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
+	if active {
+		a.withdrawZCodeSteersLocked()
+		a.beginZCodeStop()
+	}
+	_, err := a.sendZCodeFrame(*frame.ID, MethodSessionStop, data, zcodeStopTimeout)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if active {
+		a.stopsInFlight--
+	}
+	if err != nil {
 		return err
 	}
-	a.Mu.Lock()
 	if active && a.turnGeneration == generation && a.sessionID == sessionID && (a.turnActive || a.compactionSessionID != "") {
 		a.stopWindow.open(time.Now(), stop)
 		a.armStoppedZCodeTurnLocked()
 	}
-	a.Mu.Unlock()
 	return nil
 }
 
@@ -452,7 +496,8 @@ func (a *Agent) Stop() {
 		a.persistZCodeStopRow()
 	}
 	a.sink.ReportProgress(agent.ResetProgress())
-	a.cleanupZCodeMailbox()
+	a.resetZCodeSteers()
+	a.forgetZCodeConversation()
 }
 
 // Wait retains unfinished model output after an unexpected process exit.
@@ -467,6 +512,7 @@ func (a *Agent) Wait() error {
 	a.flushZCodeGeneration(completion)
 	a.persistIncompleteZCodeTools(completion)
 	a.sink.ReportProgress(agent.ResetProgress())
-	a.cleanupZCodeMailbox()
+	a.resetZCodeSteers()
+	a.forgetZCodeConversation()
 	return err
 }

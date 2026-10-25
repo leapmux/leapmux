@@ -2,7 +2,10 @@ import type { Server } from 'node:http'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { handleQoderHttp, qoderEndpointCacheRecords } from './qoderSurface'
+import { MOCK_IDENTITY_TOKEN } from './mockAgentEnvironment'
+import { registerMockModelScenario, removeMockModelScenario } from './mockModelScenario'
+import { createMockModelServer } from './mockModelServer'
+import { handleQoderHttp, QODER_QUOTA_CONTROL_PREFIX, QODER_QUOTA_PATH, qoderEndpointCacheRecords } from './qoderSurface'
 
 const origin = 'http://127.0.0.1:4555'
 const token = 'isolated-identity-token'
@@ -220,5 +223,52 @@ describe('handleQoderHttp configuration client', () => {
     const url = await configServer()
     const response = await fetch(`${url}/api/v1/qcs/config/stream?ns=foreign`, { headers })
     expect(response.status).toBe(400)
+  })
+})
+
+describe('createQoderSurface quota service', () => {
+  const servers: Awaited<ReturnType<typeof createMockModelServer>>[] = []
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map(server => server.close()))
+  })
+
+  async function quotaServer(scenarioId: string) {
+    const server = await createMockModelServer({ models: ['qoder-quota-test'] })
+    servers.push(server)
+    await registerMockModelScenario(server.url, scenarioId, { steps: [] })
+    const control = new URL(`${QODER_QUOTA_CONTROL_PREFIX}${scenarioId}`, server.url)
+    const usage = new URL(QODER_QUOTA_PATH, server.url)
+    const configure = (body: unknown) => fetch(control, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 200, body }) })
+    return { server, control, usage, configure }
+  }
+
+  it('answers the scenario quota only to the mocked account, and records each request', async () => {
+    const { control, usage, configure } = await quotaServer('qoder-quota-owner')
+    const authorization = { authorization: `Bearer ${MOCK_IDENTITY_TOKEN}` }
+    expect((await fetch(usage, { headers: authorization })).status, 'no answer is configured yet').toBe(404)
+    expect((await configure({ user_id: 'leapmux-e2e', user_type: 'personal', total_usage_percentage: 42 })).status).toBe(200)
+    expect((await fetch(usage)).status).toBe(401)
+    expect((await fetch(usage, { headers: { authorization: 'Bearer another-token' } })).status).toBe(401)
+    const answered = await fetch(usage, { headers: authorization })
+    expect(answered.status).toBe(200)
+    expect(await answered.json()).toEqual({ user_id: 'leapmux-e2e', user_type: 'personal', total_usage_percentage: 42 })
+    const state = await (await fetch(control)).json()
+    expect(state.receipts.map((receipt: { status: number, authorized: boolean }) => [receipt.status, receipt.authorized])).toEqual([[401, false], [401, false], [200, true]])
+    expect(JSON.stringify(state)).not.toContain(MOCK_IDENTITY_TOKEN)
+  })
+
+  it('forgets the quota of a removed scenario', async () => {
+    const { server, control, usage, configure } = await quotaServer('qoder-quota-removed')
+    expect((await configure({ user_id: 'leapmux-e2e', user_type: 'personal' })).status).toBe(200)
+    await removeMockModelScenario(server.url, 'qoder-quota-removed')
+    expect((await fetch(control)).status).toBe(404)
+    expect((await fetch(usage, { headers: { authorization: `Bearer ${MOCK_IDENTITY_TOKEN}` } })).status).toBe(404)
+  })
+
+  it('keeps serving the other native Qoder services', async () => {
+    const { usage } = await quotaServer('qoder-quota-services')
+    const status = await fetch(new URL('/api/v3/user/status', usage))
+    expect(status.status).toBe(200)
+    expect(await status.json()).toMatchObject({ featureSwitches: { allow_byok: 2 } })
   })
 })

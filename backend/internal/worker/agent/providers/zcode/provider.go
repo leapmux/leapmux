@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/util/validate"
@@ -58,9 +59,6 @@ func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 			if status == contracts.ZCodeNetworkStatusRetryScheduled && payload.networkStatusHasAPIRetry() {
 				return agent.APIRetryNotification()
 			}
-		case zcodeSessionUpdateHookAdmission:
-			// One notice per session. The pending count is the whole state.
-			return agent.ProviderScopedNotification("zcode:hook_admission")
 		case zcodeSessionUpdateSteerDiscarded:
 			// The discard replaces the queued notice the same key already holds.
 			return agent.ProviderScopedNotification("zcode:steer")
@@ -183,32 +181,32 @@ func (zcodeProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	return *payload.ToolCallCount, true
 }
 
-// ChildCapabilities.AcceptsMessages is false: a ZCode subagent runs to completion and takes no
-// further message.
+// ChildCapabilities states the native child operations that this provider supports.
+//
+// AcceptsMessages is false: a ZCode subagent runs to completion and takes no further
+// message. AcceptsInterrupt is true: a background subagent's tab stops it through its
+// task. A foreground subagent runs inside its parent's turn and refuses the
+// interrupt; see InterruptChild in subagent.go.
+func (zcodeProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsMessages: false, AcceptsInterrupt: true}
+}
 
 // ReportsDefaultModelSentinel is false: ZCode's catalog lists every model
 // explicitly, so no entry stands for the account default.
 func (zcodeProvider) ReportsDefaultModelSentinel() bool { return false }
 
 // ValidateAttachment enforces the part of ZCode's attachment policy that does not
-// depend on the running model.
+// depend on the running model: a binary file has no kind that keeps its bytes.
 //
-// The installed app server accepts PDF attachments, but this adapter does not send that representation.
-// Keep the explicit refusal until native PDF delivery is implemented: https://github.com/leapmux/leapmux/issues/499.
-//
-// The image gate is NOT here, because this check is stateless and an image's
-// acceptance depends on the CURRENT model's declared input modalities. It runs in
+// The image and PDF gates are NOT here, because this check is stateless and their
+// acceptance depends on the CURRENT model's declared input modalities. They run in
 // Agent.SendInput, which is the only place that knows the model -- see
 // attachments.go.
 func (zcodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	switch attachment.Kind {
-	case agent.AttachmentKindPDF:
-		return fmt.Errorf("zcode does not support PDF attachments: %s", attachment.Filename)
-	case agent.AttachmentKindBinary:
+	if attachment.Kind == agent.AttachmentKindBinary {
 		return fmt.Errorf("zcode does not support binary attachments: %s", attachment.Filename)
-	default:
-		return nil
 	}
+	return nil
 }
 
 // ResolveControlResponse turns the frontend's neutral answer into the app-server's
@@ -229,6 +227,10 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
+	// LeapMux asks the hook-trust question itself (workspace_trust.go).
+	if result, ok := providerkit.ResolveWorkspaceTrustResponse(ctx); ok {
+		return result
+	}
 
 	var stored zcodeControlRequestPayload
 	if !providerkit.WarnUnmarshal(ctx.RequestPayload, &stored, "zcode control response request") {
@@ -236,6 +238,11 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		return res
 	}
 	res.PlanModeControl = zcodeProvider{}.PlanModeControl(stored.Request.ToolName)
+	if stored.Method == contracts.ZCodeMethodRequestUserInput && stored.Request.ToolName == zcodeControlMCPElicitation {
+		// An MCP server's form: the browser answers it as an MCP form, not with
+		// allow or deny.
+		return zcodeResolveMCPElicitation(stored, ctx.ResponseContent, res)
+	}
 
 	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !ok || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {

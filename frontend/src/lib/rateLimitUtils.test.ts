@@ -1,12 +1,15 @@
 import type { RateLimitInfo } from '~/models/agentSession'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { RATE_LIMIT_TYPE } from '~/generated/contracts/session-info'
 import {
   formatCountdown,
   formatRateLimitMessage,
   formatRateLimitSummary,
   getResetsAt,
   pickUrgentRateLimit,
+  rateLimitPopoverLabel,
   rateLimitStatusLabel,
+  rateLimitTypeLabel,
 } from './rateLimitUtils'
 
 /** Unix seconds `secs` in the future, for a deterministically-positive countdown. */
@@ -28,6 +31,34 @@ describe('rateLimitStatusLabel', () => {
 })
 
 const UNKNOWN_TYPE_PREFIX_RE = /^Rate limit \(unknown_type\):/
+
+describe('rateLimitTypeLabel', () => {
+  it.each([
+    [RATE_LIMIT_TYPE.FiveHour, '5-hour'],
+    [RATE_LIMIT_TYPE.SevenDay, '7-day'],
+    [RATE_LIMIT_TYPE.OneMonth, 'Monthly'],
+  ])('labels the standard type %s', (rateLimitType, label) => {
+    expect(rateLimitTypeLabel(rateLimitType)).toBe(label)
+  })
+
+  it.each([undefined, '', '3_month', 'toString'])('returns undefined for the type %s, which is not standard', (rateLimitType) => {
+    expect(rateLimitTypeLabel(rateLimitType)).toBeUndefined()
+  })
+})
+
+describe('rateLimitPopoverLabel', () => {
+  it.each([
+    [RATE_LIMIT_TYPE.FiveHour, '5-Hour Rate Limit'],
+    [RATE_LIMIT_TYPE.SevenDay, '7-Day Rate Limit'],
+    [RATE_LIMIT_TYPE.OneMonth, 'Monthly Rate Limit'],
+  ])('labels the standard type %s', (rateLimitType, label) => {
+    expect(rateLimitPopoverLabel(rateLimitType)).toBe(label)
+  })
+
+  it.each([undefined, '', '3_month', 'constructor'])('returns undefined for the type %s, which is not standard', (rateLimitType) => {
+    expect(rateLimitPopoverLabel(rateLimitType)).toBeUndefined()
+  })
+})
 
 describe('formatCountdown', () => {
   beforeEach(() => {
@@ -216,6 +247,10 @@ describe('formatRateLimitMessage', () => {
   it('includes type label for known types', () => {
     const msg = formatRateLimitMessage({ rateLimitType: 'five_hour', utilization: 0.5 })
     expect(msg).toContain('5-hour')
+  })
+
+  it('labels a monthly window', () => {
+    expect(formatRateLimitMessage({ rateLimitType: RATE_LIMIT_TYPE.OneMonth, utilization: 0.3 })).toBe('Monthly rate limit: 30% used')
   })
 
   it('includes raw type in parentheses for unknown types', () => {

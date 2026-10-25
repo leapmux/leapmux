@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export interface CopilotEnvironmentOptions {
@@ -9,12 +9,21 @@ export interface CopilotEnvironmentOptions {
   modelKey: string
   /** The GitHub token that Copilot exchanges at the mock. */
   githubToken: string
+  /** The run directory, which holds every working directory of the run. Copilot trusts it. */
+  runDirectory: string
 }
 
-/** Point GitHub Copilot CLI at the mock, with its state in the isolated HOME and its updater off. */
+/**
+ * Point GitHub Copilot CLI at the mock, with its state in the isolated HOME and its updater off.
+ *
+ * Copilot loads a project's MCP servers only from a folder in its trusted list, and the Worker asks the reader to
+ * trust a folder that the list lacks. The list trusts the run directory, so no spec meets that question unless it
+ * states its own Copilot home: Copilot trusts each folder under a trusted one.
+ */
 export function createCopilotEnvironment(options: CopilotEnvironmentOptions): Record<string, string> {
   const copilotHome = join(options.homeDir, '.copilot')
   mkdirSync(copilotHome, { recursive: true })
+  writeFileSync(join(copilotHome, 'config.json'), `${JSON.stringify({ trustedFolders: [options.runDirectory] }, null, 2)}\n`)
   return {
     COPILOT_API_URL: options.origin,
     COPILOT_DEBUG_GITHUB_API_URL: options.origin,

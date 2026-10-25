@@ -1,9 +1,12 @@
 package copilot
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -219,4 +222,168 @@ func TestNativeCopilotSubagentUsageInfoReachesItsOwnTranscript(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, int64(300), usage[contracts.ContextUsageFieldContextTokens])
 	assert.Equal(t, int64(64000), usage[contracts.ContextUsageFieldContextWindow])
+}
+
+// startCopilotSubagent spawns the subagent `agent-1` from the root's task call
+// `task-1`, and returns its row and its transcript. mode is the execution mode
+// that `subagent.started` states.
+func startCopilotSubagent(t *testing.T, a *Agent, sink *agenttest.Sink, mode string) (bgtask.Item, *agenttest.Sink) {
+	t.Helper()
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": "task-1", "toolName": contracts.CopilotToolTask,
+		"arguments": map[string]any{"name": "Worker", "prompt": "Work.", "mode": mode},
+	}))
+	started := map[string]any{"toolCallId": "task-1", "agentName": "worker"}
+	if mode != "" {
+		started["executionMode"] = mode
+	}
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentStarted, started))
+	row, ok := copilotBackgroundRow(t, sink, "agent-1")
+	require.True(t, ok)
+	return row, sink.Child(row.ChildAgentID)
+}
+
+// copilotAgentIdleNotice frames the notice that Copilot sends to the parent
+// when a background subagent finishes a turn.
+func copilotAgentIdleNotice(t *testing.T, nativeAgentID string) []byte {
+	t.Helper()
+	return nativeCopilotEvent(t, "", contracts.CopilotEventSystemNotification, map[string]any{
+		"kind":    map[string]any{"type": copilotAgentIdle, "agentId": nativeAgentID},
+		"content": "Agent " + nativeAgentID + " is idle.",
+	})
+}
+
+// Copilot keeps a background subagent after each turn, for a later message. It
+// ends the first turn with `subagent.completed` and each later turn with an
+// `agent_idle` notice, so the row pauses at both, and a turn start resumes it.
+func TestNativeCopilotBackgroundSubagentPausesBetweenItsTurns(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	row, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, copilotExecutionBackground, child.LastSettingsRefresh().Options[copilotOptionExecutionMode],
+		"the child option decides whether the child tab takes a message")
+	assert.Equal(t, []agent.TurnState{{Active: true, Steerable: true}}, child.TurnStates(),
+		"a running background subagent takes a steer")
+
+	childBefore := len(child.Messages())
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
+	row, _ = copilotBackgroundRow(t, sink, "agent-1")
+	assert.Equal(t, bgtask.StatusPaused, row.Status)
+	assert.Contains(t, a.children, "agent-1", "an idle background subagent keeps its route")
+	require.Len(t, child.Messages(), childBefore+1)
+	assert.Contains(t, string(child.Messages()[childBefore].Content), contracts.CopilotEventSubagentCompleted)
+	assert.Equal(t, agent.TurnState{}, child.TurnStates()[len(child.TurnStates())-1])
+
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "1"}))
+	row, _ = copilotBackgroundRow(t, sink, "agent-1")
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "a message woke the subagent")
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, child.TurnStates()[len(child.TurnStates())-1])
+	assert.NotContains(t, sink.TurnActives(), true, "a subagent's turn never starts the root's turn")
+
+	parentBefore := len(sink.Messages())
+	a.HandleOutput(copilotAgentIdleNotice(t, "agent-1"))
+	row, _ = copilotBackgroundRow(t, sink, "agent-1")
+	assert.Equal(t, bgtask.StatusPaused, row.Status)
+	assert.Equal(t, agent.TurnState{}, child.TurnStates()[len(child.TurnStates())-1])
+	assert.Len(t, sink.Messages(), parentBefore+1, "the notice still reaches the parent, which answers it")
+
+	// A repeated notice changes nothing.
+	published := len(child.TurnStates())
+	a.HandleOutput(copilotAgentIdleNotice(t, "agent-1"))
+	assert.Len(t, child.TurnStates(), published)
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusPaused, bgtask.StatusRunning, bgtask.StatusPaused},
+		sink.BackgroundTaskStatuses("agent-1"))
+
+	// A later failure ends the subagent.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "2"}))
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentFailed, map[string]any{"toolCallId": "task-1", "error": "it broke"}))
+	row, _ = copilotBackgroundRow(t, sink, "agent-1")
+	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.NotContains(t, a.children, "agent-1")
+	assert.Equal(t, agent.TurnState{}, child.TurnStates()[len(child.TurnStates())-1])
+}
+
+// A foreground subagent ends with its one turn. An `agent_idle` notice that
+// names it does not pause it.
+func TestNativeCopilotForegroundSubagentEndsWithItsTurn(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"sync", ""} {
+		t.Run(fmt.Sprintf("mode %q", mode), func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			_, child := startCopilotSubagent(t, a, sink, mode)
+			assert.Equal(t, mode, child.LastSettingsRefresh().Options[copilotOptionExecutionMode])
+			assert.Equal(t, []agent.TurnState{{Active: true}}, child.TurnStates(), "a foreground subagent takes no steer")
+
+			a.HandleOutput(copilotAgentIdleNotice(t, "agent-1"))
+			row, _ := copilotBackgroundRow(t, sink, "agent-1")
+			assert.Equal(t, bgtask.StatusRunning, row.Status)
+			assert.Len(t, child.TurnStates(), 1)
+
+			a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
+			row, _ = copilotBackgroundRow(t, sink, "agent-1")
+			assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+			assert.NotContains(t, a.children, "agent-1")
+			assert.Equal(t, []agent.TurnState{{Active: true}, {}}, child.TurnStates())
+		})
+	}
+}
+
+// A background subagent that Copilot cancels or that fails ends: only a
+// completed turn leaves it idle for a later message.
+func TestNativeCopilotBackgroundSubagentEndsWhenItStopsOrFails(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		event string
+		data  map[string]any
+		want  bgtask.Status
+	}{
+		{"cancelled", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1", "cancelled": true}, bgtask.StatusStopped},
+		{"failed", contracts.CopilotEventSubagentFailed, map[string]any{"toolCallId": "task-1", "error": "it broke"}, bgtask.StatusFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+			a.HandleOutput(nativeCopilotEvent(t, "agent-1", test.event, test.data))
+			row, _ := copilotBackgroundRow(t, sink, "agent-1")
+			assert.Equal(t, test.want, row.Status)
+			assert.NotContains(t, a.children, "agent-1")
+			assert.Equal(t, []agent.TurnState{{Active: true, Steerable: true}, {}}, child.TurnStates())
+		})
+	}
+}
+
+// An `agent_idle` notice for a subagent that this process does not know, or one
+// that names no subagent, changes no row and still reaches the parent.
+func TestNativeCopilotIdleNoticeForAnUnknownSubagent(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+	before := len(sink.Messages())
+	a.HandleOutput(copilotAgentIdleNotice(t, "agent-unknown"))
+	a.HandleOutput(copilotAgentIdleNotice(t, ""))
+	row, _ := copilotBackgroundRow(t, sink, "agent-1")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Len(t, sink.Messages(), before+2)
+}
+
+// Stopping the agent also closes the row of an idle background subagent, which
+// is paused rather than running.
+func TestNativeCopilotClearingChildrenStopsAnIdleSubagent(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
+
+	a.outputMu.Lock()
+	a.clearNativeChildren()
+	a.outputMu.Unlock()
+
+	row, _ := copilotBackgroundRow(t, sink, "agent-1")
+	assert.Equal(t, bgtask.StatusStopped, row.Status)
+	assert.Empty(t, a.children)
+	assert.Equal(t, agent.TurnState{}, child.TurnStates()[len(child.TurnStates())-1])
 }

@@ -21,25 +21,27 @@ import (
 // Agent owns one native Web process and one root Session.
 type Agent struct {
 	providerkit.Process
-	sink            agent.ProviderServices
-	rpc             remoteRPC
-	workingDir      string
-	opMu            sync.Mutex
-	steerMu         sync.Mutex
-	writeMu         sync.Mutex
-	dispatchMu      sync.Mutex
-	conn            *websocket.Conn
-	streamCancel    context.CancelFunc
-	streamDone      chan struct{}
-	ready           chan struct{}
-	readyOnce       sync.Once
-	discard         atomic.Bool
-	sessionID       string
-	clientID        string
-	catalog         modelCatalog
-	selection       modelSelection
-	mode            string
-	permissions     string
+	sink         agent.ProviderServices
+	rpc          remoteRPC
+	workingDir   string
+	opMu         sync.Mutex
+	steerMu      sync.Mutex
+	writeMu      sync.Mutex
+	dispatchMu   sync.Mutex
+	conn         *websocket.Conn
+	streamCancel context.CancelFunc
+	streamDone   chan struct{}
+	ready        chan struct{}
+	readyOnce    sync.Once
+	discard      atomic.Bool
+	sessionID    string
+	clientID     string
+	catalog      modelCatalog
+	selection    modelSelection
+	mode         string
+	permissions  string
+	// autoReview states whether the native permission catalog offers Auto.
+	autoReview      bool
 	active          bool
 	streams         map[string]*sessionStream
 	controls        map[string]*nativeControl

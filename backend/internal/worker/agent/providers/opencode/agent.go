@@ -19,3 +19,10 @@ var _ agent.Agent = (*Agent)(nil)
 // false, with no build error, for a provider that stops satisfying InputSteerer,
 // so this assertion makes that regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+
+// Agent stops one subagent and steers a running one through the family base.
+// Manager.InterruptChild and Manager.SteerChildInput type-assert the running
+// agent, so these assertions make a lost method a compile error instead of a
+// refused operation.
+var _ agent.ChildInterrupter = (*Agent)(nil)
+var _ agent.ChildSteerer = (*Agent)(nil)
