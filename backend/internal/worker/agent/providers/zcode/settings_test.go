@@ -90,7 +90,7 @@ func TestApplySettingsSnapshot_BuildsTheCurrentProtocolModelCatalog(t *testing.T
 
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.Mu.Unlock()
 	zcodeApplySettings(t, a, `{
       "model": {
@@ -611,7 +611,7 @@ func TestZCodeSetters_RefuseWithoutASession(t *testing.T) {
 	a.sessionID = ""
 	a.Mu.Unlock()
 
-	assert.ErrorIs(t, a.applyZCodeModel("builtin:zai/GLM-5.3", 0), errNoZCodeSession)
+	assert.ErrorIs(t, a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0), errNoZCodeSession)
 	assert.ErrorIs(t, a.applyZCodeThoughtLevel("high", 0), errNoZCodeSession)
 	assert.ErrorIs(t, a.applyZCodeMode(contracts.ZCodeModePlan, 0), errNoZCodeSession)
 }
@@ -625,7 +625,7 @@ func TestApplyZCodeModel_RefusesAnUnknownModelWithoutAnRPC(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
 
-	err := a.applyZCodeModel("nope", 0)
+	err := a.applyZCodeModel("nope", a.thoughtLevel, 0)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nope", "the message must name the id, because the usual cause is a stale configuration")
 	assert.Empty(t, stdin.Frames(), "an unresolvable model must not reach the wire")
@@ -659,7 +659,7 @@ func TestApplyZCodeModel_OverlayCarriesTheLevelAndAutoResolvesTheDefault(t *test
 			// No reply ever arrives, so the call returns a context error. The REQUEST is
 			// what this test is about.
 			a.CancelForTest()
-			_ = a.applyZCodeModel("builtin:zai/GLM-5.3", 0)
+			_ = a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0)
 
 			requests := stdin.Requests(t)
 			require.Len(t, requests, 1)
@@ -685,7 +685,7 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.thoughtLevel = "high"
 	a.Mu.Unlock()
 	zcodeApplySettings(t, a, `{
@@ -700,7 +700,7 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
     }`)
 
 	a.CancelForTest()
-	_ = a.applyZCodeModel("account:zai-individual-coding-plan/GLM-5.3", 0)
+	_ = a.applyZCodeModel("account:zai-individual-coding-plan/GLM-5.3", a.thoughtLevel, 0)
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
@@ -727,7 +727,7 @@ func TestApplyZCodeModel_OverlayOmitsTheLevelWhenTheModelDeclaresNoDefault(t *te
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
 	a.CancelForTest()
-	_ = a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", 0)
+	_ = a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, 0)
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
@@ -885,7 +885,7 @@ func TestApplyZCodeModel_ReportsTheObservedModel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", time.Second)
+		errCh <- a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, time.Second)
 	}()
 
 	req := waitZCodeRequest(t, stdin, MethodSetModel)

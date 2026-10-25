@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLoadZCodeBuiltinProviderFile_ReadsSymlinkSegmentsBeforeNormalizingTheHash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a Windows symlink requires privileges")
+	}
+	root, target := t.TempDir(), t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(target, "child"), 0o700))
+	require.NoError(t, os.Symlink(filepath.Join(target, "child"), filepath.Join(root, "link")))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "release.json"), []byte(`{"revision":1}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "release.json"), []byte(`{"revision":2}`), 0o600))
+	path := filepath.Join(root, "link") + string(filepath.Separator) + ".." + string(filepath.Separator) + "release.json"
+	release, revision, err := loadZCodeBuiltinProviderFile(path)
+	require.NoError(t, err)
+	require.NotNil(t, release.Revision)
+	assert.Equal(t, int64(2), *release.Revision)
+	assert.Equal(t, "zcode-builtin:2:"+zcodeSHA256Hex(filepath.Clean(path)), revision)
+}
 
 func TestZCodeConfigPath(t *testing.T) {
 	t.Parallel()
@@ -948,13 +966,12 @@ func TestZCodeCatalog_AccountProvidersComeFromTheInstalledRules(t *testing.T) {
 	provider, ok := payload.Providers["account:acme-team-coding-plan"]
 	require.True(t, ok, "the installed account rule selects a provider without an adapter switch case")
 	assert.Nil(t, provider.BuiltinModelIDs, "a coding plan keeps the installed rule's model list")
-	zcodeTestAccountBridge(t, &catalog, release)
-	key, ok := catalog.inlineAPIKey("account:acme-team-coding-plan")
-	assert.True(t, ok)
-	assert.Equal(t, "acme-key", key)
+	bindings := zcodeTestBindings(t, catalog, release, zcodeCredentials{})
+	require.Len(t, bindings, 1)
+	assert.Equal(t, "acme-key", bindings[0].configKey())
 }
 
-func TestZCodeBuiltinProviderRevision_RejectsInvalidRelease(t *testing.T) {
+func TestLoadZCodeBuiltinProviderFile_RejectsInvalidRelease(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
@@ -969,14 +986,14 @@ func TestZCodeBuiltinProviderRevision_RejectsInvalidRelease(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "zcode-builtin.json")
 			require.NoError(t, os.WriteFile(path, []byte(test.content), 0o600))
-			_, err := zcodeBuiltinProviderRevision(path)
+			_, _, err := loadZCodeBuiltinProviderFile(path)
 			require.Error(t, err)
 		})
 	}
 
-	_, err := zcodeBuiltinProviderRevision("")
+	_, _, err := loadZCodeBuiltinProviderFile("")
 	require.Error(t, err)
-	_, err = zcodeBuiltinProviderRevision(filepath.Join(t.TempDir(), "missing.json"))
+	_, _, err = loadZCodeBuiltinProviderFile(filepath.Join(t.TempDir(), "missing.json"))
 	require.Error(t, err)
 }
 
@@ -992,29 +1009,11 @@ func TestZCodeCatalog_AccountProviderPayloadRecordsNoBridge(t *testing.T) {
 	require.Contains(t, payload.Providers, "account:zai-individual-coding-plan")
 	_, ok := catalog.accountProviderID("builtin:zai-coding-plan")
 	assert.False(t, ok, "building the snapshot records no bridge")
-	assert.Nil(t, catalog.legacyProviderIDs)
 
 	catalog.recordAccountBridge(bindings)
 	accountID, ok := catalog.accountProviderID("builtin:zai-coding-plan")
 	assert.True(t, ok)
 	assert.Equal(t, "account:zai-individual-coding-plan", accountID)
-	assert.Equal(t, map[string]string{"account:zai-individual-coding-plan": "builtin:zai-coding-plan"}, catalog.legacyProviderIDs)
-}
-
-func TestZCodeCatalog_InlineAPIKeyResolvesAccountProviderIDs(t *testing.T) {
-	t.Parallel()
-
-	catalog := zcodeTestCatalog(t, zcodeTestCodingPlanConfig)
-	zcodeTestAccountBridge(t, &catalog, zcodeBuiltinZAIAccountConfig)
-
-	key, ok := catalog.inlineAPIKey("account:zai-individual-coding-plan")
-	assert.True(t, ok)
-	assert.Equal(t, "plan-key", key)
-	assert.True(t, catalog.hasInlineAPIKey("account:zai-individual-coding-plan"),
-		"hasInlineAPIKey shares the account-id mapping")
-	_, ok = catalog.inlineAPIKey("account:bigmodel-individual-coding-plan")
-	assert.False(t, ok)
-	assert.False(t, catalog.hasInlineAPIKey("account:bigmodel-individual-coding-plan"))
 }
 
 func TestZCodeCatalog_AccountProviderIDUsesTheSelectedPlan(t *testing.T) {

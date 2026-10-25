@@ -37,6 +37,8 @@ type Agent struct {
 	// withdrawal sees every steer sent before it, and no steer is sent between
 	// an interrupt's withdrawal and its stop. See steering.go.
 	steerMu sync.Mutex
+	// Serialize session adoption with catalog reads of the active native session.
+	sessionLifecycleMu sync.Mutex
 
 	sink       agent.ProviderServices
 	workingDir string
@@ -44,13 +46,12 @@ type Agent struct {
 
 	// catalog is the translated view of ZCode's own configuration: the provider
 	// registry payload (with inline API keys), the per-model capabilities, and the
-	// account bridge. loadZCodeCatalog builds it before the process starts. The
-	// one later write is the account bridge, which pushAccountProviderConfig
-	// records on the Start goroutine before the session opens. Its readers run
-	// only after that: the app-server asks for credentials only during a model
-	// request of an open session, and the model setters check
-	// accountProviderConfig under Mu first. So the catalog needs no lock.
+	// account bridge. Provider and model data stay immutable after startup.
+	// Accepted account snapshots replace the bridge under Mu. Every catalog
+	// method that copies or reads the bridge holds Mu too.
 	catalog zcodeCatalog
+	// Only a legacy app-server requires the legacy registry to be usable.
+	legacyConfigurationError error
 	// registryRevision identifies this agent's provider configuration. Legacy
 	// builds use it on the workspace registry, and current builds use it on the
 	// account snapshot.
@@ -62,8 +63,7 @@ type Agent struct {
 	// account snapshot then fails.
 	builtinProviderConfigPath string
 	// credentials reads the credential store that the desktop and its app-server
-	// share. LeapMux reads it again for each model request, so a new sign-in
-	// serves at once.
+	// share. Runtime requests and the account refresh owner read current credentials.
 	credentials zcodeCredentialStore
 	// identity is how the Start Plan entitlement check identifies its client, as
 	// the desktop does.
@@ -78,9 +78,6 @@ type Agent struct {
 
 	// --- guarded by Mu ---
 
-	// accountProviderConfig is true when the legacy registry method is absent and
-	// provider/updateAccountConfig completed. It selects the current request shapes.
-	accountProviderConfig bool
 	// account is the account snapshot that the app-server accepted, or nil before
 	// it accepts one and on a legacy build.
 	account   *zcodeAccountState
@@ -198,6 +195,8 @@ type Agent struct {
 	// maps that can drift.
 	liveModels     map[string]zcodeLiveModelRecord
 	liveModelOrder []string
+	// Partial setter/read snapshots cannot expand a complete account catalog.
+	liveCatalogComplete bool
 
 	// toolCalls holds everything a.Mu knows about each tool call, keyed by its id.
 	toolCalls     map[string]*zcodeToolCall

@@ -393,15 +393,39 @@ func zcodeAppVersion(script string) string {
 		return zcodeUnknownAppVersion
 	}
 	key := zcodeAppVersionKey{path: archive, size: info.Size(), modTime: info.ModTime().UnixNano()}
-	if version, ok := zcodeAppVersions.Load(key); ok {
-		return version.(string)
+	return zcodeAppVersions.load(key, readZCodeAsarPackageVersion)
+}
+
+// zcodeAppVersionCache keeps version discovery local to one archive generation.
+// The reader parameter permits deterministic concurrent-miss tests.
+type zcodeAppVersionCache struct{ entries sync.Map }
+
+type zcodeAppVersionEntry struct {
+	done chan struct{}
+	// version is written before done closes.
+	version string
+}
+
+func (c *zcodeAppVersionCache) load(key zcodeAppVersionKey, read func(string, int64) (string, error)) string {
+	if cached, ok := c.entries.Load(key); ok {
+		entry := cached.(*zcodeAppVersionEntry)
+		<-entry.done
+		return entry.version
 	}
-	version, err := readZCodeAsarPackageVersion(archive, info.Size())
-	if err != nil || !zcodeAppVersionPattern.MatchString(version) {
-		version = zcodeUnknownAppVersion
+	entry := &zcodeAppVersionEntry{done: make(chan struct{})}
+	actual, loaded := c.entries.LoadOrStore(key, entry)
+	if loaded {
+		entry = actual.(*zcodeAppVersionEntry)
+	} else {
+		version, err := read(key.path, key.size)
+		if err != nil || !zcodeAppVersionPattern.MatchString(version) {
+			version = zcodeUnknownAppVersion
+		}
+		entry.version = version
+		close(entry.done)
 	}
-	zcodeAppVersions.Store(key, version)
-	return version
+	<-entry.done
+	return entry.version
 }
 
 // zcodeAppVersionPattern accepts a dotted version with an optional suffix. A value
@@ -417,7 +441,7 @@ type zcodeAppVersionKey struct {
 
 // zcodeAppVersions memoizes zcodeAppVersion. It holds one entry for each installed
 // version that the Worker process has seen.
-var zcodeAppVersions sync.Map // zcodeAppVersionKey -> string
+var zcodeAppVersions zcodeAppVersionCache
 
 // zcodeAsarHeaderMaxBytes limits the JSON header of an asar archive. The header of
 // ZCode 3.16 is about 7 MiB.

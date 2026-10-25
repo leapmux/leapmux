@@ -685,3 +685,42 @@ func TestZCodeStartPlanCheck_CancellingTheAgentEndsTheCheck(t *testing.T) {
 	cancel()
 	assert.Len(t, check.wait(), 2)
 }
+
+func TestZCodeStartPlanBalance_UsesNativeNumericWhitespace(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		end  string
+		want zcodeAccountEntitlement
+	}{
+		{end: `"\ufeff1"`, want: zcodeNotEntitled},
+		{end: `"\u00851\u0085"`, want: zcodeAvailable("GLM-5.3")},
+		{end: `"0x1"`, want: zcodeNotEntitled},
+		{end: `"1_0"`, want: zcodeAvailable("GLM-5.3")},
+	} {
+		t.Run(test.end, func(t *testing.T) {
+			t.Parallel()
+			body := zcodeBalanceReplyJSON(`[{"plan_id":"zcode-start-plan","status":"active","ends_at":`+test.end+`}]`, `[{"plan_id":"zcode-start-plan","capabilities":["model:glm-5.3"]}]`)
+			got, err := interpretZCodeStartPlanBalance([]byte(body), math.NaN(), 1800000000, zcodeTestCanonicalModelIDs)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
+func TestZCodeFetchStartPlanEntitlement_UsesNativeCredentialWhitespace(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ credential, want string }{
+		{credential: "\uFEFFjwt\uFEFF", want: "jwt"},
+		{credential: "\u0085jwt\u0085", want: "\u0085jwt\u0085"},
+	} {
+		t.Run(test.credential, func(t *testing.T) {
+			t.Parallel()
+			server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "Bearer "+test.want, r.Header.Get("Authorization"))
+				_, _ = io.WriteString(w, zcodeLiveBalanceReply)
+			})
+			_, err := fetchZCodeStartPlanEntitlement(t.Context(), client, server.URL, test.credential, zcodeTestIdentity, nil)
+			require.NoError(t, err)
+		})
+	}
+}

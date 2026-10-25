@@ -8,17 +8,18 @@ import (
 	"syscall"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bootstrap"
 )
 
-// RunAgentHelper runs a provider helper when a provider's CLI started this
-// process as one, and reports whether it did. Every executable that can run the
+// RunAgentHelper runs a native environment probe or a provider helper, and
+// reports whether it did. Every executable that can run the
 // worker calls it first in main, before it sets up logging or reads its
 // arguments: the helper's stderr reaches the provider's CLI as a message, so a
 // log line there would reach it too.
 //
-// A process is a helper when it starts with NO argument and
+// A provider helper starts with NO argument and
 // contracts.EnvAgentHelper is set. The provider's CLI starts the helper with no
 // argument. The leapmux CLI needs an argument for everything else it does. The
 // desktop sidecar starts with no argument too, and the desktop shell removes an
@@ -32,6 +33,9 @@ import (
 // Every process that the run starts then inherits no spec path of another
 // agent: a terminal, a nested worker, and any other child alike.
 func RunAgentHelper(args []string, stdin io.Reader, stdout, stderr io.Writer) (exitCode int, handled bool) {
+	if code, probe := envprobe.Run(args, stdout, stderr); probe {
+		return code, true
+	}
 	exitCode, handled = runAgentHelper(args, os.Getenv, stdin, stdout, stderr, bootstrap.RunAgentHelper)
 	if !handled {
 		_ = os.Unsetenv(contracts.EnvAgentHelper)

@@ -2,12 +2,11 @@ package zcode
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -67,7 +66,7 @@ func TestZCodeAccountRequestAuth_MintsACodingPlanTokenFromTheSignIn(t *testing.T
 		ProviderID:                      "account:zai-individual-coding-plan",
 		Reason:                          "model-request",
 		ExpectedAccountScope:            auth.AccountScope,
-		RejectedProjectTokenFingerprint: zcodeTokenFingerprint(auth.APIKey),
+		RejectedProjectTokenFingerprint: zcodeSHA256Hex(auth.APIKey),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "token-2", retry.APIKey, "a refused token is minted again")
@@ -278,74 +277,36 @@ func TestZCodeCatalog_AccountProviderBindingsFromTheStoreAlone(t *testing.T) {
 	assert.Equal(t, "https://zcode.z.ai/api/v1/zcode-plan/anthropic", bindings[1].baseURL(), "the installed rule states the endpoint")
 }
 
-func TestZCodeConfigurationError(t *testing.T) {
-	t.Parallel()
-
-	home := t.TempDir()
-	signedIn := zcodeTestSignedInStore(t, "login")
-	empty := zcodeTestCredentialStore(t, nil)
-	assert.NoError(t, zcodeConfigurationError(errZCodeConfigMissing, home, signedIn), "a sign-in serves without config.json")
-	assert.NoError(t, zcodeConfigurationError(errZCodeConfigUnusable, home, signedIn))
-
-	err := zcodeConfigurationError(errZCodeConfigMissing, home, empty)
-	require.ErrorContains(t, err, "ZCode is not configured")
-	assert.Contains(t, err.Error(), filepath.Join(home, ".zcode", "v2", "config.json"), "the message states the file")
-
-	unusable := errZCodeConfigUnusable
-	assert.Same(t, unusable, zcodeConfigurationError(unusable, home, empty), "the unusable config.json keeps its own reason")
-	other := io.ErrUnexpectedEOF
-	assert.Same(t, other, zcodeConfigurationError(other, home, signedIn), "an unreadable config.json still stops the start")
-
-	// A store that LeapMux cannot read must not read as a store without a sign-in:
-	// the message states the real cause.
-	malformed := newZCodeCredentialStore(t.TempDir(), zcodeTestCredentialGetenv)
-	require.NoError(t, os.MkdirAll(filepath.Dir(malformed.path), 0o700))
-	require.NoError(t, os.WriteFile(malformed.path, []byte(`{"zcodejwttoken":`), 0o600))
-	err = zcodeConfigurationError(errZCodeConfigMissing, home, malformed)
-	require.ErrorContains(t, err, "could not read a sign-in from the ZCode credential store")
-	assert.ErrorContains(t, err, "read the ZCode credential store "+malformed.path)
-	assert.NotContains(t, err.Error(), "holds no sign-in")
-
-	foreign := zcodeTestSignedInStore(t, "login")
-	foreign.key = sha256.Sum256([]byte("another secret"))
-	err = zcodeConfigurationError(errZCodeConfigMissing, home, foreign)
-	assert.ErrorContains(t, err, "decrypt the ZCode credential", "a store written under another secret states so")
-
-	err = zcodeConfigurationError(errZCodeConfigUnusable, home, foreign)
-	require.ErrorIs(t, err, errZCodeConfigUnusable, "the unusable config.json stays the reason")
-	assert.ErrorContains(t, err, "decrypt the ZCode credential")
-}
-
 func TestZCodeAccountState_TracksWhatTheAppServerHolds(t *testing.T) {
 	t.Parallel()
 
 	available := zcodeAccountEntitlement{Availability: zcodeAvailabilityAvailable, Models: []string{"GLM-5.3"}}
-	state := &zcodeAccountState{entitlements: map[string]zcodeAccountEntitlement{
-		"builtin:zai-start-plan":      zcodeUnknownEntitlement,
-		"builtin:bigmodel-start-plan": zcodeUnknownEntitlement,
+	state := &zcodeAccountState{plans: map[string]*zcodeStartPlanState{
+		"builtin:zai-start-plan":      {entitlement: zcodeUnknownEntitlement},
+		"builtin:bigmodel-start-plan": {entitlement: zcodeUnknownEntitlement},
 	}}
 	first, learned := state.payload("r")
 	assert.Equal(t, "r", first.Revision)
 	state.accepted(learned)
 	assert.False(t, state.unpushed())
 
-	state.learn(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": zcodeUnknownEntitlement})
+	state.learnForTest(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": zcodeUnknownEntitlement})
 	assert.False(t, state.unpushed(), "a check that learned nothing changes nothing")
 
-	state.learn(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": available})
+	state.learnForTest(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": available})
 	assert.True(t, state.unpushed())
 	second, learned := state.payload("r")
 	assert.Equal(t, "r#1", second.Revision, "each push carries a new revision")
 
 	// A check that learns while the push runs is not part of the pushed snapshot.
-	state.learn(map[string]zcodeAccountEntitlement{"builtin:bigmodel-start-plan": available})
+	state.learnForTest(map[string]zcodeAccountEntitlement{"builtin:bigmodel-start-plan": available})
 	state.accepted(learned)
 	assert.True(t, state.unpushed(), "the app-server does not hold the plan that the push did not carry")
 
-	state.learn(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": {Availability: zcodeAvailabilityUnavailable}})
-	assert.Equal(t, available, state.entitlements["builtin:zai-start-plan"], "a learned entitlement stays")
+	state.learnForTest(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": {Availability: zcodeAvailabilityUnavailable}})
+	assert.Equal(t, zcodeAvailabilityUnavailable, state.plans["builtin:zai-start-plan"].entitlement.Availability, "a new result replaces an earlier entitlement")
 	third, learned := state.payload("r")
-	assert.Equal(t, "r#2", third.Revision)
+	assert.Equal(t, "r#3", third.Revision)
 	state.accepted(learned)
 	assert.False(t, state.unpushed())
 }
@@ -387,17 +348,41 @@ type zcodeRecheckHarness struct {
 // newZCodeRecheckHarness starts the agent on store and waits for its first snapshot.
 func newZCodeRecheckHarness(t *testing.T, store zcodeCredentialStore) *zcodeRecheckHarness {
 	t.Helper()
-	h := &zcodeRecheckHarness{clock: testutil.NewQuartzMock(t), stdin: &zcodeRecordedStdin{}}
-	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, r *http.Request) {
-		h.mu.Lock()
-		h.authorizations = append(h.authorizations, r.Header.Get("Authorization"))
-		first := len(h.authorizations) == 1
-		h.mu.Unlock()
-		if first {
-			w.WriteHeader(http.StatusServiceUnavailable)
+	h := newZCodeRecheckHarnessWithReply(t, store, testutil.NewQuartzMock(t), zcodeBalanceTestReply{status: http.StatusServiceUnavailable})
+	var first zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 1).Params, &first))
+	require.Equal(t, zcodeAvailabilityUnknown, first.States["account:zai-start-plan"].Availability)
+	return h
+}
+
+type zcodeBalanceTestReply struct {
+	status int
+	body   string
+}
+
+func newZCodeRecheckHarnessWithReply(t *testing.T, store zcodeCredentialStore, clock *quartz.Mock, initial zcodeBalanceTestReply) *zcodeRecheckHarness {
+	t.Helper()
+	return newZCodeRecheckHarnessWithHandler(t, store, clock, func(w http.ResponseWriter, _ *http.Request, request int) {
+		if request == 1 {
+			if initial.status != 0 {
+				w.WriteHeader(initial.status)
+			}
+			_, _ = io.WriteString(w, initial.body)
 			return
 		}
 		_, _ = io.WriteString(w, zcodeLiveBalanceReply)
+	})
+}
+
+func newZCodeRecheckHarnessWithHandler(t *testing.T, store zcodeCredentialStore, clock *quartz.Mock, respond func(http.ResponseWriter, *http.Request, int)) *zcodeRecheckHarness {
+	t.Helper()
+	h := &zcodeRecheckHarness{clock: clock, stdin: &zcodeRecordedStdin{}}
+	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		h.authorizations = append(h.authorizations, r.Header.Get("Authorization"))
+		request := len(h.authorizations)
+		h.mu.Unlock()
+		respond(w, r, request)
 	})
 	h.newTimer, h.stopTimer = testutil.NewTimerTraps(t, h.clock, zcodeStartPlanRecheckTimerTag)
 	h.a = zcodeStartPlanTestAgentWithClock(t, h.stdin, server.URL, client, h.clock)
@@ -407,9 +392,6 @@ func newZCodeRecheckHarness(t *testing.T, store zcodeCredentialStore) *zcodeRech
 		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
 	require.NoError(t, h.a.pushProviderRegistry(zcodeTestRPCTimeout))
 
-	var first zcodeAccountProviderPayload
-	require.NoError(t, json.Unmarshal(zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 1).Params, &first))
-	require.Equal(t, zcodeAvailabilityUnknown, first.States["account:zai-start-plan"].Availability)
 	return h
 }
 
@@ -438,6 +420,22 @@ func zcodeRequireLearnedSnapshot(t *testing.T, req zcodeSentRequest, revision st
 	assert.Equal(t, []string{"GLM-5.3-Flash", "GLM-5.3"}, payload.Providers["account:zai-start-plan"].BuiltinModelIDs)
 }
 
+func zcodeAcknowledgeAccountSnapshot(t *testing.T, h *zcodeRecheckHarness, request zcodeSentRequest, readNumber int) {
+	t.Helper()
+	var payload zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(request.Params, &payload))
+	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"receivedRevision":"`+payload.Revision+`","status":"received"}`)))
+	zcodeAcknowledgeModelCatalog(t, h, readNumber)
+	read := zcodeNthRequest(t, h.stdin, MethodSessionRead, readNumber)
+	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, read), json.RawMessage(`{}`)))
+}
+
+func zcodeAcknowledgeModelCatalog(t *testing.T, h *zcodeRecheckHarness, n int) {
+	t.Helper()
+	request := zcodeNthRequest(t, h.stdin, MethodSessionResume, n)
+	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"session":{"sessionId":"sess-1"},"settings":{"model":{"available":[]}}}`)))
+}
+
 // A check that fails at startup must not hide the plan for the agent's life: the
 // agent checks again, pushes a new snapshot, and the open session reads the models.
 func TestZCodeProviderSetupRechecksAnUnknownStartPlan(t *testing.T) {
@@ -451,6 +449,7 @@ func TestZCodeProviderSetupRechecksAnUnknownStartPlan(t *testing.T) {
 	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, second),
 		json.RawMessage(`{"receivedRevision":"leapmux-test#1","providerCount":2,"status":"received"}`)))
 
+	zcodeAcknowledgeModelCatalog(t, h, 1)
 	read := zcodeNthRequest(t, h.stdin, MethodSessionRead, 1)
 	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, read), json.RawMessage(`{}`)))
 	assert.Equal(t, []string{"Bearer start-key", "Bearer start-key"}, h.checks())
@@ -467,12 +466,13 @@ func TestZCodeProviderSetupPushesALearnedStartPlanAgainAfterAFailedPush(t *testi
 	zcodeRequireLearnedSnapshot(t, second, "leapmux-test#1")
 	h.a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, second), -32603, "internal error"))
 
-	zcodeAwaitRecheck(t, h.clock, h.newTimer, zcodeStartPlanRecheckDelays[1])
+	zcodeAwaitRecheck(t, h.clock, h.newTimer, zcodeAccountPollInterval)
 	third := zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 3)
 	zcodeRequireLearnedSnapshot(t, third, "leapmux-test#1")
 	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, third),
 		json.RawMessage(`{"receivedRevision":"leapmux-test#1","providerCount":2,"status":"received"}`)))
 
+	zcodeAcknowledgeModelCatalog(t, h, 1)
 	read := zcodeNthRequest(t, h.stdin, MethodSessionRead, 1)
 	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, read), json.RawMessage(`{}`)))
 	assert.Len(t, h.checks(), 2, "a known entitlement needs no new check")
@@ -485,13 +485,15 @@ func TestZCodeProviderSetupRecheckReadsANewSignIn(t *testing.T) {
 
 	store := zcodeTestCredentialStore(t, nil)
 	h := newZCodeRecheckHarness(t, store)
-	renewed := zcodeTestCredentialStore(t, map[string]string{zcodeCredentialZCodeJWT: "new-jwt"})
-	data, err := os.ReadFile(renewed.path)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(store.path, data, 0o600))
-
-	zcodeAwaitRecheck(t, h.clock, h.newTimer, zcodeStartPlanRecheckDelays[0])
-	zcodeRequireLearnedSnapshot(t, zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 2), "leapmux-test#1")
+	zcodeChangeTestJWTAtNextPoll(t, h, store, "new-jwt")
+	invalidated := zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 2)
+	var payload zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(invalidated.Params, &payload))
+	assert.False(t, payload.Providers["account:zai-start-plan"].Access.Entitled)
+	zcodeAcknowledgeAccountSnapshot(t, h, invalidated, 1)
+	available := zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 3)
+	zcodeRequireLearnedSnapshot(t, available, "leapmux-test#2")
+	zcodeAcknowledgeAccountSnapshot(t, h, available, 2)
 	assert.Equal(t, []string{"Bearer start-key", "Bearer new-jwt"}, h.checks(),
 		"the first check had only the config.json key, and the re-check sends the store's new token")
 }
@@ -514,4 +516,176 @@ func TestZCodeProviderSetupRecheckEndsWhenTheAgentStops(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, pushes, "no snapshot after the agent stops")
+}
+
+func TestZCodeAccountRequestAuth_RefusesScopedFallbackAfterSignOut(t *testing.T) {
+	t.Parallel()
+	const config = `{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","options":{"apiKey":"config-key"},"models":{"GLM-5.3":{}}}}}`
+	for _, broken := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unreadable=%v", broken), func(t *testing.T) {
+			t.Parallel()
+			store := zcodeTestSignedInStore(t, "login")
+			a, api := zcodeAccountTestAgent(t, config, store)
+			first, err := a.accountRequestAuth(t.Context(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan"})
+			require.NoError(t, err)
+			if broken {
+				require.NoError(t, os.WriteFile(store.path, []byte("{"), 0o600))
+			} else {
+				require.NoError(t, os.Remove(store.path))
+			}
+			got, err := a.accountRequestAuth(t.Context(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan", ExpectedAccountScope: first.AccountScope})
+			require.ErrorIs(t, err, errZCodeScopeInvalidated)
+			assert.Empty(t, got)
+			fallback, err := a.accountRequestAuth(t.Context(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan"})
+			require.NoError(t, err)
+			assert.Equal(t, "config-key", fallback.APIKey)
+			assert.Equal(t, int32(1), api.mints.Load())
+		})
+	}
+}
+
+func TestZCodeAccountRequestAuth_RefusesUnreadableScopeDuringMint(t *testing.T) {
+	t.Parallel()
+	for _, material := range []string{"json", "oauth", "jwt"} {
+		t.Run(material, func(t *testing.T) {
+			t.Parallel()
+			store := zcodeTestSignedInStore(t, "login")
+			a, api := zcodeAccountTestAgent(t, "", store)
+			release := make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+			result := make(chan error, 1)
+			go func() {
+				auth, err := a.accountRequestAuth(t.Context(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan"})
+				assert.Empty(t, auth)
+				result <- err
+			}()
+			require.Eventually(t, func() bool { return api.count("POST ") == 1 }, 30*time.Second, time.Millisecond)
+			data := []byte("{")
+			if material != "json" {
+				values := map[string]string{zcodeOAuthAccessTokenKey("zai"): "login", zcodeOAuthUserInfoKey("zai"): zcodeTestUserInfo("user-1"), zcodeCredentialZCodeJWT: "store-jwt"}
+				values[map[string]string{"oauth": zcodeOAuthAccessTokenKey("zai"), "jwt": zcodeCredentialZCodeJWT}[material]] = "enc:v1:broken"
+				var err error
+				data, err = json.Marshal(values)
+				require.NoError(t, err)
+			}
+			require.NoError(t, os.WriteFile(store.path, data, 0o600))
+			unblock()
+			select {
+			case err := <-result:
+				require.ErrorIs(t, err, errZCodeScopeInvalidated)
+			case <-time.After(30 * time.Second):
+				t.Fatal("credential request did not finish")
+			}
+		})
+	}
+}
+
+func TestZCodeAccountState_ChangesRevisionWhenAnUnacknowledgedPayloadChanges(t *testing.T) {
+	t.Parallel()
+	state := &zcodeAccountState{plans: map[string]*zcodeStartPlanState{"a": {entitlement: zcodeUnknownEntitlement}, "b": {entitlement: zcodeUnknownEntitlement}}}
+	_, generation := state.payload("r")
+	state.accepted(generation)
+	state.learnForTest(map[string]zcodeAccountEntitlement{"a": zcodeAvailable("a")})
+	first, _ := state.payload("r")
+	unchanged, _ := state.payload("r")
+	assert.Equal(t, first.Revision, unchanged.Revision, "retrying identical content is idempotent")
+	state.learnForTest(map[string]zcodeAccountEntitlement{"b": zcodeAvailable("b")})
+	second, _ := state.payload("r")
+	assert.NotEqual(t, first.Revision, second.Revision, "a lost acknowledgement cannot cause different content to share a revision")
+}
+
+func TestZCodeAccountRequestAuth_AcceptsUnchangedIdentityDuringMint(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"reencryption", "profile", "active-provider", "unreadable-jwt"} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			store := zcodeTestSignedInStore(t, "login")
+			a, api := zcodeAccountTestAgent(t, "", store)
+			values := map[string]string{zcodeOAuthAccessTokenKey("zai"): "login", zcodeOAuthUserInfoKey("zai"): zcodeTestUserInfo("user-1"), zcodeCredentialZCodeJWT: "store-jwt"}
+			if change == "unreadable-jwt" {
+				credentials := zcodeTestReadCredentials(t, store)
+				credentials.values[zcodeCredentialZCodeJWT] = "enc:v1:broken"
+				data, err := json.Marshal(credentials.values)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(store.path, data, 0o600))
+			}
+			release := make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+			result := make(chan error, 1)
+			go func() {
+				auth, err := a.accountRequestAuth(t.Context(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan"})
+				if err == nil {
+					assert.NotEmpty(t, auth.AccountScope)
+				}
+				result <- err
+			}()
+			require.Eventually(t, func() bool { return api.count("POST ") == 1 }, 30*time.Second, time.Millisecond)
+			if change != "unreadable-jwt" {
+				if change == "profile" {
+					values[zcodeOAuthUserInfoKey("zai")] = `{"user_id":"user-1","name":"Renamed","email":"new@example.com"}`
+				}
+				if change == "active-provider" {
+					values[zcodeCredentialActiveProvider] = "bigmodel"
+				}
+				replacement := zcodeTestCredentialStore(t, values)
+				data, err := os.ReadFile(replacement.path)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(store.path, data, 0o600))
+			}
+			unblock()
+			select {
+			case err := <-result:
+				require.NoError(t, err)
+			case <-time.After(30 * time.Second):
+				t.Fatal("credential request did not finish")
+			}
+		})
+	}
+}
+
+func TestZCodeProviderSetupRefreshesAPendingStartPlan(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	now := clock.Now().Unix()
+	body := fmt.Sprintf(`{"code":0,"data":{"server_time":%d,"plans":[{"plan_id":"zcode-start-plan","status":"active","starts_at":%d}],"balances":[]}}`, now, now+30)
+	h := newZCodeRecheckHarnessWithReply(t, zcodeCredentialStore{}, clock, zcodeBalanceTestReply{body: body})
+	var first zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 1).Params, &first))
+	require.Equal(t, zcodeAvailabilityPending, first.States["account:zai-start-plan"].Availability)
+	zcodeAwaitRecheck(t, h.clock, h.newTimer, 30*time.Second)
+	second := zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 2)
+	zcodeRequireLearnedSnapshot(t, second, "leapmux-test#1")
+	zcodeAcknowledgeAccountSnapshot(t, h, second, 1)
+	assert.Len(t, h.checks(), 2)
+}
+
+func TestZCodeProviderSetupRefreshesARefusedCredentialAfterSignIn(t *testing.T) {
+	t.Parallel()
+	store := zcodeTestCredentialStore(t, map[string]string{zcodeCredentialZCodeJWT: "old-jwt"})
+	h := newZCodeRecheckHarnessWithReply(t, store, testutil.NewQuartzMock(t), zcodeBalanceTestReply{status: http.StatusUnauthorized})
+	zcodeChangeTestJWTAtNextPoll(t, h, store, "new-jwt")
+	second := zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 2)
+	var invalidated zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(second.Params, &invalidated))
+	assert.False(t, invalidated.Providers["account:zai-start-plan"].Access.Entitled)
+	zcodeAcknowledgeAccountSnapshot(t, h, second, 1)
+	third := zcodeNthRequest(t, h.stdin, MethodUpdateAccountConfig, 3)
+	zcodeRequireLearnedSnapshot(t, third, "leapmux-test#2")
+	zcodeAcknowledgeAccountSnapshot(t, h, third, 2)
+	assert.Equal(t, []string{"Bearer old-jwt", "Bearer new-jwt"}, h.checks())
+}
+
+// learnForTest isolates generation bookkeeping from transport and scheduling.
+func (s *zcodeAccountState) learnForTest(results map[string]zcodeAccountEntitlement) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, entitlement := range results {
+		s.learnLocked(id, entitlement)
+	}
 }

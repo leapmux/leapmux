@@ -51,20 +51,31 @@ type zcodeStateSnapshot struct {
 //
 // A resume that does not hold fails the whole start. See providerkit.ResumeFailedError.
 func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
+	a.sessionLifecycleMu.Lock()
+	snap, err := a.openSessionState(resumeID, timeout)
+	a.sessionLifecycleMu.Unlock()
+	if err == nil {
+		// Goal reporting can call the sink, so it runs outside the lifecycle lock.
+		a.reportZCodeGoal(snap.Session.Target, true)
+	}
+	return err
+}
+
+func (a *Agent) openSessionState(resumeID string, timeout time.Duration) (zcodeStateSnapshot, error) {
 	if resumeID != "" {
 		params := map[string]any{
 			"sessionId": resumeID,
 			"workspace": a.workspace,
 		}
 		a.Mu.Lock()
-		accountConfig := a.accountProviderConfig
+		accountConfig := a.account != nil
 		a.Mu.Unlock()
 		if accountConfig {
 			params["dynamicWorkflowEnabled"] = true
 		}
 		raw, err := a.sendZCodeRequest(MethodSessionResume, params, timeout)
 		if err != nil {
-			return providerkit.ResumeFailedError(resumeID, err)
+			return zcodeStateSnapshot{}, providerkit.ResumeFailedError(resumeID, err)
 		}
 		// "unknown" is the app-server's placeholder for "no session exists", so a
 		// reply that carries it describes no session -- although it still holds a
@@ -74,22 +85,17 @@ func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
 		// events as duplicates, and `yolo` is a mode that nothing asked for.
 		snap, ok := a.parseStateSnapshot(raw)
 		if !ok || !zcodeUsableSessionID(snap.Session.SessionID) {
-			return providerkit.ResumeFailedError(resumeID, fmt.Errorf("%s returned no session id", MethodSessionResume))
+			return zcodeStateSnapshot{}, providerkit.ResumeFailedError(resumeID, fmt.Errorf("%s returned no session id", MethodSessionResume))
 		}
-		a.applyParsedStateSnapshot(snap)
-		// A resume RESTATES the session's goal, so it is reported as a snapshot:
-		// it updates the panel and writes no transcript row for a goal that may
-		// be hours old. Outside applyParsedStateSnapshot, which holds a.Mu for
-		// its whole body and must not call into the sink.
-		a.reportZCodeGoal(snap.Session.Target, true)
-		return nil
+		a.applyCompleteSessionSnapshot(snap)
+		return snap, nil
 	}
 
 	params := map[string]any{"workspace": a.workspace}
 	a.Mu.Lock()
 	// The axis value: session/create accepts `plan` and folds it into the plan flag.
 	// The native mode alone would open the fresh session outside plan mode.
-	mode, model, accountConfig := a.permissionModeLocked(), a.model, a.accountProviderConfig
+	mode, model, accountConfig := a.permissionModeLocked(), a.model, a.account != nil
 	a.Mu.Unlock()
 	if accountConfig {
 		params["dynamicWorkflowEnabled"] = true
@@ -108,13 +114,13 @@ func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
 	}
 	raw, err := a.sendZCodeRequest(MethodSessionCreate, params, timeout)
 	if err != nil {
-		return err
+		return zcodeStateSnapshot{}, err
 	}
 	snap, ok := a.parseStateSnapshot(raw)
 	if !ok || !zcodeUsableSessionID(snap.Session.SessionID) {
-		return fmt.Errorf("%s returned no session id", MethodSessionCreate)
+		return zcodeStateSnapshot{}, fmt.Errorf("%s returned no session id", MethodSessionCreate)
 	}
-	a.applyParsedStateSnapshot(snap)
+	a.applyCompleteSessionSnapshot(snap)
 	if mode != "" {
 		// The runtime folds the create's mode as it folds a session/setMode request,
 		// and the reply states the native mode only. A create with no mode takes a
@@ -123,58 +129,27 @@ func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
 		a.recordPlanRequestLocked(mode)
 		a.Mu.Unlock()
 	}
-	// A create RESTATES the session's goal -- normally that it has none, which
-	// is what clears one a previous session left on the row.
-	a.reportZCodeGoal(snap.Session.Target, true)
-	return nil
+	return snap, nil
 }
 
 // applyStartupSettings pins the model, thought level and mode the launch asked
 // for. Each step is best-effort and reports what the app-server settled on.
 func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Duration) {
-	// Re-pin the REQUEST before any setter runs. `openSession` folded the create/resume
-	// reply through applySettingsSnapshotLocked, which overwrote a.thoughtLevel with the
-	// app-server's own `thoughtLevel.current` -- its fallback, the LOWEST level, not the
-	// default the model declares. Reading the fields back after that fold would compare
-	// the observed level against itself, so a launch that asked for `max` would send no
-	// setter, and Auto would never reach the catalog default that applyZCodeModel
-	// resolves it to. Where the launch asked for nothing, the observed value stands.
+	// Opening a session reports its own settings. The request remains local until
+	// a setter succeeds, so a refused request cannot replace those observations.
 	a.Mu.Lock()
-	// The mode the opened session RUNS in, read before the request is pinned over it.
-	// It decides whether the mode setter below has any work to do, and it is known
-	// only when both of its halves are: `settings.mode.current` gives the native mode
-	// (modeObserved), and the create request or a mode event gives the plan flag
-	// (planObserved).
 	observedMode, observedBoth := a.permissionModeLocked(), a.modeObserved && a.planObserved
-	// The model the opened session RUNS on, which stays the truth when the app-server
-	// refuses the requested one.
-	observedModel := a.model
+	model, level, mode := a.model, a.thoughtLevel, req.Mode
 	if req.Model != "" {
-		a.model = req.Model
+		model = req.Model
 	}
 	if req.ThoughtLevel != "" {
-		a.thoughtLevel = req.ThoughtLevel
+		level = req.ThoughtLevel
 	}
-	if req.Mode != "" {
-		a.pinPermissionModeLocked(req.Mode)
-	}
-	// The model and the level fall back to the observed value, because the app-server
-	// resolves both and a launch that asked for neither still runs on something. The
-	// MODE does not: a launch that asked for no mode has nothing to pin, and the mode
-	// the opened session chose is already the right one.
-	model, level, mode := a.model, a.thoughtLevel, req.Mode
 	a.Mu.Unlock()
-
 	if model != "" {
-		if err := a.applyZCodeModel(model, timeout); err != nil {
+		if err := a.applyZCodeModel(model, level, timeout); err != nil {
 			slog.Warn("zcode setModel on startup failed", "agent_id", a.AgentID(), "model", model, "error", err)
-			// The session still runs on the model that the app-server chose, so report
-			// that one rather than the request that it refused.
-			a.Mu.Lock()
-			if a.model == model {
-				a.model = observedModel
-			}
-			a.Mu.Unlock()
 		}
 	}
 	// EffortAuto is LeapMux's sentinel for "send no thought level at all", so the
@@ -257,7 +232,12 @@ func (a *Agent) subscribe(timeout time.Duration) error {
 // is the authority on what the goal is.
 func (a *Agent) applyStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot, bool) {
 	if snap, ok := a.parseStateSnapshot(raw); ok {
-		a.applyParsedStateSnapshot(snap)
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		if zcodeUsableSessionID(snap.Session.SessionID) && snap.Session.SessionID != a.sessionID {
+			return zcodeStateSnapshot{}, false
+		}
+		a.applyParsedStateSnapshotLocked(snap)
 		return snap, true
 	}
 	return zcodeStateSnapshot{}, false
@@ -292,10 +272,22 @@ func (a *Agent) parseStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot, boo
 	return snap, true
 }
 
-// applyParsedStateSnapshot folds a decoded state document into the agent's state.
-func (a *Agent) applyParsedStateSnapshot(snap zcodeStateSnapshot) {
+// applyCompleteSessionSnapshot folds create/resume, whose model list is complete.
+func (a *Agent) applyCompleteSessionSnapshot(snap zcodeStateSnapshot) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
+	if a.account != nil && snap.Settings != nil && snap.Settings.Model != nil && snap.Settings.Model.Available != nil {
+		a.replaceZCodeLiveModelsLocked(snap.Settings.Model.Available, snap.Settings.Model.Current)
+	}
+	a.applyParsedStateSnapshotLocked(snap)
+	// Only initial adoption establishes a watermark from a snapshot. Setter
+	// replies can include notifications that LeapMux has not processed yet.
+	if snap.Runtime.EventSeq > a.lastSeq {
+		a.lastSeq = snap.Runtime.EventSeq
+	}
+}
+
+func (a *Agent) applyParsedStateSnapshotLocked(snap zcodeStateSnapshot) {
 	if zcodeUsableSessionID(snap.Session.SessionID) {
 		if snap.Session.SessionID != a.sessionID {
 			// Sequence and revision counters belong to one native session, and so does
@@ -311,14 +303,7 @@ func (a *Agent) applyParsedStateSnapshot(snap zcodeStateSnapshot) {
 		}
 		a.sessionID = snap.Session.SessionID
 	}
-	if snap.Runtime.EventSeq > a.lastSeq {
-		a.lastSeq = snap.Runtime.EventSeq
-	}
-	// Monotonic, for the reason noteZCodeStateRevision gives. Written inline
-	// rather than through it because this function already holds a.Mu.
-	if snap.Runtime.StateRevision > a.stateRevision {
-		a.stateRevision = snap.Runtime.StateRevision
-	}
+	a.noteZCodeStateRevisionLocked(snap.Runtime.StateRevision)
 	if snap.Projection.ContextWindow > 0 {
 		a.contextWindow = snap.Projection.ContextWindow
 	}

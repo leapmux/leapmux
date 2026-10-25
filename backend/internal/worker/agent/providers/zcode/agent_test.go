@@ -45,7 +45,7 @@ func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
 
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
 	a.Mu.Lock()
-	accountConfig := a.accountProviderConfig
+	accountConfig := a.account != nil
 	a.Mu.Unlock()
 	assert.True(t, accountConfig)
 	requests := stdin.Requests(t)
@@ -87,7 +87,7 @@ func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `returned revision "another-revision"`)
 	a.Mu.Lock()
-	accountConfig := a.accountProviderConfig
+	accountConfig := a.account != nil
 	a.Mu.Unlock()
 	assert.False(t, accountConfig)
 	_, bridged := a.catalog.accountProviderID("builtin:zai-coding-plan")
@@ -206,7 +206,32 @@ func TestZCodeProviderSetupLegacyBuildStopsTheStartPlanCheck(t *testing.T) {
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	assert.False(t, a.accountProviderConfig)
+	assert.False(t, a.account != nil)
+}
+
+func TestZCodeProviderSetupOverlapsCurrentAccountCheckWithProtocolDetection(t *testing.T) {
+	t.Parallel()
+	reached := make(chan struct{}, 1)
+	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		reached <- struct{}{}
+		_, _ = io.WriteString(w, zcodeLiveBalanceReply)
+	})
+	stdin := &zcodeRecordedStdin{}
+	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
+	go func() {
+		select {
+		case <-reached:
+			req := waitZCodeRequest(t, stdin, MethodUpdateProviderRegistry)
+			a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, req), ErrMethodNotFound, "Method not found"))
+		case <-a.Context().Done():
+		}
+	}()
+	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig, `{"receivedRevision":"leapmux-test","status":"received"}`)
+	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+	var payload zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(zcodeNthRequest(t, stdin, MethodUpdateAccountConfig, 1).Params, &payload))
+	assert.True(t, payload.Providers["account:zai-start-plan"].Access.Entitled)
+	assert.Equal(t, []string{"GLM-5.3-Flash", "GLM-5.3"}, payload.Providers["account:zai-start-plan"].BuiltinModelIDs)
 }
 
 // An installed release that LeapMux cannot read fails the account snapshot only, and
@@ -402,7 +427,7 @@ func TestApplyStateSnapshot_IgnoresTheUnknownSessionPlaceholder(t *testing.T) {
 	sessionID, seq := a.sessionID, a.lastSeq
 	a.Mu.Unlock()
 	assert.Equal(t, "sess-1", sessionID)
-	assert.Equal(t, int64(3), seq)
+	assert.Zero(t, seq, "an incremental snapshot cannot advance the event cursor")
 }
 
 func TestApplyStateSnapshot_EmptyIsANoop(t *testing.T) {
@@ -606,7 +631,7 @@ func TestZCodeOpenSession_AccountConfigEnablesDynamicWorkflows(t *testing.T) {
       }
     }`)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.sessionID = ""
 	a.model = "builtin:zai-coding-plan/GLM-5.3"
 	a.Mu.Unlock()
@@ -631,7 +656,7 @@ func TestZCodeResumeSession_AccountConfigEnablesDynamicWorkflows(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionResume,

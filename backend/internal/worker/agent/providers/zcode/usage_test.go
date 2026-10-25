@@ -4,11 +4,69 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type zcodeObservationSink struct {
+	*agenttest.Sink
+	onInfo func()
+}
+
+func (s *zcodeObservationSink) BroadcastSessionInfo(info map[string]any) {
+	s.Sink.BroadcastSessionInfo(info)
+	if callback := s.onInfo; callback != nil {
+		s.onInfo = nil
+		callback()
+	}
+}
+
+func TestZCodeSessionObservations_CommitBeforeCallingTheSink(t *testing.T) {
+	t.Parallel()
+	for _, patch := range []bool{false, true} {
+		t.Run(map[bool]string{false: "session read", true: "state patch"}[patch], func(t *testing.T) {
+			stdin := &zcodeRecordedStdin{}
+			sink := &zcodeObservationSink{Sink: &agenttest.Sink{}}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			answerZCodeRequest(t, a, stdin, MethodSessionCreate, `{"session":{"sessionId":"replacement"},"settings":{"model":{"current":{"providerId":"new","modelId":"B"}}}}`)
+			sink.onInfo = func() { require.NoError(t, a.openSession("", zcodeTestRPCTimeout)) }
+			body := `{"runtime":{"contextUsage":{"used":5000,"size":200000}},"model":{"current":{"providerId":"old","modelId":"A"}}}`
+			if patch {
+				a.handleZCodeStateUpdated(json.RawMessage(`{"sessionId":"sess-1","scope":"session","patch":` + body + `}`))
+			} else {
+				done := make(chan struct{})
+				go func() { a.refreshZCodeUsageFromSession(); close(done) }()
+				request := waitZCodeRequest(t, stdin, MethodSessionRead)
+				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"runtime":{"contextUsage":{"used":5000,"size":200000}},"settings":{"model":{"current":{"providerId":"old","modelId":"A"}}}}`)))
+				<-done
+			}
+			assert.Equal(t, "replacement", a.sessionID)
+			assert.Equal(t, "new/B", a.model)
+		})
+	}
+}
+
+func TestRefreshZCodeUsageFromSession_DoesNotDiscardUndeliveredEvents(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	a.lastSeq = 7
+	done := make(chan struct{})
+	go func() { a.refreshZCodeUsageFromSession(); close(done) }()
+	request := waitZCodeRequest(t, stdin, MethodSessionRead)
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"runtime":{"eventSeq":55,"stateRevision":99,"contextUsage":{"used":5000,"size":200000}}}`)))
+	<-done
+	assert.Equal(t, int64(99), a.stateRevision)
+	assert.Equal(t, int64(5000), a.latestContextUsage["context_tokens"])
+	assert.Equal(t, int64(7), a.lastSeq)
+	a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventTurnStarted, `{"turnId":"later"}`))
+	assert.Equal(t, int64(8), a.lastSeq)
+	assert.True(t, a.turnActive, "the actual notification must still reach its handler")
+}
 
 func TestRefreshZCodeUsageFromSession_DropsAReadOfARetiredSession(t *testing.T) {
 	t.Parallel()
@@ -104,28 +162,28 @@ func TestZCodeContextUsage_CostOrNil(t *testing.T) {
 	assert.Equal(t, zcodeUsageCurrencyUSD, cost.Currency)
 }
 
-func TestApplyZCodeRuntimeState_NilIsANoop(t *testing.T) {
+func TestZCodeRuntimeObservation_NilIsANoop(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	a.applyZCodeRuntimeState(nil)
+	a.applyZCodeSessionObservation("sess-1", zcodeStatePatchBody{}, nil)
 	assert.Equal(t, 0, sink.SessionInfoCount())
 }
 
 // A cost in another currency must not fill total_cost_usd: that field names
 // dollars, and a converted or relabelled amount would be a wrong number.
-func TestApplyZCodeRuntimeState_NonUSDCostIsDropped(t *testing.T) {
+func TestZCodeRuntimeObservation_NonUSDCostIsDropped(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	a.applyZCodeRuntimeState(&zcodeRuntimeState{
+	a.applyZCodeSessionObservation("sess-1", zcodeStatePatchBody{Runtime: &zcodeRuntimeState{
 		ContextUsage: &zcodeContextUsage{
 			Used: 10,
 			Cost: &zcodeCost{Amount: 1.2, Currency: "EUR"},
 		},
-	})
+	}}, nil)
 
 	info := sink.LastSessionInfo()
 	require.NotNil(t, info)
@@ -138,17 +196,17 @@ func TestApplyZCodeRuntimeState_NonUSDCostIsDropped(t *testing.T) {
 }
 
 // A genuine zero (a free plan) is a reported cost, not an absence.
-func TestApplyZCodeRuntimeState_ZeroUSDIsReported(t *testing.T) {
+func TestZCodeRuntimeObservation_ZeroUSDIsReported(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	a.applyZCodeRuntimeState(&zcodeRuntimeState{
+	a.applyZCodeSessionObservation("sess-1", zcodeStatePatchBody{Runtime: &zcodeRuntimeState{
 		ContextUsage: &zcodeContextUsage{
 			Used: 10,
 			Cost: &zcodeCost{Amount: 0, Currency: zcodeUsageCurrencyUSD},
 		},
-	})
+	}}, nil)
 
 	info := sink.LastSessionInfo()
 	require.NotNil(t, info)

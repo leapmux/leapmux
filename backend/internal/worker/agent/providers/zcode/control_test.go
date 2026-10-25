@@ -918,7 +918,7 @@ func TestAnswerProviderRuntimeHeaders_AccountConfigReportsAMissingCredential(t *
       }
     }`)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.Mu.Unlock()
 
 	a.HandleOutput(zcodeRequestLine(t, 14, MethodRequestProviderRuntimeHeaders,
@@ -998,7 +998,7 @@ func TestAnswerOfficialMcpAuthHeaders_AccountConfigUsesTheCurrentShape(t *testin
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.Mu.Unlock()
 
 	a.HandleOutput(zcodeRequestLine(t, 15, MethodRequestOfficialMcpAuthHeaders, `{}`))

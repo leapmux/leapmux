@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -33,20 +32,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 
-	// ZCode's credentials are read BEFORE the process starts. Without a provider
-	// registry every turn fails with a message that identifies the app-server rather
-	// than the missing configuration, so the real cause is reported here instead.
-	// The current desktop no longer writes config.json, so a sign-in in the
-	// credential store serves without it.
-	credentials := newZCodeCredentialStore(opts.HomeDir, os.Getenv)
-	catalog, err := loadZCodeCatalog(opts.HomeDir)
-	if err != nil {
-		if err = zcodeConfigurationError(err, opts.HomeDir, credentials); err != nil {
-			cancel()
-			return nil, err
-		}
-	}
-
 	// The app-server has no working-directory flag: it takes the workspace path in
 	// every request. Wrap still sets cmd.Dir, which is what the
 	// tools it runs inherit.
@@ -60,6 +45,21 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// Wrap already prepended spec.PrefixArgs and seeded
 	// spec.Env onto cmd, so this is the same finalization every provider runs.
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
+	// Read credentials before the process starts, using its finalized environment
+	// and shell profile. Current desktops can sign in without config.json.
+	accountEnvironment, err := resolveZCodeAccountEnvironment(ctx, opts, cmd.Environ())
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	opts.HomeDir = accountEnvironment.home
+	credentials := accountEnvironment.credentials
+	catalog, err := loadZCodeCatalog(opts.HomeDir)
+	legacyConfigurationError := err
+	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
+		cancel()
+		return nil, err
+	}
 	storeLocation, err := zcodeToolStorePaths(ctx, agent.StoredSessionQuery{
 		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: cmd.Environ(),
 		Shell: opts.Shell, LoginShell: opts.LoginShell,
@@ -81,8 +81,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		workingDir:                opts.WorkingDir,
 		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
 		catalog:                   catalog,
+		legacyConfigurationError:  legacyConfigurationError,
 		registryRevision:          "leapmux-" + opts.AgentID,
-		builtinProviderConfigPath: zcodeLaunchEnvValue(cmd.Env, zcodeBuiltinProviderConfigEnv),
+		builtinProviderConfigPath: accountEnvironment.builtinProviderConfigPath,
 		credentials:               credentials,
 		identity: zcodeClientIdentity{
 			appVersion: zcodeAppVersion(zcodeInstalledScript(spec, fileExists)),
@@ -162,53 +163,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	return a, nil
 }
 
-// zcodeConfigurationError decides whether a config.json that is missing or lists no
-// usable provider stops the start. It does not when the credential store holds a
-// sign-in, because the account plans then serve without config.json. It returns
-// nil when the start continues. A store that LeapMux cannot read is reported as
-// such, never as a store without a sign-in.
-func zcodeConfigurationError(err error, homeDir string, credentials zcodeCredentialStore) error {
-	missing, unusable := errors.Is(err, errZCodeConfigMissing), errors.Is(err, errZCodeConfigUnusable)
-	if !missing && !unusable {
-		return err
-	}
-	signedIn, storeErr := zcodeStoreHoldsSignIn(credentials)
-	switch {
-	case signedIn:
-		return nil
-	case missing && storeErr != nil:
-		return fmt.Errorf("ZCode is not configured: %s does not exist, and LeapMux could not read a sign-in from the ZCode credential store: %w",
-			zcodeConfigPath(homeDir), storeErr)
-	case missing:
-		return fmt.Errorf("ZCode is not configured: %s does not exist and the ZCode credential store holds no sign-in (sign in with the ZCode application once)",
-			zcodeConfigPath(homeDir))
-	case storeErr != nil:
-		return fmt.Errorf("%w, and LeapMux could not read a sign-in from the ZCode credential store: %w", err, storeErr)
-	default:
-		return err
-	}
-}
-
-// zcodeStoreHoldsSignIn reports whether the credential store holds a sign-in of
-// either family. The error reports what kept LeapMux from reading one.
-func zcodeStoreHoldsSignIn(credentials zcodeCredentialStore) (bool, error) {
-	stored, err := credentials.read()
-	if err != nil {
-		return false, err
-	}
-	var errs []error
-	for _, family := range []string{zcodeFamilyZAI, zcodeFamilyBigModel} {
-		_, signedIn, err := stored.session(family)
-		if signedIn {
-			return true, nil
-		}
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return false, errors.Join(errs...)
-}
-
 // zcodeLaunchEnvValue reads the final value of one launch variable. The final
 // duplicate is the value that an exec environment applies.
 func zcodeLaunchEnvValue(env []string, key string) string {
@@ -234,9 +188,15 @@ func (a *Agent) pushProviderRegistry(timeout time.Duration) error {
 	raw, err := a.sendZCodeRequest(MethodUpdateProviderRegistry, params, timeout)
 	if err != nil {
 		if !zcodeIsMethodNotFound(err) {
+			if code, ok := zcodeErrorCode(err); ok && code == -32602 && a.legacyConfigurationError != nil {
+				return a.legacyConfigurationError
+			}
 			return err
 		}
 		return a.pushAccountProviderConfig(account, timeout)
+	}
+	if a.legacyConfigurationError != nil {
+		return a.legacyConfigurationError
 	}
 	var resp struct {
 		Status        string `json:"status"`

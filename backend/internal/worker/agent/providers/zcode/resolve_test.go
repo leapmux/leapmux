@@ -11,7 +11,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -1019,4 +1022,28 @@ func TestZCodeAppVersion_ReadsAnUpdatedArchive(t *testing.T) {
 	later := time.Now().Add(time.Hour)
 	require.NoError(t, os.Chtimes(archive, later, later))
 	assert.Equal(t, "3.16.4", zcodeAppVersion(script))
+}
+
+func TestZCodeAppVersionCache_CoalescesConcurrentArchiveReads(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var cache zcodeAppVersionCache
+		var reads atomic.Int32
+		release := make(chan struct{})
+		reader := func(string, int64) (string, error) { reads.Add(1); <-release; return "3.16.3", nil }
+		key := zcodeAppVersionKey{path: "archive", size: 100, modTime: 1}
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() { assert.Equal(t, "3.16.3", cache.load(key, reader)) })
+		}
+		synctest.Wait()
+		assert.Equal(t, int32(1), reads.Load(), "one archive generation is read once")
+		close(release)
+		wg.Wait()
+		assert.Equal(t, "3.16.3", cache.load(key, reader))
+		assert.Equal(t, int32(1), reads.Load())
+		key.modTime++
+		assert.Equal(t, "3.16.3", cache.load(key, reader))
+		assert.Equal(t, int32(2), reads.Load())
+	})
 }

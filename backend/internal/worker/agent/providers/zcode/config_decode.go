@@ -252,9 +252,9 @@ func loadZCodeAccountSelection(homeDir string) zcodeAccountSelection {
 		}
 		selection.planKinds[family] = kind
 		team := zcodeTeamProject{
-			organizationID: strings.TrimSpace(connection.OrganizationID),
-			projectID:      strings.TrimSpace(connection.ProjectID),
-			productID:      strings.TrimSpace(connection.ProductID),
+			organizationID: zcodeTrimJSString(connection.OrganizationID),
+			projectID:      zcodeTrimJSString(connection.ProjectID),
+			productID:      zcodeTrimJSString(connection.ProductID),
 		}
 		if kind == zcodeTeamCodingPlanMode && team.organizationID != "" && team.projectID != "" {
 			selection.teams[family] = team
@@ -290,13 +290,8 @@ func loadZCodeDeviceMid(homeDir string) string {
 	return zcodeProcessDeviceMid()
 }
 
-func zcodeBuiltinProviderRevision(path string) (string, error) {
-	_, revision, err := loadZCodeBuiltinProviderFile(path)
-	return revision, err
-}
-
 func loadZCodeBuiltinProviderFile(path string) (zcodeBuiltinProviderFile, string, error) {
-	path = strings.TrimSpace(path)
+	path = zcodeTrimJSString(path)
 	if path == "" {
 		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("ZCode did not expose its built-in provider configuration path")
 	}
@@ -304,13 +299,15 @@ func loadZCodeBuiltinProviderFile(path string) (zcodeBuiltinProviderFile, string
 	if err != nil {
 		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("resolve ZCode built-in provider configuration %s: %w", path, err)
 	}
-	data, err := os.ReadFile(abs)
+	// Native code normalizes for its revision hash, but reads the original path.
+	// Cleaning symlink/../file before the read can select a different release.
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("read ZCode built-in provider configuration %s: %w", abs, err)
+		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("read ZCode built-in provider configuration %s: %w", path, err)
 	}
 	var release zcodeBuiltinProviderFile
 	if err := json.Unmarshal(data, &release); err != nil {
-		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("parse ZCode built-in provider configuration %s: %w", abs, err)
+		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("parse ZCode built-in provider configuration %s: %w", path, err)
 	}
 	if release.Revision == nil {
 		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("ZCode built-in provider configuration %s has no revision", abs)

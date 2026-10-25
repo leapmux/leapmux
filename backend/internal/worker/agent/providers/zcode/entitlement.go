@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -225,11 +224,11 @@ func (d *zcodeStartPlanBalanceData) modelIDs(canonical map[string]string) []stri
 	for _, balance := range d.Balances {
 		var ids []string
 		for _, capability := range balance.Capabilities {
-			capability = strings.TrimSpace(capability)
+			capability = zcodeTrimJSString(capability)
 			if len(capability) < len("model:") || !strings.EqualFold(capability[:len("model:")], "model:") {
 				continue
 			}
-			if id := strings.TrimSpace(capability[len("model:"):]); id != "" {
+			if id := zcodeTrimJSString(capability[len("model:"):]); id != "" {
 				ids = append(ids, id)
 			}
 		}
@@ -237,7 +236,7 @@ func (d *zcodeStartPlanBalanceData) modelIDs(canonical map[string]string) []stri
 			ids = []string{balance.ShowName}
 		}
 		for _, id := range ids {
-			id = strings.TrimSpace(id)
+			id = zcodeTrimJSString(id)
 			if spelled, ok := canonical[strings.ToLower(id)]; ok {
 				id = spelled
 			}
@@ -289,7 +288,7 @@ func (d *zcodeStartPlanBalanceData) pendingSince(now float64) (float64, bool) {
 // zcodeTrimLower trims and lowercases a value, as the desktop's
 // `value?.trim().toLowerCase()` does for a status, a plan id, and a plan name.
 func zcodeTrimLower(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return strings.ToLower(zcodeTrimJSString(value))
 }
 
 // zcodeServerTime reads server_time as the desktop does: only a finite,
@@ -300,62 +299,6 @@ func zcodeServerTime(raw json.RawMessage) (float64, bool) {
 		return 0, false
 	}
 	return value, true
-}
-
-// zcodeJSONNumberLiteral reads raw only when it is a JSON number literal. A
-// string, a null, or an absent value is not a number.
-func zcodeJSONNumberLiteral(raw json.RawMessage) (float64, bool) {
-	text := strings.TrimSpace(string(raw))
-	if text == "" || (text[0] != '-' && (text[0] < '0' || text[0] > '9')) {
-		return 0, false
-	}
-	var value float64
-	if json.Unmarshal([]byte(text), &value) != nil {
-		return 0, false
-	}
-	return value, true
-}
-
-// zcodeJSNumber converts a JSON value as JavaScript's Number() does for the values
-// a billing reply carries. ok is false where Number() returns NaN: an absent
-// value, a string that is not numeric, an array, or an object.
-func zcodeJSNumber(raw json.RawMessage) (float64, bool) {
-	text := strings.TrimSpace(string(raw))
-	switch {
-	case text == "":
-		return 0, false
-	case text == "null", text == "false":
-		return 0, true
-	case text == "true":
-		return 1, true
-	case text[0] == '"':
-		var value string
-		if json.Unmarshal([]byte(text), &value) != nil {
-			return 0, false
-		}
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return 0, true
-		}
-		number, err := strconv.ParseFloat(value, 64)
-		if err != nil || math.IsNaN(number) {
-			return 0, false
-		}
-		return number, true
-	default:
-		return zcodeJSONNumberLiteral(raw)
-	}
-}
-
-// zcodeOptionalJSNumber converts a time as the desktop's pending test does: an
-// absent, null, or empty value is undefined, and any other value goes through
-// Number().
-func zcodeOptionalJSNumber(raw json.RawMessage) (float64, bool) {
-	text := strings.TrimSpace(string(raw))
-	if text == "" || text == "null" || text == `""` {
-		return 0, false
-	}
-	return zcodeJSNumber(raw)
 }
 
 // zcodeRawOrAbsent renders a raw JSON value for a log line.
@@ -484,7 +427,7 @@ var zcodeBalanceRequests zcodeSharedCalls[zcodeBalanceRequestKey, zcodeBalanceRe
 // (zcodeAccountBinding.startPlanCredential), so the check states what those
 // requests meet.
 func fetchZCodeStartPlanEntitlement(ctx context.Context, client *http.Client, baseURL, credential string, identity zcodeClientIdentity, canonical map[string]string) (zcodeAccountEntitlement, error) {
-	credential = strings.TrimSpace(credential)
+	credential = zcodeTrimJSString(credential)
 	if credential == "" {
 		return zcodeUnknownEntitlement, errors.New("the Start Plan holds no credential")
 	}

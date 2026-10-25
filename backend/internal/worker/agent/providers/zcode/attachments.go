@@ -150,7 +150,9 @@ func (a *Agent) checkZCodeModelInput(model string, media zcodeMediaKind, attachm
 	if live {
 		accepts = slices.Contains(record.modalities, media.modality)
 	} else {
+		a.Mu.Lock()
 		accepts = a.catalog.acceptsInputModality(model, media.modality)
+		a.Mu.Unlock()
 	}
 	if accepts {
 		return nil

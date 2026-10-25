@@ -35,13 +35,10 @@ type zcodeCatalog struct {
 	// mode, which distinguishes an individual plan from a team plan that the
 	// legacy provider id folds into one word.
 	accountSelection zcodeAccountSelection
-	// accountProviderIDs and legacyProviderIDs are the two directions of the
-	// bridge derived from the installed account-provider rules.
-	// pushAccountProviderConfig fills them through recordAccountBridge, under
-	// Agent.Mu in the critical section that sets accountProviderConfig, and every
-	// reader checks that flag first.
+	// accountProviderIDs translates configured legacy model IDs into account IDs.
+	// Accepted snapshots rebuild it from the installed account-provider rules.
+	// Readers and writers of a shared Agent catalog hold Agent.Mu.
 	accountProviderIDs map[string]string
-	legacyProviderIDs  map[string]string
 }
 
 // zcodeModelIDSeparator joins a provider id and a model id into the single string
@@ -578,7 +575,7 @@ func markZCodeDefaultModel(models []*agent.ModelInfo) {
 // LeapMux mints no OAuth header, so the only authorization it can claim is the key
 // it already pushed with the registry. An empty provider id asks about ANY
 // provider, which is what a request that gives none means. It shares the lookup
-// of inlineAPIKey, including the account-id mapping.
+// of inlineAPIKey.
 func (c zcodeCatalog) hasInlineAPIKey(providerID string) bool {
 	_, ok := c.inlineAPIKey(providerID)
 	return ok

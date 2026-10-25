@@ -280,10 +280,11 @@ func isClineDateTime(value string) bool {
 // shell once; a probe that establishes nothing falls back to getenv and home.
 func settingsEnvironment(ctx context.Context, shell string, loginShell bool, getenv func(string) string, home string) (func(string) string, string) {
 	names := append([]string{homeEnvName()}, dataEnvKeys...)
-	values, result := launch.ShellEnv(ctx, shell, loginShell, names)
+	snapshot, result := launch.ShellEnv(ctx, launch.ShellEnvOptions{Shell: shell, LoginShell: loginShell, Variables: names})
 	if result != launch.ProbeYes {
 		return getenv, home
 	}
+	values := snapshot.Values
 	if shellHome := values[homeEnvName()]; shellHome != "" {
 		home = shellHome
 	}

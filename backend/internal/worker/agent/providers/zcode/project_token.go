@@ -13,7 +13,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -70,11 +69,15 @@ type zcodeAccountEndpoints struct {
 // production.
 var zcodeProductionAccountEndpoints = zcodeAccountEndpoints{zai: "https://api.z.ai", bigModel: "https://bigmodel.cn"}
 
-func (e zcodeAccountEndpoints) origin(family string) string {
-	if family == zcodeFamilyZAI {
-		return e.zai
+func (e zcodeAccountEndpoints) origin(family string) (string, error) {
+	switch family {
+	case zcodeFamilyZAI:
+		return e.zai, nil
+	case zcodeFamilyBigModel:
+		return e.bigModel, nil
+	default:
+		return "", fmt.Errorf("unsupported ZCode account family %q", family)
 	}
-	return e.bigModel
 }
 
 // zcodeTeamProject identifies the team project of a team coding plan. The
@@ -136,17 +139,27 @@ type zcodeProjectTokenClient struct {
 	jitter    func() float64
 
 	mu sync.Mutex
-	// locations maps a location key to the location that served it.
-	locations map[string]zcodeProjectLocation
-	// staleStoreLocations holds the location keys whose stored location the
-	// project API no longer knows. LeapMux cannot delete the desktop's entry, so it
-	// skips it until the desktop replaces it.
-	staleStoreLocations map[string]zcodeProjectLocation
-	tokens              map[string]*zcodeProjectTokenEntry
+	// locations keeps the current location, its generation, and the desktop entry
+	// that the API rejected. Each mutation advances the same generation.
+	locations map[string]*zcodeProjectLocationEntry
+	tokens    map[string]*zcodeProjectTokenEntry
 	// discoveries and mints share one request among the agents that need the same
 	// location or token at once.
 	discoveries zcodeSharedCalls[string, zcodeProjectLocation]
 	mints       zcodeSharedCalls[string, zcodeProjectTokenValue]
+}
+
+type zcodeProjectLocationEntry struct {
+	value      *zcodeProjectLocation
+	staleStore *zcodeProjectLocation
+	generation uint64
+}
+
+// zcodeProjectLocationRef identifies the location knowledge that a mint used.
+// A later failure cannot invalidate a newer discovery or successful mint.
+type zcodeProjectLocationRef struct {
+	location   zcodeProjectLocation
+	generation uint64
 }
 
 // zcodeProjectTokenEntry is a cached token.
@@ -163,48 +176,68 @@ type zcodeProjectTokenValue struct {
 
 func newZCodeProjectTokenClient(client *http.Client, endpoints zcodeAccountEndpoints, clock quartz.Clock, jitter func() float64) *zcodeProjectTokenClient {
 	return &zcodeProjectTokenClient{
-		http:                client,
-		endpoints:           endpoints,
-		clock:               clock,
-		jitter:              jitter,
-		locations:           map[string]zcodeProjectLocation{},
-		staleStoreLocations: map[string]zcodeProjectLocation{},
-		tokens:              map[string]*zcodeProjectTokenEntry{},
+		http:      client,
+		endpoints: endpoints,
+		clock:     clock,
+		jitter:    jitter,
+		locations: map[string]*zcodeProjectLocationEntry{},
+		tokens:    map[string]*zcodeProjectTokenEntry{},
 	}
 }
 
 // zcodeProjectTokens is the client of the Worker process.
 var zcodeProjectTokens = newZCodeProjectTokenClient(zcodeStartPlanHTTPClient, zcodeProductionAccountEndpoints, quartz.NewReal(), rand.Float64)
 
-// zcodeBearerPrefix matches the scheme that a stored login token can carry, as the
-// desktop strips it (`replace(/^Bearer\s+/i, "")`).
-var zcodeBearerPrefix = regexp.MustCompile(`(?i)^Bearer\s+`)
+// zcodeNormalizeLoginToken applies native trimming and Bearer-scheme removal.
+func zcodeNormalizeLoginToken(value string) string {
+	value = zcodeTrimJSString(value)
+	if len(value) > 6 && strings.EqualFold(value[:6], "Bearer") {
+		tail := value[6:]
+		trimmed := strings.TrimLeftFunc(tail, zcodeIsJSWhitespace)
+		if len(trimmed) < len(tail) {
+			return trimmed
+		}
+	}
+	return value
+}
 
-// zcodeTokenFingerprint is the SHA-256 that the app-server sends for a rejected
-// token.
-func zcodeTokenFingerprint(token string) string {
-	sum := sha256.Sum256([]byte(token))
+// zcodeSHA256Hex returns the hexadecimal SHA-256 of a string, used for tokens
+// and account scopes in the app-server protocol.
+func zcodeSHA256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 
 // resolve returns the project token of the coding plan that req describes.
 func (c *zcodeProjectTokenClient) resolve(ctx context.Context, credentials zcodeCredentials, req zcodeProjectTokenRequest) (zcodeProjectToken, error) {
-	loginToken := zcodeBearerPrefix.ReplaceAllString(strings.TrimSpace(req.loginToken), "")
-	if loginToken == "" || strings.TrimSpace(req.accountID) == "" {
+	loginToken := zcodeNormalizeLoginToken(req.loginToken)
+	if loginToken == "" || zcodeTrimJSString(req.accountID) == "" {
 		return zcodeProjectToken{}, errZCodeProjectLoginRequired
 	}
-	origin := c.endpoints.origin(req.family)
-	locationKey := zcodeProjectLocationKey(origin, req.family, req.accountID, req.team)
-	location, err := c.location(ctx, credentials, req, origin, loginToken, locationKey)
+	origin, err := c.endpoints.origin(req.family)
 	if err != nil {
 		return zcodeProjectToken{}, err
 	}
+	locationKey := zcodeProjectLocationKey(origin, req.family, req.accountID, req.team)
+	reference, err := c.location(ctx, credentials, req, origin, loginToken, locationKey)
+	if err != nil {
+		return zcodeProjectToken{}, err
+	}
+	location := reference.location
 	// The login token is part of the scope, so a new sign-in never reuses a token
 	// that the previous one minted.
 	scope := zcodeJSONStringify([]any{origin, req.family, req.accountID, location.OrganizationID, location.ProjectID,
-		location.APIKeyID, zcodeProjectUsageCodingPlan, zcodeTokenFingerprint(loginToken)})
+		location.APIKeyID, zcodeProjectUsageCodingPlan, zcodeSHA256Hex(loginToken)})
 	value, err := c.token(ctx, scope, req.rejectedFingerprint, func(ctx context.Context) (zcodeProjectTokenValue, error) {
-		return c.mint(ctx, origin, loginToken, location, req.appVersion, locationKey)
+		value, err := c.mint(ctx, origin, loginToken, location, req.appVersion)
+		if errors.Is(err, errZCodeProjectNotFound) {
+			c.mints.publish(ctx, scope, func() { c.forget(locationKey, reference) })
+			return zcodeProjectTokenValue{}, errZCodeProjectInvalidReply
+		}
+		if err == nil {
+			c.mints.publish(ctx, scope, func() { c.confirmLocation(locationKey, reference) })
+		}
+		return value, err
 	})
 	if err != nil {
 		return zcodeProjectToken{}, err
@@ -214,26 +247,82 @@ func (c *zcodeProjectTokenClient) resolve(ctx context.Context, credentials zcode
 
 // location returns the project and the API key that serve the plan: the one this
 // process found earlier, the one the desktop cached, or one that discovery finds.
-func (c *zcodeProjectTokenClient) location(ctx context.Context, credentials zcodeCredentials, req zcodeProjectTokenRequest, origin, loginToken, key string) (zcodeProjectLocation, error) {
+func (c *zcodeProjectTokenClient) location(ctx context.Context, credentials zcodeCredentials, req zcodeProjectTokenRequest, origin, loginToken, key string) (zcodeProjectLocationRef, error) {
+	stored, found := credentials.projectLocation(key)
 	c.mu.Lock()
-	location, ok := c.locations[key]
-	stale, skipStore := c.staleStoreLocations[key]
+	entry := c.locationEntryLocked(key)
+	if found && (entry.staleStore == nil || stored != *entry.staleStore) && zcodeLocationServesTeam(stored, req.team) {
+		c.rememberLocationLocked(entry, stored)
+	}
+	if entry.value != nil {
+		reference := zcodeProjectLocationRef{location: *entry.value, generation: entry.generation}
+		c.mu.Unlock()
+		return reference, nil
+	}
 	c.mu.Unlock()
-	if ok {
-		return location, nil
-	}
-	if stored, found := credentials.projectLocation(key); found && (!skipStore || stored != stale) && zcodeLocationServesTeam(stored, req.team) {
-		c.remember(key, stored)
-		return stored, nil
-	}
-	return c.discoveries.do(ctx, key, zcodeProjectTokenTimeout, func(ctx context.Context) (zcodeProjectLocation, error) {
+	discoveryKey := zcodeJSONStringify([]string{key, zcodeSHA256Hex(loginToken)})
+	_, err := c.discoveries.do(ctx, discoveryKey, zcodeProjectTokenTimeout, func(ctx context.Context) (zcodeProjectLocation, error) {
+		c.mu.Lock()
+		entry := c.locationEntryLocked(key)
+		if entry.value != nil {
+			value := *entry.value
+			c.mu.Unlock()
+			return value, nil
+		}
+		generation := entry.generation
+		c.mu.Unlock()
 		found, err := c.discover(ctx, req, origin, loginToken)
 		if err != nil {
 			return zcodeProjectLocation{}, err
 		}
-		c.remember(key, found)
-		return found, nil
+		published := c.discoveries.publish(ctx, discoveryKey, func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if entry.value != nil {
+				found = *entry.value
+				return
+			}
+			if entry.generation != generation {
+				err = errZCodeProjectUnavailable
+				return
+			}
+			c.rememberLocationLocked(entry, found)
+		})
+		if !published {
+			if err := ctx.Err(); err != nil {
+				return zcodeProjectLocation{}, err
+			}
+			return zcodeProjectLocation{}, context.Canceled
+		}
+		return found, err
 	})
+	if err != nil {
+		return zcodeProjectLocationRef{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry = c.locationEntryLocked(key)
+	if entry.value == nil {
+		return zcodeProjectLocationRef{}, errZCodeProjectUnavailable
+	}
+	return zcodeProjectLocationRef{location: *entry.value, generation: entry.generation}, nil
+}
+
+// locationEntryLocked returns the one publication record for key. Caller holds c.mu.
+func (c *zcodeProjectTokenClient) locationEntryLocked(key string) *zcodeProjectLocationEntry {
+	entry := c.locations[key]
+	if entry == nil {
+		entry = &zcodeProjectLocationEntry{}
+		c.locations[key] = entry
+	}
+	return entry
+}
+
+func (c *zcodeProjectTokenClient) rememberLocationLocked(entry *zcodeProjectLocationEntry, location zcodeProjectLocation) {
+	if entry.value == nil || *entry.value != location {
+		entry.value = &location
+		entry.generation++
+	}
 }
 
 func zcodeLocationServesTeam(location zcodeProjectLocation, team *zcodeTeamProject) bool {
@@ -243,32 +332,42 @@ func zcodeLocationServesTeam(location zcodeProjectLocation, team *zcodeTeamProje
 func (c *zcodeProjectTokenClient) remember(key string, location zcodeProjectLocation) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.locations[key] = location
+	c.rememberLocationLocked(c.locationEntryLocked(key), location)
 }
 
-// forget drops a location that the project API no longer knows, so the next
-// resolution discovers it again.
-func (c *zcodeProjectTokenClient) forget(key string, location zcodeProjectLocation) {
+// forget excludes the failed desktop location without removing a replacement.
+func (c *zcodeProjectTokenClient) forget(key string, reference zcodeProjectLocationRef) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.locations, key)
-	c.staleStoreLocations[key] = location
+	entry := c.locationEntryLocked(key)
+	if entry.generation != reference.generation || entry.value == nil || *entry.value != reference.location {
+		return
+	}
+	entry.value = nil
+	entry.staleStore = &reference.location
+	entry.generation++
+}
+
+// confirmLocation records positive API evidence without replacing a different
+// location. It also restores a location when an overlapping old request failed.
+func (c *zcodeProjectTokenClient) confirmLocation(key string, reference zcodeProjectLocationRef) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.locationEntryLocked(key)
+	if entry.value != nil && *entry.value != reference.location {
+		return
+	}
+	entry.value = &reference.location
+	if entry.staleStore != nil && *entry.staleStore == reference.location {
+		entry.staleStore = nil
+	}
+	entry.generation++
 }
 
 // discover finds the plan's project and its ZCode API key, as the desktop's
 // ProjectAccessTokenClient does, except that it never creates the key.
 func (c *zcodeProjectTokenClient) discover(ctx context.Context, req zcodeProjectTokenRequest, origin, loginToken string) (zcodeProjectLocation, error) {
-	var customer struct {
-		Organizations []struct {
-			OrganizationID   string `json:"organizationId"`
-			OrganizationName string `json:"organizationName"`
-			Projects         []struct {
-				ProjectID   string          `json:"projectId"`
-				ProjectName string          `json:"projectName"`
-				ProjectType json.RawMessage `json:"projectType"`
-			} `json:"projects"`
-		} `json:"organizations"`
-	}
+	var customer zcodeProjectCustomer
 	data, err := c.call(ctx, http.MethodGet, origin+"/api/biz/customer/getCustomerInfo",
 		http.Header{"Authorization": {loginToken}}, nil)
 	if err != nil {
@@ -278,23 +377,95 @@ func (c *zcodeProjectTokenClient) discover(ctx context.Context, req zcodeProject
 		return zcodeProjectLocation{}, errZCodeProjectInvalidReply
 	}
 
-	var organizationID, projectID string
+	selection, err := zcodeSelectProject(customer, req.team)
+	if err != nil {
+		return zcodeProjectLocation{}, err
+	}
+	organizationID, projectID := selection.organizationID, selection.projectID
+
+	headers := http.Header{"Authorization": {loginToken}}
 	if req.team != nil {
+		headers.Set("bigmodel-organization", organizationID)
+		headers.Set("bigmodel-project", projectID)
+	} else if req.family == zcodeFamilyZAI {
+		headers.Set("Authorization", "Bearer "+loginToken)
+	}
+	data, err = c.call(ctx, http.MethodGet, zcodeAPIKeyListURL(origin, organizationID, projectID), headers, nil)
+	if err != nil {
+		return zcodeProjectLocation{}, err
+	}
+	var keys []json.RawMessage
+	if json.Unmarshal(data, &keys) != nil {
+		return zcodeProjectLocation{}, errZCodeProjectInvalidReply
+	}
+	apiKeyID, err := zcodeSelectProjectAPIKey(keys, req.team != nil)
+	if err != nil {
+		return zcodeProjectLocation{}, err
+	}
+	return zcodeProjectLocation{OrganizationID: organizationID, ProjectID: projectID, APIKeyID: apiKeyID}, nil
+}
+
+type zcodeProjectCustomer struct {
+	Organizations []zcodeProjectOrganization `json:"organizations"`
+}
+type zcodeProjectOrganization struct {
+	OrganizationID   string                    `json:"organizationId"`
+	OrganizationName string                    `json:"organizationName"`
+	Projects         []zcodeProjectDescription `json:"projects"`
+}
+type zcodeProjectDescription struct {
+	ProjectID   string           `json:"projectId"`
+	ProjectName string           `json:"projectName"`
+	ProjectType zcodeProjectType `json:"projectType"`
+}
+
+// zcodeProjectType retains the only project-type distinction this client uses.
+// Decoding accepts a string, a number, or null.
+type zcodeProjectType struct{ team bool }
+
+func (t *zcodeProjectType) UnmarshalJSON(raw []byte) error {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	switch value := value.(type) {
+	case nil:
+		t.team = false
+	case string:
+		t.team = zcodeTrimJSString(value) == "2"
+	case float64:
+		t.team = value == 2
+	default:
+		return errors.New("the ZCode project type is not a string, number, or null")
+	}
+	return nil
+}
+
+type zcodeProjectSelection struct{ organizationID, projectID string }
+type zcodeProjectAPIKey struct {
+	APIKey  string   `json:"apiKey"`
+	Name    string   `json:"name"`
+	KeyType *float64 `json:"keyType"`
+}
+
+func zcodeSelectProject(customer zcodeProjectCustomer, team *zcodeTeamProject) (zcodeProjectSelection, error) {
+	var organizationID, projectID string
+	if team != nil {
 		found := false
 		for _, organization := range customer.Organizations {
-			if strings.TrimSpace(organization.OrganizationID) != strings.TrimSpace(req.team.organizationID) {
+			if zcodeTrimJSString(organization.OrganizationID) != zcodeTrimJSString(team.organizationID) {
 				continue
 			}
 			for _, project := range organization.Projects {
-				if strings.TrimSpace(project.ProjectID) == strings.TrimSpace(req.team.projectID) {
+				if zcodeTrimJSString(project.ProjectID) == zcodeTrimJSString(team.projectID) {
 					found = true
 				}
 			}
 		}
 		if !found {
-			return zcodeProjectLocation{}, errZCodeProjectUnavailable
+			return zcodeProjectSelection{}, errZCodeProjectUnavailable
 		}
-		organizationID, projectID = req.team.organizationID, req.team.projectID
+		organizationID, projectID = team.organizationID, team.projectID
 	} else {
 		// An individual plan uses the account's default organization and project,
 		// leaving out team projects (projectType "2").
@@ -304,7 +475,7 @@ func (c *zcodeProjectTokenClient) discover(ctx context.Context, req zcodeProject
 		for _, organization := range customer.Organizations {
 			var projects []candidate
 			for _, project := range organization.Projects {
-				if strings.TrimSpace(strings.Trim(string(project.ProjectType), `"`)) == "2" {
+				if project.ProjectType.team {
 					continue
 				}
 				projects = append(projects, candidate{project.ProjectID, project.ProjectName})
@@ -318,7 +489,7 @@ func (c *zcodeProjectTokenClient) discover(ctx context.Context, req zcodeProject
 			}
 		}
 		if chosenOrganization == nil {
-			return zcodeProjectLocation{}, errZCodeProjectUnavailable
+			return zcodeProjectSelection{}, errZCodeProjectUnavailable
 		}
 		project := chosenProjects[0]
 		for _, candidate := range chosenProjects {
@@ -328,46 +499,39 @@ func (c *zcodeProjectTokenClient) discover(ctx context.Context, req zcodeProject
 			}
 		}
 		if project.id == "" {
-			return zcodeProjectLocation{}, errZCodeProjectUnavailable
+			return zcodeProjectSelection{}, errZCodeProjectUnavailable
 		}
 		organizationID, projectID = chosenOrganization.id, project.id
 	}
 
-	headers := http.Header{"Authorization": {loginToken}}
+	return zcodeProjectSelection{organizationID: organizationID, projectID: projectID}, nil
+}
+
+func zcodeSelectProjectAPIKey(keys []json.RawMessage, team bool) (string, error) {
 	name := zcodeProjectAPIKeyName
-	if req.team != nil {
-		headers.Set("bigmodel-organization", organizationID)
-		headers.Set("bigmodel-project", projectID)
+	if team {
 		name = zcodeTeamProjectAPIKeyName
-	} else if req.family == zcodeFamilyZAI {
-		headers.Set("Authorization", "Bearer "+loginToken)
-	}
-	data, err = c.call(ctx, http.MethodGet, zcodeAPIKeyListURL(origin, organizationID, projectID), headers, nil)
-	if err != nil {
-		return zcodeProjectLocation{}, err
-	}
-	var keys []json.RawMessage
-	if json.Unmarshal(data, &keys) != nil {
-		return zcodeProjectLocation{}, errZCodeProjectInvalidReply
 	}
 	for _, raw := range keys {
-		var key struct {
-			APIKey  string `json:"apiKey"`
-			Name    string `json:"name"`
-			KeyType *int   `json:"keyType"`
+		var identity struct {
+			Name string `json:"name"`
 		}
-		if json.Unmarshal(raw, &key) != nil || key.Name != name {
+		if json.Unmarshal(raw, &identity) != nil || identity.Name != name {
 			continue
 		}
-		if req.team != nil && (key.KeyType == nil || *key.KeyType != zcodeTeamProjectAPIKeyType) {
-			continue
+		var key zcodeProjectAPIKey
+		err := json.Unmarshal(raw, &key)
+		usable := err == nil && zcodeTrimJSString(key.APIKey) != ""
+		if team {
+			if !usable || key.KeyType == nil || *key.KeyType != zcodeTeamProjectAPIKeyType {
+				continue
+			}
+		} else if !usable {
+			return "", errZCodeProjectInvalidReply
 		}
-		if strings.TrimSpace(key.APIKey) == "" {
-			return zcodeProjectLocation{}, errZCodeProjectInvalidReply
-		}
-		return zcodeProjectLocation{OrganizationID: organizationID, ProjectID: projectID, APIKeyID: strings.TrimSpace(key.APIKey)}, nil
+		return zcodeTrimJSString(key.APIKey), nil
 	}
-	return zcodeProjectLocation{}, errZCodeProjectAPIKeyMissing
+	return "", errZCodeProjectAPIKeyMissing
 }
 
 func zcodeAPIKeyListURL(origin, organizationID, projectID string) string {
@@ -376,21 +540,31 @@ func zcodeAPIKeyListURL(origin, organizationID, projectID string) string {
 }
 
 // mint asks the project API for a new token of the location's API key.
-func (c *zcodeProjectTokenClient) mint(ctx context.Context, origin, loginToken string, location zcodeProjectLocation, appVersion, locationKey string) (zcodeProjectTokenValue, error) {
+func (c *zcodeProjectTokenClient) mint(ctx context.Context, origin, loginToken string, location zcodeProjectLocation, appVersion string) (zcodeProjectTokenValue, error) {
 	body, _ := json.Marshal(map[string]string{"clientType": "zcode", "clientVersion": appVersion})
 	started := c.clock.Now()
 	data, err := c.call(ctx, http.MethodPost,
 		zcodeAPIKeyListURL(origin, location.OrganizationID, location.ProjectID)+"/"+zcodeEncodeURIComponent(location.APIKeyID)+"/access_tokens",
 		http.Header{"Authorization": {"Bearer " + loginToken}}, body)
-	if errors.Is(err, errZCodeProjectNotFound) {
-		c.forget(locationKey, location)
-		return zcodeProjectTokenValue{}, errZCodeProjectInvalidReply
-	}
 	if err != nil {
 		return zcodeProjectTokenValue{}, err
 	}
+	var discriminator struct {
+		Enable json.RawMessage `json:"enable"`
+	}
+	if json.Unmarshal(data, &discriminator) != nil {
+		return zcodeProjectTokenValue{}, errZCodeProjectInvalidReply
+	}
+	if discriminator.Enable != nil {
+		switch string(bytes.TrimSpace(discriminator.Enable)) {
+		case "false":
+			return zcodeProjectTokenValue{}, errZCodeProjectDisabled
+		case "true":
+		default:
+			return zcodeProjectTokenValue{}, errZCodeProjectInvalidReply
+		}
+	}
 	var minted struct {
-		Enable      *bool    `json:"enable"`
 		AccessToken string   `json:"accessToken"`
 		TokenType   string   `json:"tokenType"`
 		ExpiresIn   *float64 `json:"expiresIn"`
@@ -399,14 +573,10 @@ func (c *zcodeProjectTokenClient) mint(ctx context.Context, origin, loginToken s
 	if json.Unmarshal(data, &minted) != nil {
 		return zcodeProjectTokenValue{}, errZCodeProjectInvalidReply
 	}
-	// A reply that states no "enable" grants a token, as the desktop reads it. The
-	// live API states "enabled" instead, which the desktop's schema ignores, so this
-	// reads "enable" only: reading "enabled" would refuse a token that the desktop
-	// uses.
-	if minted.Enable != nil && !*minted.Enable {
-		return zcodeProjectTokenValue{}, errZCodeProjectDisabled
-	}
-	token := strings.TrimSpace(minted.AccessToken)
+	// Only absence defaults to enabled. The live API's separate "enabled"
+	// property remains ignored, as it is in the native discriminated union.
+
+	token := zcodeTrimJSString(minted.AccessToken)
 	if token == "" || minted.TokenType != "Bearer" || minted.ExpiresIn == nil || minted.ExpiresAt == nil ||
 		!(*minted.ExpiresIn > 0) || math.IsInf(*minted.ExpiresIn, 0) || !(*minted.ExpiresAt > 0) || math.IsInf(*minted.ExpiresAt, 0) {
 		return zcodeProjectTokenValue{}, errZCodeProjectInvalidReply
@@ -424,43 +594,53 @@ func (c *zcodeProjectTokenClient) mint(ctx context.Context, origin, loginToken s
 // token returns the cached token of scope, or mints one, as the desktop's
 // ProjectAccessTokenCache does.
 func (c *zcodeProjectTokenClient) token(ctx context.Context, scope, rejectedFingerprint string, mint func(context.Context) (zcodeProjectTokenValue, error)) (zcodeProjectTokenValue, error) {
+	return c.tokenUsing(ctx, scope, rejectedFingerprint, mint, c.mints.do)
+}
+
+// tokenUsing permits a test to control admission without relying on scheduling.
+func (c *zcodeProjectTokenClient) tokenUsing(ctx context.Context, scope, rejectedFingerprint string, mint func(context.Context) (zcodeProjectTokenValue, error), coordinate zcodeCallCoordinator[string, zcodeProjectTokenValue]) (zcodeProjectTokenValue, error) {
+	if value, ok := c.cachedToken(scope, rejectedFingerprint); ok {
+		return value, nil
+	}
+	return coordinate(ctx, scope, zcodeProjectTokenTimeout, func(ctx context.Context) (zcodeProjectTokenValue, error) {
+		if value, ok := c.cachedToken(scope, rejectedFingerprint); ok {
+			return value, nil
+		}
+		value, err := mint(ctx)
+		c.mints.publish(ctx, scope, func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			entry := c.tokens[scope]
+			if err != nil {
+				if errors.Is(err, errZCodeProjectTransient) && entry != nil && entry.value.token != "" && c.clock.Now().Before(entry.value.expiresAt) {
+					entry.refreshAt = minTime(c.clock.Now().Add(zcodeProjectTokenRetryDelay), entry.value.expiresAt)
+					value, err = entry.value, nil
+					return
+				}
+				delete(c.tokens, scope)
+				return
+			}
+			jitter := time.Duration(math.Max(0, math.Min(1, c.jitter())) * float64(zcodeProjectTokenRefreshJitter))
+			c.dropExpiredTokens()
+			c.tokens[scope] = &zcodeProjectTokenEntry{value: value, fingerprint: zcodeSHA256Hex(value.token), refreshAt: value.expiresAt.Add(-zcodeProjectTokenRefreshMargin - jitter)}
+		})
+		return value, err
+	})
+}
+
+// cachedToken returns a still-usable token and invalidates a refused token.
+func (c *zcodeProjectTokenClient) cachedToken(scope, rejectedFingerprint string) (zcodeProjectTokenValue, bool) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	entry := c.tokens[scope]
 	if entry != nil && rejectedFingerprint != "" && entry.fingerprint == rejectedFingerprint {
 		entry.value, entry.refreshAt = zcodeProjectTokenValue{}, time.Time{}
 	}
 	now := c.clock.Now()
 	if entry != nil && entry.value.token != "" && now.Before(entry.refreshAt) && now.Before(entry.value.expiresAt) {
-		value := entry.value
-		c.mu.Unlock()
-		return value, nil
+		return entry.value, true
 	}
-	c.mu.Unlock()
-
-	return c.mints.do(ctx, scope, zcodeProjectTokenTimeout, func(ctx context.Context) (zcodeProjectTokenValue, error) {
-		value, err := mint(ctx)
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		entry := c.tokens[scope]
-		if err != nil {
-			// A transient failure keeps a token that is still valid for a few more
-			// seconds, so a short outage does not fail every model request.
-			if errors.Is(err, errZCodeProjectTransient) && entry != nil && entry.value.token != "" && c.clock.Now().Before(entry.value.expiresAt) {
-				entry.refreshAt = minTime(c.clock.Now().Add(zcodeProjectTokenRetryDelay), entry.value.expiresAt)
-				return entry.value, nil
-			}
-			delete(c.tokens, scope)
-			return zcodeProjectTokenValue{}, err
-		}
-		jitter := time.Duration(math.Max(0, math.Min(1, c.jitter())) * float64(zcodeProjectTokenRefreshJitter))
-		c.dropExpiredTokens()
-		c.tokens[scope] = &zcodeProjectTokenEntry{
-			value:       value,
-			fingerprint: zcodeTokenFingerprint(value.token),
-			refreshAt:   value.expiresAt.Add(-zcodeProjectTokenRefreshMargin - jitter),
-		}
-		return value, nil
-	})
+	return zcodeProjectTokenValue{}, false
 }
 
 // dropExpiredTokens deletes each cached token that expired. The scope of a token
@@ -517,7 +697,10 @@ func (c *zcodeProjectTokenClient) call(ctx context.Context, method, target strin
 		return nil, fmt.Errorf("%w: HTTP %d", errZCodeProjectRequestFailed, resp.StatusCode)
 	}
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, zcodeProjectReplyMaxBytes+1))
-	if err != nil || len(payload) > zcodeProjectReplyMaxBytes {
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errZCodeProjectTransient, err)
+	}
+	if len(payload) > zcodeProjectReplyMaxBytes {
 		return nil, errZCodeProjectInvalidReply
 	}
 	var envelope struct {
@@ -527,10 +710,23 @@ func (c *zcodeProjectTokenClient) call(ctx context.Context, method, target strin
 	if json.Unmarshal(payload, &envelope) != nil {
 		return nil, errZCodeProjectInvalidReply
 	}
-	switch strings.TrimSpace(string(envelope.Code)) {
-	case "0", "200", `"0"`, `"200"`:
-	case "404":
-		return nil, errZCodeProjectNotFound
+	var code any
+	if json.Unmarshal(envelope.Code, &code) != nil {
+		return nil, errZCodeProjectInvalidReply
+	}
+	switch code := code.(type) {
+	case float64:
+		switch code {
+		case 0, 200:
+		case 404:
+			return nil, errZCodeProjectNotFound
+		default:
+			return nil, errZCodeProjectInvalidReply
+		}
+	case string:
+		if code != "0" && code != "200" {
+			return nil, errZCodeProjectInvalidReply
+		}
 	default:
 		return nil, errZCodeProjectInvalidReply
 	}

@@ -62,8 +62,10 @@ func zcodeTestBindings(t *testing.T, catalog zcodeCatalog, content string, crede
 // content, with no credential store and the Start Plan entitlements in startPlans.
 func zcodeTestAccountPayload(t *testing.T, catalog zcodeCatalog, content string, startPlans map[string]zcodeAccountEntitlement) zcodeAccountProviderPayload {
 	t.Helper()
-	_, basedOn := zcodeTestRelease(t, content)
-	return newZCodeAccountProviderPayload(zcodeTestBindings(t, catalog, content, zcodeCredentials{}), basedOn, "leapmux-agent", startPlans)
+	release, basedOn := zcodeTestRelease(t, content)
+	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, zcodeCredentials{})
+	require.NoError(t, err)
+	return newZCodeAccountProviderPayload(bindings, basedOn, "leapmux-agent", startPlans)
 }
 
 // zcodeTestAccountBridge records the account bridge of catalog against the release in
@@ -159,8 +161,14 @@ func seedZCodeAccountStateForTests(t *testing.T, a *Agent) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	a.catalog.recordAccountBridge(bindings)
-	a.account = &zcodeAccountState{bindings: bindings, entitlements: map[string]zcodeAccountEntitlement{}}
-	a.accountProviderConfig = true
+	entitlements := map[string]zcodeAccountEntitlement{}
+	for _, binding := range bindings {
+		if binding.rule.isStartPlan() {
+			require.NotEmpty(t, binding.rule.Config.BuiltinModelIDs)
+			entitlements[binding.legacyID] = zcodeAvailable(binding.rule.Config.BuiltinModelIDs...)
+		}
+	}
+	a.account = newZCodeAccountState(zcodeAccountSnapshotInputs{bindings: bindings}, entitlements, a.Clock().Now())
 }
 
 // zcodeRecordedStdin is the stdin a test agent writes its requests to.

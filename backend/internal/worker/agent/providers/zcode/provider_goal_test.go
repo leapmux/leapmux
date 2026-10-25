@@ -65,8 +65,8 @@ func TestZCodeGoal_StateRevisionIsMonotonic(t *testing.T) {
 
 	agent := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
 
-	agent.applyZCodeRuntimeState(&zcodeRuntimeState{StateRevision: 20})
-	agent.applyZCodeRuntimeState(&zcodeRuntimeState{StateRevision: 7})
+	agent.applyZCodeSessionObservation("sess-1", zcodeStatePatchBody{Runtime: &zcodeRuntimeState{StateRevision: 20}}, nil)
+	agent.applyZCodeSessionObservation("sess-1", zcodeStatePatchBody{Runtime: &zcodeRuntimeState{StateRevision: 7}}, nil)
 
 	agent.Mu.Lock()
 	got := agent.stateRevision
@@ -141,7 +141,7 @@ func TestZCodeGoal_SessionSnapshotSeedsTheStateRevision(t *testing.T) {
 		`{"session":{"sessionId":"sess-1"},"runtime":{"eventSeq":7,"stateRevision":42}}`))
 	require.True(t, ok)
 
-	agent.applyParsedStateSnapshot(snap)
+	agent.applyCompleteSessionSnapshot(snap)
 
 	agent.Mu.Lock()
 	got := agent.stateRevision

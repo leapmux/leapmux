@@ -67,38 +67,6 @@ func zcodeProjectLocationKey(origin, family, accountID string, team *zcodeTeamPr
 		[]any{origin, family, accountID, teamPart, zcodeProjectUsageCodingPlan, selection}))
 }
 
-// zcodeJSONStringify encodes value as JavaScript's JSON.stringify does for the
-// strings, numbers, and objects that LeapMux hashes or uses as keys: no spaces, and
-// no HTML escaping.
-func zcodeJSONStringify(value any) string {
-	var out strings.Builder
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		panic(fmt.Sprintf("zcodeJSONStringify: %v", err))
-	}
-	return strings.TrimSuffix(out.String(), "\n")
-}
-
-// zcodeEncodeURIComponent escapes s as JavaScript's encodeURIComponent does: it
-// keeps letters, digits, and - _ . ! ~ * ' ( ), and percent-encodes every other
-// UTF-8 byte in uppercase hexadecimal.
-func zcodeEncodeURIComponent(s string) string {
-	const hex = "0123456789ABCDEF"
-	var out strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') || strings.IndexByte("-_.!~*'()", c) >= 0 {
-			out.WriteByte(c)
-			continue
-		}
-		out.WriteByte('%')
-		out.WriteByte(hex[c>>4])
-		out.WriteByte(hex[c&0x0f])
-	}
-	return out.String()
-}
-
 // zcodeCredentialStore reads the shared credential store.
 type zcodeCredentialStore struct {
 	path string
@@ -175,7 +143,7 @@ func (c zcodeCredentials) get(key string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decrypt the ZCode credential %q: %w", key, err)
 	}
-	return strings.TrimSpace(plain), nil
+	return zcodeTrimJSString(plain), nil
 }
 
 // zcodeDecryptCredential decrypts one store value as ZCode's
@@ -221,7 +189,6 @@ func zcodeDecryptCredential(key [sha256.Size]byte, value string) (string, error)
 
 // zcodeAccountSession is a provider family's sign-in state in the store.
 type zcodeAccountSession struct {
-	family string
 	// accessToken is the OAuth access token that coding-plan project tokens are
 	// minted from.
 	accessToken string
@@ -233,34 +200,58 @@ type zcodeAccountSession struct {
 }
 
 // session returns the family's sign-in state. ok is false when the family is not
-// signed in.
+// signed in. Independently readable material survives a failure in another field.
 func (c zcodeCredentials) session(family string) (zcodeAccountSession, bool, error) {
+	var session zcodeAccountSession
+	var errs []error
 	accessToken, err := c.get(zcodeOAuthAccessTokenKey(family))
 	if err != nil {
-		return zcodeAccountSession{}, false, err
+		errs = append(errs, err)
+	} else {
+		session.accessToken = accessToken
 	}
 	jwt, err := c.startPlanJWT(family)
 	if err != nil {
-		return zcodeAccountSession{}, false, err
+		errs = append(errs, err)
+	} else {
+		session.zcodeJWT = jwt
 	}
-	if accessToken == "" {
-		// A Start Plan can be signed in without an OAuth session: its ZCode token
-		// is enough.
-		if jwt == "" {
-			return zcodeAccountSession{}, false, nil
+	if session.accessToken != "" {
+		profile, err := c.get(zcodeOAuthUserInfoKey(family))
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			session.accountID = zcodeTrimJSString(zcodeProfileAccountID(family, profile))
 		}
-		return zcodeAccountSession{family: family, zcodeJWT: jwt}, true, nil
 	}
-	profile, err := c.get(zcodeOAuthUserInfoKey(family))
-	if err != nil {
-		return zcodeAccountSession{}, false, err
+	return session, session.accessToken != "" || session.zcodeJWT != "", errors.Join(errs...)
+}
+
+// sameSignIn verifies decoded account identity. An independently unreadable
+// field is safe only while its stored value remains unchanged.
+func (c zcodeCredentials) sameSignIn(other zcodeCredentials, family string, before zcodeAccountSession) bool {
+	if c.key != other.key {
+		return false
 	}
-	return zcodeAccountSession{
-		family:      family,
-		accessToken: accessToken,
-		accountID:   strings.TrimSpace(zcodeProfileAccountID(family, profile)),
-		zcodeJWT:    jwt,
-	}, true, nil
+	after, _, err := other.session(family)
+	if before != after {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	keys := []string{zcodeOAuthAccessTokenKey(family), zcodeOAuthUserInfoKey(family), zcodeCredentialZCodeJWT}
+	if family == zcodeFamilyBigModel {
+		if jwt, err := other.get(zcodeCredentialZCodeJWT); err == nil && jwt != "" {
+			keys = append(keys, zcodeCredentialActiveProvider)
+		}
+	}
+	for _, key := range keys {
+		if _, err := other.get(key); err != nil && c.values[key] != other.values[key] {
+			return false
+		}
+	}
+	return true
 }
 
 // zcodeProfileAccountID returns the account id of a stored user profile, as the
@@ -290,7 +281,7 @@ func zcodeProfileAccountID(family, profile string) string {
 	}
 	name, _ := fields["name"].(string)
 	email, _ := fields["email"].(string)
-	if strings.TrimSpace(name) == "" && email == "" && userID == "unknown" {
+	if zcodeTrimJSString(name) == "" && email == "" && userID == "unknown" {
 		return ""
 	}
 	return userID

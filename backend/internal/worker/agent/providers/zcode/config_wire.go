@@ -269,8 +269,8 @@ func (b zcodeAccountBinding) selectedWithoutFamily() bool {
 // accountProviderBindings binds each selected account rule that a credential
 // serves: the family's sign-in in the credential store, or the plan's config.json
 // provider. A plan that neither serves is left out of the snapshot. The error
-// reports a credential store that LeapMux could not read; the bindings then rest
-// on config.json alone.
+// reports unreadable credential material. Each binding retains independently
+// readable credentials and can also use its config.json key.
 func (c zcodeCatalog) accountProviderBindings(rules []zcodeBuiltinProviderRule, credentials zcodeCredentials) ([]zcodeAccountBinding, error) {
 	sessions := map[string]zcodeAccountSession{}
 	var errs []error
@@ -393,16 +393,12 @@ func newZCodeAccountProviderPayload(bindings []zcodeAccountBinding, basedOn, rev
 	return payload
 }
 
-// recordAccountBridge records both directions of the bridge between the legacy and
-// the account provider ids. The caller holds Agent.Mu and sets
-// accountProviderConfig in the same critical section, and every reader checks that
-// flag first.
+// recordAccountBridge translates legacy provider IDs to account provider IDs.
+// Readers and writers of a shared Agent catalog hold Agent.Mu.
 func (c *zcodeCatalog) recordAccountBridge(bindings []zcodeAccountBinding) {
 	c.accountProviderIDs = make(map[string]string, len(bindings))
-	c.legacyProviderIDs = make(map[string]string, len(bindings))
 	for _, binding := range bindings {
 		c.accountProviderIDs[binding.legacyID] = binding.accountID
-		c.legacyProviderIDs[binding.accountID] = binding.legacyID
 	}
 }
 
@@ -416,9 +412,6 @@ func (p zcodeRegistryProvider) inlineAPIKey() (string, bool) {
 }
 
 func (c zcodeCatalog) inlineAPIKey(providerID string) (string, bool) {
-	if legacyID := c.legacyProviderIDs[providerID]; legacyID != "" {
-		providerID = legacyID
-	}
 	for _, provider := range c.Providers {
 		if providerID != "" && provider.ProviderID != providerID {
 			continue

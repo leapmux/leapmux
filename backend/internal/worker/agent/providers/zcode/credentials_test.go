@@ -109,7 +109,7 @@ func TestZCodeCredentials_Session(t *testing.T) {
 				zcodeCredentialZCodeJWT:         "jwt",
 			},
 			family:     zcodeFamilyZAI,
-			want:       zcodeAccountSession{family: "zai", accessToken: "access", accountID: "user-1", zcodeJWT: "jwt"},
+			want:       zcodeAccountSession{accessToken: "access", accountID: "user-1", zcodeJWT: "jwt"},
 			wantSigned: true,
 		},
 		{
@@ -122,7 +122,7 @@ func TestZCodeCredentials_Session(t *testing.T) {
 				zcodeCredentialZCodeJWT:         "jwt",
 			},
 			family:     zcodeFamilyZAI,
-			want:       zcodeAccountSession{family: "zai", accessToken: "access", accountID: "0b7c4e7e-0000-4000-8000-000000000001", zcodeJWT: "jwt"},
+			want:       zcodeAccountSession{accessToken: "access", accountID: "0b7c4e7e-0000-4000-8000-000000000001", zcodeJWT: "jwt"},
 			wantSigned: true,
 		},
 		{
@@ -131,7 +131,7 @@ func TestZCodeCredentials_Session(t *testing.T) {
 				zcodeOAuthAccessTokenKey("bigmodel"): "access", zcodeCredentialZCodeJWT: "jwt", zcodeCredentialActiveProvider: "zai",
 			},
 			family:     zcodeFamilyBigModel,
-			want:       zcodeAccountSession{family: "bigmodel", accessToken: "access"},
+			want:       zcodeAccountSession{accessToken: "access"},
 			wantSigned: true,
 		},
 		{
@@ -140,21 +140,21 @@ func TestZCodeCredentials_Session(t *testing.T) {
 				zcodeOAuthAccessTokenKey("bigmodel"): "access", zcodeCredentialZCodeJWT: "jwt", zcodeCredentialActiveProvider: "bigmodel",
 			},
 			family:     zcodeFamilyBigModel,
-			want:       zcodeAccountSession{family: "bigmodel", accessToken: "access", zcodeJWT: "jwt"},
+			want:       zcodeAccountSession{accessToken: "access", zcodeJWT: "jwt"},
 			wantSigned: true,
 		},
 		{
 			name:       "a ZCode token alone signs in a Start Plan",
 			values:     map[string]string{zcodeCredentialZCodeJWT: "jwt"},
 			family:     zcodeFamilyZAI,
-			want:       zcodeAccountSession{family: "zai", zcodeJWT: "jwt"},
+			want:       zcodeAccountSession{zcodeJWT: "jwt"},
 			wantSigned: true,
 		},
 		{
 			name:       "an unreadable profile leaves the account id empty",
 			values:     map[string]string{zcodeOAuthAccessTokenKey("zai"): "access", zcodeOAuthUserInfoKey("zai"): "{"},
 			family:     zcodeFamilyZAI,
-			want:       zcodeAccountSession{family: "zai", accessToken: "access"},
+			want:       zcodeAccountSession{accessToken: "access"},
 			wantSigned: true,
 		},
 		{
@@ -274,4 +274,46 @@ func TestLoadZCodeDeviceMid(t *testing.T) {
 	} {
 		assert.Equal(t, fallback, loadZCodeDeviceMid(home), name)
 	}
+}
+
+func TestZCodeCredentials_PreservesIndependentCredentialMaterial(t *testing.T) {
+	t.Parallel()
+	for _, broken := range []string{"oauth", "profile", "jwt"} {
+		t.Run(broken, func(t *testing.T) {
+			t.Parallel()
+			values := map[string]string{zcodeOAuthAccessTokenKey("zai"): "login", zcodeOAuthUserInfoKey("zai"): zcodeTestUserInfo("user-1"), zcodeCredentialZCodeJWT: "jwt"}
+			key := map[string]string{"oauth": zcodeOAuthAccessTokenKey("zai"), "profile": zcodeOAuthUserInfoKey("zai"), "jwt": zcodeCredentialZCodeJWT}[broken]
+			credentials := zcodeTestReadCredentials(t, zcodeTestCredentialStore(t, values))
+			credentials.values[key] = "enc:v1:broken"
+			session, _, err := credentials.session("zai")
+			require.Error(t, err)
+			if broken == "jwt" {
+				assert.Equal(t, "login", session.accessToken)
+				assert.Equal(t, "user-1", session.accountID)
+			} else {
+				assert.Equal(t, "jwt", session.zcodeJWT)
+			}
+		})
+	}
+}
+
+func TestZCodeCredentials_UsesNativeWhitespace(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ value, want string }{
+		{value: "\uFEFF \tjwt\uFEFF", want: "jwt"},
+		{value: "\u0085jwt\u0085", want: "\u0085jwt\u0085"},
+	} {
+		credentials := zcodeCredentials{values: map[string]string{"key": test.value}}
+		got, err := credentials.get("key")
+		require.NoError(t, err)
+		assert.Equal(t, test.want, got)
+	}
+}
+
+func TestZCodeProjectLocationKey_UsesNativeUnicodeEncoding(t *testing.T) {
+	t.Parallel()
+	team := &zcodeTeamProject{organizationID: "org\u2028one", projectID: "project\u2029two"}
+	assert.Equal(t,
+		"project-key-location:v1:%5B%22https%3A%2F%2Fapi.z.ai%22%2C%22zai%22%2C%22user%E2%80%A8one%22%2C%7B%22organizationId%22%3A%22org%E2%80%A8one%22%2C%22projectId%22%3A%22project%E2%80%A9two%22%7D%2C1%2Cnull%5D",
+		zcodeProjectLocationKey("https://api.z.ai", "zai", "user\u2028one", team))
 }

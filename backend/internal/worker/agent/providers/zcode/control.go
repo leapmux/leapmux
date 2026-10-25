@@ -450,7 +450,7 @@ func (a *Agent) replyZCodeUserInput(id json.RawMessage, behavior string, reply z
 // accountRequestAuth resolves.
 func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 	a.Mu.Lock()
-	accountConfig := a.accountProviderConfig
+	accountConfig := a.account != nil
 	a.Mu.Unlock()
 	var req zcodeRuntimeHeadersRequest
 	if err := json.Unmarshal(params, &req); err != nil {
@@ -482,7 +482,9 @@ func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 		go a.answerAccountRuntimeHeaders(id, req)
 		return
 	}
+	a.Mu.Lock()
 	authorized := a.catalog.hasInlineAPIKey(req.ProviderID)
+	a.Mu.Unlock()
 	result := map[string]any{
 		"headers":    map[string]string{},
 		"authorized": authorized,
@@ -519,7 +521,7 @@ func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, req zcodeRuntime
 // a declared unavailability lets it fall through to the servers it can reach.
 func (a *Agent) answerOfficialMcpAuthHeaders(id json.RawMessage) {
 	a.Mu.Lock()
-	accountConfig := a.accountProviderConfig
+	accountConfig := a.account != nil
 	a.Mu.Unlock()
 	if accountConfig {
 		if err := a.sendZCodeReply(id, map[string]any{
