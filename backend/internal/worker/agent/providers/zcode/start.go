@@ -68,6 +68,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
+	// The script path is the first prefix arg when the launch spec runs the
+	// bundled zcode.cjs; empty for a PATH launcher that owns its own setup.
+	scriptPath := ""
+	if len(spec.PrefixArgs) > 0 {
+		scriptPath = spec.PrefixArgs[0]
+	}
+
 	a := &Agent{
 		Process:                   providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "zcode", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		sink:                      sink,
@@ -76,6 +83,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		catalog:                   catalog,
 		registryRevision:          "leapmux-" + opts.AgentID,
 		builtinProviderConfigPath: zcodeLaunchEnvValue(cmd.Env, zcodeBuiltinProviderConfigEnv),
+		scriptPath:                scriptPath,
 		mode:                      contracts.ZCodeDefaultMode,
 		toolCalls:                 map[string]*zcodeToolCall{},
 		pendingControls:           map[string]*pendingControl{},
@@ -197,6 +205,7 @@ func (a *Agent) pushProviderRegistry(timeout time.Duration) error {
 // pushAccountProviderConfig applies the host-owned account snapshot that replaced
 // workspace/updateProviderRegistry in ZCode 0.16.9.
 func (a *Agent) pushAccountProviderConfig(timeout time.Duration) error {
+	a.fetchStartPlanEntitlements(timeout)
 	params, err := a.catalog.accountProviderPayload(a.builtinProviderConfigPath, a.registryRevision)
 	if err != nil {
 		return err
@@ -226,4 +235,42 @@ func (a *Agent) pushAccountProviderConfig(timeout time.Duration) error {
 	slog.Debug("zcode account provider configuration applied", "agent_id", a.AgentID(),
 		"status", response.Status, "providers", response.ProviderCount)
 	return nil
+}
+
+// fetchStartPlanEntitlements queries ZCode's billing/balance API for every
+// start-plan provider and caches the model display names the purchased plan
+// grants. The catalog then pushes those names as builtinModelIds so the
+// app-server's registry matches the plan, not the generic static list.
+//
+// A failure is non-fatal: the catalog leaves startPlanModels empty and
+// accountProviderPayload omits builtinModelIds, so the app-server falls back
+// to its own builtinModelIds.
+func (a *Agent) fetchStartPlanEntitlements(timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(a.Context(), timeout)
+	defer cancel()
+	version := zcodeAppVersion(a.scriptPath)
+	a.Mu.Lock()
+	if a.catalog.startPlanModels == nil {
+		a.catalog.startPlanModels = map[string][]string{}
+	}
+	a.Mu.Unlock()
+	for _, provider := range a.catalog.Providers {
+		if !strings.HasSuffix(provider.ProviderID, "-start-plan") {
+			continue
+		}
+		if provider.APIKey == nil || provider.APIKey.Value == "" {
+			continue
+		}
+		models, err := fetchStartPlanEntitlementModels(ctx, provider.BaseURL, provider.APIKey.Value, version)
+		if err != nil {
+			slog.Warn("zcode start-plan entitlement fetch failed; falling back to builtin list",
+				"agent_id", a.AgentID(), "provider", provider.ProviderID, "error", err)
+			continue
+		}
+		a.Mu.Lock()
+		a.catalog.startPlanModels[provider.ProviderID] = models
+		a.Mu.Unlock()
+		slog.Debug("zcode start-plan entitlement models fetched",
+			"agent_id", a.AgentID(), "provider", provider.ProviderID, "models", models)
+	}
 }

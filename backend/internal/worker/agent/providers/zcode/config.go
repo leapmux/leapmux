@@ -38,6 +38,11 @@ type zcodeCatalog struct {
 	// bridge derived from the installed account-provider rules.
 	accountProviderIDs map[string]string
 	legacyProviderIDs  map[string]string
+	// startPlanModels maps a LEGACY provider id (e.g. "builtin:zai-start-plan")
+	// to the model display names the entitlement API reports for that plan.
+	// Nil or absent when the fetch failed or was not attempted; the caller
+	// then falls back to the static builtin list.
+	startPlanModels map[string][]string
 }
 
 // zcodeModelIDSeparator joins a provider id and a model id into the single string

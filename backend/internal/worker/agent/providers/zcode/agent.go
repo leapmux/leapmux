@@ -52,6 +52,9 @@ type Agent struct {
 	// builtinProviderConfigPath identifies the installed release that the account
 	// provider snapshot overlays. Empty for a PATH launcher that owns its setup.
 	builtinProviderConfigPath string
+	// scriptPath is the resolved zcode.cjs path, used to discover the ZCode
+	// application version for the entitlement API. Empty for a PATH launcher.
+	scriptPath string
 
 	// --- guarded by Mu ---
 

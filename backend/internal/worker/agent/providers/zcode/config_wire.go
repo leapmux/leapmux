@@ -156,19 +156,36 @@ func (c *zcodeCatalog) accountProviderPayload(builtinPath, revision string) (zco
 		}
 		c.accountProviderIDs[provider.ProviderID] = accountID
 		c.legacyProviderIDs[accountID] = provider.ProviderID
-		entry := zcodeAccountProviderConfig{BuiltinModelIDs: make([]string, 0, len(provider.Models))}
+		entry := zcodeAccountProviderConfig{}
 		entry.Access.Type = strings.TrimSpace(rule.Config.Access.Type)
-		entry.Access.Entitled = provider.Enabled
-		for _, model := range provider.Models {
-			entry.BuiltinModelIDs = append(entry.BuiltinModelIDs, model.ModelID)
+		// Entitled means the account HOLDS the plan -- every provider that reaches
+		// this loop carries a credential -- not that it is the selected connection
+		// kind. The app-server gates model executability on entitled AND current,
+		// and mapping enabled here silently dropped every model of a plan the user
+		// did not select as the active connection.
+		entry.Access.Entitled = true
+		isStartPlan := strings.TrimSpace(rule.Config.Access.Mode) == "start-plan"
+		// For Start Plan, push the model list the entitlement API reports so the
+		// app-server's registry carries the models the purchased plan actually
+		// grants (which can differ from the generic builtinModelIds). When the
+		// fetch failed or returned nothing, leave the field unset so the
+		// app-server keeps its own builtinModelIds -- the static fallback.
+		if isStartPlan {
+			if models := c.startPlanModels[provider.ProviderID]; len(models) > 0 {
+				entry.BuiltinModelIDs = append([]string(nil), models...)
+			}
 		}
 		payload.Providers[accountID] = entry
-		state := zcodeAccountProviderState{Availability: "available", Entitled: provider.Enabled, Current: provider.Enabled}
-		if !provider.Enabled {
-			state.Availability = "unavailable"
-			state.UnavailableReason = "not-entitled"
+		// Start Plan is classified "ordinary" by the app-server
+		// (isStartPlanModelProviderId), so it is always usable alongside the
+		// selected coding-plan connection and must report current. A coding-plan
+		// provider reports current only when it IS the selected connection, which
+		// keeps the app-server's one-current-account-plan invariant.
+		payload.States[accountID] = zcodeAccountProviderState{
+			Availability: "available",
+			Entitled:     true,
+			Current:      isStartPlan || provider.Enabled,
 		}
-		payload.States[accountID] = state
 	}
 	return payload, nil
 }

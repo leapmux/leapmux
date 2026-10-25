@@ -610,21 +610,146 @@ func TestZCodeCatalog_AccountProviderPayloadUsesTheInstalledRelease(t *testing.T
 
 	provider, ok := payload.Providers["account:zai-individual-coding-plan"]
 	require.True(t, ok)
-	assert.Equal(t, []string{"GLM-5.3", "GLM-5.3-Flash"}, provider.BuiltinModelIDs)
+	assert.Empty(t, provider.BuiltinModelIDs,
+		"the push must not override the app-server's own model list")
 	assert.Equal(t, "zhipu-account", provider.Access.Type)
 	assert.True(t, provider.Access.Entitled)
 	assert.Equal(t, zcodeAccountProviderState{Availability: "available", Entitled: true, Current: true},
 		payload.States["account:zai-individual-coding-plan"])
 	start := payload.Providers["account:zai-start-plan"]
-	assert.False(t, start.Access.Entitled)
-	assert.Equal(t, zcodeAccountProviderState{
-		Availability: "unavailable", UnavailableReason: "not-entitled",
-	}, payload.States["account:zai-start-plan"])
+	assert.True(t, start.Access.Entitled,
+		"a provider that carries a credential is entitled even when it is not the selected connection")
+	assert.Equal(t, zcodeAccountProviderState{Availability: "available", Entitled: true, Current: true},
+		payload.States["account:zai-start-plan"],
+		"Start Plan is always current (classified ordinary by the app-server)")
 
 	encoded, err := json.Marshal(payload)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "plan-key", "the account snapshot must not put the credential on the wire")
 	assert.NotContains(t, string(encoded), "start-key", "the account snapshot must not put any credential on the wire")
+}
+
+func TestZCodeCatalog_AccountProviderPayloadMarksEveryCredentialedProviderEntitled(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        },
+        "builtin:zai-start-plan": {
+          "kind": "anthropic", "enabled": false,
+          "options": {"apiKey": "start-key"},
+          "models": {"GLM-5.3-Flash": {}}
+        }
+      }
+    }`)
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+      "revision":30,
+      "config":{"providerConfigRules":{"providerRules":[
+        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
+        {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"}}}
+      ]}}
+    }`), 0o600))
+
+	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
+	require.NoError(t, err)
+	for _, id := range []string{"account:zai-individual-coding-plan", "account:zai-start-plan"} {
+		provider, ok := payload.Providers[id]
+		require.True(t, ok, id)
+		assert.True(t, provider.Access.Entitled, id)
+		state := payload.States[id]
+		assert.True(t, state.Entitled, id)
+		assert.Equal(t, "available", state.Availability, id)
+		assert.Empty(t, state.UnavailableReason, id)
+	}
+}
+
+func TestZCodeCatalog_AccountProviderPayloadStartPlanIsAlwaysCurrent(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-start-plan": {
+          "kind": "anthropic", "enabled": false,
+          "options": {"apiKey": "start-key"},
+          "models": {"GLM-5.3-Flash": {}}
+        }
+      }
+    }`)
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+      "revision":30,
+      "config":{"providerConfigRules":{"providerRules":[
+        {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"}}}
+      ]}}
+    }`), 0o600))
+
+	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
+	require.NoError(t, err)
+	state := payload.States["account:zai-start-plan"]
+	assert.True(t, state.Current, "Start Plan is ordinary and always usable alongside the selected connection")
+	assert.True(t, state.Entitled)
+	assert.Equal(t, "available", state.Availability)
+}
+
+func TestZCodeCatalog_AccountProviderPayloadNonSelectedCodingPlanIsNotCurrent(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": false,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+      "revision":30,
+      "config":{"providerConfigRules":{"providerRules":[
+        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}}
+      ]}}
+    }`), 0o600))
+
+	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
+	require.NoError(t, err)
+	state := payload.States["account:zai-individual-coding-plan"]
+	assert.False(t, state.Current, "a non-selected coding-plan connection is not current")
+	assert.True(t, state.Entitled, "it still carries a credential")
+	assert.Equal(t, "available", state.Availability)
+}
+
+func TestZCodeCatalog_AccountProviderPayloadOmitsBuiltinModelIds(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}, "GLM-5.3-Flash": {}}
+        }
+      }
+    }`)
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+      "revision":30,
+      "config":{"providerConfigRules":{"providerRules":[
+        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}}
+      ]}}
+    }`), 0o600))
+
+	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
+	require.NoError(t, err)
+	encoded, err := json.Marshal(payload)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "builtinModelIds",
+		"the push must omit builtinModelIds so the app-server keeps its own model list")
 }
 
 func TestZCodeCatalog_AccountProvidersComeFromTheInstalledRules(t *testing.T) {
@@ -654,7 +779,8 @@ func TestZCodeCatalog_AccountProvidersComeFromTheInstalledRules(t *testing.T) {
 	require.NoError(t, err)
 	provider, ok := payload.Providers["account:acme-team-coding-plan"]
 	require.True(t, ok, "the installed account rule selects a provider without an adapter switch case")
-	assert.Equal(t, []string{"ACME-1"}, provider.BuiltinModelIDs)
+	assert.Empty(t, provider.BuiltinModelIDs,
+		"the push must not override the app-server's own model list")
 	key, ok := catalog.inlineAPIKey("account:acme-team-coding-plan")
 	assert.True(t, ok)
 	assert.Equal(t, "acme-key", key)
