@@ -535,8 +535,8 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	assert.Equal(t, agent.AutoContinueReasonRateLimit, schedule.Reason)
-	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.DueAt)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, schedule.Kind)
+	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.ResetAt)
 	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"rejected","resetsAt":1893456000}`, string(schedule.SourcePayload))
 
 	// Persist the exact raw rate_limit_event as AGENT.
@@ -593,7 +593,7 @@ func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
 	}`))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agent.AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 }
 
@@ -617,9 +617,9 @@ func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
 		}
 	}`))
 
-	assert.Equal(t, 0, sink.AutoScheduleCount(), "an allowed_warning event must not schedule an auto-continue")
+	assert.Equal(t, 0, sink.AutoScheduleCount(), "an allowed_warning event must not schedule an automatic retry")
 	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agent.AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
 }
 
 // TestClaudeRateLimitEvent_OverageAbsorbsRejected verifies that an active overage allowance accepts a request despite a rejected base window.
@@ -668,7 +668,7 @@ func TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset(t *testing.
 	}`))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
-	assert.Equal(t, time.Unix(1893460000, 0).UTC(), sink.LastAutoSchedule().DueAt)
+	assert.Equal(t, time.Unix(1893460000, 0).UTC(), sink.LastAutoSchedule().ResetAt)
 }
 
 // TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact verifies rejected without resetsAt.
@@ -853,7 +853,7 @@ func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
 	}`))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
-	assert.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoSchedule().Reason)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoSchedule().Kind)
 
 	a.HandleOutput([]byte(`{
 		"type":"result",
@@ -862,10 +862,10 @@ func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
 	}`))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
 }
 
-func TestClaudeResult_IdleTimeoutPrefixSchedulesAPIErrorAutoContinue(t *testing.T) {
+func TestClaudeResult_IdleTimeoutPrefixSchedulesServerErrorAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	sink := &outputTestSink{}
@@ -881,7 +881,7 @@ func TestClaudeResult_IdleTimeoutPrefixSchedulesAPIErrorAutoContinue(t *testing.
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	assert.Equal(t, agent.AutoContinueReasonAPIError, schedule.Reason)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, schedule.Kind)
 	var source struct {
 		Type        string `json:"type"`
 		IsError     bool   `json:"is_error"`
@@ -943,7 +943,7 @@ func TestExtractAndBroadcastUsage_DebouncesOnTheProcessClock(t *testing.T) {
 	assert.Len(t, sink.SessionInfoValues("context_usage"), 2)
 }
 
-func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) {
+func TestClaudeResult_BareOverloadedSchedulesServerErrorAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	sink := &outputTestSink{}
@@ -963,7 +963,7 @@ func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) 
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	assert.Equal(t, agent.AutoContinueReasonAPIError, schedule.Reason)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, schedule.Kind)
 	var source struct {
 		Type    string `json:"type"`
 		IsError bool   `json:"is_error"`

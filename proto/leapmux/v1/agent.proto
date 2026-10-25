@@ -79,7 +79,7 @@ enum MessageSource {
   // User-side transcript row. Includes:
   //   - Human-typed input.
   //   - Synthetic conversational prompts injected by LeapMux that are
-  //     forwarded to the agent's stdin (auto-continue, plan-execution
+  //     forwarded to the agent's stdin (automatic retries, plan-execution
   //     prompts).
   //   - Display-only synthetic rows that mirror a user-side action
   //     (control-response / approval feedback such as Claude permission
@@ -403,11 +403,16 @@ enum AgentInputKind {
   AGENT_INPUT_KIND_CLEAR_CONTEXT = 2;
   AGENT_INPUT_KIND_COMPACT_CONTEXT = 3;
   AGENT_INPUT_KIND_PLAN_EXECUTION = 4;
-  AGENT_INPUT_KIND_AUTO_CONTINUE = 5;
+  // A provider-reported usage limit, retried automatically at the provider's
+  // reset instant plus jitter. Worker-created only; external enqueue refuses it.
+  AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT = 5;
   AGENT_INPUT_KIND_CONTROL_FEEDBACK = 6;
   // The user's answer to a question that the agent asked without waiting. The
   // provider turns the text into its own reply format when the input dispatches.
   AGENT_INPUT_KIND_QUESTION_ANSWER = 7;
+  // A retryable server error, retried automatically with exponential backoff.
+  // Worker-created only; external enqueue refuses it.
+  AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR = 8;
 }
 
 enum AgentInputState {
@@ -466,6 +471,16 @@ message QueuedAgentInput {
   // cancel). The Worker computes it from the same predicate its preemption
   // guard applies, for the same reason can_steer exists.
   bool can_preempt = 14;
+  // Empty means immediate. Otherwise this is the canonical UTC send-not-before
+  // timestamp. A timestamp at or before the Worker's current time is immediate.
+  string scheduled_at = 15;
+  // The item's reorder segment in this snapshot: a run of contiguous,
+  // unlocked items that share one reorder group (all immediate items, or all
+  // items scheduled at exactly one instant). A move is legal only between two
+  // items with the same non-zero value, and 0 marks a locked item. The values
+  // mean nothing outside one snapshot. Clients compare them and never
+  // calculate them, because the Worker's clock decides the groups.
+  uint32 reorder_segment = 16;
 }
 
 message AgentInputQueueSnapshot {
@@ -488,6 +503,9 @@ message EnqueueAgentInputRequest {
   string text = 3;
   repeated Attachment attachments = 4;
   AgentInputKind kind = 5;
+  // Empty schedules immediate delivery. Otherwise a canonical UTC RFC3339
+  // send-not-before timestamp; a value at or before now still means immediate.
+  string scheduled_at = 6;
 }
 
 message EnqueueAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
@@ -514,6 +532,11 @@ message UpdateQueuedAgentInputRequest {
   uint64 expected_version = 4;
   string text = 5;
   repeated Attachment attachments = 6;
+  // What the save does with the item's schedule. Absent keeps the stored
+  // schedule, so a deadline that a provider moved while the edit was open
+  // survives a save that did not change it. Empty clears the schedule;
+  // otherwise a canonical UTC RFC3339 send-not-before timestamp replaces it.
+  optional string scheduled_at = 7;
 }
 message UpdateQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
 
@@ -533,8 +556,9 @@ message DeleteQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
 message MoveQueuedAgentInputRequest {
   string agent_id = 1;
   string input_id = 2;
-  // Empty moves the input to the end. Otherwise, the input moves immediately
-  // before this input.
+  // Empty moves the input to the end of the source item's reorder segment --
+  // not the global end of the queue. Otherwise, the input moves immediately
+  // before this input, which must share the source item's reorder segment.
   string before_input_id = 3;
 }
 message MoveQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }

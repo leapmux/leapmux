@@ -295,3 +295,16 @@ export const NODE_TEST_FILES = [
   'tests/e2e/provider-fixture-factory.test.ts',
   'tests/e2e/zcode-install.test.ts',
 ]
+
+// These node tests read the local calendar, so they run with a pinned
+// timezone that has a daylight saving time (DST) transition and is not UTC.
+// A thread worker cannot pin one: Node reads TZ when a process starts and
+// ignores both a worker's `env` option and an assignment to process.env.TZ
+// inside the worker. So the project that runs them uses forked processes,
+// which start with this TZ in their environment.
+export const TIMEZONE_TEST_FILES = [
+  'src/components/chat/composer/scheduleSend.test.ts',
+]
+
+/** The timezone that every `TIMEZONE_TEST_FILES` test runs in. */
+export const PINNED_TEST_TIMEZONE = 'America/New_York'

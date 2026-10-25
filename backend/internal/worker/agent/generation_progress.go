@@ -472,7 +472,7 @@ func NewModelProgressResetSink(inner ProviderServices) ProviderServices {
 		SessionServices:        inner,
 		PlanServices:           inner,
 		GoalServices:           inner,
-		AutoContinueServices:   inner,
+		AutoRetryServices:      inner,
 		ChildServices:          modelProgressResetChildren{ChildServices: inner},
 		BackgroundTaskServices: inner,
 	}

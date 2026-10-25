@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync/atomic"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -394,12 +395,23 @@ func (services *orderedProviderServices) ReportSteersUncertain(count int) {
 	}
 	services.submitEffect("report uncertain steer", services.CaptureSteerReport(count, SteerOutcomeUncertain))
 }
-func (services *orderedProviderServices) ScheduleAutoContinue(schedule AutoContinueSchedule) {
-	schedule.SourcePayload = slices.Clone(schedule.SourcePayload)
-	services.after("schedule automatic continuation", func() { services.ProviderServices.ScheduleAutoContinue(schedule) })
+func (services *orderedProviderServices) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
+	sourcePayload = slices.Clone(sourcePayload)
+	writer := services.CaptureAutoRetry()
+	services.after("schedule usage-limit retry", func() { writer.ScheduleUsageLimitRetry(resetAt, sourcePayload) })
 }
-func (services *orderedProviderServices) CancelAutoContinue(reason AutoContinueReason) {
-	services.after("cancel automatic continuation", func() { services.ProviderServices.CancelAutoContinue(reason) })
+func (services *orderedProviderServices) ScheduleServerErrorRetry(sourcePayload []byte) {
+	sourcePayload = slices.Clone(sourcePayload)
+	writer := services.CaptureAutoRetry()
+	services.after("schedule server-error retry", func() { writer.ScheduleServerErrorRetry(sourcePayload) })
+}
+func (services *orderedProviderServices) CancelUsageLimitRetry() {
+	writer := services.CaptureAutoRetry()
+	services.after("cancel usage-limit retry", func() { writer.CancelUsageLimitRetry() })
+}
+func (services *orderedProviderServices) CancelServerErrorRetry() {
+	writer := services.CaptureAutoRetry()
+	services.after("cancel server-error retry", func() { writer.CancelServerErrorRetry() })
 }
 
 // ChildSink gives each child a stable queue and retains the child's original writer.

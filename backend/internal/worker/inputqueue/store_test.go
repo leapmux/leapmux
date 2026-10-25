@@ -23,7 +23,9 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
+// newQueueDatabase opens a migrated worker database that holds one open
+// agent, "agent-1". Every queue fixture starts from it.
+func newQueueDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	database, err := workerdb.Open(filepath.Join(t.TempDir(), "queue.sqlite"), sqlitedb.Config{})
 	require.NoError(t, err)
@@ -33,7 +35,13 @@ func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	return database, NewStore(database)
+	return database
+}
+
+func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
+	t.Helper()
+	database := newQueueDatabase(t)
+	return database, NewStore(database, nil)
 }
 
 func TestStoreAcceptKeepsTheProviderSteeringStateReportedDuringDispatch(t *testing.T) {
@@ -141,6 +149,29 @@ func queueSnapshotIDs(snapshot Snapshot) []string {
 		ids = append(ids, item.ID)
 	}
 	return ids
+}
+
+// A refused steer states its own reason. "active turn ended before steering"
+// is the answer only when no turn runs.
+func TestStorePrepareSteerStatesWhyItRefuses(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "head", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "head"})
+	require.NoError(t, err)
+
+	prepared, _, err := store.PrepareSteer(ctx, "agent-1", "head", false)
+	assert.ErrorIs(t, err, ErrTurnEnded, "no turn runs")
+	assert.Nil(t, prepared)
+
+	_, _, err = store.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", "head", "other-client", false)
+	require.NoError(t, err)
+	prepared, _, err = store.PrepareSteer(ctx, "agent-1", "head", false)
+	assert.ErrorIs(t, err, ErrSteeringState, "another client edits the head while the turn runs")
+	assert.NotErrorIs(t, err, ErrTurnEnded)
+	assert.Nil(t, prepared)
 }
 
 func TestStorePrepareSteerForEchoReservesNoSequence(t *testing.T) {
@@ -380,9 +411,15 @@ func TestStoreMoveRefusesToPlaceAnItemBeforeAnAwaitingEchoItem(t *testing.T) {
 func TestSnapshotHeadSkipsAwaitingEcho(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, -1, (Snapshot{}).HeadIndex())
-	snapshot := Snapshot{Items: []SnapshotItem{{StoredItem: StoredItem{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO}}}}
+	snapshot := Snapshot{Items: []SnapshotItem{
+		{ItemMetadata: ItemMetadata{
+			OrderingMetadata: OrderingMetadata{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO},
+		}},
+	}}
 	assert.Equal(t, -1, snapshot.HeadIndex())
-	snapshot.Items = append(snapshot.Items, SnapshotItem{StoredItem: StoredItem{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}})
+	snapshot.Items = append(snapshot.Items, SnapshotItem{
+		ItemMetadata: ItemMetadata{OrderingMetadata: OrderingMetadata{State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}},
+	})
 	assert.Equal(t, 1, snapshot.HeadIndex())
 }
 
@@ -672,7 +709,7 @@ func TestStoreTruncatesSnapshotTextButEditReturnsFullText(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
-	assert.Less(t, len(snapshot.Items[0].Text), len(fullText))
+	assert.Less(t, len(snapshot.Items[0].TextPreview), len(fullText))
 
 	_, editText, _, err := store.BeginEdit(ctx, "agent-1", "input-1", "client", false)
 	require.NoError(t, err)
@@ -834,9 +871,25 @@ func TestStoreEditBarrierTakeoverAndAtomicUpdate(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEditOwned)
 	snapshot, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "client-b", true)
 	require.NoError(t, err)
-	_, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version+1, "stale", nil)
+	_, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         "one",
+		ClientID:        "client-b",
+		ExpectedVersion: snapshot.Items[0].Version + 1,
+		Text:            "stale",
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(nil),
+	})
 	assert.ErrorIs(t, err, ErrVersionConflict)
-	snapshot, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version, "/summarize", nil)
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         "one",
+		ClientID:        "client-b",
+		ExpectedVersion: snapshot.Items[0].Version,
+		Text:            "/summarize",
+		Attachments:     nil,
+		Schedule:        ReplaceSchedule(nil),
+	})
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, snapshot.Items[0].Kind)
 	assert.Empty(t, snapshot.Items[0].EditOwner)
@@ -883,7 +936,15 @@ func TestStoreEditPreservesGeneratedOperationKind(t *testing.T) {
 	require.NoError(t, err)
 	snapshot, _, _, err := store.BeginEdit(ctx, "agent-1", "generated", "client", false)
 	require.NoError(t, err)
-	snapshot, err = store.Update(ctx, "agent-1", "generated", "client", snapshot.Items[0].Version, "/compact", []Attachment{{Filename: "plan.txt", Data: []byte("changed")}})
+	snapshot, err = store.Update(ctx, UpdateRequest{
+		AgentID:         "agent-1",
+		InputID:         "generated",
+		ClientID:        "client",
+		ExpectedVersion: snapshot.Items[0].Version,
+		Text:            "/compact",
+		Attachments:     []Attachment{{Filename: "plan.txt", Data: []byte("changed")}},
+		Schedule:        ReplaceSchedule(nil),
+	})
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, snapshot.Items[0].Kind)
 	require.Len(t, snapshot.Items[0].Metadata, 1)
@@ -1218,7 +1279,8 @@ func TestStorePreparationReturnsTheCommittedItem(t *testing.T) {
 			assert.Equal(t, prepared.ReservedSeq, stored.ReservedSeq)
 			assert.Greater(t, prepared.ReservedSeq, first.ReservedSeq)
 			require.Len(t, snapshot.Items, 1)
-			assert.Equal(t, stored, snapshot.Items[0].StoredItem)
+			assert.Equal(t, stored.ItemMetadata, snapshot.Items[0].ItemMetadata)
+			assert.Equal(t, stored.Text, snapshot.Items[0].TextPreview)
 			assert.True(t, snapshot.ActiveTurn)
 			assert.Equal(t, operation == "retry", snapshot.Paused)
 			assert.Equal(t, operation == "steer", snapshot.ActiveTurnSteerable)
@@ -1256,7 +1318,7 @@ END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
 	assert.Equal(t, input.Attachments, attachments)
 	assert.Equal(t, attachments, prepared.Item.Attachments)
 	require.Len(t, snapshot.Items, 1)
-	assert.Equal(t, strings.Repeat("x", snapshotTextPreviewCharacters)+"…", snapshot.Items[0].Text)
+	assert.Equal(t, strings.Repeat("x", snapshotTextPreviewCharacters)+"…", snapshot.Items[0].TextPreview)
 	assert.Equal(t, stored.UpdatedAt, snapshot.Items[0].UpdatedAt)
 }
 
@@ -1339,7 +1401,7 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
-	snapshots, err := NewStore(database).Recover(ctx)
+	snapshots, err := NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	require.Len(t, snapshots, 1)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshots[0].Items[0].State)
@@ -1352,7 +1414,7 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
-	snapshots, err = NewStore(database).Recover(ctx)
+	snapshots, err = NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshots[0].PauseReason)
 }
@@ -1372,7 +1434,7 @@ func TestStoreRecoveryIgnoresClosedAgents(t *testing.T) {
 	_, err = database.ExecContext(ctx, `UPDATE agents SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 'agent-1'`)
 	require.NoError(t, err)
 
-	snapshots, err := NewStore(database).Recover(ctx)
+	snapshots, err := NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, snapshots)
 }
@@ -1545,7 +1607,12 @@ func TestStoreRetryKeepsAManualPause(t *testing.T) {
 func TestStoreAcceptKeepsThePlanMarkerWithAttachments(t *testing.T) {
 	t.Parallel()
 
-	item := StoredItem{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: "run it"}
+	item := StoredItem{
+		ItemMetadata: ItemMetadata{
+			OrderingMetadata: OrderingMetadata{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION},
+		},
+		Text: "run it",
+	}
 	withAttachment, err := transcriptContent(item, []Attachment{{Filename: "a.png", MimeType: "image/png"}})
 	require.NoError(t, err)
 	withoutAttachment, err := transcriptContent(item, nil)
@@ -1615,7 +1682,7 @@ func TestStoreRecoveryReleasesAnAbandonedEditLock(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, blocked, "an edited head blocks dispatch")
 
-	_, err = NewStore(database).Recover(ctx)
+	_, err = NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)

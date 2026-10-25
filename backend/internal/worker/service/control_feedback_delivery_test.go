@@ -78,7 +78,7 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, queue.Items, 1, "the native mapper cannot carry rejection feedback")
 				assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, queue.Items[0].Kind)
-				assert.Equal(t, feedback, queue.Items[0].Text)
+				assert.Equal(t, feedback, queue.Items[0].TextPreview)
 				require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim-1"}))
 				assert.Len(t, sent, 1)
 				again, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
@@ -100,7 +100,14 @@ func TestControlFeedbackCannotReachAReplacementSession(t *testing.T) {
 	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: "feedback-input", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "feedback",
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      "feedback-input",
+				AgentID: "agent-1",
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
+			},
+		},
+		Text: "feedback",
 	}}
 	adapter := &agentInputQueueAdapter{svc: svc}
 	_, err = adapter.Dispatch(item)

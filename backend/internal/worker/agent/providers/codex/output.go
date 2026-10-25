@@ -771,7 +771,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	if turnStatus != "" {
 		retryable := turnStatus == "failed" &&
 			(turnErrorInfo == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage))
-		providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, retryable, params)
+		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, retryable, params)
 		if turnStatus == "completed" && collaborationMode == CollaborationPlan && sawPlan && planText != "" {
 			// Persist plan content so initiatePlanExecution can use it.
 			compressed, compression := msgcodec.Compress([]byte(planText))

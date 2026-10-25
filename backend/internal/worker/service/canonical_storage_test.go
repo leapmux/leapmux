@@ -52,9 +52,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Options:       "{}",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	_, err := inputqueue.NewStore(sqlDB).Enqueue(ctx, inputqueue.NewItem{
+	// agent_input_queue_items.scheduled_at is Go-bound on every scheduled
+	// enqueue, through the sqltime wrapper.
+	scheduled := now.Add(time.Hour)
+	_, err := inputqueue.NewStore(sqlDB, nil).Enqueue(ctx, inputqueue.NewItem{
 		ID: "queue-1", AgentID: "agent-1",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "queued",
+		ScheduledAt: &scheduled,
 	})
 	require.NoError(t, err)
 	require.NoError(t, closeErr(queries.CloseAgent(ctx, "agent-1")))
@@ -110,15 +114,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	})
 	require.NoError(t, cwErr)
 	require.NoError(t, queries.DeleteWorktree(ctx, "wt-1"))
-
-	// auto_continue_schedules.due_at is Go-bound on every upsert.
-	require.NoError(t, queries.UpsertAutoContinueSchedule(ctx, gendb.UpsertAutoContinueScheduleParams{
-		AgentID:       "agent-1",
-		Reason:        "rate_limit",
-		Content:       "continue",
-		DueAt:         sqltime.NewSQLiteTime(now.Add(time.Hour)),
-		SourcePayload: []byte("{}"),
-	}))
 
 	// agent_todos.updated_at via UpsertAgentTodo's strftime.
 	require.NoError(t, queries.UpsertAgentTodo(ctx, gendb.UpsertAgentTodoParams{

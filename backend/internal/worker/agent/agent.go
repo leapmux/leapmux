@@ -30,16 +30,32 @@ type SpanInfo struct {
 	NoSpan bool
 }
 
-type AutoContinueReason string
+// AutoRetryLease keeps a provider owner current through one queue mutation.
+// Release it before observer delivery or provider calls.
+type AutoRetryLease interface{ Release() }
 
-const (
-	AutoContinueReasonAPIError  AutoContinueReason = "api_error"
-	AutoContinueReasonRateLimit AutoContinueReason = "rate_limit"
-)
+// AutoRetryAdmission retains the owner that observed a retry operation.
+// A nil lease refuses an operation from a retired owner.
+type AutoRetryAdmission interface{ Acquire() AutoRetryLease }
 
-type AutoContinueSchedule struct {
-	Reason        AutoContinueReason
-	DueAt         time.Time
+// AutoRetrySchedule is the request that reaches the input queue for one
+// automatic retry. The AutoRetryServices methods build it, so a provider never
+// writes one: each method fixes the kind, and only a usage limit carries a
+// reset instant. The queue, not the provider, owns the retry deadline policy:
+// it adds jitter and, for a server error, applies the durable backoff.
+type AutoRetrySchedule struct {
+	// Admission is absent for trusted worker operations, and present for a
+	// provider report whose original owner must remain current.
+	Admission AutoRetryAdmission
+	// Kind is one of the two automatic-retry AgentInputKind values.
+	Kind leapmuxv1.AgentInputKind
+	// ResetAt is the provider's reset instant of a usage limit. The queue
+	// schedules the retry a jittered moment after it. A server-error retry
+	// leaves it zero, because the queue derives that deadline from its
+	// backoff.
+	ResetAt time.Time
+	// SourcePayload is the provider's own report of the failure. The accepted
+	// retry keeps it as supplemental content.
 	SourcePayload []byte
 }
 
@@ -399,10 +415,30 @@ type CapturedGoalWriter interface {
 	ClearGoal() error
 }
 
-// AutoContinueServices schedules automatic continuation.
-type AutoContinueServices interface {
-	ScheduleAutoContinue(schedule AutoContinueSchedule)
-	CancelAutoContinue(reason AutoContinueReason)
+// AutoRetryServices schedules and cancels the automatic retries that the
+// input queue owns. Each method states its own kind, so a provider cannot ask
+// for a kind that is not a retry kind, and a server-error retry carries no
+// reset instant.
+type AutoRetryServices interface {
+	AutoRetryWriter
+	// CaptureAutoRetry retains the current provider owner before an output
+	// queue can delay the operation.
+	CaptureAutoRetry() AutoRetryWriter
+}
+
+// AutoRetryWriter applies retry operations for one captured provider owner.
+type AutoRetryWriter interface {
+	// ScheduleUsageLimitRetry asks for a retry a jittered moment after the
+	// provider's usage limit resets at resetAt.
+	ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte)
+	// ScheduleServerErrorRetry asks for a retry after the queue's durable
+	// server-error backoff.
+	ScheduleServerErrorRetry(sourcePayload []byte)
+	// CancelUsageLimitRetry removes the pending usage-limit retry.
+	CancelUsageLimitRetry()
+	// CancelServerErrorRetry removes the pending server-error retry and ends
+	// its backoff cycle.
+	CancelServerErrorRetry()
 }
 
 // ChildAgentSpec supplies a native child identity and its initial stored options.
@@ -626,7 +662,7 @@ type ServiceFacets interface {
 	SessionServices
 	PlanServices
 	GoalServices
-	AutoContinueServices
+	AutoRetryServices
 	ChildServices
 	BackgroundTaskServices
 }
@@ -649,7 +685,7 @@ type providerServices struct {
 	SessionServices
 	PlanServices
 	GoalServices
-	AutoContinueServices
+	AutoRetryServices
 	ChildServices
 	BackgroundTaskServices
 }
@@ -668,7 +704,7 @@ func NewProviderServices(services ServiceFacets) ProviderServices {
 		SessionServices:        services,
 		PlanServices:           services,
 		GoalServices:           services,
-		AutoContinueServices:   services,
+		AutoRetryServices:      services,
 		ChildServices:          services,
 		BackgroundTaskServices: services,
 	}

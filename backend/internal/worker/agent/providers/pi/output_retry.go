@@ -48,7 +48,7 @@ func (a *Agent) settleHeldPiTurnAt(completion agent.MessageCompletion, settledAt
 			content.Completion = agent.MessageCompletionInterrupted
 		}
 		a.persistPiAgentEnd(agent.WithToolUseCount(content, toolUses))
-		providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.orderedSink(), !held.willRetry && held.env.isRetryableFailure(), held.raw)
+		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.orderedSink(), !held.willRetry && held.env.isRetryableFailure(), held.raw)
 	}
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.PublishTurnActive()

@@ -642,7 +642,7 @@ func TestPiPromptFailureSuppressesIntentionalStopError(t *testing.T) {
 // These envelopes differ only in willRetry.
 // Pi reports false after it exhausts its retry budget.
 // LeapMux may then continue the session.
-func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoContinue(t *testing.T) {
+func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -955,7 +955,7 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	assert.Equal(t, float64(200000), usage["context_window"])
 }
 
-func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesAutoContinue(t *testing.T) {
+func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesServerErrorAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -967,13 +967,13 @@ func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesAutoContinue(t *testing.
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	assert.Equal(t, agent.AutoContinueReasonAPIError, schedule.Reason)
-	assert.False(t, schedule.DueAt.IsZero())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, schedule.Kind)
+	assert.True(t, schedule.ResetAt.IsZero(), "the queue derives a server-error deadline; the provider supplies no instant")
 	assert.JSONEq(t, string(raw), string(schedule.SourcePayload))
 	assert.Equal(t, 0, sink.AutoCancelCount())
 }
 
-func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoContinue(t *testing.T) {
+func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -984,11 +984,11 @@ func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoContinue(t *testin
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 }
 
-func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoContinue(t *testing.T) {
+func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -999,11 +999,11 @@ func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoContinue(t *
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 }
 
-func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeLeavesAutoContinueUnchanged(t *testing.T) {
+func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeLeavesAutoRetryUnchanged(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}

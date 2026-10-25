@@ -12,6 +12,7 @@ import {
   localStorageRemove,
   localStorageSet,
   localStorageStore,
+  localStorageStoreMany,
   mirrorEntryForTests,
   onStorageChanged,
   PREFIX_EDITOR_DRAFT,
@@ -746,5 +747,64 @@ describe('cross-tab changes', () => {
     stop()
 
     expect(heard).toEqual([null])
+  })
+})
+
+describe('localStorageStoreMany', () => {
+  it('stores related records with one captured expiration time', async () => {
+    const first = `${PREFIX_EDITOR_DRAFT}${WORKER}-batch-text` as const
+    const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-batch-metadata` as const
+    let instant = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => instant++)
+    const write = localStorageStoreMany([{ name: first, value: { content: 'text' } }, { name: second, value: '' }])
+    clock.mockRestore()
+    await flushStorageWrites()
+    expect(await write.durable).toBe(true)
+    const rows = await Promise.all([readKvRow(accountStorageKey(ACCOUNT, first)), readKvRow(accountStorageKey(ACCOUNT, second))])
+    expect(rows[0]?.e).toBe(rows[1]?.e)
+    expect(rows[0]?.v).toEqual({ content: 'text' })
+    expect(rows[1]?.v).toBe('')
+  })
+
+  it('enqueues nothing when any record cannot be cloned', async () => {
+    const first = `${PREFIX_EDITOR_DRAFT}${WORKER}-rejected-first` as const
+    const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-rejected-second` as const
+    const write = localStorageStoreMany([{ name: first, value: 'must not persist' }, { name: second, value: () => {} }])
+    expect(await write.durable).toBe(false)
+    expect(peekKvPending(accountStorageKey(ACCOUNT, first))).toBeUndefined()
+    await flushStorageWrites()
+    expect(await localStorageLoad(first)).toBeUndefined()
+    expect(await localStorageLoad(second)).toBeUndefined()
+  })
+
+  it('keeps the complete collection in the account that issued it', async () => {
+    const first = `${PREFIX_EDITOR_DRAFT}${WORKER}-account-first` as const
+    const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-account-second` as const
+    localStorageStoreMany([{ name: first, value: 'old text' }, { name: second, value: 'old metadata' }])
+    setStorageAccountForTests(OTHER)
+    localStorageStore(first, 'new text')
+    await flushStorageWrites()
+    expect(await localStorageLoad(first)).toBe('new text')
+    expect(await localStorageLoad(second)).toBeUndefined()
+    setStorageAccountForTests(ACCOUNT)
+    expect(await localStorageLoad(first)).toBe('old text')
+    expect(await localStorageLoad(second)).toBe('old metadata')
+  })
+
+  it('rejects an account change during value preparation without a partial write', async () => {
+    const first = `${PREFIX_EDITOR_DRAFT}${WORKER}-preparation-first` as const
+    const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-preparation-second` as const
+    const value = {
+      get changed() {
+        setStorageAccountForTests(OTHER)
+        return true
+      },
+    }
+    expect(() => localStorageStoreMany([{ name: first, value: 'old' }, { name: second, value }])).toThrow('storage account changes')
+    await flushStorageWrites()
+    expect(await localStorageLoad(first)).toBeUndefined()
+    setStorageAccountForTests(ACCOUNT)
+    expect(await localStorageLoad(first)).toBeUndefined()
+    expect(await localStorageLoad(second)).toBeUndefined()
   })
 })

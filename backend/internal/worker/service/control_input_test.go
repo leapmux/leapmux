@@ -77,8 +77,14 @@ func storeAnsweredQuestion(t *testing.T, svc *Service) (inputqueue.DispatchItem,
 	row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: "answer-input", AgentID: "agent-1",
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red",
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      "answer-input",
+				AgentID: "agent-1",
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+			},
+		},
+		Text: "Red",
 	}}
 	return item, row, payload
 }
@@ -109,8 +115,14 @@ func TestResolveControlInputRefusesAnAnswerWithNoQuestion(t *testing.T) {
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: "answer-input", AgentID: "agent-1",
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red",
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:      "answer-input",
+				AgentID: "agent-1",
+				Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+			},
+		},
+		Text: "Red",
 	}}
 
 	_, err = svc.resolveControlInput(item, row)
@@ -230,7 +242,8 @@ func TestQuestionSteeringRequiresItsSessionCapabilityOnlyForAnswers(t *testing.T
 			recorder := &recordingQuestionAgent{}
 			svc.Agents.PutAgentForTest("agent-1", ordinaryInputSteerer{Agent: recorder, recorder: recorder})
 			item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-				ID: "input-1", AgentID: "agent-1", Kind: kind, Text: "Red",
+				ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{ID: "input-1", AgentID: "agent-1", Kind: kind}},
+				Text:         "Red",
 			}}
 			_, err := (&agentInputQueueAdapter{svc: svc}).Steer(item)
 			steered, sent := recorder.deliveries()

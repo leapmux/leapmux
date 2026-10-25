@@ -2,10 +2,38 @@ import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { TabView } from '~/stores/tabView'
+import { Code, ConnectError } from '@connectrpc/connect'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ChannelError } from '~/lib/channelError'
 import { createAgentInputEnqueueRetry } from './agentInputEnqueueRetry'
+
+const ENQUEUE_REFUSAL_CODES = new Set([
+  Code.InvalidArgument,
+  Code.NotFound,
+  Code.AlreadyExists,
+  Code.PermissionDenied,
+  Code.ResourceExhausted,
+  Code.FailedPrecondition,
+  Code.OutOfRange,
+  Code.Unauthenticated,
+])
+
+// These responses refuse admission. Internal and transport failures can leave
+// the commit uncertain, so they retain the original input ID.
+function isDefinitiveEnqueueRefusal(error: unknown): boolean {
+  return ((error instanceof ChannelError && error.source === 'rpc') || error instanceof ConnectError)
+    && ENQUEUE_REFUSAL_CODES.has(error.code)
+}
+
+function queueAttachmentsOf(attachments: readonly FileAttachment[]) {
+  return attachments.map(attachment => ({
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    data: attachment.data,
+  }))
+}
 
 /**
  * The composer's queue commands, built once for the shell.
@@ -16,8 +44,8 @@ import { createAgentInputEnqueueRetry } from './agentInputEnqueueRetry'
  * decision, so it lives here and `TileRenderer` sends no Worker RPC of its own.
  *
  * The bag holds no per-mount state, so the shell builds it once beside the
- * other renderer-level helpers. The composer remounts on every tab switch, and
- * `enqueueRetry` must outlive that remount.
+ * other renderer-level helpers. The composer unmounts whenever a non-agent tab
+ * has focus, and `enqueueRetry` must outlive that unmount.
  */
 export function createAgentInputQueueOperations(deps: {
   /** The tab join. Each command resolves its Worker through this. */
@@ -34,6 +62,9 @@ export function createAgentInputQueueOperations(deps: {
   // Keep ambiguous enqueue attempts across editor unmounts. A user can switch
   // to a file and back while the unchanged draft still needs its original ID.
   const enqueueRetry = createAgentInputEnqueueRetry()
+  // One input ID represents one delivery attempt, including across editor
+  // remounts. Share its in-flight request so outcomes cannot disagree.
+  const inFlightByInputId = new Map<string, Promise<boolean>>()
   const queueWorkerID = (item: QueuedAgentInput) => deps.view.getAgentTab(item.agentId)?.workerId ?? ''
   /**
    * Run one queue RPC and apply the snapshot that it answers with.
@@ -68,18 +99,22 @@ export function createAgentInputQueueOperations(deps: {
       clientId: deps.clientId(),
       takeover,
     }))
-  const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[]) => {
+  /**
+   * Save an open edit. `scheduledAt` is undefined to keep the stored schedule,
+   * empty to clear it, or the new wire schedule. The parameter is required, so
+   * a caller states which one it means.
+   */
+  const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[], scheduledAt: string | undefined) => {
     await runQueueRpc('Failed to save queued input', () => workerRpc.updateQueuedAgentInput(queueWorkerID(item), {
       agentId: item.agentId,
       inputId: item.id,
       clientId: deps.clientId(),
       expectedVersion: item.version,
       text,
-      attachments: fileAttachments.map(attachment => ({
-        filename: attachment.filename,
-        mimeType: attachment.mimeType,
-        data: attachment.data,
-      })),
+      attachments: queueAttachmentsOf(fileAttachments),
+      // An omitted `scheduled_at` keeps the stored schedule, and an empty one
+      // clears it.
+      ...(scheduledAt !== undefined ? { scheduledAt } : {}),
     }))
   }
   const cancelQueueEdit = async (item: QueuedAgentInput) => {
@@ -119,40 +154,58 @@ export function createAgentInputQueueOperations(deps: {
     const initialAgentTab = deps.view.getAgentTab(initialAgentID)
     await runQueueRpc('Failed to change queue pause state', () => workerRpc.setAgentInputQueuePaused(initialAgentTab?.workerId ?? '', { agentId: initialAgentID, paused }))
   }
-  const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments?: FileAttachment[]) => {
-    // One read of the focused agent, at send time. The RPC below must reach
-    // the agent that the user typed into, never the one that a tab switch
-    // focused while the enqueue was in flight.
+  const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments: FileAttachment[] = [], scheduledAt = '', requirePendingAttempt = false): Promise<boolean> => {
+    // Capture the destination before the request can yield to a tab switch.
     const initialAgentID = deps.focusedAgentId()
     if (!initialAgentID)
-      return
-    // Jump to the live tail BEFORE the RPC. A reader who scrolled up must
-    // land on the message that they just sent, and the live-append
-    // auto-scroll never moves a reader who sits above the tail.
+      return false
+    const payload = { agentId: initialAgentID, kind, text: content, attachments: fileAttachments, scheduledAt }
+    const inputId = requirePendingAttempt ? enqueueRetry.inputIdForPendingAttempt(payload) : enqueueRetry.inputIdFor(payload)
+    if (inputId === undefined)
+      return false
+    const existing = inFlightByInputId.get(inputId)
+    if (existing)
+      return existing
+    // Scroll before the RPC so a reader above the tail sees the sent message.
     deps.forceScrollToBottom()
     const sendAgent = deps.view.getAgentTab(initialAgentID)
-    const attachments = fileAttachments ?? []
-    const inputId = enqueueRetry.inputIdFor({ agentId: initialAgentID, kind, text: content, attachments })
-    await runQueueRpc('Failed to queue message', () => workerRpc.enqueueAgentInput(sendAgent?.workerId ?? '', {
-      agentId: initialAgentID,
-      inputId,
-      kind,
-      text: content,
-      attachments: attachments.map(attachment => ({
-        filename: attachment.filename,
-        mimeType: attachment.mimeType,
-        data: attachment.data,
-      })),
-    }))
-    enqueueRetry.markAccepted(inputId)
+    const request = (async () => {
+      try {
+        await runQueueRpc('Failed to queue message', () => workerRpc.enqueueAgentInput(sendAgent?.workerId ?? '', {
+          agentId: initialAgentID,
+          inputId,
+          kind,
+          text: content,
+          attachments: queueAttachmentsOf(fileAttachments),
+          scheduledAt,
+        }))
+        enqueueRetry.markAccepted(inputId)
+        return true
+      }
+      catch (error) {
+        if (isDefinitiveEnqueueRefusal(error))
+          enqueueRetry.markRefused(inputId)
+        else
+          enqueueRetry.markUncertain(inputId)
+        throw error
+      }
+      finally {
+        inFlightByInputId.delete(inputId)
+      }
+    })()
+    inFlightByInputId.set(inputId, request)
+    return request
   }
-  // One command for each kind that the composer sends. The kind is a wire
-  // value of this request, so `AgentInputKind` stays inside this module and no
-  // caller selects the enum member.
-  const sendMessage = (content: string, fileAttachments?: FileAttachment[]) =>
-    enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments)
-  const sendControlFeedback = (content: string) =>
-    enqueueComposerInput(AgentInputKind.CONTROL_FEEDBACK, content)
+  // Each command fixes its request kind, so callers cannot select another one.
+  const sendMessage = async (content: string, fileAttachments?: FileAttachment[], scheduledAt = '') => {
+    await enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments, scheduledAt)
+  }
+  /** Retry only an exact unanswered payload, preserving its input ID and schedule. */
+  const retryPendingMessage = (content: string, fileAttachments?: FileAttachment[], scheduledAt = '') =>
+    enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments, scheduledAt, true)
+  const sendControlFeedback = async (content: string) => {
+    await enqueueComposerInput(AgentInputKind.CONTROL_FEEDBACK, content)
+  }
 
   return {
     beginQueueEdit,
@@ -165,6 +218,7 @@ export function createAgentInputQueueOperations(deps: {
     preemptQueueItem,
     setQueuePaused,
     sendMessage,
+    retryPendingMessage,
     sendControlFeedback,
   }
 }

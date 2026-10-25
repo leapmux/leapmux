@@ -85,7 +85,7 @@ The central service (`leapmux hub`) that authenticates users, stores accounts, w
 
 ### Input queue
 
-The Worker-owned queue every input to an agent passes through — messages, attachments, slash commands, plan executions, and answers to permission prompts. It survives page refreshes, reconnects and Worker restarts, and every device sees the same one. Items can be reordered, edited, deleted, retried, paused and **steered**. See [The input queue](/docs/using/coding-agents/#the-input-queue).
+The Worker-owned queue every input to an agent passes through — messages, attachments, slash commands, plan executions, and answers to permission prompts. It survives page refreshes, reconnects and Worker restarts, and every device sees the same one. Items can be scheduled for a future send, reordered inside their reorder group, edited, deleted, retried, paused and **steered**; a provider's automatic retries appear in it as ordinary rows. See [The input queue](/docs/using/coding-agents/#the-input-queue).
 
 ### Installation name
 

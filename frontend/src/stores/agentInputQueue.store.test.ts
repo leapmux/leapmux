@@ -48,3 +48,41 @@ describe('agent input queue store', () => {
     expect(store.apply(create(AgentInputQueueSnapshotSchema, { agentId: 'a1', revision: 3n }))).toBe(true)
   })
 })
+
+// Maturity raises the revision, and the store's revision ordering is what
+// makes the matured ordering win over a pre-deadline snapshot that arrives
+// late.
+describe('agent input queue store maturity', () => {
+  it('replaces the pre-deadline ordering with a higher-revision maturity snapshot', () => {
+    const store = createAgentInputQueueStore()
+    const preDeadlineItems = () => [
+      { id: 'future', reorderSegment: 2 },
+      { id: 'now', reorderSegment: 1 },
+    ]
+    // A fresh decode per event, exactly as a Worker push arrives: the store
+    // keeps one stored node per agent, so re-applying one instance would read
+    // the store's own merged fields back.
+    expect(store.apply(create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      revision: 4n,
+      items: preDeadlineItems(),
+    }))).toBe(true)
+    expect(store.apply(create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      revision: 5n,
+      items: [
+        { id: 'now', reorderSegment: 1 },
+        { id: 'future', reorderSegment: 1 },
+      ],
+    }))).toBe(true)
+    expect(store.get('a1')?.items.map(row => row.id)).toEqual(['now', 'future'])
+
+    // An older snapshot cannot undo the matured order.
+    expect(store.apply(create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      revision: 4n,
+      items: preDeadlineItems(),
+    }))).toBe(false)
+    expect(store.get('a1')?.items.map(row => row.id)).toEqual(['now', 'future'])
+  })
+})

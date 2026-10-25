@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // handleRateLimitsUpdated publishes account state to live session surfaces and
-// schedules automatic continuation. Account snapshots never become transcript rows.
+// schedules or cancels the usage-limit retry. Account snapshots never become
+// transcript rows.
 func (a *Agent) handleRateLimitsUpdated(content []byte, params json.RawMessage) {
 	var notif struct {
 		RateLimits struct {
@@ -39,13 +39,9 @@ func (a *Agent) handleRateLimitsUpdated(content []byte, params json.RawMessage) 
 	})
 
 	if resumeReset := codexRateLimitResumeReset(reachedType, summary); resumeReset != nil {
-		a.sink.ScheduleAutoContinue(agent.AutoContinueSchedule{
-			Reason:        agent.AutoContinueReasonRateLimit,
-			DueAt:         *resumeReset,
-			SourcePayload: append([]byte(nil), content...),
-		})
+		a.sink.ScheduleUsageLimitRetry(*resumeReset, append([]byte(nil), content...))
 	} else {
-		a.sink.CancelAutoContinue(agent.AutoContinueReasonRateLimit)
+		a.sink.CancelUsageLimitRetry()
 	}
 }
 

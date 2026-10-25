@@ -21,10 +21,10 @@ import (
 // (crash/restart). A row that was already final (completed/failed/...) must
 // be left untouched.
 //
-// RestoreState runs MarkAllActiveAgentBackgroundTasksInterrupted BEFORE
-// restoring auto-continue schedules, and the sweep is pure DB (caches do not
-// exist yet at boot), so the rows read back after the call reflect the
-// persisted state the next boot -- and the live worker -- will see.
+// RestoreState runs MarkAllActiveAgentBackgroundTasksInterrupted AFTER the
+// input queue's recovery, and the sweep is pure DB (caches do not exist yet
+// at boot), so the rows read back after the call reflect the persisted state
+// the next boot -- and the live worker -- will see.
 func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	t.Parallel()
 

@@ -121,7 +121,7 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 |---|---|---|---|
 | Steer Queued Input | `⌘⏎` | `Ctrl+⏎` | agent tab, composer empty, no terminal focused, no dialog open |
 
-`Steer Queued Input` hands the input queue's first item to the turn the agent already runs. It acts only on an empty composer, because the same chord sends whatever the composer holds — so text, an attachment, or a permission prompt awaiting approval all send as usual. Nothing happens when the provider does not accept a steer, when the queue is empty, or when the first item is not in a steerable state. See [The input queue](/docs/using/coding-agents/#the-input-queue).
+`Steer Queued Input` hands the input queue's first item to the turn the agent already runs. It acts only on an empty composer, because the same chord sends whatever the composer holds — so text, an attachment, or a permission prompt awaiting approval all send as usual. Nothing happens when the provider does not accept a steer, when the queue is empty, or when the first item is not in a steerable state — a first item scheduled for a later time is not steerable until its scheduled instant arrives. See [The input queue](/docs/using/coding-agents/#the-input-queue).
 
 {{< callout type="info" >}}
 `Send Message` (command `chat.sendMessage`) submits the focused chat input from anywhere inside the chat panel. It has no default chord, because the chat editor's own Enter and Cmd/Ctrl+Enter already send — see [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below. Bind it in Preferences if you want a second way in.

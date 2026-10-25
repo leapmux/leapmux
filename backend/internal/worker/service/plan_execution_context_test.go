@@ -47,8 +47,16 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 		return agent.SettingsApplyResult{AppliedLive: true, Settlements: settlements, SurfacedOptions: options}
 	}
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: "execute", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
-		Text: "Execute the approved plan.", TargetMode: "acceptEdits", PrepareContext: true,
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:             "execute",
+				AgentID:        "agent-1",
+				Kind:           leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+				PrepareContext: true,
+			},
+			TargetMode: "acceptEdits",
+		},
+		Text: "Execute the approved plan.",
 	}}
 	adapter := &agentInputQueueAdapter{svc: svc}
 	_, err = adapter.Dispatch(item)
@@ -104,8 +112,16 @@ func TestPlanExecutionResumesThePreparedSessionAfterTheProcessExits(t *testing.T
 	}
 
 	_, err = (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
-		ID: "execute", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
-		Text: "Execute the approved plan.", TargetMode: "acceptEdits", PrepareContext: true,
+		ItemMetadata: inputqueue.ItemMetadata{
+			OrderingMetadata: inputqueue.OrderingMetadata{
+				ID:             "execute",
+				AgentID:        "agent-1",
+				Kind:           leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+				PrepareContext: true,
+			},
+			TargetMode: "acceptEdits",
+		},
+		Text: "Execute the approved plan.",
 	}})
 	require.Equal(t, []string{"", "prepared-session"}, resumeIDs,
 		"the cold start resumed the session from the row that the dispatch read before the context replacement")

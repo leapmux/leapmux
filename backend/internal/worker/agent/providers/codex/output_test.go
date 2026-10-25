@@ -1256,8 +1256,8 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	require.Equal(t, agentapi.AutoContinueReasonRateLimit, schedule.Reason)
-	require.True(t, schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()))
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, schedule.Kind)
+	require.True(t, schedule.ResetAt.Equal(time.Unix(1893456000, 0).UTC()))
 
 	assert.Zero(t, sink.NotificationCount(), "account state must not become transcript history")
 }
@@ -1326,7 +1326,7 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agentapi.AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
 }
 
 // TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules covers a native rateLimitReachedType that confirms a timed rate-limit window.
@@ -1341,7 +1341,7 @@ func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
-	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1893456000, 0).UTC()))
+	assert.True(t, sink.LastAutoSchedule().ResetAt.Equal(time.Unix(1893456000, 0).UTC()))
 }
 
 // TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels verifies that credit depletion has no rolling-window reset.
@@ -1355,9 +1355,9 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"workspace_owner_credits_depleted","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000}}}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
-	assert.Equal(t, 0, sink.AutoScheduleCount(), "credit depletion must not schedule an auto-continue")
+	assert.Equal(t, 0, sink.AutoScheduleCount(), "credit depletion must not schedule an automatic retry")
 	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agentapi.AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
 	require.Equal(t, 1, sink.SessionInfoCount())
 	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
 	require.True(t, ok)
@@ -1396,7 +1396,7 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
-	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1893456000, 0).UTC()),
+	assert.True(t, sink.LastAutoSchedule().ResetAt.Equal(time.Unix(1893456000, 0).UTC()),
 		"resume should bind to the most-utilized window's reset")
 
 	require.Equal(t, 1, sink.SessionInfoCount())
@@ -1425,7 +1425,7 @@ func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *test
 
 	require.Equal(t, 1, sink.AutoScheduleCount(), "a resumable time-window block must not be cancelled when the binding window lacks a reset")
 	assert.Equal(t, 0, sink.AutoCancelCount())
-	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1894000000, 0).UTC()),
+	assert.True(t, sink.LastAutoSchedule().ResetAt.Equal(time.Unix(1894000000, 0).UTC()),
 		"resume falls back to the latest available window reset")
 }
 
@@ -1486,8 +1486,8 @@ func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	require.Equal(t, agentapi.AutoContinueReasonAPIError, schedule.Reason)
-	require.False(t, schedule.DueAt.IsZero())
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, schedule.Kind)
+	require.True(t, schedule.ResetAt.IsZero(), "the queue derives a server-error deadline; the provider supplies no instant")
 	require.NotEmpty(t, schedule.SourcePayload)
 }
 
@@ -1501,7 +1501,7 @@ func TestHandleCodexOutput_TurnFailedNonOverloadedCancelsAPIErrorResume(t *testi
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agentapi.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *testing.T) {
@@ -1517,7 +1517,7 @@ func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *test
 	require.Equal(t, 1, sink.MessageCount())
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	require.Equal(t, agentapi.AutoContinueReasonAPIError, schedule.Reason)
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, schedule.Kind)
 	require.Equal(t, string(sink.Messages()[0].Content), string(schedule.SourcePayload))
 	require.Equal(t, 0, sink.AutoCancelCount())
 }
@@ -1558,7 +1558,7 @@ func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *tes
 
 	require.Equal(t, 0, sink.AutoScheduleCount())
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agentapi.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
@@ -1573,7 +1573,7 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 
 	require.Equal(t, 0, sink.AutoScheduleCount())
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agentapi.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
 }
 
 // Current Codex models use Multi-Agent V2 without a spawnAgent collaboration item.

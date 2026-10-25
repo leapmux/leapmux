@@ -1,6 +1,6 @@
 import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
-import type { Draft } from '~/lib/editor/draftPersistence'
+import type { Draft, DraftMetadataRecord } from '~/lib/editor/draftPersistence'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
@@ -59,9 +59,9 @@ export function readDraftFromEditor(editor: Editor): Draft {
 }
 
 /** Read the document of the editor with {@link readDraftFromEditor} and save it as a draft. */
-export function saveDraftFromEditor(editor: Editor, draftKey: string): void {
+export function saveDraftFromEditor(editor: Editor, draftKey: string, metadata?: readonly DraftMetadataRecord[]): void {
   const { content, cursor } = readDraftFromEditor(editor)
-  saveDraft(draftKey, content, cursor)
+  saveDraft(draftKey, content, cursor, metadata)
 }
 
 /** The document an editor shows for a key that has no saved draft. */
@@ -85,11 +85,11 @@ const EMPTY_DRAFT: Draft = { content: '', cursor: -1 }
  * content-change handler that were current when the swap STARTED. A null key
  * means "no draft to restore", which shows an empty document.
  */
-export function createDraftSwapper(): (draftKey: string | null, apply: (draft: Draft) => void) => Promise<void> {
+export function createDraftSwapper(read: (key: string) => Promise<Draft> = loadDraft): (draftKey: string | null, apply: (draft: Draft) => void) => Promise<void> {
   let token = 0
   return async (draftKey, apply) => {
     const mine = ++token
-    const draft = draftKey ? await loadDraft(draftKey) : EMPTY_DRAFT
+    const draft = draftKey ? await read(draftKey) : EMPTY_DRAFT
     // A later swap won. Replacing the document now would install an older key's
     // prose over the one the user is looking at.
     if (mine !== token)

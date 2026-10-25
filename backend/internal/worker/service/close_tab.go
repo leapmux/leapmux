@@ -8,6 +8,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 // worktreeLinkPolicy decides what a non-REMOVE close does with the tab's
@@ -600,6 +601,14 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 			}
 			if id == agentID {
 				rootRetired = retired
+			}
+			// closed_at is committed, so the scheduler refuses this agent
+			// from now on. Retiring its queue removes a retry that a late
+			// provider report created after the teardown's cancellation,
+			// and stops the maturity timer, so a scheduled item of a closed
+			// agent never dispatches into an agent that takes no process.
+			if err := svc.InputQueue.RetireAgent(bgCtx(), id); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+				slog.Warn("retire the input queue of a closed agent", "agent", id, "error", err)
 			}
 		}
 		return rootRetired, firstErr

@@ -3,12 +3,20 @@ import type { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
 import { blake2b } from '@noble/hashes/blake2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { randomUUID } from '~/lib/idGenerator'
+import { lruSet } from '~/lib/mapLru'
 
 export interface AgentInputEnqueuePayload {
   agentId: string
   kind: AgentInputKind
   text: string
   attachments: readonly FileAttachment[]
+  /**
+   * The wire schedule (`ISO` UTC), or the empty string for an immediate send.
+   * Part of the fingerprint on purpose: a resend that changes ONLY the
+   * schedule must mint a fresh input id, because the Worker refuses to reuse
+   * one queue id whose accepted content differs.
+   */
+  scheduledAt: string
 }
 
 function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
@@ -23,6 +31,7 @@ function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
   update(encoder.encode(payload.agentId))
   update(Uint8Array.of(payload.kind))
   update(encoder.encode(payload.text))
+  update(encoder.encode(payload.scheduledAt))
   for (const attachment of payload.attachments) {
     update(encoder.encode(attachment.filename))
     update(encoder.encode(attachment.mimeType))
@@ -41,46 +50,54 @@ function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
  */
 export const MAX_PENDING_ATTEMPTS = 20
 
-/** Keep one client input ID until the matching enqueue succeeds. */
-export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
-  // Keyed on the WHOLE payload, not on (agent, kind). A failed send leaves the
-  // text in the composer, and the user can abandon it and type a different
-  // message. Two pending attempts for one agent must coexist, so a later
-  // re-send of either recovers its own input ID. One ID for each (agent, kind)
-  // evicted the first attempt, and a re-send of it then minted a fresh ID --
-  // which duplicates the input when the first enqueue reached the Worker after
-  // all and only the answer was lost.
-  const pendingByFingerprint = new Map<string, string>()
+interface PendingAttempt {
+  inputId: string
+  uncertain: boolean
+}
 
-  function remember(key: string, inputId: string): void {
-    // delete-then-set moves the entry to the most recent insertion slot, so a
-    // repeated attempt for one payload does not age out early.
-    pendingByFingerprint.delete(key)
-    pendingByFingerprint.set(key, inputId)
-    while (pendingByFingerprint.size > MAX_PENDING_ATTEMPTS) {
-      const oldest = pendingByFingerprint.keys().next().value
-      if (oldest === undefined)
-        break
-      pendingByFingerprint.delete(oldest)
+/** Keep one client input ID until delivery has a known result. */
+export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
+  // The complete payload identifies an attempt. Several abandoned drafts for
+  // one agent must keep independent IDs when their responses are lost.
+  const pendingByFingerprint = new Map<string, PendingAttempt>()
+  const keyOf = (payload: AgentInputEnqueuePayload) => `${payload.agentId}\0${payload.kind}\0${payloadFingerprint(payload)}`
+
+  const settle = (inputId: string, outcome: 'accepted' | 'refused' | 'uncertain') => {
+    for (const [key, attempt] of pendingByFingerprint) {
+      if (attempt.inputId !== inputId)
+        continue
+      if (outcome === 'uncertain') {
+        attempt.uncertain = true
+      }
+      else if (outcome === 'accepted' || !attempt.uncertain) {
+        // A later refusal cannot disprove an earlier unanswered delivery.
+        // Keep that ID until a successful response settles its uncertainty.
+        pendingByFingerprint.delete(key)
+      }
+      return
     }
   }
 
   return {
     inputIdFor(payload: AgentInputEnqueuePayload): string {
-      const key = `${payload.agentId}\0${payload.kind}\0${payloadFingerprint(payload)}`
-      const pending = pendingByFingerprint.get(key)
-      const inputId = pending ?? mint()
-      remember(key, inputId)
-      return inputId
+      const key = keyOf(payload)
+      const attempt = pendingByFingerprint.get(key) ?? { inputId: mint(), uncertain: false }
+      lruSet(pendingByFingerprint, key, attempt, MAX_PENDING_ATTEMPTS)
+      return attempt.inputId
     },
 
-    markAccepted(inputId: string): void {
-      for (const [key, pendingInputId] of pendingByFingerprint) {
-        if (pendingInputId === inputId) {
-          pendingByFingerprint.delete(key)
-          return
-        }
-      }
+    /** Acquire an unanswered attempt without minting an ID or hashing twice. */
+    inputIdForPendingAttempt(payload: AgentInputEnqueuePayload): string | undefined {
+      const key = keyOf(payload)
+      const attempt = pendingByFingerprint.get(key)
+      if (!attempt?.uncertain)
+        return undefined
+      lruSet(pendingByFingerprint, key, attempt, MAX_PENDING_ATTEMPTS)
+      return attempt.inputId
     },
+
+    markAccepted: (inputId: string) => settle(inputId, 'accepted'),
+    markRefused: (inputId: string) => settle(inputId, 'refused'),
+    markUncertain: (inputId: string) => settle(inputId, 'uncertain'),
   }
 }

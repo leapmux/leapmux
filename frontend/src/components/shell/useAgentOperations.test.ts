@@ -1,12 +1,13 @@
 import type { CloseAgentResponse } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ControlRequest } from '~/stores/control.store'
-
 import { create } from '@bufbuild/protobuf'
+
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
+import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from '~/components/chat/composer/scheduleDrafts'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentActivityState, AgentInfoSchema, AgentProvider, ControlResponseState, SendControlResponseResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
@@ -23,6 +24,7 @@ import { emitAddTab } from '~/stores/tabOps'
 import { deferred, flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
+import { queueEditDraftKey } from '../chat/composer/draftIdentity'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
 const mockOpenAgent = vi.fn()
@@ -739,6 +741,30 @@ describe('useAgentOperations', () => {
           expect(releaseAgentComposerActionState).toHaveBeenCalledWith('a-1')
           // RPC was dispatched with KEEP as the default worktree action.
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('forgets the schedule drafts of the closed agent and keeps every other agent\'s', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add } = setup()
+          const agent = create(AgentInfoSchema, { id: 'a-sched', workerId: 'w-1' })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          setScheduleDraft('a-sched', '2030-01-01T18:45')
+          setScheduleDraft(queueEditDraftKey('a-sched', 'input-1'), '')
+          setScheduleDraft('a-other', '2030-01-02T18:45')
+          mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
+
+          ops.handleAgentClose('a-sched')
+
+          expect(getScheduleDraft('a-sched')).toBeUndefined()
+          expect(getScheduleDraft(queueEditDraftKey('a-sched', 'input-1'))).toBeUndefined()
+          expect(getScheduleDraft('a-other')).toBe('2030-01-02T18:45')
+          clearScheduleDraft('a-other')
         }
         finally {
           dispose()

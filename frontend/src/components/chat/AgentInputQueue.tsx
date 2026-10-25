@@ -21,11 +21,12 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { GuardedPointerSensor } from '~/components/shell/guardedPointerSensor'
 import { AgentInputKind, AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
+import { formatLocalDateTime } from '~/lib/dateFormat'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import * as styles from './AgentInputQueue.css'
-import { dragIdOf, isLockedInputState, queueHeadIndex, resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
+import { dragIdOf, isLockedInputState, movableSegmentIds, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
 
 export interface AgentInputQueueProps {
   snapshot?: AgentInputQueueSnapshot
@@ -57,9 +58,10 @@ const OPERATION_LABELS = {
   [AgentInputKind.CLEAR_CONTEXT]: 'Clear context',
   [AgentInputKind.COMPACT_CONTEXT]: 'Compact context',
   [AgentInputKind.PLAN_EXECUTION]: 'Execute plan',
-  [AgentInputKind.AUTO_CONTINUE]: 'Auto-continue',
+  [AgentInputKind.AUTO_RETRY_USAGE_LIMIT]: 'Auto-retry (usage limit)',
   [AgentInputKind.CONTROL_FEEDBACK]: 'Control feedback',
   [AgentInputKind.QUESTION_ANSWER]: 'Answer',
+  [AgentInputKind.AUTO_RETRY_SERVER_ERROR]: 'Auto-retry (server error)',
 } satisfies Record<AgentInputKind, string>
 
 /**
@@ -91,6 +93,19 @@ function attachmentLabel(item: QueuedAgentInput): string {
   return item.attachments
     .map(attachment => `${attachment.filename} (${attachment.size.toLocaleString()} B)`)
     .join(', ')
+}
+
+/**
+ * The full local weekday/date/time/timezone text for a scheduled row, or ''
+ * when the item is immediate. Parsed and validated first, so malformed data
+ * never renders `Invalid Date`; an unreadable timestamp reads as no schedule
+ * rather than as a wrong one.
+ */
+function scheduleLabel(item: QueuedAgentInput): string {
+  if (!item.scheduledAt)
+    return ''
+  const at = new Date(item.scheduledAt)
+  return Number.isNaN(at.getTime()) ? '' : formatLocalDateTime(at)
 }
 
 /**
@@ -190,28 +205,31 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   }
 
   /**
-   * Exclude locked rows from the collision candidates.
+   * Keep only the rows of the dragged row's segment as collision candidates.
    *
    * `createSortable` registers a droppable for every row, whether or not the
    * queue can displace it, so the Worker's own row won the collision like any
    * other. `SortableProvider` then PREVIEWED that move -- the rows visibly
    * reflowed -- and `handleDragEnd` discarded it, because `resolveQueueMove`
-   * refuses a locked target. The row returned to its position without an explanation.
+   * refuses a target outside the segment. The row returned to its position
+   * without an explanation.
    *
    * Filtering here keeps the preview and the drop on one answer: the pointer
-   * lands on the first LEGAL slot instead. `resolveQueueMove` stays the single
-   * definition of a legal reorder; this only stops the pointer from selecting a
-   * target that function will refuse.
+   * lands on the first LEGAL slot instead. The filter compares the same
+   * Worker-derived segments as `resolveQueueMove`, so it cannot offer a row
+   * across a locked one.
    */
-  const dropTarget: CollisionDetector = (draggable, droppables, context) =>
-    closestCenter(
+  const dropTarget: CollisionDetector = (draggable, droppables, context) => {
+    const dragged = byKey().get(String(draggable.id))
+    return closestCenter(
       draggable,
       droppables.filter((candidate) => {
         const item = byKey().get(String(candidate.id))
-        return item !== undefined && !isLockedInputState(item.state)
+        return item !== undefined && dragged !== undefined && shareReorderSegment(dragged, item)
       }),
       context,
     )
+  }
 
   const move = (fromIndex: number, toIndex: number) => {
     const resolved = resolveQueueMove(items(), fromIndex, toIndex)
@@ -221,10 +239,11 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
 
   // ONE scan for the whole list, for the same reason as `anyItemIsEdited`: every
   // row asks the same question, so a per-row scan costs the square of the queue
-  // length on every snapshot.
-  const movableCount = createMemo(
-    () => items().filter(candidate => !isLockedInputState(candidate.state)).length,
-  )
+  // length on every snapshot. The segment scan replaces the old movable count:
+  // a row has a destination exactly when its contiguous, unlocked, same-group
+  // segment holds another row, so a lone immediate row ahead of a future item
+  // no longer lifts only to snap back.
+  const movableIds = createMemo(() => movableSegmentIds(items()))
   const headIndex = createMemo(() => queueHeadIndex(items()))
 
   /**
@@ -236,9 +255,9 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
    * live grip and live drag activators.
    *
    * The question is whether this row has a legal DESTINATION, which is what
-   * `resolveQueueMove` answers for the two arrow buttons. That function refuses
-   * a move onto the row itself and refuses a locked row at either end, so a
-   * destination exists exactly when a second movable row does. A
+   * `resolveQueueMove` answers for the two arrow buttons. That function permits
+   * a move between two rows of one reorder segment only, so a destination
+   * exists exactly when the row's segment holds a second row. A
    * count of the whole queue is not the same test: a queue of one locked
    * row and one queued row has two rows and no legal move, and the queued row
    * would lift and snap back with nothing saying why.
@@ -249,7 +268,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
    */
   const canDragKey = (key: string) => {
     const item = byKey().get(key)
-    return !!item && !isLockedInputState(item.state) && movableCount() >= 2
+    return !!item && movableIds().has(item.id)
   }
 
   /**
@@ -335,6 +354,9 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             {operationLabel(item().kind)}
             {' · '}
             {stateLabel(item().state)}
+            <Show when={scheduleLabel(item())}>
+              {label => ` · Scheduled for ${label()}`}
+            </Show>
             <Show when={item().attachments.length > 0}>
               {` · ${attachmentLabel(item())}`}
             </Show>

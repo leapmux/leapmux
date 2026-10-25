@@ -231,15 +231,16 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		// this index without repeating the term. That inference is exactly what it
 		// cannot make for `<> ''`, which is why idx_agents_spawn_span needs its
 		// term spelled and this one does not.
-		"idx_agents_parent":               "an IS NOT NULL predicate, which an equality term already implies",
-		"idx_agents_closed_at":            "no query filters on closed_at through this index",
-		"idx_agents_open_working_dir":     "no query filters on working_dir through this index",
-		"idx_agent_input_queue_one_edit":  "a uniqueness constraint, enforced on write rather than read",
-		"idx_worktrees_path":              "a uniqueness constraint, enforced on write rather than read",
-		"idx_worktrees_deleted_at":        "no query filters on deleted_at through this index",
-		"idx_terminals_closed_at":         "no query filters on closed_at through this index",
-		"idx_terminals_open_working_dir":  "no query filters on working_dir through this index",
-		"idx_terminals_quake_working_dir": "a uniqueness constraint, enforced on write rather than read",
+		"idx_agents_parent":                         "an IS NOT NULL predicate, which an equality term already implies",
+		"idx_agents_closed_at":                      "no query filters on closed_at through this index",
+		"idx_agents_open_working_dir":               "no query filters on working_dir through this index",
+		"idx_agent_input_queue_one_edit":            "a uniqueness constraint, enforced on write rather than read",
+		"idx_agent_input_queue_one_auto_retry_kind": "a uniqueness constraint, enforced on write rather than read",
+		"idx_worktrees_path":                        "a uniqueness constraint, enforced on write rather than read",
+		"idx_worktrees_deleted_at":                  "no query filters on deleted_at through this index",
+		"idx_terminals_closed_at":                   "no query filters on closed_at through this index",
+		"idx_terminals_open_working_dir":            "no query filters on working_dir through this index",
+		"idx_terminals_quake_working_dir":           "a uniqueness constraint, enforced on write rather than read",
 	}
 	for _, index := range partialIndexes(t, connection) {
 		if _, ok := covered[index]; ok {

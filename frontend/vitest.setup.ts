@@ -164,7 +164,7 @@ globalThis.cancelAnimationFrame = (() => {}) as typeof globalThis.cancelAnimatio
 // jsdom does not implement the HTML Popover API. Provide minimal stubs so
 // components that toggle popovers (DropdownMenu, GridSizePopover) don't
 // throw under test. The stubs flip a data-attribute and dispatch a
-// `toggle` event so listeners that key off it still fire.
+// `beforetoggle` event before the state changes, followed by `toggle`.
 type PopoverProto = HTMLElement & {
   showPopover: () => void
   hidePopover: () => void
@@ -172,8 +172,15 @@ type PopoverProto = HTMLElement & {
 }
 if (typeof (HTMLElement.prototype as Partial<PopoverProto>).showPopover !== 'function') {
   const proto = HTMLElement.prototype as PopoverProto
+  const beforeToggle = (element: HTMLElement, oldState: string, newState: string) => {
+    const event = new Event('beforetoggle', { cancelable: newState === 'open' })
+    Object.defineProperties(event, { oldState: { value: oldState }, newState: { value: newState } })
+    return element.dispatchEvent(event)
+  }
   proto.showPopover = function showPopover(this: HTMLElement) {
     if (this.matches('[data-popover-open]'))
+      return
+    if (!beforeToggle(this, 'closed', 'open'))
       return
     this.setAttribute('data-popover-open', '')
     this.dispatchEvent(new Event('toggle', { bubbles: true }))
@@ -181,6 +188,7 @@ if (typeof (HTMLElement.prototype as Partial<PopoverProto>).showPopover !== 'fun
   proto.hidePopover = function hidePopover(this: HTMLElement) {
     if (!this.matches('[data-popover-open]'))
       return
+    beforeToggle(this, 'open', 'closed')
     this.removeAttribute('data-popover-open')
     this.dispatchEvent(new Event('toggle', { bubbles: true }))
   }
@@ -190,7 +198,7 @@ if (typeof (HTMLElement.prototype as Partial<PopoverProto>).showPopover !== 'fun
       return false
     }
     this.showPopover()
-    return true
+    return this.matches('[data-popover-open]')
   }
 }
 

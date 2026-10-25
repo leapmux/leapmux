@@ -608,7 +608,7 @@ func New(cfg Config) *Service {
 	}
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents, &svc.worktreeLifecycle)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
-	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
+	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB, cfg.Clock), queueAdapter, queueAdapter)
 	svc.Output.SetSupportsSteeringFunc(queueAdapter.SupportsSteering)
 	svc.Output.SetSupportsPreemptionFunc(queueAdapter.SupportsPreemption)
 	// The one turn flag every provider publishes. A queue that already closed
@@ -668,14 +668,22 @@ func New(cfg Config) *Service {
 	svc.updateAgentSettingsFn = svc.Agents.UpdateSettings
 	svc.batchGitStatusFn = gitutil.BatchGetGitStatus
 
-	// Wire auto-continue so OutputHandler can send synthetic user messages.
-	// An auto-continue injection is not a human-typed input, so it stays
-	// UNSPECIFIED (no scroll-rail jump dot).
-	svc.Output.SetSendMessageFunc(func(agentID, content string) {
-		if err := svc.enqueueSyntheticUserInput(agentID, content, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE); err != nil {
-			slog.Error("auto-continue input enqueue failed", "agent_id", agentID, "error", err)
-		}
-	})
+	// Wire automatic retries to the input queue, which owns the scheduled
+	// items, their deadlines, and the server-error backoff. A provider asks
+	// through its service facet; the queue publishes like any other input.
+	svc.Output.SetAutoRetryFuncs(
+		func(agentID string, schedule agent.AutoRetrySchedule) {
+			logAutoRetryError("schedule an automatic retry", agentID,
+				svc.InputQueue.ScheduleAutoRetry(bgCtx(), agentID, schedule), "kind", schedule.Kind.String())
+		},
+		func(agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) {
+			logAutoRetryError("cancel an automatic retry", agentID,
+				svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind, admission), "kind", kind.String())
+		},
+		func(agentID string) {
+			logAutoRetryError("cancel the automatic retries", agentID, svc.InputQueue.CancelAutoRetries(bgCtx(), agentID))
+		},
+	)
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
 	// clobber a settings change made mid-startup (see SetAgentStartingFunc).
 	// Read through svc, as the closure below does.
@@ -821,12 +829,13 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 }
 
 // RestoreState reconciles what a previous worker process left persisted. It
-// updates interrupted queue and background-task state, then re-arms the
-// auto-continue timers. Recovered queue dispatch waits for Hub reconciliation.
+// updates interrupted queue and background-task state, and the queue recovery
+// itself re-arms every scheduled item's deadline timer. Recovered queue
+// dispatch waits for Hub reconciliation.
 //
 // Separate from New because it reads the database and starts timers.
 // Construction should not do either: it is what lets every unit test
-// build a Service without touching the auto_continue tables or arming a
+// build a Service without touching the queue tables or arming a
 // background goroutine it then has to stop.
 //
 // Agents and terminals need no equivalent: their status is derived from
@@ -836,7 +845,7 @@ func (svc *Service) RestoreState() {
 	if err := svc.InputQueue.RecoverState(bgCtx()); err != nil {
 		slog.Warn("recover agent input queues failed", "error", err)
 	}
-	// Before anything else, mark every still-active background-task row
+	// Mark every still-active background-task row
 	// 'interrupted': the previous worker process was cut off (crash/restart),
 	// so a row left 'pending'/'running' is genuinely not making progress. Pure
 	// DB -- caches do not exist yet at boot. Logs the affected-row count so a
@@ -857,7 +866,21 @@ func (svc *Service) RestoreState() {
 	} else if endedCount > 0 {
 		slog.Info("marked background tasks interrupted on boot", "count", endedCount)
 	}
-	svc.Output.restoreAutoContinueSchedules()
+}
+
+// logAutoRetryError logs a failed automatic-retry request from a provider or
+// from lifecycle cleanup. Two refusals are expected, not faults: a stopped
+// queue refuses every request during a Worker shutdown, and a closed or
+// archived agent refuses a late provider report. Both log at Debug.
+func logAutoRetryError(action, agentID string, err error, attributes ...any) {
+	if err == nil {
+		return
+	}
+	level := slog.LevelError
+	if errors.Is(err, inputqueue.ErrManagerStopped) || errors.Is(err, inputqueue.ErrConflict) {
+		level = slog.LevelDebug
+	}
+	slog.Log(bgCtx(), level, "failed to "+action, append([]any{"agent_id", agentID, "error", err}, attributes...)...)
 }
 
 // HandleAgentProcessExit is the ExitHandler body: it clears the exited

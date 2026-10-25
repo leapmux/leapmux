@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { localStorageLoad, PREFIX_EDITOR_DRAFT } from '~/lib/browserStorage'
+import { localStorageLoad, PREFIX_COMPOSER_SCHEDULE_DRAFT, PREFIX_EDITOR_DRAFT } from '~/lib/browserStorage'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { clearDraft, loadDraft, saveDraft } from './draftPersistence'
 
@@ -38,6 +38,13 @@ describe('draftPersistence', () => {
 
     saveDraft(AGENT, '', -1)
     expect(await loadDraft(AGENT)).toEqual({ content: '', cursor: -1 })
+    expect(await localStorageLoad(`${PREFIX_EDITOR_DRAFT}${AGENT}`)).toBeUndefined()
+  })
+
+  it('persists metadata even when the draft text is empty', async () => {
+    const name = `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${AGENT}` as const
+    saveDraft(AGENT, '', -1, [{ name, value: '' }])
+    expect(await localStorageLoad(name)).toBe('')
     expect(await localStorageLoad(`${PREFIX_EDITOR_DRAFT}${AGENT}`)).toBeUndefined()
   })
 

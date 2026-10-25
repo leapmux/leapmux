@@ -81,6 +81,25 @@ func (d *recordingDispatcher) SupportsSteering(string) bool { return d.steering 
 
 func (d *recordingDispatcher) SteerPolicy(string) agent.SteerPolicy { return d.policy }
 
+// A steer of a future head answers with the schedule while the turn runs, and
+// steers nothing.
+func TestManagerSteerOfAFutureHeadReportsTheSchedule(t *testing.T) {
+	t.Parallel()
+	_, _, store := newPriorityFixture(t)
+	dispatcher := &recordingDispatcher{steering: true}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+	enqueueAt(t, store, "future", scheduled(t, time.Hour), leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)
+	_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+
+	_, err = manager.Steer(t.Context(), "agent-1", "future")
+	assert.ErrorIs(t, err, ErrScheduled)
+	dispatcher.mu.Lock()
+	defer dispatcher.mu.Unlock()
+	assert.Empty(t, dispatcher.steered)
+}
+
 func TestManagerSteerOfASurvivorIsNotRequeuedWhenTheTurnEndsDuringTheCall(t *testing.T) {
 	t.Parallel()
 	for _, rowAtEcho := range []bool{false, true} {

@@ -1,10 +1,12 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { localFieldValueOf } from '../../src/components/chat/composer/scheduleSend'
 import { getUserId } from './helpers/api'
 import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { withExtraClients } from './helpers/multiClient'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
+import { QUEUED_INPUT_ROW_TESTID, queuedInputRow } from './helpers/steer'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { composerEditor, focusComposer, loginViaToken, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
@@ -326,7 +328,7 @@ test.describe('agent input queue', () => {
     // Check the label visibility directly. toHaveText reads textContent and includes a span that uses display: none.
     // That assertion would still report Send when the button shows only its icon.
     await expect(page.getByTestId('send-button').locator('span')).toBeHidden()
-    await expect(page.getByRole('button', { name: 'Send' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible()
 
     // Removing the label must preserve the button height.
     // An inline-flex container without a line-box strut uses the height of its tallest item.
@@ -336,7 +338,7 @@ test.describe('agent input queue', () => {
       page.getByTestId(id).evaluate(el => el.getBoundingClientRect().height)
     const plusHeight = await heightOf('composer-plus-trigger')
     expect(plusHeight).toBeGreaterThan(0)
-    for (const id of ['queue-pause-button', 'send-button'])
+    for (const id of ['queue-pause-button', 'schedule-send-trigger', 'send-button'])
       expect(await heightOf(id), `${id} must match the [+] while icon-only`).toBe(plusHeight)
 
     // Measure the action cluster as well as its slot.
@@ -356,5 +358,247 @@ test.describe('agent input queue', () => {
     // Require the plus button to accept a click after the geometry check.
     await plus.click()
     await expect(page.getByTestId('composer-plus-popover')).toBeVisible()
+  })
+})
+
+/**
+ * Schedule the composer's next send through the real popover: open the
+ * trigger, fill the field, apply. The Worker owns the clock, so the value the
+ * browser computes only has to be far enough ahead for the row to render
+ * before its deadline passes.
+ */
+async function scheduleNextSend(page: Page, offsetMs: number) {
+  await page.getByTestId('schedule-send-trigger').click()
+  // Wait for the popover before filling: a click during its opening position
+  // lands outside it and dismisses it, losing the apply.
+  await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+  // Set the value programmatically. Playwright's `fill` requires the field to
+  // read back exactly the value it typed, and the field writes the shortest
+  // form of a time: it drops a zero fraction, and zero seconds with it. So
+  // `fill` reports some valid values as malformed. The control's own onInput
+  // handler carries the value either way.
+  const value = localFieldValueOf(new Date(Date.now() + offsetMs))
+  await page.getByTestId('schedule-send-field').evaluate((element: HTMLElement, setValue: string) => {
+    ;(element as HTMLInputElement).value = setValue
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+  }, value)
+  await page.getByTestId('schedule-send-field').press('Enter')
+  await expect(page.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+}
+
+test.describe('scheduled input', () => {
+  test('styles the schedule card as an Oat form with outline actions', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await page.getByTestId('schedule-send-trigger').click()
+    const popover = page.getByTestId('schedule-send-popover')
+    await expect(popover).toBeVisible()
+    const outlineColor = await queuePauseButton(page).evaluate(button => getComputedStyle(button).borderTopColor)
+    for (const action of ['clear', 'cancel', 'apply'])
+      await expect(page.getByTestId(`schedule-send-${action}`)).toHaveCSS('border-top-color', outlineColor)
+    const foreground = await popover.evaluate(card => getComputedStyle(card).color)
+    await expect(popover.locator('label')).toHaveCSS('color', foreground)
+    await expect(page.getByTestId('schedule-send-field')).toHaveAccessibleDescription('Uses your local timezone.')
+    await expect(page.getByTestId('schedule-send-clear')).toBeDisabled()
+    await page.getByTestId('schedule-send-cancel').click()
+    await scheduleNextSend(page, 300_000)
+    await page.getByTestId('schedule-send-trigger').click()
+    await expect(page.getByTestId('schedule-send-clear')).toBeEnabled()
+    await expect(page.getByTestId('schedule-send-clear')).toHaveCSS('border-top-color', outlineColor)
+    await page.getByTestId('schedule-send-field').fill('2000-01-01T09:00')
+    await expect(page.getByTestId('schedule-send-apply')).toBeDisabled()
+    await expect(page.getByTestId('schedule-send-apply')).toHaveCSS('border-top-color', outlineColor)
+    await expect(page.getByTestId('schedule-send-error')).toHaveCSS('border-top-width', '0px')
+    await expect(page.getByTestId('schedule-send-error')).toHaveCSS('padding-top', '0px')
+    await expect(page.getByTestId('schedule-send-field')).toHaveAccessibleDescription('Uses your local timezone. Pick a time in the future.')
+    await page.getByTestId('schedule-send-cancel').click()
+  })
+
+  test('restores the schedule of an unsent draft after a reload', async ({ page, authenticatedWorkspace, separateHubWorker }) => {
+    void authenticatedWorkspace
+    await scheduleNextSend(page, 300_000)
+    await composerEditor(page).fill('unsent scheduled draft')
+    const userId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+    await waitForEditorDraft(page, userId, 'unsent scheduled draft')
+    await page.reload()
+    await expect(composerEditor(page)).toHaveText('unsent scheduled draft')
+    await expect(page.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+  })
+
+  for (const clear of [false, true]) {
+    test(`restores an unsaved ${clear ? 'cleared' : 'replacement'} schedule in a queue edit after a reload`, async ({ page, authenticatedWorkspace, separateHubWorker }) => {
+      void authenticatedWorkspace
+      await pauseQueue(page)
+      await scheduleNextSend(page, 300_000)
+      await sendMessage(page, 'stored scheduled input')
+      const row = queuedInputRow(page, 'stored scheduled input')
+      await row.getByRole('button', { name: 'Edit', exact: true }).click()
+      await expect(composerEditor(page)).toHaveText('stored scheduled input')
+      if (clear) {
+        await page.getByTestId('schedule-send-trigger').click()
+        await page.getByTestId('schedule-send-clear').click()
+      }
+      else {
+        await scheduleNextSend(page, 600_000)
+      }
+      if (clear)
+        await expect(page.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+      await page.getByTestId('schedule-send-trigger').click()
+      await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+      const expected = clear ? '' : await page.getByTestId('schedule-send-field').inputValue()
+      await page.getByTestId('schedule-send-cancel').click()
+      const text = `unsaved ${clear ? 'cleared' : 'replacement'} edit`
+      await composerEditor(page).fill(text)
+      const userId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+      await waitForEditorDraft(page, userId, text)
+      await page.reload()
+      await expect(composerEditor(page)).toHaveText(text)
+      if (clear)
+        await expect(page.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+      await page.getByTestId('schedule-send-trigger').click()
+      await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+      await expect(page.getByTestId('schedule-send-field')).toHaveValue(expected)
+    })
+  }
+
+  test('refuses an incomplete native date without clearing the existing schedule', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await scheduleNextSend(page, 300_000)
+    await page.getByTestId('schedule-send-trigger').click()
+    const field = page.getByTestId('schedule-send-field')
+    await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+    const original = await field.inputValue()
+    await field.evaluate((element: HTMLInputElement) => {
+      element.addEventListener('input', () => {
+        element.dataset.nativeBadInput = String(element.validity.badInput)
+      }, { capture: true })
+    })
+    // The first date segment is incomplete after Backspace. Its native value
+    // is empty, but badInput distinguishes that state from deliberate clearing.
+    const box = (await field.boundingBox())!
+    await field.click({ position: { x: 8, y: box.height / 2 } })
+    await field.press('Backspace')
+    await expect(field).toHaveAttribute('data-native-bad-input', 'true')
+    await expect(page.getByTestId('schedule-send-apply')).toBeDisabled()
+    await field.press('Enter')
+    await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+    await page.getByTestId('schedule-send-cancel').click()
+    await page.getByTestId('schedule-send-trigger').click()
+    await expect(field).toHaveValue(original)
+  })
+
+  test('keeps a scheduled message through a reload, then reschedules and clears it in an edit', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    // Establish a live provider session first, as the file's first test does:
+    // the cleared-schedule delivery at the end dispatches into a process that
+    // is still answering, long after the fixture's idle auto-start would exit.
+    await sendScriptedTurn(page, modelScript)
+    // A far-enough deadline that the reload and the row assertions all happen
+    // while the item is still future.
+    await scheduleNextSend(page, 90_000)
+    await sendMessage(page, 'scheduled hello')
+
+    const row = queuedInputRow(page, 'scheduled hello')
+    await expect(row).toContainText('Message')
+    await expect(row).toContainText('Scheduled for')
+
+    await page.reload()
+    await expect(queuedInputRow(page, 'scheduled hello')).toContainText('Scheduled for')
+
+    // Editing the schedule through the real queue edit moves the deadline
+    // further out; clearing it delivers immediately through the ordinary drain.
+    const cleared = await modelScript.queue({ text: `DELIVERED_${Date.now()}` })
+    await row.getByRole('button', { name: 'Edit', exact: true }).click()
+    await expect(composerEditor(page)).toHaveText('scheduled hello')
+    // The edit changes the text and moves the schedule; both save together.
+    await composerEditor(page).fill('scheduled hello edited')
+    await scheduleNextSend(page, 150_000)
+    // The schedule popover held the focus; the save chord belongs to the
+    // editor, so hand the focus back before pressing it.
+    await composerEditor(page).click()
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    const edited = queuedInputRow(page, 'scheduled hello edited')
+    await expect(edited).toContainText('Scheduled for')
+
+    await edited.getByRole('button', { name: 'Edit', exact: true }).click()
+    await expect(composerEditor(page)).toHaveText('scheduled hello edited')
+    await page.getByTestId('schedule-send-trigger').click()
+    await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
+    await page.getByTestId('schedule-send-clear').click()
+    await composerEditor(page).click()
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    await modelScript.waitForSteps(cleared + 1)
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
+  })
+
+  test('delivers a scheduled message once its deadline passes', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    // The matured input dispatches into a process that is already answering.
+    await sendScriptedTurn(page, modelScript)
+    const delivered = await modelScript.queue({ text: `MATURED_${Date.now()}` })
+    // Far enough out that the row renders as scheduled first. The Worker's
+    // maturity timer, and nothing in this test, delivers it: the ordered step
+    // waits on its own budget, which outlasts the deadline.
+    await scheduleNextSend(page, 15_000)
+    await sendMessage(page, 'deliver at maturity')
+    await expect(queuedInputRow(page, 'deliver at maturity')).toContainText('Scheduled for')
+
+    await modelScript.waitForSteps(delivered + 1)
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
+  })
+
+  test('holds a matured scheduled input while the queue is paused, then delivers it on resume', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    // Establish a live provider session first, as the file's first test does:
+    // the matured input dispatches into a process that is already answering.
+    await sendScriptedTurn(page, modelScript)
+    await pauseQueue(page)
+    await sendMessage(page, 'waits immediately')
+    await scheduleNextSend(page, 10_000)
+    await sendMessage(page, 'pause at maturity')
+    const immediate = queuedInputRow(page, 'waits immediately')
+    const scheduled = queuedInputRow(page, 'pause at maturity')
+    await expect(scheduled).toContainText('Scheduled for')
+    // A future row shares no reorder group with an immediate one.
+    await expect(scheduled.getByRole('button', { name: 'Move Up' })).toBeDisabled()
+
+    // Maturity moves the row into the immediate group, and the Worker
+    // publishes that move even while the queue is paused. The two rows then
+    // share one segment, so Move Up turns on: proof that the deadline passed.
+    // The default expect budget outlasts the ten-second deadline.
+    await expect(scheduled.getByRole('button', { name: 'Move Up' })).toBeEnabled()
+    await expect(immediate.getByRole('button', { name: 'Move Down' })).toBeEnabled()
+    // Nothing dispatched while paused: both rows still wait, and the matured
+    // row keeps stating its schedule.
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(2)
+    await expect(scheduled).toContainText('Queued')
+    await expect(scheduled).toContainText('Scheduled for')
+
+    const resumed = await modelScript.queue(
+      { text: `RESUMED_FIRST_${Date.now()}` },
+      { text: `RESUMED_SECOND_${Date.now()}` },
+    )
+    await resumePausedQueue(page)
+    await modelScript.waitForSteps(resumed + 2)
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
+  })
+
+  test('keeps a scheduled row reorderable only inside its own group', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await expect(composerEditor(page)).toBeVisible()
+    await pauseQueue(page)
+    // One future item, one immediate: neither has a compatible neighbour, so
+    // both arrow pairs refuse.
+    await scheduleNextSend(page, 120_000)
+    await sendMessage(page, 'the future one')
+    await sendMessage(page, 'the immediate one')
+    const future = queuedInputRow(page, 'the future one')
+    const immediate = queuedInputRow(page, 'the immediate one')
+    // The immediate row takes the effective first position although it was
+    // queued second.
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID).first()).toContainText('the immediate one')
+    for (const row of [future, immediate]) {
+      await expect(row.getByRole('button', { name: 'Move Up' })).toBeDisabled()
+      await expect(row.getByRole('button', { name: 'Move Down' })).toBeDisabled()
+    }
   })
 })

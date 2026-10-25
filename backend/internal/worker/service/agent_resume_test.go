@@ -907,7 +907,7 @@ func TestAgentResume_DrainsRecoveredInputOnlyAfterWorkerOwner(t *testing.T) {
 	rec := newStartRecorder()
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-queue", false)
-	_, err := inputqueue.NewStore(svc.DB).Enqueue(t.Context(), inputqueue.NewItem{
+	_, err := inputqueue.NewStore(svc.DB, nil).Enqueue(t.Context(), inputqueue.NewItem{
 		ID: "queued", AgentID: "agent-queue", Text: "queued",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})

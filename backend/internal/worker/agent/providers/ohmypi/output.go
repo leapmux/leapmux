@@ -370,7 +370,7 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 	}
 	// omp retries a failed request itself (auto_retry_*), so LeapMux schedules no
 	// continuation of its own, and a pending one is cancelled.
-	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, false, raw)
+	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, false, raw)
 	a.sink.ResetSpans()
 	a.refreshSessionStatsAsync()
 }

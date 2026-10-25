@@ -44,7 +44,7 @@ func TestProviderServicesKeepOneImplementationAcrossFacets(t *testing.T) {
 	assert.Same(t, sink, composed.SessionServices)
 	assert.Same(t, sink, composed.PlanServices)
 	assert.Same(t, sink, composed.GoalServices)
-	assert.Same(t, sink, composed.AutoContinueServices)
+	assert.Same(t, sink, composed.AutoRetryServices)
 	assert.Same(t, sink, composed.ChildServices)
 	assert.Same(t, sink, composed.BackgroundTaskServices)
 	_, err := services.ReadToolResultBySeq(17)

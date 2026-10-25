@@ -2,13 +2,16 @@ import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentTab } from '~/stores/tab.types'
 import type { TabView } from '~/stores/tabView'
 import { create } from '@bufbuild/protobuf'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AgentInputKind,
   AgentInputQueueSnapshotSchema,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ChannelError } from '~/lib/channelError'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
+import { deferred } from '~/test-support/async'
 import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 
 /**
@@ -18,11 +21,13 @@ import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 const enqueueAgentInput = vi.hoisted(() => vi.fn())
 const deleteQueuedAgentInput = vi.hoisted(() => vi.fn())
 const beginQueuedAgentInputEdit = vi.hoisted(() => vi.fn())
+const updateQueuedAgentInput = vi.hoisted(() => vi.fn())
 const setAgentInputQueuePaused = vi.hoisted(() => vi.fn())
 vi.mock('~/api/workerRpc', () => ({
   enqueueAgentInput,
   deleteQueuedAgentInput,
   beginQueuedAgentInputEdit,
+  updateQueuedAgentInput,
   setAgentInputQueuePaused,
 }))
 
@@ -238,5 +243,134 @@ describe('createAgentInputQueueOperations composer send', () => {
 
     expect(enqueueAgentInput).not.toHaveBeenCalled()
     expect(forceScrollToBottom).not.toHaveBeenCalled()
+  })
+})
+
+// The schedule rides the same enqueue and update requests the text does. A
+// save that clears it sends an explicit empty string, and a save that keeps it
+// omits the field.
+describe('agent input queue operations schedule', () => {
+  it('sends the schedule on enqueue', async () => {
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
+    await ops.sendMessage('later', undefined, '2030-01-01T09:00:00.000Z')
+    expect(enqueueAgentInput).toHaveBeenCalledWith('w1', {
+      agentId: 'agent-1',
+      inputId: expect.any(String),
+      kind: AgentInputKind.USER_MESSAGE,
+      text: 'later',
+      attachments: [],
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+    })
+  })
+
+  it('sends an empty schedule on an immediate enqueue', async () => {
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
+    await ops.sendMessage('now')
+    expect(enqueueAgentInput.mock.calls[0]?.[1]).toMatchObject({ scheduledAt: '' })
+  })
+
+  it('omits the schedule from a save that keeps it', async () => {
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    updateQueuedAgentInput.mockResolvedValue(snapshotOf('agent-1', 2n, []))
+    await ops.updateQueueItem(queuedItem('agent-1', 'input-1'), 'edited', [], undefined)
+    const request = updateQueuedAgentInput.mock.calls[0]?.[1] as Record<string, unknown>
+    expect('scheduledAt' in request).toBe(false)
+  })
+
+  it('sends the schedule on update, and an explicit empty string when clearing', async () => {
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    updateQueuedAgentInput.mockResolvedValue(snapshotOf('agent-1', 2n, []))
+    const item = queuedItem('agent-1', 'input-1')
+    await ops.updateQueueItem(item, 'edited', [], '2030-01-01T09:00:00.000Z')
+    expect(updateQueuedAgentInput).toHaveBeenCalledWith('w1', {
+      agentId: 'agent-1',
+      inputId: 'input-1',
+      clientId: 'client-1',
+      expectedVersion: 7n,
+      text: 'edited',
+      attachments: [],
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+    })
+    await ops.updateQueueItem(item, 'edited now', [], '')
+    expect(updateQueuedAgentInput).toHaveBeenLastCalledWith('w1', {
+      agentId: 'agent-1',
+      inputId: 'input-1',
+      clientId: 'client-1',
+      expectedVersion: 7n,
+      text: 'edited now',
+      attachments: [],
+      scheduledAt: '',
+    })
+  })
+})
+
+// An expired schedule is valid only for an exact unanswered delivery.
+describe('createAgentInputQueueOperations retryPendingMessage', () => {
+  const at = '2030-01-01T09:00:00.000Z'
+
+  it.each([
+    new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument }),
+    new ChannelError('rpc', 'refused', { code: Code.FailedPrecondition }),
+    new ConnectError('not authorized', Code.PermissionDenied),
+  ])('keeps a definitive refusal out of the unanswered-attempt exception: %s', async (error) => {
+    const { ops, forceScrollToBottom } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(error)
+    await expect(ops.sendMessage('later', [], at)).rejects.toThrow(error.message)
+    forceScrollToBottom.mockClear()
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(false)
+    expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
+    expect(forceScrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    new Error('answer lost'),
+    new ChannelError('transport', 'disconnected'),
+    new ChannelError('rpc', 'commit uncertain', { code: Code.Internal }),
+  ])('reuses the original id and schedule for an unanswered attempt: %s', async (error) => {
+    const { ops } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(error)
+    await expect(ops.sendMessage('later', undefined, at)).rejects.toThrow(error.message)
+    expect(await ops.retryPendingMessage('later')).toBe(false)
+    expect(await ops.retryPendingMessage('other', [], at)).toBe(false)
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: snapshotOf('agent-1', 1n, []) })
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(true)
+    const [first, second] = enqueueAgentInput.mock.calls.map(call => (call[1] as { inputId: string }).inputId)
+    expect(second).toBe(first)
+    expect(enqueueAgentInput.mock.calls[1]?.[1]).toMatchObject({ scheduledAt: at, text: 'later' })
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(false)
+  })
+
+  it.each([new Error('answer lost'), new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument })])('shares one in-flight request across identical sends: %s', async (error) => {
+    const { ops } = setup()
+    const response = deferred<{ snapshot: undefined }>()
+    enqueueAgentInput.mockReturnValue(response.promise)
+    const settled = Promise.allSettled([ops.sendMessage('later', [], at), ops.sendMessage('later', [], at)])
+    try {
+      expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      response.reject(error)
+      await settled
+    }
+  })
+
+  it('keeps earlier uncertainty when a later attempt receives a refusal', async () => {
+    const { ops } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
+    await expect(ops.sendMessage('later', [], at)).rejects.toThrow('answer lost')
+    enqueueAgentInput.mockRejectedValueOnce(new ChannelError('rpc', 'not authorized', { code: Code.PermissionDenied }))
+    await expect(ops.retryPendingMessage('later', [], at)).rejects.toThrow('not authorized')
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: undefined })
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(true)
+    const ids = enqueueAgentInput.mock.calls.map(call => (call[1] as { inputId: string }).inputId)
+    expect(new Set(ids).size).toBe(1)
+  })
+
+  it('sends nothing while no agent has focus', async () => {
+    const { ops } = setup({ focusedAgentId: null })
+    expect(await ops.retryPendingMessage('later', [], at)).toBe(false)
+    expect(enqueueAgentInput).not.toHaveBeenCalled()
   })
 })

@@ -463,9 +463,9 @@ func newMinimalService(t *testing.T, sqlDB *sql.DB) *Service {
 // TestNew_WiresTheOutputHandlerSeams pins the wiring that used to live in
 // a separate Init step.
 //
-// Both seams fail silently if dropped: without sendMessageFunc an
-// auto-continue schedule fires and injects nothing, so an agent that
-// should have been nudged just stops; without agentStartingFunc,
+// Both seams fail silently if dropped: without scheduleAutoRetry a provider's
+// retry request is logged and lost, so an agent that should resume after a
+// usage limit just stops; without agentStartingFunc,
 // PersistSettingsRefresh cannot tell it is inside the startup window and
 // clobbers a settings change made mid-startup. Neither shows up as an
 // error anywhere, which is exactly why folding them into the constructor
@@ -475,8 +475,12 @@ func TestNew_WiresTheOutputHandlerSeams(t *testing.T) {
 
 	svc := newMinimalService(t, newServiceTestDB(t))
 
-	assert.NotNil(t, svc.Output.sendMessageFunc,
-		"auto-continue must be able to inject synthetic user messages")
+	assert.NotNil(t, svc.Output.scheduleAutoRetry,
+		"providers must be able to schedule automatic retries")
+	assert.NotNil(t, svc.Output.cancelAutoRetry,
+		"providers must be able to cancel automatic retries")
+	assert.NotNil(t, svc.Output.cancelAllAutoRetry,
+		"lifecycle cleanup must be able to cancel every automatic retry")
 	assert.NotNil(t, svc.Output.agentStarting,
 		"PersistSettingsRefresh must be able to detect the startup window")
 }

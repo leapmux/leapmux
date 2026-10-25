@@ -1,8 +1,9 @@
 import type { AsyncLocalKey, SyncLocalKey } from '~/lib/browserStorage'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
-import { accountStorageKey, accountStorageKeyPrefix, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, mirrorEntryForTests, onStorageAccountChange, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, PREFIX_EDITOR_DRAFT, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { useTestStorage } from '~/test-support/persistentStorage'
 
 // Restated rather than imported, so an assertion is an INDEPENDENT statement of
 // the number the registry holds.
@@ -558,5 +559,36 @@ describe('the synchronous tier hands out private copies', () => {
 
     expect(seenMidBatch).toEqual({ diffView: 'split', turnEndSound: 'chime' })
     expect(loadBrowserPrefs()).toEqual({ turnEndSound: 'chime' })
+  })
+})
+
+describe('localStorageDropPrefix', () => {
+  useTestStorage()
+
+  it('removes matching pending and persisted writes without removing a neighboring prefix', async () => {
+    localStorageStore(`${PREFIX_EDITOR_DRAFT}retired-input-1`, 'one')
+    await flushStorageWrites()
+    localStorageStore(`${PREFIX_EDITOR_DRAFT}retired-input-2`, 'two')
+    localStorageStore(`${PREFIX_EDITOR_DRAFT}retired-neighbor`, 'keep')
+    await localStorageDropPrefix(`${PREFIX_EDITOR_DRAFT}retired-input-`)
+    expect(await localStorageLoad(`${PREFIX_EDITOR_DRAFT}retired-input-1`)).toBeUndefined()
+    expect(await localStorageLoad(`${PREFIX_EDITOR_DRAFT}retired-input-2`)).toBeUndefined()
+    expect(await localStorageLoad(`${PREFIX_EDITOR_DRAFT}retired-neighbor`)).toBe('keep')
+  })
+
+  it('keeps deletion in its captured account when the namespace changes', async () => {
+    const key = `${PREFIX_EDITOR_DRAFT}retired-input`
+    localStorageStore(key, 'old account')
+    const deletion = localStorageDropPrefix(key)
+    setStorageAccountForTests(OTHER)
+    localStorageStore(key, 'new account')
+    await deletion
+    expect(await localStorageLoad(key)).toBe('new account')
+    setStorageAccountForTests(ACCOUNT)
+    expect(await localStorageLoad(key)).toBeUndefined()
+  })
+
+  it('accepts an empty matching family', async () => {
+    await expect(localStorageDropPrefix(`${PREFIX_EDITOR_DRAFT}absent-`)).resolves.toBeUndefined()
   })
 })

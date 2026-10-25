@@ -13,13 +13,21 @@ import { flush } from '~/test-support/async'
 import { pointerEvent } from '~/test-support/pointer'
 import { AgentInputQueue } from './AgentInputQueue'
 
+/**
+ * A row with the segment that the Worker sends for a queue of one immediate
+ * run: 0 for a locked row, and 1 for every other row. A fixture with several
+ * segments states them.
+ */
 function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) {
+  const state = overrides.state ?? AgentInputState.QUEUED
+  const lockedState = state === AgentInputState.DISPATCHING || state === AgentInputState.AWAITING_ECHO
   return create(QueuedAgentInputSchema, {
     id,
     agentId: 'agent-1',
     text: `text ${id}`,
     kind: AgentInputKind.USER_MESSAGE,
-    state: AgentInputState.QUEUED,
+    state,
+    reorderSegment: lockedState ? 0 : 1,
     ...overrides,
   })
 }
@@ -464,5 +472,105 @@ describe('AgentInputQueue', () => {
     const steer = within(first).getByRole('button', { name: 'Steer' })
     expect(buttons[buttons.length - 1]).toBe(steer)
     expect(steer).toHaveTextContent('Steer')
+  })
+})
+
+// Scheduled rows: each shows its own type and its full local timestamp, an
+// immediate row shows no schedule, and a row with no legal destination in its
+// reorder segment offers no drag grip or arrow.
+describe('AgentInputQueue scheduled rows', () => {
+  const group = '2030-01-01T09:00:00.000Z'
+
+  it('labels each automatic retry kind and its own scheduled timestamp', () => {
+    renderQueue({
+      items: [
+        item('usage', {
+          kind: AgentInputKind.AUTO_RETRY_USAGE_LIMIT,
+          scheduledAt: group,
+          reorderSegment: 2,
+        }),
+        item('server', {
+          kind: AgentInputKind.AUTO_RETRY_SERVER_ERROR,
+          scheduledAt: '2030-01-01T10:30:00.000Z',
+          reorderSegment: 3,
+        }),
+      ],
+    })
+    const usage = screen.getByTestId('queued-input-usage')
+    expect(usage).toHaveTextContent('Auto-retry (usage limit)')
+    expect(usage).toHaveTextContent('Scheduled for')
+    expect(usage.textContent).toMatch(/1\/1\/2030/)
+    const server = screen.getByTestId('queued-input-server')
+    expect(server).toHaveTextContent('Auto-retry (server error)')
+    expect(server.textContent).toMatch(/1\/1\/2030/)
+  })
+
+  it('shows no schedule text on an immediate row', () => {
+    renderQueue({ items: [item('now')] })
+    expect(screen.getByTestId('queued-input-now')).not.toHaveTextContent('Scheduled for')
+  })
+
+  it('renders an unreadable timestamp as no schedule rather than Invalid Date', () => {
+    renderQueue({ items: [item('broken', { scheduledAt: 'not-a-time', reorderSegment: 2 })] })
+    const row = screen.getByTestId('queued-input-broken')
+    expect(row).not.toHaveTextContent('Scheduled for')
+    expect(row).not.toHaveTextContent('Invalid Date')
+  })
+
+  it('keeps the schedule text on a past-due row that still waits', () => {
+    const past = '2020-01-01T00:00:00.000Z'
+    renderQueue({ items: [item('waiting', { scheduledAt: past })] })
+    expect(screen.getByTestId('queued-input-waiting')).toHaveTextContent('Scheduled for')
+  })
+
+  it('hides the drag grip and disables the arrows of a row with no compatible destination', () => {
+    renderQueue({
+      items: [
+        item('only-immediate'),
+        item('future', { scheduledAt: group, reorderSegment: 2 }),
+      ],
+    })
+    const only = screen.getByTestId('queued-input-only-immediate')
+    // Two rows exist, but they belong to different reorder groups, so neither
+    // has a legal destination: an inert grip, and both arrows disabled.
+    expect(within(only).getByTestId('queue-drag-handle-only-immediate').className).toContain('dragHandleInert')
+    expect((within(only).getByRole('button', { name: 'Move Up' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(only).getByRole('button', { name: 'Move Down' }) as HTMLButtonElement).disabled).toBe(true)
+    const future = screen.getByTestId('queued-input-future')
+    expect(within(future).getByTestId('queue-drag-handle-future').className).toContain('dragHandleInert')
+    expect((within(future).getByRole('button', { name: 'Move Up' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(future).getByRole('button', { name: 'Move Down' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('moves the first row down to the end of its segment when a locked row follows the segment', () => {
+    const handlers = renderQueue({
+      items: [
+        item('a'),
+        item('b'),
+        item('sending', { state: AgentInputState.DISPATCHING }),
+      ],
+    })
+    const first = screen.getByTestId('queued-input-a')
+    expect(within(first).getByTestId('queue-drag-handle-a').className).not.toContain('dragHandleInert')
+    const moveDown = within(first).getByRole('button', { name: 'Move Down' }) as HTMLButtonElement
+    expect(moveDown.disabled).toBe(false)
+    fireEvent.click(moveDown)
+    // The empty id is the segment end, which the Worker resolves before the
+    // locked row. Naming the locked row would be refused.
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }), '')
+  })
+
+  it('moves rows that share one scheduled instant', () => {
+    const handlers = renderQueue({
+      items: [
+        item('a', { scheduledAt: group, reorderSegment: 2 }),
+        item('b', { scheduledAt: group, reorderSegment: 2 }),
+      ],
+    })
+    fireEvent.click(within(screen.getByTestId('queued-input-b')).getByRole('button', { name: 'Move Up' }))
+    expect(handlers.onMove).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'b' }),
+      'a',
+    )
   })
 })

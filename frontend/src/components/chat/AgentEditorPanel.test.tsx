@@ -4,13 +4,13 @@ import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { create } from '@bufbuild/protobuf'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
 import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
+import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE, setStorageAccountForTests } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { formatResetTimestamp } from '~/lib/rateLimitUtils'
 import { createControlStore } from '~/stores/control.store'
@@ -20,9 +20,13 @@ import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { AgentEditorPanel } from './AgentEditorPanel'
-import { clearAttachments, getAttachments, queueEditDraftKey, setAttachments } from './attachments'
+import { clearAttachments, getAttachments, setAttachments } from './attachments'
+import { queueEditDraftKey } from './composer/draftIdentity'
+import { forgetAgentScheduleDrafts } from './composer/scheduleDrafts'
+import { localFieldValueOf } from './composer/scheduleSend'
 import '~/components/chat/providers'
 
 // The asynchronous storage tier has no in-memory mirror, so these round-trips
@@ -58,12 +62,14 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers()
   for (const id of ['a1', 'a2', 'a1-queue-owned-a1', 'a2-queue-owned-a2']) {
     clearDraft(id)
     clearAttachments(id)
   }
+  // The schedule drafts outlive a panel on purpose, so each case drops them.
+  await Promise.all([forgetAgentScheduleDrafts('a1'), forgetAgentScheduleDrafts('a2')])
 })
 
 function agent(overrides: MessageInitShape<typeof AgentInfoSchema> = {}): AgentInfo {
@@ -92,6 +98,7 @@ interface RenderPanelOptions {
   promptSuggestion?: AgentEditorPanelProps['promptSuggestion']
   onDismissPromptSuggestion?: AgentEditorPanelProps['onDismissPromptSuggestion']
   onSendMessage?: AgentEditorPanelProps['onSendMessage']
+  onRetryPendingSend?: AgentEditorPanelProps['onRetryPendingSend']
   onRetryTurn?: AgentEditorPanelProps['onRetryTurn']
 }
 
@@ -133,6 +140,7 @@ function renderPanel(options: RenderPanelOptions = {}) {
         {...(options.onInterrupt !== undefined ? { onInterrupt: options.onInterrupt } : {})}
         {...(options.agentActivity !== undefined ? { agentActivity: options.agentActivity } : {})}
         {...(options.inputQueue !== undefined ? { inputQueue: options.inputQueue } : {})}
+        {...(options.onRetryPendingSend !== undefined ? { onRetryPendingSend: options.onRetryPendingSend } : {})}
         {...(options.turnRetryOffer !== undefined ? { turnRetryOffer: options.turnRetryOffer } : {})}
         {...(options.promptSuggestion !== undefined ? { promptSuggestion: options.promptSuggestion } : {})}
         {...(options.onDismissPromptSuggestion !== undefined ? { onDismissPromptSuggestion: options.onDismissPromptSuggestion } : {})}
@@ -958,7 +966,7 @@ describe('agent editor panel composer emptiness', () => {
 
     expect(handle.hasPendingInput()).toBe(true)
     expect(
-      (getByRole('button', { name: /send/i }) as HTMLButtonElement).disabled,
+      (getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled,
       'the debounced signal has not caught up yet, which is the point',
     ).toBe(true)
   })
@@ -1325,7 +1333,7 @@ describe('agent editor panel', () => {
 
     send?.()
 
-    expect(onSendMessage).toHaveBeenCalledWith('', [attachment])
+    expect(onSendMessage).toHaveBeenCalledWith('', [attachment], '')
     expect(screen.getByTestId('file-input')).toBeDisabled()
     finishEnqueue?.()
     await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
@@ -1359,12 +1367,14 @@ describe('agent editor panel', () => {
     await waitFor(() => expect(send).toBeTypeOf('function'))
     await waitFor(() => expect(addFiles).toBeTypeOf('function'))
 
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
+
     // Fake `setTimeout` alone, so the 1000 ms debounce cannot fire on its own
     // while every assertion below runs. A full fake clock also stops the
     // FileReader that `addFiles` awaits, and the read never completes.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     send?.()
-    await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('queued text', undefined))
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('queued text', undefined, ''))
     expect(screen.getByTestId('file-input')).toBeDisabled()
     expect(screen.getByTestId('send-spinner')).toBeInTheDocument()
 
@@ -1418,13 +1428,14 @@ describe('agent editor panel', () => {
       </PreferencesProvider>
     ))
     await waitFor(() => expect(send).toBeTypeOf('function'))
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
     send?.()
-    expect(onSendMessage).toHaveBeenCalledWith('draft a', [attachmentA])
+    expect(onSendMessage).toHaveBeenCalledWith('draft a', [attachmentA], '')
 
     setAgentId('a2')
     await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('draft b'))
     expect(screen.getByTestId('file-input')).not.toBeDisabled()
-    expect(screen.getByTestId('send-button')).not.toBeDisabled()
+    await waitFor(() => expect(screen.getByTestId('send-button')).not.toBeDisabled())
     expect(screen.queryByTestId('send-spinner')).not.toBeInTheDocument()
 
     setAgentId('a1')
@@ -1490,8 +1501,10 @@ describe('agent editor panel', () => {
       </PreferencesProvider>
     ))
     await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('saved a1 edit'))
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
     send?.()
-    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [])
+    // The item holds no schedule and the save keeps it so, so the save omits it.
+    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [], undefined)
 
     setAgentId('a2')
     await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('full a2'))
@@ -1727,5 +1740,346 @@ describe('agent editor panel', () => {
     const tooltip = hoverForTooltip(screen.getByTestId('composer-branch-trigger'))
     expect(tooltip!.querySelector('[data-testid="working-tree-directory"]')!.textContent)
       .toBe(WORKTREE_DIR)
+  })
+})
+
+// The composer's schedule control: a draft under the composer's draft key,
+// validated again at send time, seeded from the edited item, and never part
+// of a control answer.
+describe('agent editor panel schedule send', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+  const futureAt = (days = 1) => new Date(Date.now() + days * DAY_MS)
+  const futureField = () => localFieldValueOf(futureAt())
+
+  /** A paused queue whose one item this client already edits, as after a reload. */
+  const ownedEditQueue = (agentId: string, scheduledAt: string) => create(AgentInputQueueSnapshotSchema, {
+    agentId,
+    paused: true,
+    items: [{
+      id: `owned-${agentId}`,
+      agentId,
+      text: `preview ${agentId}`,
+      kind: AgentInputKind.USER_MESSAGE,
+      state: AgentInputState.QUEUED,
+      editOwnerClientId: 'client-a',
+      scheduledAt,
+    }],
+  })
+  const editorText = () => document.querySelector('[data-testid="composer-editor"] .ProseMirror')
+
+  /** Open the popover and apply one field value; the panel draft keeps it. */
+  const applySchedule = (field: string) => {
+    fireEvent.click(screen.getByTestId('schedule-send-trigger'))
+    const input = screen.getByTestId('schedule-send-field') as HTMLInputElement
+    fireEvent.input(input, { target: { value: field } })
+    fireEvent.click(screen.getByTestId('schedule-send-apply'))
+  }
+
+  it('renders an unmarked trigger by default and sends immediate input with no schedule', async () => {
+    vi.useRealTimers()
+    const onSendMessage = vi.fn()
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+    getEditorRef('a1')?.set('hello now')
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalled())
+    expect(onSendMessage.mock.calls[0]?.[2]).toBe('')
+  })
+
+  it('sends the instant that the draft chose, and clears the draft after success', async () => {
+    vi.useRealTimers()
+    const onSendMessage = vi.fn()
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    getEditorRef('a1')?.set('hello later')
+    const at = futureAt()
+    applySchedule(localFieldValueOf(at))
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalled())
+    expect(onSendMessage.mock.calls[0]?.[2]).toBe(at.toISOString())
+    // A successful send clears the draft: the trigger is immediate again.
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled'))
+  })
+
+  it('refuses an expired draft without losing the text or the schedule', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    const onSendMessage = vi.fn()
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    getEditorRef('a1')?.set('hello too late')
+    applySchedule(futureField())
+    // The deadline passes while the draft sits in the composer.
+    vi.setSystemTime(new Date(Date.now() + 48 * 60 * 60 * 1000))
+    fireEvent.click(screen.getByTestId('send-button'))
+    expect(onSendMessage).not.toHaveBeenCalled()
+    // Data loss guards: the editor text and the schedule draft both survive.
+    expect(getEditorRef('a1')?.get()).toBe('hello too late')
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+  })
+
+  it('re-sends an unanswered attempt after its schedule passed, with the schedule unchanged', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    const onSendMessage = vi.fn()
+    const at = futureAt()
+    // The first send of this payload lost its answer, so the Worker may hold
+    // it under the attempt's input ID.
+    const onRetryPendingSend = vi.fn<NonNullable<AgentEditorPanelProps['onRetryPendingSend']>>(() => Promise.resolve(true))
+    renderPanel({ onSendMessage, onRetryPendingSend })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    getEditorRef('a1')?.set('hello again')
+    applySchedule(localFieldValueOf(at))
+    vi.setSystemTime(new Date(at.getTime() + 2 * DAY_MS))
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(onRetryPendingSend).toHaveBeenCalledWith('hello again', [], at.toISOString()))
+    expect(onSendMessage).not.toHaveBeenCalled()
+    await waitFor(() => expect(editorText()).toHaveTextContent(/^$/))
+  })
+
+  it('keeps the schedule draft when the send itself fails', async () => {
+    vi.useRealTimers()
+    const onSendMessage = vi.fn(() => Promise.reject(new Error('worker unreachable')))
+    renderPanel({ onSendMessage })
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    getEditorRef('a1')?.set('try me')
+    applySchedule(futureField())
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true'))
+  })
+
+  it('keeps one agent schedule out of another agent composer', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    applySchedule(futureField())
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+
+    setAgentId('a2')
+    await waitFor(() => expect(getEditorRef('a2')).toBeDefined())
+    expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+  })
+
+  it('keeps schedule readiness when reactive props repeat the same draft identity', async () => {
+    vi.useRealTimers()
+    const [view, setView] = createSignal({ agentId: 'a1' })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel agentId={view().agentId} agent={agent()} repoGitStore={createRepoGitStore()} onSendMessage={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
+    setView({ agentId: 'a1' })
+    expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled()
+  })
+
+  it('closes an open schedule popover when the composer changes agents', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel agentId={agentId()} agent={agent()} repoGitStore={createRepoGitStore()} onSendMessage={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    fireEvent.click(screen.getByTestId('schedule-send-trigger'))
+    const previousPopover = screen.getByTestId('schedule-send-popover')
+    fireEvent.input(screen.getByTestId('schedule-send-field'), { target: { value: futureField() } })
+    setAgentId('a2')
+    await waitFor(() => expect(getEditorRef('a2')).toBeDefined())
+    expect(previousPopover).not.toBeInTheDocument()
+    expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+    fireEvent.click(screen.getByTestId('schedule-send-trigger'))
+    expect(screen.getByTestId('schedule-send-field')).toHaveValue('')
+  })
+
+  it('keeps an unchanged edit schedule by omitting it from the save', async () => {
+    vi.useRealTimers()
+    // A save that re-sent a value derived from the field would move a schedule
+    // in the repeated hour of a fall-back day (scheduleSend.test.ts), and would
+    // overwrite a deadline that a provider moved during the edit. An omitted
+    // schedule keeps whatever the Worker holds.
+    const stored = '2099-06-01T12:00:00.000Z'
+    const onUpdateQueueItem = vi.fn<NonNullable<AgentEditorPanelProps['onUpdateQueueItem']>>(() => Promise.resolve())
+    let send: (() => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={ownedEditQueue('a1', stored)}
+          queueClientId="client-a"
+          onBeginQueueEdit={() => Promise.resolve({ snapshot: ownedEditQueue('a1', stored), attachments: [], text: 'full a1' })}
+          onUpdateQueueItem={onUpdateQueueItem}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(editorText()).toHaveTextContent('full a1'))
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+    send?.()
+    await waitFor(() => expect(onUpdateQueueItem).toHaveBeenCalled())
+    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a1' }), 'full a1', [], undefined)
+  })
+
+  it('clears an edit schedule by sending an empty one', async () => {
+    vi.useRealTimers()
+    const stored = '2099-06-01T12:00:00.000Z'
+    const onUpdateQueueItem = vi.fn<NonNullable<AgentEditorPanelProps['onUpdateQueueItem']>>(() => Promise.resolve())
+    let send: (() => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={ownedEditQueue('a1', stored)}
+          queueClientId="client-a"
+          onBeginQueueEdit={() => Promise.resolve({ snapshot: ownedEditQueue('a1', stored), attachments: [], text: 'full a1' })}
+          onUpdateQueueItem={onUpdateQueueItem}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(editorText()).toHaveTextContent('full a1'))
+    fireEvent.click(screen.getByTestId('schedule-send-trigger'))
+    fireEvent.click(screen.getByTestId('schedule-send-clear'))
+    expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+
+    send?.()
+    await waitFor(() => expect(onUpdateQueueItem).toHaveBeenCalled())
+    expect(onUpdateQueueItem.mock.calls[0]?.[3]).toBe('')
+  })
+
+  it('keeps an applied edit schedule across a switch to another agent and back', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    const stored = futureAt(1).toISOString()
+    const queueA1 = ownedEditQueue('a1', stored)
+    const queueA2 = create(AgentInputQueueSnapshotSchema, { agentId: 'a2', paused: true, items: [] })
+    const onUpdateQueueItem = vi.fn<NonNullable<AgentEditorPanelProps['onUpdateQueueItem']>>(() => Promise.resolve())
+    let send: (() => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={agentId() === 'a1' ? queueA1 : queueA2}
+          queueClientId="client-a"
+          onBeginQueueEdit={() => Promise.resolve({ snapshot: queueA1, attachments: [], text: 'full a1' })}
+          onUpdateQueueItem={onUpdateQueueItem}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(editorText()).toHaveTextContent('full a1'))
+    const applied = futureAt(2)
+    applySchedule(localFieldValueOf(applied))
+
+    setAgentId('a2')
+    await waitFor(() => expect(getEditorRef('a2')).toBeDefined())
+    expect(screen.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
+    setAgentId('a1')
+    await waitFor(() => expect(editorText()).toHaveTextContent('full a1'))
+
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
+    send?.()
+    await waitFor(() => expect(onUpdateQueueItem).toHaveBeenCalled())
+    expect(onUpdateQueueItem.mock.calls[0]?.[3]).toBe(applied.toISOString())
+  })
+
+  it('keeps schedule lifetime aligned with text edited days after the schedule was applied', async () => {
+    vi.useRealTimers()
+    renderPanel()
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    const started = Date.now()
+    applySchedule(localFieldValueOf(new Date(started + 30 * DAY_MS)))
+    getEditorRef('a1')?.set('original draft')
+    await vi.runAllTimersAsync()
+    await flushStorageWrites()
+    vi.setSystemTime(started + 6 * DAY_MS)
+    getEditorRef('a1')?.set('edited on day six')
+    await vi.runAllTimersAsync()
+    await flushStorageWrites()
+    vi.setSystemTime(started + 8 * DAY_MS)
+    setStorageAccountForTests('temporary-draft-account')
+    setStorageAccountForTests(TEST_USER_ID)
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
+    expect((await loadDraft('a1')).content).toBe('edited on day six')
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+  })
+
+  it('keeps text lifetime aligned when only the schedule changes days later', async () => {
+    vi.useRealTimers()
+    renderPanel()
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    const started = Date.now()
+    getEditorRef('a1')?.set('text before the schedule change')
+    await vi.runAllTimersAsync()
+    await flushStorageWrites()
+    vi.setSystemTime(started + 6 * DAY_MS)
+    applySchedule(localFieldValueOf(new Date(started + 30 * DAY_MS)))
+    await flushStorageWrites()
+    vi.setSystemTime(started + 8 * DAY_MS)
+    setStorageAccountForTests('temporary-draft-account')
+    setStorageAccountForTests(TEST_USER_ID)
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
+    expect((await loadDraft('a1')).content).toBe('text before the schedule change')
+    expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
+  })
+
+  it('keeps the ordinary schedule draft while the panel is unmounted', async () => {
+    vi.useRealTimers()
+    // The shell unmounts the panel whenever a non-agent tab has focus.
+    const [shown, setShown] = createSignal(true)
+    render(() => (
+      <PreferencesProvider>
+        <Show when={shown()}>
+          <AgentEditorPanel agentId="a1" agent={agent()} repoGitStore={createRepoGitStore()} onSendMessage={() => {}} />
+        </Show>
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    applySchedule(futureField())
+
+    setShown(false)
+    expect(screen.queryByTestId('schedule-send-trigger')).not.toBeInTheDocument()
+    setShown(true)
+    await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true'))
+  })
+
+  it('offers no schedule control while a control request owns the composer', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, {
+      requestId: 'perm-1',
+      claimToken: 'claim-1',
+      payload: toolRequestPayload('Bash'),
+    })
+    renderPanel({ controlStore, onControlResponse: async () => {} })
+    await vi.waitFor(() => expect(screen.getByTestId('control-banner')).toBeInTheDocument())
+    // The control-response action cluster carries no schedule trigger: a reply
+    // the user owes NOW inherits no ordinary schedule.
+    expect(screen.queryByTestId('schedule-send-trigger')).not.toBeInTheDocument()
   })
 })

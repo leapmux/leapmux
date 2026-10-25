@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
@@ -444,7 +445,7 @@ func TestKimiFailedTurn(t *testing.T) {
 		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "failed",
 			"error": map[string]any{"code": "provider.overloaded", "message": "busy", "retryable": true}})
 		require.Equal(t, 1, rig.sink.AutoScheduleCount())
-		assert.Equal(t, agent.AutoContinueReasonAPIError, rig.sink.LastAutoSchedule().Reason)
+		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, rig.sink.LastAutoSchedule().Kind)
 	})
 
 	t.Run("an error of a subagent is recorded in its own transcript only", func(t *testing.T) {

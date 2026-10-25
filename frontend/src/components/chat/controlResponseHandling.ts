@@ -121,7 +121,7 @@ export function useControlResponseHandling(
   editorContentRefAccessor: () => EditorContentRef | undefined,
   resetEditorHeightFn: () => void,
   getAttachments?: () => FileAttachment[],
-  onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void | Promise<void>,
+  onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => boolean | void | Promise<boolean | void>,
 ): ControlResponseHandlingResult {
   let sendInFlight = false
   const planModeConfig = () => pluginFor(props.agent?.agentProvider)?.configuration?.planMode
@@ -592,7 +592,7 @@ export function useControlResponseHandling(
       return false
     const sendFn = onSendMessageOverride ?? props.onSendMessage
     sendInFlight = true
-    let sent: void | Promise<void>
+    let sent: boolean | void | Promise<boolean | void>
     try {
       sent = sendFn(content, currentAttachments.length > 0 ? currentAttachments : undefined)
     }
@@ -600,9 +600,20 @@ export function useControlResponseHandling(
       sendInFlight = false
       throw error
     }
-    if (sent && typeof sent.then === 'function') {
-      return Promise.resolve(sent).then(() => {
+    // `false` is the composer's REFUSAL: the caller rejected the send (an
+    // expired schedule draft) and the editor must keep its text. Propagating
+    // it is the whole contract -- swallowing it here would clear a draft the
+    // user still holds.
+    if (sent === false) {
+      sendInFlight = false
+      return false
+    }
+    if (sent instanceof Promise) {
+      return sent.then((settled) => {
+        if (settled === false)
+          return false
         resetEditorHeightFn()
+        return undefined
       }).finally(() => {
         sendInFlight = false
       })

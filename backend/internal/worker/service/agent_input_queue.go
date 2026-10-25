@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -38,6 +41,27 @@ func queuedInputTextPreview(value string) string {
 		end--
 	}
 	return value[:end] + "…"
+}
+
+// parseQueueSchedule reads one external schedule field. An empty value means
+// immediate; anything else parses as RFC3339, normalizes to UTC, and floors to
+// the millisecond so the wire instant survives the canonical DATETIME column
+// byte-exactly. A malformed value is ErrInvalidInput, and a past value stays
+// valid queue data: the queue counts it immediate. The normalized UTC instant
+// must still fit the RFC3339 year range.
+func parseQueueSchedule(value string) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	at, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: scheduled_at is not an RFC3339 timestamp", inputqueue.ErrInvalidInput)
+	}
+	at = sqltime.FloorMillis(at.UTC())
+	if _, err := at.MarshalText(); err != nil {
+		return nil, fmt.Errorf("%w: scheduled_at is outside the UTC RFC3339 range", inputqueue.ErrInvalidInput)
+	}
+	return &at, nil
 }
 
 func queueAttachments(attachments []*leapmuxv1.Attachment) []inputqueue.Attachment {
@@ -464,6 +488,15 @@ func acceptedTranscriptProto(message inputqueue.AcceptedTranscript) *leapmuxv1.A
 	}
 }
 
+// queueScheduleProto emits the canonical UTC timestamp the Worker derived, or
+// empty for an immediate item.
+func queueScheduleProto(scheduledAt *time.Time) string {
+	if scheduledAt == nil {
+		return ""
+	}
+	return timefmt.Format(*scheduledAt)
+}
+
 func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueueSnapshot {
 	result := &leapmuxv1.AgentInputQueueSnapshot{
 		AgentId: snapshot.AgentID, Revision: snapshot.Revision,
@@ -481,10 +514,11 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 			}
 		}
 		result.Items[i] = &leapmuxv1.QueuedAgentInput{
-			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.Text),
-			Attachments: attachments, Order: item.Order, State: item.State,
+			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.TextPreview),
+			Attachments: attachments, Order: item.Position, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
 			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt,
+			ScheduledAt: queueScheduleProto(item.ScheduledAt), ReorderSegment: item.ReorderSegment,
 			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		}
 	}
@@ -498,10 +532,16 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 				sendQueueError(sender, fmt.Errorf("%w: the worker creates question-answer inputs", inputqueue.ErrInvalidInput))
 				return
 			}
+			scheduledAt, err := parseQueueSchedule(r.GetScheduledAt())
+			if err != nil {
+				sendQueueError(sender, err)
+				return
+			}
 			snapshot, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Text: r.GetText(),
 				Attachments:      queueAttachments(r.GetAttachments()),
 				ReclassifyOnEdit: r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+				ScheduledAt:      scheduledAt,
 			})
 			if sendQueueError(sender, err) {
 				return
@@ -531,7 +571,24 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 
 	registerAgentGuardedByID(d, "UpdateQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateQueuedAgentInputRequest, sender channel.ResponseWriter) {
-			snapshot, err := svc.InputQueue.Update(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetClientId(), r.GetExpectedVersion(), r.GetText(), queueAttachments(r.GetAttachments()))
+			schedule := inputqueue.KeepSchedule()
+			if r.ScheduledAt != nil {
+				scheduledAt, err := parseQueueSchedule(r.GetScheduledAt())
+				if err != nil {
+					sendQueueError(sender, err)
+					return
+				}
+				schedule = inputqueue.ReplaceSchedule(scheduledAt)
+			}
+			snapshot, err := svc.InputQueue.Update(bgCtx(), inputqueue.UpdateRequest{
+				AgentID:         r.GetAgentId(),
+				InputID:         r.GetInputId(),
+				ClientID:        r.GetClientId(),
+				ExpectedVersion: r.GetExpectedVersion(),
+				Text:            r.GetText(),
+				Attachments:     queueAttachments(r.GetAttachments()),
+				Schedule:        schedule,
+			})
 			if sendQueueError(sender, err) {
 				return
 			}
@@ -614,8 +671,9 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrNotHead), errors.Is(err, inputqueue.ErrRetryState),
 		errors.Is(err, inputqueue.ErrUncertainConfirmation), errors.Is(err, inputqueue.ErrTurnEnded),
 		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
+		errors.Is(err, inputqueue.ErrScheduled),
 		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrPreemptionState),
-		errors.Is(err, inputqueue.ErrManagerStopped):
+		errors.Is(err, inputqueue.ErrScheduleOrder), errors.Is(err, inputqueue.ErrManagerStopped):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrInvalidInput), errors.Is(err, inputqueue.ErrQueueFull),
 		errors.Is(err, inputqueue.ErrItemTooLarge), errors.Is(err, inputqueue.ErrQueueAttachmentsLarge):

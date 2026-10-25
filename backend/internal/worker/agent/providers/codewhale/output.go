@@ -232,7 +232,7 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 	if a.markTurnFinished(turnID) {
 		a.PublishTurnActive()
 	}
-	a.sink.CancelAutoContinue(agent.AutoContinueReasonAPIError)
+	a.sink.CancelServerErrorRetry()
 	a.refreshContextUsage()
 }
 

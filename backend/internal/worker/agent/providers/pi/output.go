@@ -186,7 +186,7 @@ type piAgentEndEnvelope struct {
 }
 
 // piRetryableWebSocketError is the exact errorMessage Pi emits for transient
-// WebSocket disconnects that we auto-retry via the auto-continue pipeline.
+// WebSocket disconnects, which the input queue retries automatically.
 const piRetryableWebSocketError = "WebSocket error"
 
 // piDialogMethods is the set of extension UI methods that block waiting for an
@@ -413,7 +413,7 @@ func piTurnDurationMs(startedAt, endedAt time.Time) *int64 {
 }
 
 // isRetryableFailure reports whether the turn ended on the one transient
-// failure LeapMux itself auto-continues past.
+// failure that LeapMux itself retries automatically.
 func (env piAgentEndEnvelope) isRetryableFailure() bool {
 	// Walk from the end: only the final assistant message reflects the
 	// turn's final outcome; earlier assistant entries are intra-turn.

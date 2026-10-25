@@ -2294,7 +2294,7 @@ func TestSendControlResponse_AsyncQuestionAnswerQueuesTheQuestionAnswer(t *testi
 	require.NoError(t, err)
 	require.Len(t, queue.Items, 1)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, queue.Items[0].Kind)
-	assert.Equal(t, "Red", queue.Items[0].Text)
+	assert.Equal(t, "Red", queue.Items[0].TextPreview)
 	assert.NotEmpty(t, answer.InputID)
 	assert.Equal(t, answer.InputID, queue.Items[0].ID, "the input carries the answer's queue identity")
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
@@ -2474,7 +2474,7 @@ func TestResumeControlResponseFinalizationQueuesTheQuestionAnswerOnce(t *testing
 	require.Len(t, queue.Items, 1)
 	assert.Equal(t, "control-recovery", queue.Items[0].ID)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, queue.Items[0].Kind)
-	assert.Equal(t, "Red", queue.Items[0].Text)
+	assert.Equal(t, "Red", queue.Items[0].TextPreview)
 
 	require.NoError(t, svc.resumeControlResponseFinalization(answer))
 	again, err := svc.InputQueue.Snapshot(ctx, "agent-1")
@@ -2630,7 +2630,7 @@ func TestProcessControlResponseRejectsInvalidQueuedAnswerBeforeClaim(t *testing.
 			snapshot, err := svc.InputQueue.Snapshot(t.Context(), row.ID)
 			require.NoError(t, err)
 			require.Len(t, snapshot.Items, 1)
-			assert.Equal(t, "Red", snapshot.Items[0].Text)
+			assert.Equal(t, "Red", snapshot.Items[0].TextPreview)
 		})
 	}
 }

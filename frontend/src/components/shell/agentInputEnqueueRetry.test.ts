@@ -21,6 +21,7 @@ function message(text: string) {
     kind: AgentInputKind.USER_MESSAGE,
     text,
     attachments: [] as FileAttachment[],
+    scheduledAt: '',
   }
 }
 
@@ -33,6 +34,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'hello',
       attachments: [attachment('a.txt', [1, 2, 3])],
+      scheduledAt: '',
     }
 
     expect(retry.inputIdFor(first)).toBe('input-1')
@@ -51,6 +53,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'hello',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
     const accepted = retry.inputIdFor(payload)
 
@@ -67,6 +70,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'message',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
 
     expect(retry.inputIdFor(message)).toBe('input-1')
@@ -86,6 +90,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'first',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
     const second = { ...first, text: 'second' }
 
@@ -135,6 +140,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'first',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
     const firstId = retry.inputIdFor(first)
     const second = { ...first, text: 'second' }
@@ -143,5 +149,79 @@ describe('agent input enqueue retry', () => {
     retry.markAccepted(firstId)
 
     expect(retry.inputIdFor(second)).toBe(secondId)
+  })
+})
+
+// The schedule is part of the payload identity: a resend that changes only the
+// schedule must not reuse the input ID the Worker already bound to the old
+// deadline.
+describe('agent input enqueue retry schedule', () => {
+  it('reuses the ID for an identical schedule and mints one for each change', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+
+    expect(retry.inputIdFor(scheduled)).toBe('input-1')
+    expect(retry.inputIdFor({ ...scheduled })).toBe('input-1')
+    expect(retry.inputIdFor({ ...message('later') })).toBe('input-2')
+    expect(retry.inputIdFor({ ...message('later'), scheduledAt: '2031-01-01T09:00:00.000Z' })).toBe('input-3')
+  })
+})
+
+// The composer asks whether a send re-sends an unanswered attempt, so that an
+// expired schedule does not force a changed payload and a second input ID.
+describe('agent input enqueue retry pending attempts', () => {
+  it('acquires only an uncertain attempt until the Worker accepts it', () => {
+    const retry = createAgentInputEnqueueRetry(() => 'input-1')
+    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+    expect(retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
+    const id = retry.inputIdFor(scheduled)
+    expect(retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
+    retry.markUncertain(id)
+    expect(retry.inputIdForPendingAttempt({ ...scheduled })).toBe(id)
+    retry.markAccepted(id)
+    expect(retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
+  })
+
+  it('does not acquire a pending attempt for a payload that differs in any part', () => {
+    const retry = createAgentInputEnqueueRetry(() => 'input-1')
+    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+    retry.markUncertain(retry.inputIdFor(scheduled))
+    for (const changed of [
+      message('later'),
+      { ...scheduled, text: 'other' },
+      { ...scheduled, agentId: 'agent-2' },
+      { ...scheduled, kind: AgentInputKind.CONTROL_FEEDBACK },
+      { ...scheduled, attachments: [attachment('a.txt', [1])] },
+    ])
+      expect(retry.inputIdForPendingAttempt(changed)).toBeUndefined()
+  })
+
+  it('does not mint an id for an absent pending attempt', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    expect(retry.inputIdForPendingAttempt(message('hello'))).toBeUndefined()
+    expect(retry.inputIdFor(message('hello'))).toBe('input-1')
+  })
+
+  it('removes a known refusal but retains earlier delivery uncertainty', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const payload = message('hello')
+    const refused = retry.inputIdFor(payload)
+    retry.markRefused(refused)
+    const uncertain = retry.inputIdFor(payload)
+    expect(uncertain).not.toBe(refused)
+    retry.markUncertain(uncertain)
+    retry.markRefused(uncertain)
+    expect(retry.inputIdForPendingAttempt(payload)).toBe(uncertain)
+  })
+
+  it('detects changed attachment bytes when acquiring a pending attempt', () => {
+    const retry = createAgentInputEnqueueRetry()
+    const payload = { ...message('hello'), attachments: [attachment('a.txt', [1, 2])] }
+    retry.markUncertain(retry.inputIdFor(payload))
+    payload.attachments[0]!.data[0] = 9
+    expect(retry.inputIdForPendingAttempt(payload)).toBeUndefined()
   })
 })
