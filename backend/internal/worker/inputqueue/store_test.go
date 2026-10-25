@@ -23,7 +23,9 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
+// newQueueDatabase opens a migrated worker database that holds one open
+// agent, "agent-1". Every queue fixture starts from it.
+func newQueueDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	database, err := workerdb.Open(filepath.Join(t.TempDir(), "queue.sqlite"), sqlitedb.Config{})
 	require.NoError(t, err)
@@ -33,6 +35,12 @@ func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
+	return database
+}
+
+func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
+	t.Helper()
+	database := newQueueDatabase(t)
 	return database, NewStore(database, nil)
 }
 
@@ -141,6 +149,29 @@ func queueSnapshotIDs(snapshot Snapshot) []string {
 		ids = append(ids, item.ID)
 	}
 	return ids
+}
+
+// A refused steer states its own reason. "active turn ended before steering"
+// is the answer only when no turn runs.
+func TestStorePrepareSteerStatesWhyItRefuses(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "head", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "head"})
+	require.NoError(t, err)
+
+	prepared, _, err := store.PrepareSteer(ctx, "agent-1", "head", false)
+	assert.ErrorIs(t, err, ErrTurnEnded, "no turn runs")
+	assert.Nil(t, prepared)
+
+	_, _, err = store.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", "head", "other-client", false)
+	require.NoError(t, err)
+	prepared, _, err = store.PrepareSteer(ctx, "agent-1", "head", false)
+	assert.ErrorIs(t, err, ErrSteeringState, "another client edits the head while the turn runs")
+	assert.NotErrorIs(t, err, ErrTurnEnded)
+	assert.Nil(t, prepared)
 }
 
 func TestStorePrepareSteerForEchoReservesNoSequence(t *testing.T) {
@@ -834,9 +865,9 @@ func TestStoreEditBarrierTakeoverAndAtomicUpdate(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEditOwned)
 	snapshot, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "client-b", true)
 	require.NoError(t, err)
-	_, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version+1, "stale", nil, nil)
+	_, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version+1, "stale", nil, ReplaceSchedule(nil))
 	assert.ErrorIs(t, err, ErrVersionConflict)
-	snapshot, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version, "/summarize", nil, nil)
+	snapshot, err = store.Update(ctx, "agent-1", "one", "client-b", snapshot.Items[0].Version, "/summarize", nil, ReplaceSchedule(nil))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, snapshot.Items[0].Kind)
 	assert.Empty(t, snapshot.Items[0].EditOwner)
@@ -883,7 +914,7 @@ func TestStoreEditPreservesGeneratedOperationKind(t *testing.T) {
 	require.NoError(t, err)
 	snapshot, _, _, err := store.BeginEdit(ctx, "agent-1", "generated", "client", false)
 	require.NoError(t, err)
-	snapshot, err = store.Update(ctx, "agent-1", "generated", "client", snapshot.Items[0].Version, "/compact", []Attachment{{Filename: "plan.txt", Data: []byte("changed")}}, nil)
+	snapshot, err = store.Update(ctx, "agent-1", "generated", "client", snapshot.Items[0].Version, "/compact", []Attachment{{Filename: "plan.txt", Data: []byte("changed")}}, ReplaceSchedule(nil))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, snapshot.Items[0].Kind)
 	require.Len(t, snapshot.Items[0].Metadata, 1)

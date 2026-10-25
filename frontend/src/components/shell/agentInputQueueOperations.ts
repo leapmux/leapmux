@@ -16,8 +16,8 @@ import { createAgentInputEnqueueRetry } from './agentInputEnqueueRetry'
  * decision, so it lives here and `TileRenderer` sends no Worker RPC of its own.
  *
  * The bag holds no per-mount state, so the shell builds it once beside the
- * other renderer-level helpers. The composer remounts on every tab switch, and
- * `enqueueRetry` must outlive that remount.
+ * other renderer-level helpers. The composer unmounts whenever a non-agent tab
+ * has focus, and `enqueueRetry` must outlive that unmount.
  */
 export function createAgentInputQueueOperations(deps: {
   /** The tab join. Each command resolves its Worker through this. */
@@ -68,7 +68,12 @@ export function createAgentInputQueueOperations(deps: {
       clientId: deps.clientId(),
       takeover,
     }))
-  const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[], scheduledAt?: string) => {
+  /**
+   * Save an open edit. `scheduledAt` is undefined to keep the stored schedule,
+   * empty to clear it, or the new wire schedule. The parameter is required, so
+   * a caller states which one it means.
+   */
+  const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[], scheduledAt: string | undefined) => {
     await runQueueRpc('Failed to save queued input', () => workerRpc.updateQueuedAgentInput(queueWorkerID(item), {
       agentId: item.agentId,
       inputId: item.id,
@@ -80,8 +85,8 @@ export function createAgentInputQueueOperations(deps: {
         mimeType: attachment.mimeType,
         data: attachment.data,
       })),
-      // An explicit empty string clears the schedule; undefined leaves the
-      // request shape the caller built.
+      // An omitted `scheduled_at` keeps the stored schedule, and an empty one
+      // clears it.
       ...(scheduledAt !== undefined ? { scheduledAt } : {}),
     }))
   }
@@ -122,7 +127,7 @@ export function createAgentInputQueueOperations(deps: {
     const initialAgentTab = deps.view.getAgentTab(initialAgentID)
     await runQueueRpc('Failed to change queue pause state', () => workerRpc.setAgentInputQueuePaused(initialAgentTab?.workerId ?? '', { agentId: initialAgentID, paused }))
   }
-  const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments?: FileAttachment[], scheduledAt?: string) => {
+  const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments?: FileAttachment[], scheduledAt = '') => {
     // One read of the focused agent, at send time. The RPC below must reach
     // the agent that the user typed into, never the one that a tab switch
     // focused while the enqueue was in flight.
@@ -135,7 +140,7 @@ export function createAgentInputQueueOperations(deps: {
     deps.forceScrollToBottom()
     const sendAgent = deps.view.getAgentTab(initialAgentID)
     const attachments = fileAttachments ?? []
-    const inputId = enqueueRetry.inputIdFor({ agentId: initialAgentID, kind, text: content, attachments, ...(scheduledAt !== undefined ? { scheduledAt } : {}) })
+    const inputId = enqueueRetry.inputIdFor({ agentId: initialAgentID, kind, text: content, attachments, scheduledAt })
     await runQueueRpc('Failed to queue message', () => workerRpc.enqueueAgentInput(sendAgent?.workerId ?? '', {
       agentId: initialAgentID,
       inputId,
@@ -146,15 +151,31 @@ export function createAgentInputQueueOperations(deps: {
         mimeType: attachment.mimeType,
         data: attachment.data,
       })),
-      ...(scheduledAt !== undefined ? { scheduledAt } : {}),
+      // Empty for no schedule, which `scheduled_at` reads as immediate.
+      scheduledAt,
     }))
     enqueueRetry.markAccepted(inputId)
   }
   // One command for each kind that the composer sends. The kind is a wire
   // value of this request, so `AgentInputKind` stays inside this module and no
   // caller selects the enum member.
-  const sendMessage = (content: string, fileAttachments?: FileAttachment[], scheduledAt?: string) =>
+  const sendMessage = (content: string, fileAttachments?: FileAttachment[], scheduledAt = '') =>
     enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments, scheduledAt)
+  /**
+   * Whether `sendMessage` with exactly these arguments re-sends an attempt to
+   * the focused agent whose answer never arrived. That attempt may have
+   * reached the Worker, and only the unchanged payload reuses its input ID.
+   */
+  const isPendingMessage = (content: string, fileAttachments?: FileAttachment[], scheduledAt = '') => {
+    const agentId = deps.focusedAgentId()
+    return agentId !== null && enqueueRetry.hasPendingAttempt({
+      agentId,
+      kind: AgentInputKind.USER_MESSAGE,
+      text: content,
+      attachments: fileAttachments ?? [],
+      scheduledAt,
+    })
+  }
   const sendControlFeedback = (content: string) =>
     enqueueComposerInput(AgentInputKind.CONTROL_FEEDBACK, content)
 
@@ -169,6 +190,7 @@ export function createAgentInputQueueOperations(deps: {
     preemptQueueItem,
     setQueuePaused,
     sendMessage,
+    isPendingMessage,
     sendControlFeedback,
   }
 }

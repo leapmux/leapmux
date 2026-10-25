@@ -536,7 +536,7 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, schedule.Kind)
-	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.ScheduledAt)
+	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.ResetAt)
 	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"rejected","resetsAt":1893456000}`, string(schedule.SourcePayload))
 
 	// Persist the exact raw rate_limit_event as AGENT.
@@ -617,7 +617,7 @@ func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
 		}
 	}`))
 
-	assert.Equal(t, 0, sink.AutoScheduleCount(), "an allowed_warning event must not schedule an auto-continue")
+	assert.Equal(t, 0, sink.AutoScheduleCount(), "an allowed_warning event must not schedule an automatic retry")
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
 }
@@ -668,7 +668,7 @@ func TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset(t *testing.
 	}`))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
-	assert.Equal(t, time.Unix(1893460000, 0).UTC(), sink.LastAutoSchedule().ScheduledAt)
+	assert.Equal(t, time.Unix(1893460000, 0).UTC(), sink.LastAutoSchedule().ResetAt)
 }
 
 // TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact verifies rejected without resetsAt.

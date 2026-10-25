@@ -153,13 +153,14 @@ order of their times. A row can only be reordered inside its own group — an
 immediate item never swaps with a scheduled one, and two scheduled items swap
 only when they wait for the exact same instant. A deadline that passes while
 you watch simply promotes its row to the immediate group; nothing is re-sent
-or lost.
+or lost. The promoted row still waits behind an item that is on its way to the
+agent, and behind one whose delivery failed or is uncertain.
 
 Providers use the same mechanism for their own automatic retries. When Claude
-Code hits a usage limit that lifts at a known time, or a turn fails with a
-retryable server error, the queue gains an **Auto-retry (usage limit)** or
-**Auto-retry (server error)** row with its own countdown — visible, reorderable
-within its group, and cancellable like any other item. Pausing the queue holds
+Code or Codex hits a usage limit that lifts at a known time, or a turn fails
+with a retryable server error, the queue gains an **Auto-retry (usage limit)**
+or **Auto-retry (server error)** row that shows the time it waits for. The row
+is visible, reorderable within its group, and cancellable like any other item. Pausing the queue holds
 a matured retry exactly as it holds anything else; resuming delivers it.
 
 ### Pausing

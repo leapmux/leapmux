@@ -673,19 +673,15 @@ func New(cfg Config) *Service {
 	// through its service facet; the queue publishes like any other input.
 	svc.Output.SetAutoRetryFuncs(
 		func(agentID string, schedule agent.AutoRetrySchedule) {
-			if err := svc.InputQueue.ScheduleAutoRetry(bgCtx(), agentID, schedule); err != nil {
-				slog.Error("auto-retry schedule failed", "agent_id", agentID, "kind", schedule.Kind.String(), "error", err)
-			}
+			logAutoRetryError("schedule an automatic retry", agentID,
+				svc.InputQueue.ScheduleAutoRetry(bgCtx(), agentID, schedule), "kind", schedule.Kind.String())
 		},
 		func(agentID string, kind leapmuxv1.AgentInputKind) {
-			if err := svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind); err != nil {
-				slog.Error("auto-retry cancel failed", "agent_id", agentID, "kind", kind.String(), "error", err)
-			}
+			logAutoRetryError("cancel an automatic retry", agentID,
+				svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind), "kind", kind.String())
 		},
 		func(agentID string) {
-			if err := svc.InputQueue.CancelAutoRetries(bgCtx(), agentID); err != nil {
-				slog.Error("auto-retry cleanup failed", "agent_id", agentID, "error", err)
-			}
+			logAutoRetryError("cancel the automatic retries", agentID, svc.InputQueue.CancelAutoRetries(bgCtx(), agentID))
 		},
 	)
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
@@ -849,7 +845,7 @@ func (svc *Service) RestoreState() {
 	if err := svc.InputQueue.RecoverState(bgCtx()); err != nil {
 		slog.Warn("recover agent input queues failed", "error", err)
 	}
-	// Before anything else, mark every still-active background-task row
+	// Mark every still-active background-task row
 	// 'interrupted': the previous worker process was cut off (crash/restart),
 	// so a row left 'pending'/'running' is genuinely not making progress. Pure
 	// DB -- caches do not exist yet at boot. Logs the affected-row count so a
@@ -870,6 +866,21 @@ func (svc *Service) RestoreState() {
 	} else if endedCount > 0 {
 		slog.Info("marked background tasks interrupted on boot", "count", endedCount)
 	}
+}
+
+// logAutoRetryError logs a failed automatic-retry request from a provider or
+// from lifecycle cleanup. Two refusals are expected, not faults: a stopped
+// queue refuses every request during a Worker shutdown, and a closed or
+// archived agent refuses a late provider report. Both log at Debug.
+func logAutoRetryError(action, agentID string, err error, attributes ...any) {
+	if err == nil {
+		return
+	}
+	level := slog.LevelError
+	if errors.Is(err, inputqueue.ErrManagerStopped) || errors.Is(err, inputqueue.ErrConflict) {
+		level = slog.LevelDebug
+	}
+	slog.Log(bgCtx(), level, "failed to "+action, append([]any{"agent_id", agentID, "error", err}, attributes...)...)
 }
 
 // HandleAgentProcessExit is the ExitHandler body: it clears the exited

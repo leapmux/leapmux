@@ -197,17 +197,23 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	controls, err := svc.Queries.ListControlRequestsByAgentID(ctx, agentID)
 	require.NoError(t, err)
 	assert.Empty(t, controls)
-	// The archived agent's scheduled retry is gone, and unarchiving cannot
-	// resurrect it: the scheduler refuses a closed-or-archived agent, so the
-	// item exists nowhere to come back from.
+	// The archive removes the agent's scheduled retry, and unarchiving cannot
+	// bring one back: the scheduler refuses an archived agent, so a provider
+	// report that arrives late, while the workspace is archived, stores
+	// nothing that the unarchive could resume.
 	queueSnapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
 	assert.Empty(t, queueSnapshot.Items)
+	err = svc.InputQueue.ScheduleAutoRetry(ctx, agentID, agent.AutoRetrySchedule{
+		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		SourcePayload: []byte(`{"error":"overloaded"}`),
+	})
+	require.ErrorIs(t, err, inputqueue.ErrConflict, "an archived agent refuses a new retry")
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
 	queueSnapshot, err = svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
-	assert.Empty(t, queueSnapshot.Items, "unarchive does not resurrect a cancelled retry")
+	assert.Empty(t, queueSnapshot.Items, "the unarchived agent has no retry to resume")
 	assert.True(t, agentCleanup.Load())
 	assert.True(t, terminalCleanup.Load())
 }

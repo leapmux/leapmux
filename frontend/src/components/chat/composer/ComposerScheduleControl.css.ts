@@ -1,24 +1,26 @@
 import { style } from '@vanilla-extract/css'
-import { popoverColumnClamp } from '~/styles/popover.css'
 
 /**
  * The schedule-send popover. The trigger reuses `actionButtonClass` from the
- * composer's action row, so it renders as one of Send's siblings; only the
- * popover body is this module's own.
+ * composer's action row, so it renders as one of Send's siblings. The popover
+ * is a `DropdownMenu` card, which supplies the surface, the inset and the
+ * viewport clamp, so this module holds only the body's own layout.
+ *
+ * The popover element itself takes no `display`: an author `display` beats the
+ * user agent's `display: none` for a closed popover, and keeps the closed
+ * popover laid out (see `~/styles/popover.css.ts`). The body below carries the
+ * column instead.
  */
 
-export const schedulePopover = style([popoverColumnClamp, {
-  backgroundColor: 'var(--background)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  boxShadow: 'var(--shadow-large)',
-  padding: 'var(--space-2)',
-  zIndex: 300,
+export const schedulePopover = style({
   minWidth: '260px',
+})
+
+export const scheduleBody = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-2)',
-}])
+})
 
 export const scheduleField = style({
   display: 'flex',
@@ -40,7 +42,7 @@ export const scheduleInput = style({
 })
 
 export const scheduleError = style({
-  color: 'var(--destructive-foreground, var(--foreground))',
+  color: 'var(--danger)',
   fontSize: 'var(--text-8)',
 })
 

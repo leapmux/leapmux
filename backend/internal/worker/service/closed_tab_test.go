@@ -349,6 +349,11 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		Clock:            cfg.clock,
 		MaxMessageSize:   cfg.maxMessageSize,
 	})
+	// The queue arms a real maturity timer for every scheduled item, and a
+	// timer that outlives the case would read a closed database in a later
+	// one. Cleanups run last-in first-out, so this stop runs before the
+	// database close registered above.
+	t.Cleanup(svc.InputQueue.StopAndWait)
 	svc.ControlIPC = cfg.remoteIPC
 	// Before RegisterAll, exactly like every other field of Service: the
 	// struct's own contract makes that the last point at which a write is

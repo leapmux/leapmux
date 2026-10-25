@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -76,13 +77,20 @@ func TestOrderedTranscriptKeepsTheOldRowAndSkipsAnEffectAfterSessionReplacement(
 	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
 	services.SetTurnState(agent.TurnState{Active: true}, 1)
 	require.Error(t, services.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"text":"old"}`)}, agent.SpanInfo{}))
-	services.ScheduleAutoRetry(agent.AutoRetrySchedule{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR})
+	// Every retry method waits behind the failed write, so the replacement
+	// skips each one. A method without an ordered override would reach the
+	// sink at once.
+	services.ScheduleUsageLimitRetry(time.Now().Add(time.Hour), []byte(`{"reset":1}`))
+	services.ScheduleServerErrorRetry([]byte(`{"error":1}`))
+	services.CancelUsageLimitRetry()
+	services.CancelServerErrorRetry()
 	sink.UpdateSessionID("new")
 	sink.PersistErr = nil
 	require.NoError(t, queue.Flush())
 	messages := sink.Messages()
 	assert.Equal(t, "old", messages[len(messages)-1].AgentSessionID)
 	assert.Zero(t, sink.AutoScheduleCount())
+	assert.Zero(t, sink.AutoCancelCount())
 	active, _ := sink.LastTurnActive()
 	assert.True(t, active)
 }

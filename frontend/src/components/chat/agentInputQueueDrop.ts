@@ -2,7 +2,10 @@ import type { QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import { AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /**
- * The whole reorder policy of the agent input queue, as pure functions.
+ * The browser's half of the agent input queue's reorder policy, as pure
+ * functions. The Worker derives which rows may trade places (each row's
+ * `reorderSegment`); this module turns a gesture into the move that the
+ * Worker accepts.
  *
  * Its own module, because a pointer drag cannot be reproduced in a unit test:
  * solid-dnd activates on real pointer geometry and collision detection, which
@@ -27,20 +30,24 @@ export function isLockedInputState(state: AgentInputState): boolean {
   return state === AgentInputState.DISPATCHING || state === AgentInputState.AWAITING_ECHO
 }
 
-/**
- * The reorder group the Worker derived for one item: the empty string is the
- * immediate/past-due group, and a future item's group is its scheduled
- * instant. The browser COMPARES this value and never re-derives it, because
- * the browser clock can disagree with the Worker's -- an item whose deadline
- * just passed must keep the group the Worker stamped until the next snapshot.
- */
-export function reorderGroupOf(item: QueuedAgentInput): string {
-  return item.reorderGroup
-}
-
 /** Find the first input that does not await an echo, or return -1. */
 export function queueHeadIndex(items: readonly QueuedAgentInput[]): number {
   return items.findIndex(item => item.state !== AgentInputState.AWAITING_ECHO)
+}
+
+/**
+ * Whether two rows sit in one reorder segment, so a move between them is legal.
+ *
+ * The Worker derives each row's `reorderSegment` from the same rule that
+ * `Store.Move` enforces: a maximal run of contiguous, unlocked rows of one
+ * reorder group. An immediate item and a future one never share a segment, two
+ * future items share one only at exactly the same scheduled instant, and a
+ * locked row (DISPATCHING or AWAITING_ECHO) carries 0, which matches nothing.
+ * The browser compares the values and never derives them, because the
+ * Worker's clock decides which items are still future.
+ */
+export function shareReorderSegment(a: QueuedAgentInput, b: QueuedAgentInput): boolean {
+  return a.reorderSegment !== 0 && a.reorderSegment === b.reorderSegment
 }
 
 /** The move a reorder stands for, in the shape `MoveQueuedAgentInput` takes. */
@@ -58,23 +65,18 @@ export interface QueueMove {
  * `beforeInputId` identifies the item that must follow the moved item.
  * MoveQueuedAgentInput defines this order. The Worker takes the item out of the list
  * first. It then puts the item back in front of `beforeInputId`. An empty
- * string moves the item to the end.
+ * string moves the item to the end of its segment.
  *
  * A downward move points at the item after the target, because the removal
  * already shifted every item below the source up by one slot. An upward move
  * points at the target itself.
  *
- * A move stays inside ONE reorder group: the moved item and its target must
- * carry the same Worker-derived `reorderGroup`, and every row between them
- * must too, unlocked. An immediate item and a future one never trade places,
- * and two future items share a segment only at exactly the same scheduled
- * instant. A downward move whose follower belongs to another group takes the
- * SEGMENT END (an empty `beforeInputId`), which the Worker resolves as the end
- * of the moved item's compatible unlocked segment -- not the queue's end.
- *
- * DISPATCHING and AWAITING_ECHO lock a row. Neither endpoint can be locked,
- * and no locked row may sit between them. The provider can already read that
- * input, so a move must not displace it.
+ * A move stays inside ONE reorder segment (see {@link shareReorderSegment}):
+ * the moved item and its target must share one. A downward move whose
+ * follower is outside that segment -- absent, locked, or in another group --
+ * takes the SEGMENT END (an empty `beforeInputId`), which the Worker resolves
+ * as the end of the moved item's segment, not the queue's end. Naming a locked
+ * follower would be refused.
  */
 export function resolveQueueMove(
   items: readonly QueuedAgentInput[],
@@ -83,26 +85,11 @@ export function resolveQueueMove(
 ): QueueMove | undefined {
   const moved = items[fromIndex]
   const target = items[toIndex]
-  if (!moved || !target || fromIndex === toIndex)
+  if (!moved || !target || fromIndex === toIndex || !shareReorderSegment(moved, target))
     return undefined
-  if (isLockedInputState(moved.state) || isLockedInputState(target.state))
-    return undefined
-  if (reorderGroupOf(moved) !== reorderGroupOf(target))
-    return undefined
-  const from = Math.min(fromIndex, toIndex)
-  const to = Math.max(fromIndex, toIndex)
-  for (let index = from; index <= to; index++) {
-    const between = items[index]
-    if (!between || isLockedInputState(between.state) || reorderGroupOf(between) !== reorderGroupOf(moved))
-      return undefined
-  }
   if (fromIndex < toIndex) {
     const follower = items[toIndex + 1]
-    if (!follower)
-      return { moved, beforeInputId: '' }
-    if (isLockedInputState(follower.state))
-      return undefined
-    if (reorderGroupOf(follower) !== reorderGroupOf(moved))
+    if (!follower || !shareReorderSegment(moved, follower))
       return { moved, beforeInputId: '' }
     return { moved, beforeInputId: follower.id }
   }
@@ -110,31 +97,21 @@ export function resolveQueueMove(
 }
 
 /**
- * The ids whose rows have at least one legal destination: their contiguous,
- * unlocked, same-group segment holds another row. One scan, because every row
- * asks the same question and a per-row scan costs the square of the queue
- * length on every snapshot.
+ * The ids whose rows have at least one legal destination: their segment holds
+ * another row. One pass, because every row asks the same question and a
+ * per-row scan costs the square of the queue length on every snapshot.
  */
 export function movableSegmentIds(items: readonly QueuedAgentInput[]): Set<string> {
-  const movable = new Set<string>()
-  let run: QueuedAgentInput[] = []
-  const flush = () => {
-    if (run.length >= 2)
-      run.forEach(item => movable.add(item.id))
-    run = []
-  }
+  const sizes = new Map<number, number>()
   for (const item of items) {
-    if (isLockedInputState(item.state)) {
-      flush()
-      continue
-    }
-    const last = run[run.length - 1]
-    if (last !== undefined && reorderGroupOf(last) !== reorderGroupOf(item)) {
-      flush()
-    }
-    run.push(item)
+    if (item.reorderSegment !== 0)
+      sizes.set(item.reorderSegment, (sizes.get(item.reorderSegment) ?? 0) + 1)
   }
-  flush()
+  const movable = new Set<string>()
+  for (const item of items) {
+    if ((sizes.get(item.reorderSegment) ?? 0) >= 2)
+      movable.add(item.id)
+  }
   return movable
 }
 

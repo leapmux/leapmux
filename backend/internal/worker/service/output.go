@@ -464,9 +464,9 @@ func (h *OutputHandler) cancelAutoRetryKind(agentID string, kind leapmuxv1.Agent
 	h.cancelAutoRetry(agentID, kind)
 }
 
-// cancelAutoRetryRequest removes every pending retry of one agent. Runtime
+// cancelAllAutoRetries removes every pending retry of one agent. Runtime
 // cleanup calls it after the transcript mutation lock is released.
-func (h *OutputHandler) cancelAutoRetryRequest(agentID string) {
+func (h *OutputHandler) cancelAllAutoRetries(agentID string) {
 	if h.cancelAllAutoRetry == nil {
 		return
 	}
@@ -556,7 +556,7 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 		h.drainProgressClears(retiredIDs)
 		// Retries die with the agent. The queue's own coordinator and observer
 		// work must not run beneath the transcript mutation lock.
-		h.cancelAutoRetryRequest(agentID)
+		h.cancelAllAutoRetries(agentID)
 		return
 	}
 }
@@ -599,7 +599,7 @@ func (h *OutputHandler) cleanupChildMaps(childID string) {
 		h.watcher.DrainAgentEvents(childID)
 		// The child's retries die with its transcript, outside the
 		// transcript mutation lock like every queue operation here.
-		h.cancelAutoRetryRequest(childID)
+		h.cancelAllAutoRetries(childID)
 		return
 	}
 }
@@ -1906,12 +1906,24 @@ func (s *agentOutputSink) UpdatePlan(content []byte, compression leapmuxv1.Conte
 	s.h.updatePlan(s.agentID, content, compression, title)
 }
 
-func (s *agentOutputSink) ScheduleAutoRetry(schedule agent.AutoRetrySchedule) {
-	s.h.scheduleAutoRetryRequest(s.agentID, schedule)
+func (s *agentOutputSink) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
+	s.h.scheduleAutoRetryRequest(s.agentID, agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, ResetAt: resetAt, SourcePayload: sourcePayload,
+	})
 }
 
-func (s *agentOutputSink) CancelAutoRetry(kind leapmuxv1.AgentInputKind) {
-	s.h.cancelAutoRetryKind(s.agentID, kind)
+func (s *agentOutputSink) ScheduleServerErrorRetry(sourcePayload []byte) {
+	s.h.scheduleAutoRetryRequest(s.agentID, agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, SourcePayload: sourcePayload,
+	})
+}
+
+func (s *agentOutputSink) CancelUsageLimitRetry() {
+	s.h.cancelAutoRetryKind(s.agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+}
+
+func (s *agentOutputSink) CancelServerErrorRetry() {
+	s.h.cancelAutoRetryKind(s.agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
 }
 
 // --- Internal helpers ---

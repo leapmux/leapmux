@@ -6,6 +6,7 @@ import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState } from '
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { queueEditDraftKey } from './attachments'
+import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from './composer/scheduleDrafts'
 import { createQueueEditSession } from './queueEditSession'
 
 // The queue edit reads and writes a DRAFT, which is an unbounded family on the
@@ -53,8 +54,8 @@ const beginQueueEdit: BeginQueueEdit = item => Promise.resolve({
  * `useChatAttachments` moves the real one in an effect that this suite does not
  * run.
  */
-function createHarness() {
-  const [snapshot, setSnapshot] = createSignal(snapshotOwnedBy(CLIENT_ID))
+function createHarness(initialOwner = CLIENT_ID) {
+  const [snapshot, setSnapshot] = createSignal(snapshotOwnedBy(initialOwner))
   const clearAllAttachments = vi.fn()
   const replaceAttachments = vi.fn()
   let session!: QueueEditSession
@@ -235,5 +236,61 @@ describe('createQueueEditSession ownership loss', () => {
 
     expect(session.activeEditingInput()).toBeDefined()
     expect(clearAllAttachments).not.toHaveBeenCalled()
+  })
+})
+
+// The edit's schedule draft lives outside the session, under the edit's draft
+// key, and it ends wherever the edit's text draft ends.
+describe('createQueueEditSession schedule drafts', () => {
+  let harness: ReturnType<typeof createHarness> | undefined
+
+  afterEach(() => {
+    harness?.dispose()
+    harness = undefined
+    clearDraft(EDIT_DRAFT_KEY)
+    clearScheduleDraft(EDIT_DRAFT_KEY)
+  })
+
+  it('keeps the schedule draft of an edit that it adopts', async () => {
+    setScheduleDraft(EDIT_DRAFT_KEY, '2030-01-01T18:45')
+    harness = createHarness()
+    await vi.waitFor(() => expect(harness!.session.activeEditingInput()).toBeDefined())
+    expect(getScheduleDraft(EDIT_DRAFT_KEY)).toBe('2030-01-01T18:45')
+  })
+
+  it('drops a stale schedule draft when the user opens a fresh edit', async () => {
+    harness = createHarness('')
+    setScheduleDraft(EDIT_DRAFT_KEY, '2030-01-01T18:45')
+    const [item] = snapshotOwnedBy('').items
+    harness.session.loadQueueEdit(item!, false, false)
+    // The begin-edit answer moves the lock to this client, and the panel's
+    // store applies that snapshot. The adopt effect then finds the same
+    // request in flight and does nothing.
+    harness.setSnapshot(snapshotOwnedBy(CLIENT_ID))
+    await vi.waitFor(() => expect(harness!.session.activeEditingInput()).toBeDefined())
+    expect(getScheduleDraft(EDIT_DRAFT_KEY)).toBeUndefined()
+  })
+
+  it('drops the schedule draft when the edit loses its lock', async () => {
+    harness = createHarness()
+    await vi.waitFor(() => expect(harness!.session.activeEditingInput()).toBeDefined())
+    setScheduleDraft(EDIT_DRAFT_KEY, '2030-01-01T18:45')
+
+    harness.setSnapshot(snapshotOwnedBy(''))
+    await flushMicrotasks()
+
+    expect(harness.session.activeEditingInput()).toBeUndefined()
+    expect(getScheduleDraft(EDIT_DRAFT_KEY)).toBeUndefined()
+  })
+
+  it('drops the schedule draft when a delete or a cancel ends the edit', async () => {
+    harness = createHarness()
+    await vi.waitFor(() => expect(harness!.session.activeEditingInput()).toBeDefined())
+    setScheduleDraft(EDIT_DRAFT_KEY, '')
+
+    harness.session.clearQueueEditArtifacts(harness.session.activeEditingInput()!)
+
+    expect(harness.session.activeEditingInput()).toBeUndefined()
+    expect(getScheduleDraft(EDIT_DRAFT_KEY)).toBeUndefined()
   })
 })

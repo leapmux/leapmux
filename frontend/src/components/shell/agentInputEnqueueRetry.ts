@@ -10,12 +10,12 @@ export interface AgentInputEnqueuePayload {
   text: string
   attachments: readonly FileAttachment[]
   /**
-   * The wire schedule (`ISO` UTC), or undefined for an immediate send. Part of
-   * the fingerprint on purpose: a resend that changes ONLY the schedule must
-   * mint a fresh input id, because the Worker refuses to reuse one queue id
-   * whose accepted content differs.
+   * The wire schedule (`ISO` UTC), or the empty string for an immediate send.
+   * Part of the fingerprint on purpose: a resend that changes ONLY the
+   * schedule must mint a fresh input id, because the Worker refuses to reuse
+   * one queue id whose accepted content differs.
    */
-  scheduledAt?: string
+  scheduledAt: string
 }
 
 function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
@@ -30,7 +30,7 @@ function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
   update(encoder.encode(payload.agentId))
   update(Uint8Array.of(payload.kind))
   update(encoder.encode(payload.text))
-  update(encoder.encode(payload.scheduledAt ?? ''))
+  update(encoder.encode(payload.scheduledAt))
   for (const attachment of payload.attachments) {
     update(encoder.encode(attachment.filename))
     update(encoder.encode(attachment.mimeType))
@@ -73,13 +73,23 @@ export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
     }
   }
 
+  const keyOf = (payload: AgentInputEnqueuePayload) => `${payload.agentId}\0${payload.kind}\0${payloadFingerprint(payload)}`
+
   return {
     inputIdFor(payload: AgentInputEnqueuePayload): string {
-      const key = `${payload.agentId}\0${payload.kind}\0${payloadFingerprint(payload)}`
+      const key = keyOf(payload)
       const pending = pendingByFingerprint.get(key)
       const inputId = pending ?? mint()
       remember(key, inputId)
       return inputId
+    },
+
+    /**
+     * Whether an attempt with exactly this payload holds an input ID that no
+     * enqueue answered yet. A re-send of the same payload reuses that ID.
+     */
+    hasPendingAttempt(payload: AgentInputEnqueuePayload): boolean {
+      return pendingByFingerprint.has(keyOf(payload))
     },
 
     markAccepted(inputId: string): void {

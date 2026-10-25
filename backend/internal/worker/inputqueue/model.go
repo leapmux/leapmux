@@ -77,10 +77,15 @@ var (
 	ErrTurnEnded             = errors.New("active turn ended before steering")
 	ErrSteeringState         = errors.New("queue state does not permit steering")
 	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
+	// ErrScheduled refuses to steer a head whose scheduled instant has not
+	// arrived. It must not reuse ErrTurnEnded: the turn still runs.
+	ErrScheduled = errors.New("queued agent input waits for its scheduled time")
 	// ErrScheduleOrder refuses a move across reorder groups. An immediate item
 	// and a future one never share a segment, and two future items share one
 	// only at exactly the same scheduled instant.
-	ErrScheduleOrder         = errors.New("queued agent input cannot move across reorder groups")
+	ErrScheduleOrder = errors.New("queued agent input cannot move across reorder groups")
+	// ErrPreemptionUnsupported is steering's counterpart for the interrupt-only
+	// route: the running provider cannot steer and Preempt refuses outright.
 	ErrPreemptionUnsupported = errors.New("agent provider does not support preemption")
 	// ErrPreemptionState is ErrSteeringState's counterpart. It must not reuse
 	// ErrTurnEnded, whose text states STEERING and asserts that a turn ended: the
@@ -159,10 +164,13 @@ type StoredItem struct {
 	TargetMode       string
 	PrepareContext   bool
 	ReclassifyOnEdit bool
-	Order            int64
+	// Order is the durable order_index slot. It breaks ties inside one reorder
+	// group; it is not the item's position in the effective order, which
+	// SnapshotItem.Position states.
+	Order int64
 	// ScheduledAt is the durable send-not-before instant. Nil means immediate;
-	// a past value is immediate at read time. Priority derives from this field
-	// and the Worker's clock, never from Order.
+	// a past value is immediate at read time. The reorder group derives from
+	// this field and the Worker's clock.
 	ScheduledAt   *time.Time
 	SourcePayload []byte
 	State         leapmuxv1.AgentInputState
@@ -187,11 +195,19 @@ type DispatchItem struct {
 type SnapshotItem struct {
 	StoredItem
 	Metadata []AttachmentMetadata
+	// Position is the item's 1-based place in the effective order at the
+	// snapshot's instant. The wire's order field carries it.
+	Position int64
 	// ReorderGroup is the Worker-derived reorder group at the snapshot's
 	// captured instant: empty for immediate/past-due items, the canonical
-	// scheduled_at for future ones. Clients compare it to decide which moves
-	// are legal; they never derive it themselves.
+	// scheduled_at for future ones. The Manager's drain reads it; the wire
+	// carries ReorderSegment instead.
 	ReorderGroup string
+	// ReorderSegment is the item's reorder segment at the snapshot's captured
+	// instant (see reorderSegments), or 0 for a locked item. Two items may
+	// trade places only when they carry the same non-zero value. Clients
+	// compare it and never derive it.
+	ReorderSegment uint32
 	// CanSteer uses the same predicate as the store's steering guard.
 	CanSteer bool
 	// CanPreempt uses the same predicate the manager's preemption guard applies:
@@ -213,6 +229,12 @@ type Snapshot struct {
 	ActiveTurn          bool
 	ActiveTurnSteerable bool
 	Items               []SnapshotItem
+	// NextDeadline is the earliest scheduled_at among the items that this
+	// snapshot shows as future, or zero when none is. The store derives it at
+	// the same instant as every Position and ReorderGroup, and the Manager
+	// arms its maturity timer from it, so an item that a snapshot shows as
+	// future always has a timer.
+	NextDeadline time.Time
 }
 
 // HeadIndex finds the first item that does not await an echo, or returns -1.
@@ -225,6 +247,22 @@ func (s Snapshot) HeadIndex() int {
 	return -1
 }
 
+// ScheduleEdit is what a queue edit's save does with the item's schedule. The
+// zero value keeps the stored schedule, so a deadline that a provider moved
+// while the edit was open survives a save that did not change the schedule.
+type ScheduleEdit struct {
+	// Replace makes the save write At. Without it, At is ignored.
+	Replace bool
+	// At is the new send-not-before instant, or nil for none.
+	At *time.Time
+}
+
+// KeepSchedule keeps the stored schedule.
+func KeepSchedule() ScheduleEdit { return ScheduleEdit{} }
+
+// ReplaceSchedule writes at as the new schedule, or clears it when at is nil.
+func ReplaceSchedule(at *time.Time) ScheduleEdit { return ScheduleEdit{Replace: true, At: at} }
+
 type NewItem struct {
 	ID               string
 	AgentID          string
@@ -234,8 +272,7 @@ type NewItem struct {
 	PrepareContext   bool
 	ReclassifyOnEdit bool
 	Attachments      []Attachment
-	// ScheduledAt schedules the item; nil means immediate. The Worker's
-	// automatic-retry kinds require it.
+	// ScheduledAt schedules the item; nil means immediate.
 	ScheduledAt *time.Time
 	// SourcePayload is the provider source an automatic retry carries into the
 	// accepted transcript's supplemental content. Empty for ordinary input.

@@ -243,18 +243,12 @@ describe('createAgentInputQueueOperations composer send', () => {
   })
 })
 
-// The schedule rides the same enqueue and update requests the text does: an
-// explicit value on the wire, and an EXPLICIT EMPTY one when a save clears it,
-// because an absent field is not a cleared field.
+// The schedule rides the same enqueue and update requests the text does. A
+// save that clears it sends an explicit empty string, and a save that keeps it
+// omits the field.
 describe('agent input queue operations schedule', () => {
   it('sends the schedule on enqueue', async () => {
-    const ops = createAgentInputQueueOperations({
-      view: stubView({ 'agent-1': 'w1' }),
-      store: createAgentInputQueueStore(),
-      clientId: () => 'client-a',
-      focusedAgentId: () => 'agent-1',
-      forceScrollToBottom: () => {},
-    })
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
     enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
     await ops.sendMessage('later', undefined, '2030-01-01T09:00:00.000Z')
     expect(enqueueAgentInput).toHaveBeenCalledWith('w1', {
@@ -267,35 +261,30 @@ describe('agent input queue operations schedule', () => {
     })
   })
 
-  it('sends no schedule field on an immediate enqueue', async () => {
-    const ops = createAgentInputQueueOperations({
-      view: stubView({ 'agent-1': 'w1' }),
-      store: createAgentInputQueueStore(),
-      clientId: () => 'client-a',
-      focusedAgentId: () => 'agent-1',
-      forceScrollToBottom: () => {},
-    })
+  it('sends an empty schedule on an immediate enqueue', async () => {
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
     enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
     await ops.sendMessage('now')
-    const request = enqueueAgentInput.mock.calls[0]?.[1] as Record<string, unknown>
+    expect(enqueueAgentInput.mock.calls[0]?.[1]).toMatchObject({ scheduledAt: '' })
+  })
+
+  it('omits the schedule from a save that keeps it', async () => {
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    updateQueuedAgentInput.mockResolvedValue(snapshotOf('agent-1', 2n, []))
+    await ops.updateQueueItem(queuedItem('agent-1', 'input-1'), 'edited', [], undefined)
+    const request = updateQueuedAgentInput.mock.calls[0]?.[1] as Record<string, unknown>
     expect('scheduledAt' in request).toBe(false)
   })
 
   it('sends the schedule on update, and an explicit empty string when clearing', async () => {
-    const ops = createAgentInputQueueOperations({
-      view: stubView({ 'agent-1': 'w1' }),
-      store: createAgentInputQueueStore(),
-      clientId: () => 'client-a',
-      focusedAgentId: () => 'agent-1',
-      forceScrollToBottom: () => {},
-    })
+    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
     updateQueuedAgentInput.mockResolvedValue(snapshotOf('agent-1', 2n, []))
     const item = queuedItem('agent-1', 'input-1')
     await ops.updateQueueItem(item, 'edited', [], '2030-01-01T09:00:00.000Z')
     expect(updateQueuedAgentInput).toHaveBeenCalledWith('w1', {
       agentId: 'agent-1',
       inputId: 'input-1',
-      clientId: 'client-a',
+      clientId: 'client-1',
       expectedVersion: 7n,
       text: 'edited',
       attachments: [],
@@ -305,11 +294,40 @@ describe('agent input queue operations schedule', () => {
     expect(updateQueuedAgentInput).toHaveBeenLastCalledWith('w1', {
       agentId: 'agent-1',
       inputId: 'input-1',
-      clientId: 'client-a',
+      clientId: 'client-1',
       expectedVersion: 7n,
       text: 'edited now',
       attachments: [],
       scheduledAt: '',
     })
+  })
+})
+
+// A send whose answer was lost may have reached the Worker. The composer asks
+// whether a re-send matches such an attempt, so that an expired schedule does
+// not force a changed payload, which would mint a second input ID.
+describe('createAgentInputQueueOperations isPendingMessage', () => {
+  const at = '2030-01-01T09:00:00.000Z'
+
+  it('reports a message whose answer was lost until a re-send of it lands', async () => {
+    const { ops } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
+    await expect(ops.sendMessage('later', undefined, at)).rejects.toThrow('answer lost')
+
+    expect(ops.isPendingMessage('later', undefined, at)).toBe(true)
+    expect(ops.isPendingMessage('later', [], at)).toBe(true)
+    expect(ops.isPendingMessage('later')).toBe(false)
+    expect(ops.isPendingMessage('other', undefined, at)).toBe(false)
+
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: snapshotOf('agent-1', 1n, []) })
+    await ops.sendMessage('later', undefined, at)
+    const [first, second] = enqueueAgentInput.mock.calls.map(call => (call[1] as { inputId: string }).inputId)
+    expect(second).toBe(first)
+    expect(ops.isPendingMessage('later', undefined, at)).toBe(false)
+  })
+
+  it('reports nothing while no agent has focus', () => {
+    const { ops } = setup({ focusedAgentId: null })
+    expect(ops.isPendingMessage('later', undefined, at)).toBe(false)
   })
 })

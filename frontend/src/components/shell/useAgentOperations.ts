@@ -20,6 +20,7 @@ import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 
 import * as workerRpc from '~/api/workerRpc'
 import { forgetAgentAttachments } from '~/components/chat/attachments'
+import { forgetAgentScheduleDrafts } from '~/components/chat/composer/scheduleDrafts'
 import { ControlResponseDeliveryError } from '~/components/chat/controls/controlResponseError'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { optionGroupLabel } from '~/components/chat/settingsGroups'
@@ -588,6 +589,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   const retireAgentTabLocally = (agentId: string) => {
     props.controlStore.clearAgent(agentId)
     forgetAgentAttachments(agentId)
+    forgetAgentScheduleDrafts(agentId)
     props.agentInputQueueStore.clearAgent(agentId)
     props.chatStore.forgetAgent(agentId)
     // The activity flag goes with the tab, the way the Worker drops its own

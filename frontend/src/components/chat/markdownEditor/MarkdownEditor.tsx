@@ -891,9 +891,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     draftSaveDebounce.current?.cancel()
     // Save the document on screen under the key that owns it. `prevDraftKey`
     // states that key. `getDraftKey()` does not: during disposal the reactive
-    // getters (props.agentId) may already reflect the NEW agent (e.g. a tab switch
-    // recreates FocusedAgentEditorPanel, and focusedAgentId() has already changed
-    // by cleanup time). A key change whose read has not landed also leaves the
+    // getters (props.agentId) may already reflect the NEW focus (e.g. a switch to
+    // a non-agent tab unmounts FocusedAgentEditorPanel, and focusedAgentId() has
+    // already changed by cleanup time). A key change whose read has not landed also leaves the
     // OUTGOING document on screen while the props name the incoming key.
     if (editorInstance && prevDraftKey) {
       try {

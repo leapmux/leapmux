@@ -30,15 +30,21 @@ type SpanInfo struct {
 	NoSpan bool
 }
 
-// AutoRetrySchedule asks the input queue to schedule one automatic retry.
-// The queue, not the provider, owns the retry deadline policy: it adds jitter
-// and, for a server error, applies the durable backoff.
+// AutoRetrySchedule is the request that reaches the input queue for one
+// automatic retry. The AutoRetryServices methods build it, so a provider never
+// writes one: each method fixes the kind, and only a usage limit carries a
+// reset instant. The queue, not the provider, owns the retry deadline policy:
+// it adds jitter and, for a server error, applies the durable backoff.
 type AutoRetrySchedule struct {
-	// Kind is one of the two automatic-retry AgentInputKind values. For a
-	// usage limit, ScheduledAt is the provider's reset instant; for a server
-	// error it carries no meaning and the queue derives the deadline.
-	Kind          leapmuxv1.AgentInputKind
-	ScheduledAt   time.Time
+	// Kind is one of the two automatic-retry AgentInputKind values.
+	Kind leapmuxv1.AgentInputKind
+	// ResetAt is the provider's reset instant of a usage limit. The queue
+	// schedules the retry a jittered moment after it. A server-error retry
+	// leaves it zero, because the queue derives that deadline from its
+	// backoff.
+	ResetAt time.Time
+	// SourcePayload is the provider's own report of the failure. The accepted
+	// retry keeps it as supplemental content.
 	SourcePayload []byte
 }
 
@@ -398,10 +404,22 @@ type CapturedGoalWriter interface {
 	ClearGoal() error
 }
 
-// AutoRetryServices schedules automatic retries through the input queue.
+// AutoRetryServices schedules and cancels the automatic retries that the
+// input queue owns. Each method states its own kind, so a provider cannot ask
+// for a kind that is not a retry kind, and a server-error retry carries no
+// reset instant.
 type AutoRetryServices interface {
-	ScheduleAutoRetry(schedule AutoRetrySchedule)
-	CancelAutoRetry(kind leapmuxv1.AgentInputKind)
+	// ScheduleUsageLimitRetry asks for a retry a jittered moment after the
+	// provider's usage limit resets at resetAt.
+	ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte)
+	// ScheduleServerErrorRetry asks for a retry after the queue's durable
+	// server-error backoff.
+	ScheduleServerErrorRetry(sourcePayload []byte)
+	// CancelUsageLimitRetry removes the pending usage-limit retry.
+	CancelUsageLimitRetry()
+	// CancelServerErrorRetry removes the pending server-error retry and ends
+	// its backoff cycle.
+	CancelServerErrorRetry()
 }
 
 // ChildAgentSpec supplies a native child identity and its initial stored options.

@@ -232,7 +232,7 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 	if a.markTurnFinished(turnID) {
 		a.PublishTurnActive()
 	}
-	a.sink.CancelAutoRetry(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+	a.sink.CancelServerErrorRetry()
 	a.refreshContextUsage()
 }
 

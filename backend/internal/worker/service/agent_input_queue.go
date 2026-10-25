@@ -511,10 +511,10 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 		}
 		result.Items[i] = &leapmuxv1.QueuedAgentInput{
 			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.Text),
-			Attachments: attachments, Order: item.Order, State: item.State,
+			Attachments: attachments, Order: item.Position, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
 			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt,
-			ScheduledAt: queueScheduleProto(item.ScheduledAt), ReorderGroup: item.ReorderGroup,
+			ScheduledAt: queueScheduleProto(item.ScheduledAt), ReorderSegment: item.ReorderSegment,
 			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		}
 	}
@@ -526,11 +526,6 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
 			if r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 				sendQueueError(sender, fmt.Errorf("%w: the worker creates question-answer inputs", inputqueue.ErrInvalidInput))
-				return
-			}
-			if r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT ||
-				r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR {
-				sendQueueError(sender, fmt.Errorf("%w: the worker schedules automatic retries", inputqueue.ErrInvalidInput))
 				return
 			}
 			scheduledAt, err := parseQueueSchedule(r.GetScheduledAt())
@@ -572,12 +567,16 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 
 	registerAgentGuardedByID(d, "UpdateQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateQueuedAgentInputRequest, sender channel.ResponseWriter) {
-			scheduledAt, err := parseQueueSchedule(r.GetScheduledAt())
-			if err != nil {
-				sendQueueError(sender, err)
-				return
+			schedule := inputqueue.KeepSchedule()
+			if r.ScheduledAt != nil {
+				scheduledAt, err := parseQueueSchedule(r.GetScheduledAt())
+				if err != nil {
+					sendQueueError(sender, err)
+					return
+				}
+				schedule = inputqueue.ReplaceSchedule(scheduledAt)
 			}
-			snapshot, err := svc.InputQueue.Update(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetClientId(), r.GetExpectedVersion(), r.GetText(), queueAttachments(r.GetAttachments()), scheduledAt)
+			snapshot, err := svc.InputQueue.Update(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetClientId(), r.GetExpectedVersion(), r.GetText(), queueAttachments(r.GetAttachments()), schedule)
 			if sendQueueError(sender, err) {
 				return
 			}
@@ -660,6 +659,7 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrNotHead), errors.Is(err, inputqueue.ErrRetryState),
 		errors.Is(err, inputqueue.ErrUncertainConfirmation), errors.Is(err, inputqueue.ErrTurnEnded),
 		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
+		errors.Is(err, inputqueue.ErrScheduled),
 		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrPreemptionState),
 		errors.Is(err, inputqueue.ErrScheduleOrder), errors.Is(err, inputqueue.ErrManagerStopped):
 		sendFailedPrecondition(sender, err.Error())

@@ -326,7 +326,7 @@ func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
 	}
 	cancelled := a.takeStopCancelledRequest() || payload.ResultType == contracts.ZCodeResultCancelled
 	a.finishZCodeTurn(event, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: cancelled})
-	// A completed turn is not an error, so any pending auto-continue for one is stale.
+	// A completed turn is not an error, so any pending server-error retry for one is stale.
 	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, false, event.persistBytes())
 }
 
@@ -340,7 +340,7 @@ func (a *Agent) takeStopCancelledRequest() bool {
 
 // zcodeTurnFailed is the turn.failed payload. `error.retryable` is the app-server's
 // own verdict on whether the failure is transient, which is exactly the question the
-// auto-continue scheduler asks -- so no message-text matching is needed.
+// automatic retry decides on -- so no message-text matching is needed.
 type zcodeTurnFailed struct {
 	Error struct {
 		Type      string `json:"type"`

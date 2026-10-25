@@ -968,7 +968,7 @@ func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesServerErrorAutoRetry(t *
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, schedule.Kind)
-	assert.True(t, schedule.ScheduledAt.IsZero(), "the queue derives a server-error deadline; the provider supplies no instant")
+	assert.True(t, schedule.ResetAt.IsZero(), "the queue derives a server-error deadline; the provider supplies no instant")
 	assert.JSONEq(t, string(raw), string(schedule.SourcePayload))
 	assert.Equal(t, 0, sink.AutoCancelCount())
 }

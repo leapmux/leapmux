@@ -19,7 +19,6 @@ import Play from 'lucide-solid/icons/play'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from 'solid-js'
-import { createStore } from 'solid-js/store'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
@@ -52,7 +51,8 @@ import * as styles from './ChatView.css'
 import { ComposerPlusMenu } from './composer/ComposerPlusMenu'
 import { ComposerScheduleControl } from './composer/ComposerScheduleControl'
 import { ComposerStatusBar } from './composer/ComposerStatusBar'
-import { checkSchedule, datetimeLocalOf, EMPTY_SCHEDULE, parseLocalSchedule, scheduleIsoOf } from './composer/scheduleSend'
+import { clearScheduleDraft, getScheduleDraft, setScheduleDraft as storeScheduleDraft } from './composer/scheduleDrafts'
+import { checkSchedule, datetimeLocalOf, EMPTY_SCHEDULE, scheduleRefusalMessage } from './composer/scheduleSend'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
 import { useControlResponseHandling } from './controlResponseHandling'
 import { actionButtonClass } from './controls/ControlActionRow'
@@ -89,12 +89,24 @@ export interface AgentEditorPanelProps {
    * shows this one resolved string rather than inventing its own wording.
    */
   disabledReason?: string
+  /** Send a message. `scheduledAt` is the wire schedule, or empty for none. */
   onSendMessage: (content: string, attachments?: FileAttachment[], scheduledAt?: string) => void | Promise<void>
+  /**
+   * Whether `onSendMessage` with exactly these arguments re-sends an attempt
+   * whose answer never arrived. Such a re-send keeps its schedule after that
+   * time passed: the Worker reads a past schedule as immediate, and a changed
+   * payload would mint a new input ID and could queue the message twice.
+   */
+  isPendingSend?: (content: string, attachments: FileAttachment[], scheduledAt: string) => boolean
   onSendControlFeedback?: (content: string) => void | Promise<void>
   inputQueue?: AgentInputQueueSnapshot
   queueClientId?: string
   onBeginQueueEdit?: BeginQueueEdit
-  onUpdateQueueItem?: (item: QueuedAgentInput, text: string, attachments: FileAttachment[], scheduledAt?: string) => Promise<void>
+  /**
+   * Save the open edit. `scheduledAt` is undefined to keep the stored
+   * schedule, empty to clear it, or the new wire schedule.
+   */
+  onUpdateQueueItem?: (item: QueuedAgentInput, text: string, attachments: FileAttachment[], scheduledAt: string | undefined) => Promise<void>
   onCancelQueueEdit?: (item: QueuedAgentInput) => Promise<void>
   onDeleteQueueItem?: (item: QueuedAgentInput) => Promise<void>
   onMoveQueueItem?: (item: QueuedAgentInput, beforeInputId: string) => Promise<void>
@@ -320,47 +332,28 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   })
 
   /**
-   * The schedule draft, keyed by agent id so one agent's schedule cannot leak
-   * into another's composer on a tab switch. TWO maps, because an edit of a
-   * queued item needs its own draft: it starts from the item's stored schedule
-   * while the ordinary draft waits, and ends -- saved or cancelled -- by
-   * restoring that ordinary draft.
+   * The schedule draft, under the composer's draft key: the agent id for the
+   * ordinary composer, and the queue-edit key while an edit is open. The text
+   * and the attachments use the same key, so one agent's schedule cannot leak
+   * into another's composer, and an edit's schedule cannot leak into the
+   * ordinary draft that waits behind it. `scheduleDrafts.ts` holds the store
+   * outside the panel, so a draft survives the panel's unmount.
    *
-   * The edit draft seeds ONCE per input identity (the effect below), so a
-   * later queue snapshot that re-states the same item cannot overwrite a
-   * schedule the user is still editing.
+   * A key without a draft shows its default: the schedule that the edited item
+   * holds, or no schedule for the ordinary composer. A queue snapshot that
+   * re-states the edited item therefore cannot overwrite a schedule that the
+   * user applied, and the edit session drops the edit's draft when the edit
+   * ends.
    */
-  const [scheduleDrafts, setScheduleDrafts] = createStore<{
-    ordinary: Record<string, string | undefined>
-    edit: Record<string, string | undefined>
-  }>({ ordinary: {}, edit: {} })
   const editingInput = () => queueEdit.activeEditingInput()
-  createEffect(on(
-    () => editingInput()?.id,
-    (inputId, previous) => {
-      if (inputId === previous)
-        return
-      if (inputId === undefined) {
-        // The edit ended, saved or cancelled: the ordinary draft takes the
-        // trigger back, and the edit draft stops matching anything.
-        setScheduleDrafts('edit', props.agentId, undefined)
-        return
-      }
-      setScheduleDrafts('edit', props.agentId, datetimeLocalOf(editingInput()?.scheduledAt ?? ''))
-    },
-  ))
   const scheduleDraft = () => {
+    const draft = getScheduleDraft(queueEdit.attachmentDraftKey())
+    if (draft !== undefined)
+      return draft
     const editing = editingInput()
-    if (editing)
-      return scheduleDrafts.edit[props.agentId] ?? datetimeLocalOf(editing.scheduledAt ?? '')
-    return scheduleDrafts.ordinary[props.agentId] ?? EMPTY_SCHEDULE
+    return editing ? datetimeLocalOf(editing.scheduledAt) : EMPTY_SCHEDULE
   }
-  const setScheduleDraft = (value: string) => {
-    if (editingInput())
-      setScheduleDrafts('edit', props.agentId, value)
-    else
-      setScheduleDrafts('ordinary', props.agentId, value)
-  }
+  const setScheduleDraft = (value: string) => storeScheduleDraft(untrack(queueEdit.attachmentDraftKey), value)
 
   const att = useChatAttachments({
     agentId: queueEdit.attachmentDraftKey,
@@ -509,23 +502,24 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       // Capture the composer's identity BEFORE anything awaits: an agent
       // switch mid-flight must neither clear another agent's schedule draft
       // nor attribute this send to the newly focused tab.
-      const sentAgentID = props.agentId
       const editingAtSend = queueEdit.activeEditingInput()
       const storedSchedule = editingAtSend?.scheduledAt
-      const draft = untrack(scheduleDraft)
-      if (draft !== EMPTY_SCHEDULE) {
-        const check = checkSchedule(draft, new Date(), storedSchedule)
-        if (check === 'invalid' || check === 'notFuture') {
-          showWarnToast('Schedule send', check === 'invalid'
-            ? 'Enter a real local date and time.'
-            : 'Pick a time in the future.')
-          // The refusal keeps everything the user holds: the editor text stays
-          // (the caller propagates `false`), and so do the attachments and the
-          // schedule draft.
-          return false
-        }
+      const sentScheduleDraftKey = untrack(queueEdit.attachmentDraftKey)
+      const check = checkSchedule(untrack(scheduleDraft), new Date(), storedSchedule)
+      // A past schedule refuses the send, except on a re-send of an attempt
+      // whose answer never arrived (see `isPendingSend`).
+      const resendsPendingAttempt = check.verdict === 'notFuture' && !editingAtSend
+        && (props.isPendingSend?.(content, fileAttachments ?? [], check.wire) ?? false)
+      if (check.verdict === 'invalid' || (check.verdict === 'notFuture' && !resendsPendingAttempt)) {
+        showWarnToast('Schedule send', scheduleRefusalMessage(check.verdict))
+        // The refusal keeps everything the user holds: the editor text stays
+        // (the caller propagates `false`), and so do the attachments and the
+        // schedule draft.
+        return false
       }
-      const scheduledAt = draft === EMPTY_SCHEDULE ? undefined : scheduleIsoOf(parseLocalSchedule(draft)!)
+      // An edit that kept the stored schedule leaves it to the Worker, so a
+      // deadline that a provider moved during the edit survives the save.
+      const editSchedule = check.verdict === 'unchanged' ? undefined : check.wire
       const sentAttachmentDraftKey = untrack(att.activeDraftKey)
       state.sending.start()
       state.setEnqueueInFlight(true)
@@ -534,7 +528,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         if (editing && props.onUpdateQueueItem) {
           queueEdit.markUpdateStarted()
           try {
-            await props.onUpdateQueueItem(editing, content, fileAttachments ?? [], scheduledAt ?? '')
+            await props.onUpdateQueueItem(editing, content, fileAttachments ?? [], editSchedule)
           }
           catch (error) {
             queueEdit.markUpdateFailed()
@@ -542,14 +536,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }
           queueEdit.markUpdateCompleted(editing)
         }
-        else if (scheduledAt !== undefined) {
-          await props.onSendMessage(content, fileAttachments, scheduledAt)
-        }
         else {
-          await props.onSendMessage(content, fileAttachments)
+          await props.onSendMessage(content, fileAttachments, check.wire)
         }
-        // A successful send clears ONLY the captured agent's schedule draft.
-        setScheduleDrafts(editingAtSend ? 'edit' : 'ordinary', sentAgentID, undefined)
+        // A successful send clears ONLY the schedule draft that it sent, even
+        // when the panel moved to another agent while the send was in flight.
+        clearScheduleDraft(sentScheduleDraftKey)
         if (untrack(att.activeDraftKey) === sentAttachmentDraftKey)
           clearAllAttachments()
         else if (sentAttachmentDraftKey)

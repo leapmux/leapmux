@@ -982,12 +982,31 @@ func (s *Sink) GoalClears() int {
 	defer s.mu.Unlock()
 	return s.goalClears
 }
-func (s *Sink) ScheduleAutoRetry(schedule agent.AutoRetrySchedule) {
+
+// The four retry methods record the request that the production sink sends,
+// so a provider test asserts the kind, the instant, and the payload.
+func (s *Sink) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
+	s.recordAutoSchedule(agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, ResetAt: resetAt, SourcePayload: sourcePayload,
+	})
+}
+func (s *Sink) ScheduleServerErrorRetry(sourcePayload []byte) {
+	s.recordAutoSchedule(agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, SourcePayload: sourcePayload,
+	})
+}
+func (s *Sink) CancelUsageLimitRetry() {
+	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+}
+func (s *Sink) CancelServerErrorRetry() {
+	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+}
+func (s *Sink) recordAutoSchedule(schedule agent.AutoRetrySchedule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoSchedules = append(s.autoSchedules, schedule)
 }
-func (s *Sink) CancelAutoRetry(kind leapmuxv1.AgentInputKind) {
+func (s *Sink) recordAutoCancel(kind leapmuxv1.AgentInputKind) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoCancels = append(s.autoCancels, kind)
@@ -1759,8 +1778,10 @@ func (nop) PublishGoalCapabilities()                                            
 func (nop) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
 	return nil, errors.New("the nop sink captures no goal authority")
 }
-func (nop) ScheduleAutoRetry(agent.AutoRetrySchedule)             {}
-func (nop) CancelAutoRetry(leapmuxv1.AgentInputKind)              {}
+func (nop) ScheduleUsageLimitRetry(time.Time, []byte)             {}
+func (nop) ScheduleServerErrorRetry([]byte)                       {}
+func (nop) CancelUsageLimitRetry()                                {}
+func (nop) CancelServerErrorRetry()                               {}
 func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error) { return "", nil }
 func (nop) ChildSpawnSpan(string) (string, error)                 { return "", nil }
 func (nop) ChildSink(string) agent.ProviderServices               { return Nop() }

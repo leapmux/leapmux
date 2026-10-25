@@ -26,7 +26,7 @@ import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import * as styles from './AgentInputQueue.css'
-import { dragIdOf, isLockedInputState, movableSegmentIds, queueHeadIndex, resolveQueueDrop, resolveQueueMove } from './agentInputQueueDrop'
+import { dragIdOf, isLockedInputState, movableSegmentIds, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
 
 export interface AgentInputQueueProps {
   snapshot?: AgentInputQueueSnapshot
@@ -205,18 +205,19 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   }
 
   /**
-   * Exclude locked rows from the collision candidates.
+   * Keep only the rows of the dragged row's segment as collision candidates.
    *
    * `createSortable` registers a droppable for every row, whether or not the
    * queue can displace it, so the Worker's own row won the collision like any
    * other. `SortableProvider` then PREVIEWED that move -- the rows visibly
    * reflowed -- and `handleDragEnd` discarded it, because `resolveQueueMove`
-   * refuses a locked target. The row returned to its position without an explanation.
+   * refuses a target outside the segment. The row returned to its position
+   * without an explanation.
    *
    * Filtering here keeps the preview and the drop on one answer: the pointer
-   * lands on the first LEGAL slot instead. `resolveQueueMove` stays the single
-   * definition of a legal reorder; this only stops the pointer from selecting a
-   * target that function will refuse.
+   * lands on the first LEGAL slot instead. The filter compares the same
+   * Worker-derived segments as `resolveQueueMove`, so it cannot offer a row
+   * across a locked one.
    */
   const dropTarget: CollisionDetector = (draggable, droppables, context) => {
     const dragged = byKey().get(String(draggable.id))
@@ -224,8 +225,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
       draggable,
       droppables.filter((candidate) => {
         const item = byKey().get(String(candidate.id))
-        return item !== undefined && !isLockedInputState(item.state)
-          && dragged !== undefined && item.reorderGroup === dragged.reorderGroup
+        return item !== undefined && dragged !== undefined && shareReorderSegment(dragged, item)
       }),
       context,
     )
@@ -255,9 +255,9 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
    * live grip and live drag activators.
    *
    * The question is whether this row has a legal DESTINATION, which is what
-   * `resolveQueueMove` answers for the two arrow buttons. That function refuses
-   * a move onto the row itself and refuses a locked row at either end, so a
-   * destination exists exactly when a second movable row does. A
+   * `resolveQueueMove` answers for the two arrow buttons. That function permits
+   * a move between two rows of one reorder segment only, so a destination
+   * exists exactly when the row's segment holds a second row. A
    * count of the whole queue is not the same test: a queue of one locked
    * row and one queued row has two rows and no legal move, and the queued row
    * would lift and snap back with nothing saying why.
@@ -355,7 +355,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             {' · '}
             {stateLabel(item().state)}
             <Show when={scheduleLabel(item())}>
-              {` · Scheduled for ${scheduleLabel(item())}`}
+              {label => ` · Scheduled for ${label()}`}
             </Show>
             <Show when={item().attachments.length > 0}>
               {` · ${attachmentLabel(item())}`}

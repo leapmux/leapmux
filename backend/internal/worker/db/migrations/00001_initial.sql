@@ -326,11 +326,12 @@ CREATE TABLE agent_input_queue_items (
 CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
     ON agent_input_queue_items(agent_id) WHERE edit_owner <> '';
 -- One pending automatic retry per kind and agent. The literals are ordinals:
--- 1 is AGENT_INPUT_STATE_QUEUED (AGENT_INPUT_STATE_QUEUED), 5 is
--- AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT and 8 is
--- AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR. A partial-index predicate cannot
--- bind a parameter -- SQLite matches it syntactically -- so the ordinals are
--- spelled here and pinned by TestAutoRetryPartialIndexOrdinals.
+-- 1 is AGENT_INPUT_STATE_QUEUED, 5 is AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
+-- and 8 is AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR. SQLite forbids a bound
+-- parameter in the WHERE clause of a partial index, so the ordinals are
+-- spelled here and pinned by TestAutoRetryPartialIndexOrdinals. A row that
+-- returns to QUEUED first removes the newer pending row of its kind
+-- (absorbQueuedAutoRetry and dropQueuedAutoRetry in inputqueue/store.go).
 CREATE UNIQUE INDEX idx_agent_input_queue_one_auto_retry_kind
     ON agent_input_queue_items(agent_id, kind)
     WHERE state = 1 AND kind IN (5, 8);

@@ -575,7 +575,7 @@ func TestAgentProcessExitPausesRootAndChildQueues(t *testing.T) {
 func TestSendQueueErrorMapsSteeringStateToFailedPrecondition(t *testing.T) {
 	t.Parallel()
 
-	for _, queueErr := range []error{inputqueue.ErrTurnEnded, inputqueue.ErrSteeringState} {
+	for _, queueErr := range []error{inputqueue.ErrTurnEnded, inputqueue.ErrSteeringState, inputqueue.ErrScheduled} {
 		writer := newTestWriter()
 		assert.True(t, sendQueueError(writer, queueErr))
 		require.Len(t, writer.rejections(), 1)
@@ -1025,15 +1025,8 @@ func TestAutoRetryProducersUseGeneratedQueueKinds(t *testing.T) {
 
 	// Through the sink facet, exactly as a provider asks.
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
-		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
-		ScheduledAt:   time.Now().Add(time.Hour),
-		SourcePayload: []byte(`{"reset":"usage"}`),
-	})
-	sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
-		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
-		SourcePayload: []byte(`{"error":"overloaded"}`),
-	})
+	sink.ScheduleUsageLimitRetry(time.Now().Add(time.Hour), []byte(`{"reset":"usage"}`))
+	sink.ScheduleServerErrorRetry([]byte(`{"error":"overloaded"}`))
 
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
@@ -1045,9 +1038,22 @@ func TestAutoRetryProducersUseGeneratedQueueKinds(t *testing.T) {
 		assert.NotEmpty(t, item.ScheduledAt, "a retry always carries its deadline")
 		assert.Equal(t, "Continue.", item.Text)
 	}
+
+	// Each cancel removes its own kind only.
+	sink.CancelServerErrorRetry()
+	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, snapshot.Items[0].Kind)
+	sink.CancelUsageLimitRetry()
+	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
 }
 
-func TestControlFeedbackProducerUsesGeneratedQueueKind(t *testing.T) {
+// The goal command's text reaches the agent as an ordinary user message, so
+// it takes the user-message rail mark when the agent accepts it.
+func TestSyntheticUserInputEnqueuesAUserMessage(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1059,13 +1065,13 @@ func TestControlFeedbackProducerUsesGeneratedQueueKind(t *testing.T) {
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 
-	require.NoError(t, svc.enqueueSyntheticUserInput(
-		"agent-1", "Use a safer command", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK))
+	require.NoError(t, svc.enqueueSyntheticUserInput("agent-1", "/goal finish the migration"))
 
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
-	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, snapshot.Items[0].Kind)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.Items[0].Kind)
+	assert.Equal(t, "/goal finish the migration", snapshot.Items[0].Text)
 }
 
 func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
@@ -2272,7 +2278,7 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 	enqueued := decodeQueueResponse(t, enqueueWriter, &leapmuxv1.EnqueueAgentInputResponse{})
 	require.Len(t, enqueued.GetSnapshot().GetItems(), 1)
 	assert.Equal(t, timefmt.Format(floored), enqueued.GetSnapshot().GetItems()[0].GetScheduledAt())
-	assert.Equal(t, timefmt.Format(floored), enqueued.GetSnapshot().GetItems()[0].GetReorderGroup())
+	assert.Equal(t, uint32(1), enqueued.GetSnapshot().GetItems()[0].GetReorderSegment())
 
 	// An immediate item enqueued later takes the effective first position.
 	enqueueWriter = newTestWriter()
@@ -2286,10 +2292,10 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 	assert.Equal(t, "immediate-1", items[0].GetId())
 	assert.Equal(t, int64(1), items[0].GetOrder())
 	assert.Empty(t, items[0].GetScheduledAt())
-	assert.Empty(t, items[0].GetReorderGroup())
+	assert.Equal(t, uint32(1), items[0].GetReorderSegment())
 	assert.Equal(t, "scheduled-1", items[1].GetId())
 	assert.Equal(t, int64(2), items[1].GetOrder())
-	assert.NotEmpty(t, items[1].GetReorderGroup())
+	assert.Equal(t, uint32(2), items[1].GetReorderSegment(), "a future item never shares the immediate segment")
 
 	// A list replays the same derived fields.
 	listWriter := newTestWriter()
@@ -2297,28 +2303,42 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 	listed := decodeQueueResponse(t, listWriter, &leapmuxv1.ListAgentInputQueueResponse{})
 	assert.Equal(t, items, listed.GetSnapshot().GetItems())
 
-	// Saving an edit can clear the schedule.
-	beginWriter := newTestWriter()
-	dispatch(dispatcher, "BeginQueuedAgentInputEdit", &leapmuxv1.BeginQueuedAgentInputEditRequest{
-		AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
-	}, beginWriter)
-	begun := decodeQueueResponse(t, beginWriter, &leapmuxv1.BeginQueuedAgentInputEditResponse{})
-	updateWriter := newTestWriter()
-	dispatch(dispatcher, "UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{
-		AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
-		ExpectedVersion: begun.GetSnapshot().GetItems()[0].GetVersion(), Text: "later, edited",
-	}, updateWriter)
-	updated := decodeQueueResponse(t, updateWriter, &leapmuxv1.UpdateQueuedAgentInputResponse{})
-	require.Len(t, updated.GetSnapshot().GetItems(), 2)
-	var edited *leapmuxv1.QueuedAgentInput
-	for _, item := range updated.GetSnapshot().GetItems() {
-		if item.GetId() == "scheduled-1" {
-			edited = item
+	// A save that omits the schedule keeps it, and a save of an empty one
+	// clears it.
+	save := func(text string, scheduledAt *string) *leapmuxv1.QueuedAgentInput {
+		t.Helper()
+		beginWriter := newTestWriter()
+		dispatch(dispatcher, "BeginQueuedAgentInputEdit", &leapmuxv1.BeginQueuedAgentInputEditRequest{
+			AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
+		}, beginWriter)
+		begun := decodeQueueResponse(t, beginWriter, &leapmuxv1.BeginQueuedAgentInputEditResponse{})
+		var version uint64
+		for _, item := range begun.GetSnapshot().GetItems() {
+			if item.GetId() == "scheduled-1" {
+				version = item.GetVersion()
+			}
 		}
+		updateWriter := newTestWriter()
+		dispatch(dispatcher, "UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{
+			AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
+			ExpectedVersion: version, Text: text, ScheduledAt: scheduledAt,
+		}, updateWriter)
+		updated := decodeQueueResponse(t, updateWriter, &leapmuxv1.UpdateQueuedAgentInputResponse{})
+		require.Len(t, updated.GetSnapshot().GetItems(), 2)
+		for _, item := range updated.GetSnapshot().GetItems() {
+			if item.GetId() == "scheduled-1" {
+				return item
+			}
+		}
+		require.FailNow(t, "the saved item is missing")
+		return nil
 	}
-	require.NotNil(t, edited)
-	assert.Empty(t, edited.GetScheduledAt(), "an edit can clear the schedule")
-	assert.Empty(t, edited.GetReorderGroup())
+	kept := save("later, edited", nil)
+	assert.Equal(t, items[1].GetScheduledAt(), kept.GetScheduledAt(), "a save that omits the schedule keeps it")
+	assert.Equal(t, "later, edited", kept.GetText())
+	cleared := save("later, edited again", proto.String(""))
+	assert.Empty(t, cleared.GetScheduledAt(), "an empty schedule clears it")
+	assert.Equal(t, uint32(1), cleared.GetReorderSegment(), "a cleared item joins the immediate segment")
 }
 
 func TestEnqueueAgentInputRefusesAMalformedSchedule(t *testing.T) {
@@ -2344,6 +2364,43 @@ func TestEnqueueAgentInputRefusesAMalformedSchedule(t *testing.T) {
 	after, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
+}
+
+// A save whose schedule does not parse is refused before it reaches the
+// queue, so the item keeps its text and its schedule.
+func TestUpdateQueuedAgentInputRefusesAMalformedSchedule(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	at := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "input-1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		Text: "later", ScheduledAt: &at,
+	})
+	require.NoError(t, err)
+	begun, _, _, err := svc.InputQueue.BeginEdit(ctx, "agent-1", "input-1", "client-1", false)
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{
+		AgentId: "agent-1", InputId: "input-1", ClientId: "client-1",
+		ExpectedVersion: begun.Items[0].Version, Text: "edited", ScheduledAt: proto.String("next tuesday"),
+	}, writer)
+	require.Len(t, writer.errors, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), writer.errors[0].code)
+	after, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, after.Items, 1)
+	assert.Equal(t, "later", after.Items[0].Text)
+	require.NotNil(t, after.Items[0].ScheduledAt)
+	assert.True(t, at.Equal(*after.Items[0].ScheduledAt))
 }
 
 func TestEnqueueAgentInputRefusesTheAutomaticRetryKinds(t *testing.T) {

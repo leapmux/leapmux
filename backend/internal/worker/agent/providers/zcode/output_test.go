@@ -300,7 +300,7 @@ func TestHandleZCodeOutput_TurnFailed_SchedulesAutoRetryOnlyWhenRetryable(t *tes
 			assert.True(t, sink.Messages()[0].TurnEnd)
 
 			if tc.wantScheduled {
-				assert.Positive(t, sink.AutoScheduleCount(), "a retryable failure must schedule an auto-continue")
+				assert.Positive(t, sink.AutoScheduleCount(), "a retryable failure must schedule an automatic retry")
 			} else {
 				assert.Equal(t, 0, sink.AutoScheduleCount())
 			}

@@ -1,10 +1,12 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { localFieldValueOf } from '../../src/components/chat/composer/scheduleSend'
 import { getUserId } from './helpers/api'
 import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { withExtraClients } from './helpers/multiClient'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
+import { QUEUED_INPUT_ROW_TESTID, queuedInputRow } from './helpers/steer'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { composerEditor, focusComposer, loginViaToken, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
@@ -360,17 +362,6 @@ test.describe('agent input queue', () => {
 })
 
 /**
- * A local datetime-local value the composer's schedule field accepts: one
- * `step={0.001}` field wants seconds, and the queue's maturity must still be a
- * few seconds out when the assertion runs.
- */
-function localScheduleField(offsetMs: number): string {
-  const at = new Date(Date.now() + offsetMs)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
-}
-
-/**
  * Schedule the composer's next send through the real popover: open the
  * trigger, fill the field, apply. The Worker owns the clock, so the value the
  * browser computes only has to be far enough ahead for the row to render
@@ -381,11 +372,12 @@ async function scheduleNextSend(page: Page, offsetMs: number) {
   // Wait for the popover before filling: a click during its opening position
   // lands outside it and dismisses it, losing the apply.
   await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
-  // Set the value programmatically: Playwright's fill on a millisecond-step
-  // datetime-local intermittently rejects a seconds-precision value as
-  // malformed, and the control's own onInput handler is what carries the
-  // value either way.
-  const value = localScheduleField(offsetMs)
+  // Set the value programmatically. Playwright's `fill` requires the field to
+  // read back exactly the value it typed, and the field writes the shortest
+  // form of a time: it drops a zero fraction, and zero seconds with it. So
+  // `fill` reports some valid values as malformed. The control's own onInput
+  // handler carries the value either way.
+  const value = localFieldValueOf(new Date(Date.now() + offsetMs))
   await page.getByTestId('schedule-send-field').evaluate((element: HTMLElement, setValue: string) => {
     ;(element as HTMLInputElement).value = setValue
     element.dispatchEvent(new Event('input', { bubbles: true }))
@@ -395,7 +387,7 @@ async function scheduleNextSend(page: Page, offsetMs: number) {
 }
 
 test.describe('scheduled input', () => {
-  test('schedules a message, delivers it after the deadline, and survives a reload until then', async ({ page, authenticatedWorkspace, modelScript }) => {
+  test('keeps a scheduled message through a reload, then reschedules and clears it in an edit', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     // Establish a live provider session first, as the file's first test does:
     // the cleared-schedule delivery at the end dispatches into a process that
@@ -406,12 +398,12 @@ test.describe('scheduled input', () => {
     await scheduleNextSend(page, 90_000)
     await sendMessage(page, 'scheduled hello')
 
-    const row = page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello' })
+    const row = queuedInputRow(page, 'scheduled hello')
     await expect(row).toContainText('Message')
     await expect(row).toContainText('Scheduled for')
 
     await page.reload()
-    await expect(page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello' })).toContainText('Scheduled for')
+    await expect(queuedInputRow(page, 'scheduled hello')).toContainText('Scheduled for')
 
     // Editing the schedule through the real queue edit moves the deadline
     // further out; clearing it delivers immediately through the ordinary drain.
@@ -425,9 +417,9 @@ test.describe('scheduled input', () => {
     // editor, so hand the focus back before pressing it.
     await composerEditor(page).click()
     await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
-    await expect(page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello edited' })).toContainText('Scheduled for')
+    const edited = queuedInputRow(page, 'scheduled hello edited')
+    await expect(edited).toContainText('Scheduled for')
 
-    const edited = page.getByTestId(/^queued-input-/).filter({ hasText: 'scheduled hello edited' })
     await edited.getByRole('button', { name: 'Edit', exact: true }).click()
     await expect(composerEditor(page)).toHaveText('scheduled hello edited')
     await page.getByTestId('schedule-send-trigger').click()
@@ -436,7 +428,23 @@ test.describe('scheduled input', () => {
     await composerEditor(page).click()
     await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await modelScript.waitForSteps(cleared + 1)
-    await expect(page.getByTestId(/^queued-input-/)).toHaveCount(0)
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
+  })
+
+  test('delivers a scheduled message once its deadline passes', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    // The matured input dispatches into a process that is already answering.
+    await sendScriptedTurn(page, modelScript)
+    const delivered = await modelScript.queue({ text: `MATURED_${Date.now()}` })
+    // Far enough out that the row renders as scheduled first. The Worker's
+    // maturity timer, and nothing in this test, delivers it: the ordered step
+    // waits on its own budget, which outlasts the deadline.
+    await scheduleNextSend(page, 15_000)
+    await sendMessage(page, 'deliver at maturity')
+    await expect(queuedInputRow(page, 'deliver at maturity')).toContainText('Scheduled for')
+
+    await modelScript.waitForSteps(delivered + 1)
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
   })
 
   test('holds a matured scheduled input while the queue is paused, then delivers it on resume', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -445,22 +453,34 @@ test.describe('scheduled input', () => {
     // the matured input dispatches into a process that is already answering.
     await sendScriptedTurn(page, modelScript)
     await pauseQueue(page)
+    await sendMessage(page, 'waits immediately')
     await scheduleNextSend(page, 10_000)
     await sendMessage(page, 'pause at maturity')
-    const row = page.getByTestId(/^queued-input-/).filter({ hasText: 'pause at maturity' })
-    await expect(row).toContainText('Scheduled for')
+    const immediate = queuedInputRow(page, 'waits immediately')
+    const scheduled = queuedInputRow(page, 'pause at maturity')
+    await expect(scheduled).toContainText('Scheduled for')
+    // A future row shares no reorder group with an immediate one.
+    await expect(scheduled.getByRole('button', { name: 'Move Up' })).toBeDisabled()
 
-    // Past the deadline the queue still holds the row: the label stays (a
-    // past-due row keeps stating its schedule) and nothing dispatches while
-    // paused. The default expect budget carries past the ten-second deadline
-    // before the presence assertion re-reads the row.
-    await expect(row).toHaveCount(1)
-    await expect(row).toContainText('Queued')
+    // Maturity moves the row into the immediate group, and the Worker
+    // publishes that move even while the queue is paused. The two rows then
+    // share one segment, so Move Up turns on: proof that the deadline passed.
+    // The default expect budget outlasts the ten-second deadline.
+    await expect(scheduled.getByRole('button', { name: 'Move Up' })).toBeEnabled()
+    await expect(immediate.getByRole('button', { name: 'Move Down' })).toBeEnabled()
+    // Nothing dispatched while paused: both rows still wait, and the matured
+    // row keeps stating its schedule.
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(2)
+    await expect(scheduled).toContainText('Queued')
+    await expect(scheduled).toContainText('Scheduled for')
 
-    const resumed = await modelScript.queue({ text: `RESUMED_${Date.now()}` })
+    const resumed = await modelScript.queue(
+      { text: `RESUMED_FIRST_${Date.now()}` },
+      { text: `RESUMED_SECOND_${Date.now()}` },
+    )
     await resumePausedQueue(page)
-    await modelScript.waitForSteps(resumed + 1)
-    await expect(page.getByTestId(/^queued-input-/)).toHaveCount(0)
+    await modelScript.waitForSteps(resumed + 2)
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
   })
 
   test('keeps a scheduled row reorderable only inside its own group', async ({ page, authenticatedWorkspace }) => {
@@ -472,11 +492,11 @@ test.describe('scheduled input', () => {
     await scheduleNextSend(page, 120_000)
     await sendMessage(page, 'the future one')
     await sendMessage(page, 'the immediate one')
-    const future = page.getByTestId(/^queued-input-/).filter({ hasText: 'the future one' })
-    const immediate = page.getByTestId(/^queued-input-/).filter({ hasText: 'the immediate one' })
+    const future = queuedInputRow(page, 'the future one')
+    const immediate = queuedInputRow(page, 'the immediate one')
     // The immediate row takes the effective first position although it was
     // queued second.
-    await expect(page.getByTestId(/^queued-input-/).first()).toContainText('the immediate one')
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID).first()).toContainText('the immediate one')
     for (const row of [future, immediate]) {
       await expect(row.getByRole('button', { name: 'Move Up' })).toBeDisabled()
       await expect(row.getByRole('button', { name: 'Move Down' })).toBeDisabled()

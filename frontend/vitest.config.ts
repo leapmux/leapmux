@@ -4,7 +4,7 @@ import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import solid from 'vite-plugin-solid'
 import { defineConfig } from 'vitest/config'
 import { VITE_SOURCE_DIRECTORIES } from './viteAssetAccess.ts'
-import { NODE_TEST_FILES } from './vitest.node.ts'
+import { NODE_TEST_FILES, PINNED_TEST_TIMEZONE, TIMEZONE_TEST_FILES } from './vitest.node.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -79,6 +79,20 @@ export default defineConfig({
         },
       },
       {
+        // The node tests that read the local calendar. vitest.node.ts states
+        // why they need forked processes and not threads.
+        resolve: { tsconfigPaths: true },
+        test: {
+          name: 'node-timezone',
+          environment: 'node',
+          globals: true,
+          pool: 'forks',
+          env: { TZ: PINNED_TEST_TIMEZONE },
+          include: TIMEZONE_TEST_FILES,
+          testTimeout: 30_000,
+        },
+      },
+      {
         extends: true,
         test: {
           name: 'dom',
@@ -88,7 +102,7 @@ export default defineConfig({
           // The incorrect value makes every element appear clipped and prevents tests from reaching the unclipped branch.
           // Correct that difference before proposing a switch from jsdom.
           environment: 'jsdom',
-          exclude: NODE_TEST_FILES,
+          exclude: [...NODE_TEST_FILES, ...TIMEZONE_TEST_FILES],
           // Dexie reads IDBKeyRange during import. Install it before the storage setup.
           setupFiles: ['./vitest.idbKeyRange.ts', './vitest.setup.ts'],
         },

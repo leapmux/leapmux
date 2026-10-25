@@ -173,10 +173,10 @@ func TestEnumColumnIntegerChecksMatchTheirStorage(t *testing.T) {
 	}
 }
 
-// idx_agent_input_queue_one_auto_retry_kind pins one pending retry per kind and
-// agent. Its predicate spells three ordinals SQLite can only match
-// syntactically -- a partial index cannot bind a parameter -- so this test
-// keeps them tied to the proto enums a renumber would move.
+// idx_agent_input_queue_one_auto_retry_kind allows one pending retry per kind
+// and agent. SQLite forbids a bound parameter in the WHERE clause of a partial
+// index, so its predicate spells three ordinals as literals, and this test
+// keeps them tied to the proto enums that a renumber would move.
 func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 	t.Parallel()
 

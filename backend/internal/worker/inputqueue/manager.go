@@ -8,9 +8,6 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
-	"time"
-
-	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -42,13 +39,12 @@ type coordinator struct {
 	// publications retain committed data until unlocked observer delivery.
 	publications []queuePublication
 	publishing   bool
-	// deadlineTimer arms the earliest future queued item's maturity. At most
-	// one replaceable timer exists per agent; deadlineGen rises on every arm
-	// and stop, so a callback whose timer a rearm or Manager.Stop replaced is
-	// refused instead of delivering a second maturity.
-	deadlineTimer *quartz.Timer
-	deadlineAt    time.Time
-	deadlineGen   uint64
+	// maturity is the one timer for the earliest scheduled deadline; see
+	// maturity.go.
+	maturity maturityTimer
+	// retired records that the agent closed. A closed agent takes no input,
+	// so its queue arms no maturity timer and starts no drain again.
+	retired bool
 }
 
 // pendingEchoSteer retains an early callback until its provider call returns.
@@ -79,83 +75,18 @@ func cloneQueueSnapshot(snapshot Snapshot) Snapshot {
 	return snapshot
 }
 
-// enqueueSnapshotLocked records the commit order and re-arms the deadline
-// timer, which every changed snapshot reaches. The caller holds c.mu.
+// enqueueSnapshotLocked records one snapshot publication. The caller holds c.mu.
 func (m *Manager) enqueueSnapshotLocked(c *coordinator, snapshot Snapshot) {
-	c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot)})
-	m.rearmDeadlineLocked(c, snapshot)
+	m.enqueuePublicationLocked(c, queuePublication{snapshot: cloneQueueSnapshot(snapshot)})
 }
 
-// rearmDeadlineLocked arms the coordinator's single maturity timer for the
-// earliest future queued item, or stops it when none remains. nextScheduledAt
-// examines every queued item, not only the head, because immediate work may
-// dispatch first and the timer must still fire when the future item matures.
-// The caller holds c.mu.
-func (m *Manager) rearmDeadlineLocked(c *coordinator, snapshot Snapshot) {
-	if m.isStopped() {
-		return
-	}
-	now := m.store.now()
-	items := make([]StoredItem, len(snapshot.Items))
-	for i := range snapshot.Items {
-		items[i] = snapshot.Items[i].StoredItem
-	}
-	next, has := nextScheduledAt(items, now)
-	if c.deadlineTimer != nil && (!has || !next.Equal(c.deadlineAt)) {
-		// A FIRED timer's callback may still be running, and Stop reports
-		// which case this is: false means the timer already expired, so its
-		// maturity callback is in flight and must stay valid. Only an ACTIVE
-		// timer's replacement invalidates a generation, and a stopped active
-		// timer never fires, so no callback ever arrives for it anyway.
-		if c.deadlineTimer.Stop() {
-			c.deadlineGen++
-		}
-		c.deadlineTimer = nil
-	}
-	if !has || (c.deadlineTimer != nil && next.Equal(c.deadlineAt)) {
-		return
-	}
-	c.deadlineGen++
-	agentID, gen, at := snapshot.AgentID, c.deadlineGen, next
-	c.deadlineAt = at
-	c.deadlineTimer = m.store.clock.AfterFunc(at.Sub(now), func() {
-		m.deadlineReached(agentID, gen, at)
-	}, queueDeadlineTimerTag)
-}
-
-// queueDeadlineTimerTag names the maturity timer on the clock, so tests trap
-// the arm and the stop by one tag.
-const queueDeadlineTimerTag = "queue-deadline"
-
-// deadlineReached is the maturity edge: the deadline the timer carried has
-// arrived, so the queue's effective order changed. PrepareDispatch remains
-// the sole delivery authority -- this only records the change, publishes it,
-// and asks for an ordinary drain, so a paused queue or an active turn still
-// holds exactly as it would for any other snapshot.
-func (m *Manager) deadlineReached(agentID string, gen uint64, expected time.Time) {
-	if !m.beginActivity() {
-		return
-	}
-	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	if gen != c.deadlineGen {
-		// A rearm or Stop replaced this timer; its news is stale.
-		c.mu.Unlock()
-		return
-	}
-	snapshot, changed, err := m.store.MatureScheduled(context.Background(), agentID, expected, m.store.now())
-	if err != nil {
-		m.enqueueFailureLocked(c, "agent input queue maturity failed", "agent_id", agentID, "error", err)
-		c.mu.Unlock()
-		m.drainPublications(c)
-		return
-	}
-	if changed {
-		m.enqueueSnapshotLocked(c, snapshot)
-	}
-	m.unlockAndPublish(c)
-	m.drainIfReleased(agentID, snapshot)
+// enqueuePublicationLocked records one publication in commit order and
+// re-arms the maturity timer from its snapshot. Every publication that
+// carries a snapshot passes through here, so no committed order escapes the
+// timer. The caller holds c.mu.
+func (m *Manager) enqueuePublicationLocked(c *coordinator, publication queuePublication) {
+	c.publications = append(c.publications, publication)
+	m.rearmMaturityLocked(c, publication.snapshot)
 }
 
 // enqueueFailureLocked retains the failure in drain order. The caller holds c.mu.
@@ -340,7 +271,7 @@ func canDrainAutomatically(snapshot Snapshot) bool {
 		return false
 	}
 	// A head whose scheduled instant has not arrived does not drain. The
-	// deadline timer's maturity publication is what re-enables the drain.
+	// maturity timer's edge is what re-enables the drain.
 	if snapshot.Items[head].ReorderGroup != "" {
 		return false
 	}
@@ -373,6 +304,21 @@ func (m *Manager) beginActivity() bool {
 	return true
 }
 
+// beginDrainActivity is beginActivity for a drain. It also refuses an agent
+// whose recovered queue still waits for DrainRecovered.
+func (m *Manager) beginDrainActivity(agentID string) bool {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.stopped {
+		return false
+	}
+	if _, held := m.recovered[agentID]; held {
+		return false
+	}
+	m.activity.Add(1)
+	return true
+}
+
 func (m *Manager) endActivity() {
 	m.activity.Done()
 }
@@ -384,10 +330,10 @@ func (m *Manager) isStopped() bool {
 }
 
 // Stop refuses new queue work and returns the function that joins active work.
-// An active dispatch finishes its current item. Deadline timers are stopped
-// first, without holding lifecycleMu while a coordinator lock is taken: a
-// maturity callback in flight holds beginActivity's registration, so the join
-// below covers it, and one that has not started finds admission closed.
+// An active dispatch finishes its current item. Maturity timers are stopped
+// without holding lifecycleMu while a coordinator lock is taken: a maturity
+// callback in flight holds beginActivity's registration, so the join below
+// covers it, and one that has not started finds admission closed.
 func (m *Manager) Stop() func() {
 	m.lifecycleMu.Lock()
 	m.stopped = true
@@ -400,11 +346,7 @@ func (m *Manager) Stop() func() {
 	m.mu.Unlock()
 	for _, c := range coordinators {
 		c.mu.Lock()
-		if c.deadlineTimer != nil {
-			c.deadlineTimer.Stop()
-			c.deadlineTimer = nil
-			c.deadlineGen++
-		}
+		stopMaturityLocked(c)
 		c.mu.Unlock()
 	}
 	return m.activity.Wait
@@ -512,13 +454,9 @@ func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx
 	// The classifier rewrites a slash command into its own kind, so the test
 	// must see the kind the store will store, not the one the client sent.
 	kind := m.store.Classify(input.Kind, input.Text)
+	// The store refuses an automatic-retry kind for every agent.
 	if err := m.refuseUnacceptedKind(input.AgentID, kind); err != nil {
 		return Snapshot{}, false, err
-	}
-	// Only the Worker creates automatic-retry items, through ScheduleAutoRetry.
-	// An external enqueue of one would race the retry cycle's own upsert.
-	if autoRetryKind(kind) {
-		return Snapshot{}, false, fmt.Errorf("%w: the Worker schedules automatic retries", ErrInvalidInput)
 	}
 	// mutateAndDrain can refuse before it calls the store, and then nothing was
 	// added.
@@ -542,8 +480,8 @@ func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error
 	snapshot, err := m.store.Snapshot(ctx, agentID)
 	if err == nil {
 		// A plain read is an arm point too: time moved since the last one, so
-		// the earliest future deadline may differ from the armed timer's.
-		m.rearmDeadlineLocked(c, snapshot)
+		// a deadline may have come due while its timer still waits.
+		m.rearmMaturityLocked(c, snapshot)
 	}
 	return snapshot, err
 }
@@ -564,7 +502,7 @@ func (m *Manager) BeginEdit(ctx context.Context, agentID, inputID, clientID stri
 	return snapshot, text, attachments, err
 }
 
-func (m *Manager) Update(ctx context.Context, agentID, inputID, clientID string, expectedVersion uint64, text string, attachments []Attachment, scheduledAt *time.Time) (Snapshot, error) {
+func (m *Manager) Update(ctx context.Context, agentID, inputID, clientID string, expectedVersion uint64, text string, attachments []Attachment, schedule ScheduleEdit) (Snapshot, error) {
 	// An edit can reclassify the item, so the new text can carry a kind this
 	// agent cannot take. Store.Update refuses it below on a stale read only;
 	// this refuses it before the write transaction opens.
@@ -576,7 +514,7 @@ func (m *Manager) Update(ctx context.Context, agentID, inputID, clientID string,
 		return Snapshot{}, err
 	}
 	return m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
-		return m.store.Update(ctx, agentID, inputID, clientID, expectedVersion, text, attachments, scheduledAt)
+		return m.store.Update(ctx, agentID, inputID, clientID, expectedVersion, text, attachments, schedule)
 	}))
 }
 
@@ -753,8 +691,10 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		return Snapshot{}, err
 	}
 	if prepared == nil {
+		// prepare states every steering refusal as an error, so this guard
+		// only keeps a nil dispatch out of the provider call.
 		m.unlockAndPublish(c)
-		return snapshot, ErrTurnEnded
+		return snapshot, ErrSteeringState
 	}
 	var echo *pendingEchoSteer
 	if policy.RowAtEcho {
@@ -879,7 +819,7 @@ func (m *Manager) AcceptEchoedSteers(ctx context.Context, agentID string, count 
 			for index := range rows {
 				rows[index].Content = slices.Clone(rows[index].Content)
 			}
-			c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot), accepted: rows})
+			m.enqueuePublicationLocked(c, queuePublication{snapshot: cloneQueueSnapshot(snapshot), accepted: rows})
 		}
 		if len(rows) < count {
 			m.enqueueLogLocked(c, slog.LevelWarn, "steer echo count exceeds pending inputs", "agent_id", agentID, "reported", count, "accepted", len(rows))
@@ -1107,6 +1047,34 @@ func (m *Manager) Recover(ctx context.Context) error {
 	return m.DrainRecovered(ctx)
 }
 
+// RetireAgent ends the queue's work for an agent that closed. It cancels the
+// agent's pending automatic retries, stops its maturity timer, and refuses
+// every later arm and drain, so a scheduled item of a closed agent never
+// matures into a dispatch that fails and pauses the queue.
+//
+// Call it after closed_at is stamped. The scheduler refuses a closed agent
+// from that commit on, so no retry can appear after this cancellation, and
+// one that a late provider report created before it is removed here.
+//
+// Retirement is permanent. A closed agent ID never takes input again,
+// because reopening a tab creates a new agent with a copy of the transcript.
+func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
+	if !m.beginActivity() {
+		return ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	c.retired = true
+	stopMaturityLocked(c)
+	snapshot, changed, err := m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
+	if err == nil && changed {
+		m.enqueueSnapshotLocked(c, snapshot)
+	}
+	m.unlockAndPublish(c)
+	return err
+}
+
 // RecoverState reconciles interrupted persisted state without dispatching
 // queued input. Bootstrap uses it before the Worker receives its owner.
 func (m *Manager) RecoverState(ctx context.Context) error {
@@ -1150,20 +1118,23 @@ func (m *Manager) DrainRecovered(ctx context.Context) error {
 	m.lifecycleMu.Unlock()
 	var drainErr error
 	for _, agentID := range agentIDs {
+		// The hold ends here on every path. AgentResumer.Start calls this once,
+		// so an agent left in the set after a failed read would refuse every
+		// drain for the life of the process.
+		m.lifecycleMu.Lock()
+		delete(m.recovered, agentID)
+		m.lifecycleMu.Unlock()
 		c := m.coordinator(agentID)
 		c.mu.Lock()
 		snapshot, err := m.store.Snapshot(ctx, agentID)
 		if err == nil {
-			m.rearmDeadlineLocked(c, snapshot)
+			m.rearmMaturityLocked(c, snapshot)
 		}
 		c.mu.Unlock()
 		if err != nil {
 			drainErr = errors.Join(drainErr, fmt.Errorf("read recovered queue %s: %w", agentID, err))
 			continue
 		}
-		m.lifecycleMu.Lock()
-		delete(m.recovered, agentID)
-		m.lifecycleMu.Unlock()
 		if !snapshot.Paused && len(snapshot.Items) > 0 {
 			m.scheduleDrain(agentID)
 		}
@@ -1177,12 +1148,22 @@ func (m *Manager) NotifyDependencyReady(agentID string) {
 	m.scheduleDrain(agentID)
 }
 
+// scheduleDrain starts the agent's drain loop, or records a request for the
+// loop that already runs. It is the one admission point of every automatic
+// dispatch, so it holds the two refusals that no source of drains may bypass:
+// a recovered queue waits for DrainRecovered, which confirms the Worker owner
+// and the Hub's tab, and a retired (closed) agent takes no input at all.
 func (m *Manager) scheduleDrain(agentID string) {
-	if !m.beginActivity() {
+	if !m.beginDrainActivity(agentID) {
 		return
 	}
 	c := m.coordinator(agentID)
 	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		m.endActivity()
+		return
+	}
 	if c.draining {
 		c.drainAgain = true
 		c.mu.Unlock()
@@ -1237,8 +1218,8 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		}
 		if prepared == nil {
 			// The refused head leaves the durable order unchanged, but the
-			// read is still an arm point for the next future deadline.
-			m.rearmDeadlineLocked(c, snapshot)
+			// read is still an arm point, because time moved since the last.
+			m.rearmMaturityLocked(c, snapshot)
 			c.draining = false
 			m.unlockAndPublish(c)
 			return
@@ -1319,7 +1300,7 @@ func (m *Manager) acceptDispatch(c *coordinator, ctx context.Context, prepared P
 	if err == nil {
 		transcript.Content = slices.Clone(transcript.Content)
 		transcript.SupplementalContent = slices.Clone(transcript.SupplementalContent)
-		c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot),
+		m.enqueuePublicationLocked(c, queuePublication{snapshot: cloneQueueSnapshot(snapshot),
 			accepted: []AcceptedTranscript{transcript}, afterAccept: result.AfterAccept})
 		return snapshot, true, nil
 	}

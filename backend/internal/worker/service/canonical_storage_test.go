@@ -53,8 +53,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// agent_input_queue_items.scheduled_at is Go-bound on every scheduled
-	// enqueue, through the same sqltime wrapper the old auto-continue upsert
-	// used for its due_at.
+	// enqueue, through the sqltime wrapper.
 	scheduled := now.Add(time.Hour)
 	_, err := inputqueue.NewStore(sqlDB, nil).Enqueue(ctx, inputqueue.NewItem{
 		ID: "queue-1", AgentID: "agent-1",

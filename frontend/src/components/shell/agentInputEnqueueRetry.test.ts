@@ -21,6 +21,7 @@ function message(text: string) {
     kind: AgentInputKind.USER_MESSAGE,
     text,
     attachments: [] as FileAttachment[],
+    scheduledAt: '',
   }
 }
 
@@ -33,6 +34,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'hello',
       attachments: [attachment('a.txt', [1, 2, 3])],
+      scheduledAt: '',
     }
 
     expect(retry.inputIdFor(first)).toBe('input-1')
@@ -51,6 +53,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'hello',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
     const accepted = retry.inputIdFor(payload)
 
@@ -67,6 +70,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'message',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
 
     expect(retry.inputIdFor(message)).toBe('input-1')
@@ -86,6 +90,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'first',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
     const second = { ...first, text: 'second' }
 
@@ -135,6 +140,7 @@ describe('agent input enqueue retry', () => {
       kind: AgentInputKind.USER_MESSAGE,
       text: 'first',
       attachments: [] as FileAttachment[],
+      scheduledAt: '',
     }
     const firstId = retry.inputIdFor(first)
     const second = { ...first, text: 'second' }
@@ -159,5 +165,40 @@ describe('agent input enqueue retry schedule', () => {
     expect(retry.inputIdFor({ ...scheduled })).toBe('input-1')
     expect(retry.inputIdFor({ ...message('later') })).toBe('input-2')
     expect(retry.inputIdFor({ ...message('later'), scheduledAt: '2031-01-01T09:00:00.000Z' })).toBe('input-3')
+  })
+})
+
+// The composer asks whether a send re-sends an unanswered attempt, so that an
+// expired schedule does not force a changed payload and a second input ID.
+describe('agent input enqueue retry pending attempts', () => {
+  it('reports an attempt as pending until the Worker accepts it', () => {
+    const retry = createAgentInputEnqueueRetry(() => 'input-1')
+    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+
+    expect(retry.hasPendingAttempt(scheduled)).toBe(false)
+    retry.inputIdFor(scheduled)
+    expect(retry.hasPendingAttempt({ ...scheduled })).toBe(true)
+    retry.markAccepted('input-1')
+    expect(retry.hasPendingAttempt(scheduled)).toBe(false)
+  })
+
+  it('reports no pending attempt for a payload that differs in any part', () => {
+    const retry = createAgentInputEnqueueRetry(() => 'input-1')
+    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+    retry.inputIdFor(scheduled)
+
+    expect(retry.hasPendingAttempt(message('later'))).toBe(false)
+    expect(retry.hasPendingAttempt({ ...scheduled, text: 'other' })).toBe(false)
+    expect(retry.hasPendingAttempt({ ...scheduled, agentId: 'agent-2' })).toBe(false)
+    expect(retry.hasPendingAttempt({ ...scheduled, kind: AgentInputKind.CONTROL_FEEDBACK })).toBe(false)
+    expect(retry.hasPendingAttempt({ ...scheduled, attachments: [attachment('a.txt', [1])] })).toBe(false)
+  })
+
+  it('does not count a query as an attempt', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    retry.hasPendingAttempt(message('hello'))
+    expect(retry.inputIdFor(message('hello'))).toBe('input-1')
+    expect(retry.hasPendingAttempt(message('hello'))).toBe(true)
   })
 })

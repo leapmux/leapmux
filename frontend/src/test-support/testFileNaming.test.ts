@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { collectE2EFiles, e2eRoot } from '~/test-support/e2eFiles'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { isAllowedE2ESpecPath, isPlaywrightSpec, isUnitTest, providerSpecDependencies, siblingModulePath } from '~/test-support/testFileNaming'
-import { NODE_TEST_FILES } from '../../vitest.node'
+import { NODE_TEST_FILES, TIMEZONE_TEST_FILES } from '../../vitest.node'
 
 // Repo layout guard: the file EXTENSION decides which runner collects a test,
 // everywhere in the repo. `.spec.ts` is Playwright, `.test.ts` is vitest.
@@ -132,6 +132,26 @@ describe('test file naming', () => {
       'A `NODE_TEST_FILES` entry that identifies no file silently leaves its test in the '
       + 'jsdom project. Repoint the entry at the module\'s new path, or delete it.',
     ).toEqual([])
+  })
+
+  /**
+   * Every `TIMEZONE_TEST_FILES` entry identifies a file that exists, and no
+   * file sits in both lists. An entry that identifies nothing leaves its test
+   * in the jsdom project, which runs in the host's timezone, so a test that
+   * needs the pinned timezone passes on one host and fails on another.
+   */
+  it('points every timezone-project entry at a file that only that project runs', () => {
+    const stale = TIMEZONE_TEST_FILES.filter(entry => !existsSync(join(frontendRoot, entry)))
+    expect(
+      stale,
+      'A `TIMEZONE_TEST_FILES` entry that identifies no file leaves its test in the '
+      + 'jsdom project, outside the pinned timezone. Repoint the entry, or delete it.',
+    ).toEqual([])
+    expect(
+      TIMEZONE_TEST_FILES.filter(entry => NODE_TEST_FILES.includes(entry)),
+      'A file in both lists runs twice, once in a thread outside the pinned timezone.',
+    ).toEqual([])
+    expect(TIMEZONE_TEST_FILES.length).toBeGreaterThan(0)
   })
 
   it('finds the files it judges, so no case above passes vacuously', () => {

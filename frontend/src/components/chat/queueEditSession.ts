@@ -5,6 +5,7 @@ import { createEffect, createSignal, untrack } from 'solid-js'
 import { clearDraft, loadDraft } from '~/lib/editor/draftPersistence'
 import { randomUUID } from '~/lib/idGenerator'
 import { queueEditDraftKey } from './attachments'
+import { clearScheduleDraft } from './composer/scheduleDrafts'
 
 /**
  * What the begin-edit RPC answers: the queue snapshot it produced, the input's
@@ -89,7 +90,9 @@ export interface QueueEditSession {
    * Claims the edit lock on `item` and loads its text and attachments into the
    * composer. `takeover` takes the lock from another client. `restoreDraft`
    * keeps a saved draft for this input instead of the text that the RPC
-   * answers, which is what an adopted edit wants after a reload.
+   * answers, which is what an adopted edit wants after a reload. It keeps the
+   * edit's schedule draft for the same reason; without it, the edit starts
+   * from the schedule that the item holds.
    *
    * A second call for an input whose request is still in flight does nothing,
    * so a repeated click cannot claim the lock twice.
@@ -210,6 +213,8 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
         size: attachment.data.byteLength,
       }))
       normalAttachmentRestore = { key: editAgentId, attachments: [...untrack(ports.attachments)] }
+      if (!restoreDraft)
+        clearScheduleDraft(queueDraftKey)
       setEditingInput(edited)
     }).catch(() => {}).finally(() => {
       queueEditRequests.delete(requestKey)
@@ -227,7 +232,9 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
    */
   const clearQueueEditArtifacts = (item: QueuedAgentInput) => {
     const ports = requirePorts()
-    clearDraft(queueEditDraftKey(opts.agentId(), item.id))
+    const draftKey = queueEditDraftKey(opts.agentId(), item.id)
+    clearDraft(draftKey)
+    clearScheduleDraft(draftKey)
     if (untrack(activeEditingInput)?.id === item.id) {
       ports.clearAllAttachments()
       setEditingInput()
@@ -290,7 +297,11 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
         pendingQueueEditAttachments = undefined
         ports.clearAllAttachments()
         setEditingInput()
-        queueMicrotask(() => clearDraft(queueEditDraftKey(opts.agentId(), initialEditing.id)))
+        queueMicrotask(() => {
+          const draftKey = queueEditDraftKey(opts.agentId(), initialEditing.id)
+          clearDraft(draftKey)
+          clearScheduleDraft(draftKey)
+        })
       }
     })
   }

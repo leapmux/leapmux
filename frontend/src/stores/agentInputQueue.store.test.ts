@@ -55,10 +55,9 @@ describe('agent input queue store', () => {
 describe('agent input queue store maturity', () => {
   it('replaces the pre-deadline ordering with a higher-revision maturity snapshot', () => {
     const store = createAgentInputQueueStore()
-    const group = '2030-01-01T09:00:00.000Z'
     const preDeadlineItems = () => [
-      { id: 'future', reorderGroup: group },
-      { id: 'now', reorderGroup: '' },
+      { id: 'future', reorderSegment: 2 },
+      { id: 'now', reorderSegment: 1 },
     ]
     // A fresh decode per event, exactly as a Worker push arrives: the store
     // keeps one stored node per agent, so re-applying one instance would read
@@ -72,8 +71,8 @@ describe('agent input queue store maturity', () => {
       agentId: 'a1',
       revision: 5n,
       items: [
-        { id: 'now', reorderGroup: '' },
-        { id: 'future', reorderGroup: '' },
+        { id: 'now', reorderSegment: 1 },
+        { id: 'future', reorderSegment: 1 },
       ],
     }))).toBe(true)
     expect(store.get('a1')?.items.map(row => row.id)).toEqual(['now', 'future'])

@@ -1533,12 +1533,12 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 	// fills -- so they clear any pending resume. This mirrors Claude Code's own
 	// block rule (it shows the blocking countdown only on "rejected")
 	// and fixes a bug where any non-"allowed" status, notably "allowed_warning",
-	// scheduled a spurious auto-continue.
+	// scheduled a spurious automatic retry.
 	usingOverage := rlInfo.IsUsingOverage != nil && *rlInfo.IsUsingOverage
 	blocked, resumeAt := claudeRateLimitResume(
 		rlInfo.Status, rlInfo.ResetsAt, usingOverage, rlInfo.OverageStatus, rlInfo.OverageResetsAt)
 	if !blocked {
-		a.sink.CancelAutoRetry(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+		a.sink.CancelUsageLimitRetry()
 		return
 	}
 	// Blocked, but a resume can only be scheduled if the event says when the
@@ -1548,11 +1548,7 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 		return
 	}
 
-	a.sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
-		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
-		ScheduledAt:   time.Unix(*resumeAt, 0).UTC(),
-		SourcePayload: append([]byte(nil), rle.RateLimitInfo...),
-	})
+	a.sink.ScheduleUsageLimitRetry(time.Unix(*resumeAt, 0).UTC(), append([]byte(nil), rle.RateLimitInfo...))
 }
 
 // claudeRateLimitStatusRejected is the only Claude rate_limit_event status that
@@ -1801,11 +1797,11 @@ var claudeRetryableIdleTimeoutPattern = regexp.MustCompile(`(?i)^API Error[^[:al
 // numeric code, already caught by claudeSyntheticAPI5xxPattern) and a bare
 // "API Error: Overloaded" with no code, which the 5xx pattern cannot match
 // because it requires a three-digit code right after the punctuation. This
-// pattern covers the code-less form so both spellings auto-continue.
+// pattern covers the code-less form so both spellings schedule a retry.
 var claudeRetryableOverloadedPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+Overloaded(?:$|[^[:alnum:]].*)`)
 
 // isRetryableClaudeResultError reports whether a Claude result error should
-// trigger auto-continue. Matching is case-insensitive (each pattern carries the
+// schedule an automatic retry. Matching is case-insensitive (each pattern carries the
 // (?i) flag): the result field is an unstructured, human-readable error string,
 // not a structured code, so a cosmetic casing change must not silently regress
 // the retry -- that over-strictness is exactly what left the bare "Overloaded"

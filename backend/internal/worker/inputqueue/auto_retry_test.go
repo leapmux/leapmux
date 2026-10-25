@@ -1,16 +1,19 @@
 package inputqueue
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -21,7 +24,7 @@ import (
 func scheduleRetry(t *testing.T, store *Store, kind leapmuxv1.AgentInputKind, at time.Time, payload []byte) Snapshot {
 	t.Helper()
 	snapshot, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
-		Kind: kind, ScheduledAt: at, SourcePayload: payload,
+		Kind: kind, ResetAt: at, SourcePayload: payload,
 	})
 	require.NoError(t, err)
 	return snapshot
@@ -44,6 +47,28 @@ func storedRetryRow(t *testing.T, database *sql.DB, kind leapmuxv1.AgentInputKin
 		return storedID, &at
 	}
 	return storedID, nil
+}
+
+// acceptDueRetry moves the clock to the retry's deadline and accepts the
+// dispatch that the deadline releases.
+func acceptDueRetry(t *testing.T, clock *quartz.Mock, store *Store, at time.Time) PreparedDispatch {
+	t.Helper()
+	clock.Set(at)
+	prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, _, err = store.Accept(t.Context(), *prepared, DispatchResult{})
+	require.NoError(t, err)
+	return *prepared
+}
+
+// countQueueRows counts every row of agent-1's queue, whatever its state.
+func countQueueRows(t *testing.T, database *sql.DB) int {
+	t.Helper()
+	var rows int
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = 'agent-1'`).Scan(&rows))
+	return rows
 }
 
 func storedServerErrorDelay(t *testing.T, database *sql.DB) int64 {
@@ -77,7 +102,7 @@ func TestAutoRetryRepeatedSchedulingUpdatesOneRowAndKeepsItsPosition(t *testing.
 	require.Len(t, second.Items, 2)
 	assert.Equal(t, "ordinary", second.Items[0].ID)
 	assert.Equal(t, secondID, second.Items[1].ID)
-	assert.Equal(t, []byte(`{"e":2}`), second.Items[1].SourcePayload)
+	assert.Equal(t, []byte(`{"e":2}`), storedItem(t, store, secondID).SourcePayload)
 }
 
 func TestAutoRetryBothKindsCoexistAndCancelRemovesOnlyItsKind(t *testing.T) {
@@ -95,7 +120,7 @@ func TestAutoRetryBothKindsCoexistAndCancelRemovesOnlyItsKind(t *testing.T) {
 	assert.Equal(t, server, snapshot.Items[0].Kind)
 	assert.Equal(t, usage, snapshot.Items[1].Kind)
 
-	snapshot, changed, err := store.cancelAutoRetry(t.Context(), "agent-1", usage, true)
+	snapshot, changed, err := store.cancelAutoRetries(t.Context(), "agent-1", usage)
 	require.NoError(t, err)
 	assert.True(t, changed)
 	require.Len(t, snapshot.Items, 1)
@@ -128,12 +153,7 @@ func TestAutoRetryServerErrorBackoffDoublesAcrossAcceptedCycles(t *testing.T) {
 		assert.Zero(t, at.Nanosecond()%int(time.Millisecond), "the deadline floors to the millisecond")
 
 		// The accepted cycle removes the item; the delay it stored survives.
-		clock.Set(*at)
-		prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
-		require.NoError(t, err)
-		require.NotNil(t, prepared)
-		_, _, err = store.Accept(t.Context(), *prepared, DispatchResult{})
-		require.NoError(t, err)
+		acceptDueRetry(t, clock, store, *at)
 	}
 
 	// The cap holds: the stored delay stops at 180 seconds.
@@ -148,12 +168,7 @@ func TestAutoRetryCancelDeleteAndRefusalResetOrKeepBackoff(t *testing.T) {
 	grow := func(cycles int) {
 		for i := 0; i < cycles; i++ {
 			snapshot := scheduleRetry(t, store, kind, time.Time{}, nil)
-			clock.Set(*snapshot.Items[0].ScheduledAt)
-			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
-			require.NoError(t, err)
-			require.NotNil(t, prepared)
-			_, _, err = store.Accept(t.Context(), *prepared, DispatchResult{})
-			require.NoError(t, err)
+			acceptDueRetry(t, clock, store, *snapshot.Items[0].ScheduledAt)
 		}
 	}
 
@@ -170,7 +185,7 @@ func TestAutoRetryCancelDeleteAndRefusalResetOrKeepBackoff(t *testing.T) {
 
 	// Cancelling the pending server-error retry resets the delay.
 	scheduleRetry(t, store, kind, time.Time{}, nil)
-	_, _, err = store.cancelAutoRetry(t.Context(), "agent-1", kind, true)
+	_, _, err = store.cancelAutoRetries(t.Context(), "agent-1", kind)
 	require.NoError(t, err)
 	assert.Equal(t, int64(10000), storedServerErrorDelay(t, database))
 
@@ -183,7 +198,7 @@ func TestAutoRetryCancelDeleteAndRefusalResetOrKeepBackoff(t *testing.T) {
 	assert.Equal(t, int64(10000), storedServerErrorDelay(t, database))
 }
 
-func TestAutoRetryUsageLimitJitterBounds(t *testing.T) {
+func TestAutoRetryUsageLimitJitterLimits(t *testing.T) {
 	t.Parallel()
 	clock, _, store := newPriorityFixture(t)
 	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
@@ -223,19 +238,14 @@ func TestAutoRetryRefusesClosedAndArchivedAgents(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
 	assert.ErrorIs(t, err, ErrConflict)
-	var rows int
-	require.NoError(t, database.QueryRowContext(t.Context(),
-		`SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = 'agent-1'`).Scan(&rows))
-	assert.Zero(t, rows)
+	assert.Zero(t, countQueueRows(t, database))
 
 	// An archived workspace refuses just the same, without touching the row.
 	_, err = database.ExecContext(t.Context(), `UPDATE agents SET closed_at = NULL, workspace_archived = 1 WHERE id = 'agent-1'`)
 	require.NoError(t, err)
 	_, err = store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
 	assert.ErrorIs(t, err, ErrConflict)
-	require.NoError(t, database.QueryRowContext(t.Context(),
-		`SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = 'agent-1'`).Scan(&rows))
-	assert.Zero(t, rows)
+	assert.Zero(t, countQueueRows(t, database))
 }
 
 func TestAutoRetryQueueFullRefusesWithoutTouchingDurableState(t *testing.T) {
@@ -251,10 +261,7 @@ func TestAutoRetryQueueFullRefusesWithoutTouchingDurableState(t *testing.T) {
 	}
 	_, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
 	assert.ErrorIs(t, err, ErrQueueFull)
-	var rows int
-	require.NoError(t, database.QueryRowContext(t.Context(),
-		`SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = 'agent-1'`).Scan(&rows))
-	assert.Equal(t, MaxItems, rows)
+	assert.Equal(t, MaxItems, countQueueRows(t, database))
 }
 
 func TestAutoRetryFreshCycleTakesAFreshIDAndClonesItsPayload(t *testing.T) {
@@ -269,17 +276,475 @@ func TestAutoRetryFreshCycleTakesAFreshIDAndClonesItsPayload(t *testing.T) {
 	// Mutating the caller's buffer after the call must not reach the queue.
 	copy(payload, []byte(`XXXXXX  `))
 
-	// Past the deadline the dispatch carries the payload the queue cloned.
-	clock.Set(*snapshot.Items[0].ScheduledAt)
-	prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
-	require.NoError(t, err)
-	require.NotNil(t, prepared)
+	// Past the deadline the dispatch carries the payload the queue copied.
+	prepared := acceptDueRetry(t, clock, store, *snapshot.Items[0].ScheduledAt)
 	assert.Equal(t, []byte(`{"limit":"rate"}`), prepared.Item.SourcePayload)
-	_, _, err = store.Accept(t.Context(), *prepared, DispatchResult{})
-	require.NoError(t, err)
 
 	// The next cycle is a NEW item: an accepted transcript's ID is never reused.
 	next := scheduleRetry(t, store, kind, clock.Now().Add(time.Hour), nil)
 	require.Len(t, next.Items, 1)
 	assert.NotEqual(t, firstID, next.Items[0].ID)
+}
+
+// An agent that never queued input has no queue state row. Cancelling its
+// retries is then a no-op, not a failure: every close of such an agent, and
+// every child cleanup, cancels.
+func TestAutoRetryCancelForAnAgentWithoutQueueStateSucceeds(t *testing.T) {
+	t.Parallel()
+	_, _, store := newPriorityFixture(t)
+	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+
+	require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR))
+	require.NoError(t, manager.CancelAutoRetries(t.Context(), "agent-1"))
+}
+
+// A retry that the user steers into a turn, on a provider that writes the
+// row at the echo, keeps its provider source exactly as a dispatched retry
+// does.
+func TestAutoRetrySteeredAtTheEchoKeepsItsSource(t *testing.T) {
+	t.Parallel()
+	clock, _, store := newPriorityFixture(t)
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+	payload := []byte(`{"error":"overloaded"}`)
+	snapshot := scheduleRetry(t, store, kind, time.Time{}, payload)
+	require.Len(t, snapshot.Items, 1)
+	retryID := snapshot.Items[0].ID
+	clock.Set(*snapshot.Items[0].ScheduledAt)
+	_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+
+	prepared, _, err := store.PrepareSteer(t.Context(), "agent-1", retryID, true)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, err = store.HoldForEcho(t.Context(), *prepared)
+	require.NoError(t, err)
+	rows, _, _, err := store.AcceptEchoedSteers(t.Context(), "agent-1", 1, "[]", "")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	supplement, err := msgcodec.Decompress(rows[0].SupplementalContent, rows[0].SupplementalContentCompression)
+	require.NoError(t, err)
+	decoded, err := agent.DecodeMessageSupplement(nil, supplement)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(payload), string(decoded.Supplemental))
+}
+
+// A dispatched retry of either kind keeps its provider source as the
+// supplemental content of its transcript, so the browser can extract the
+// provider's own view of what failed. A retry with no source stores none.
+func TestAutoRetryDispatchedKeepsItsSource(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			for _, payload := range [][]byte{[]byte(`{"error":"overloaded"}`), nil} {
+				clock, _, store := newPriorityFixture(t)
+				snapshot := scheduleRetry(t, store, kind, clock.Now().Add(time.Hour), payload)
+				require.Len(t, snapshot.Items, 1)
+				clock.Set(*snapshot.Items[0].ScheduledAt)
+				prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+				require.NoError(t, err)
+				require.NotNil(t, prepared)
+				accepted, _, err := store.Accept(t.Context(), *prepared, DispatchResult{})
+				require.NoError(t, err)
+
+				if payload == nil {
+					assert.Empty(t, accepted.SupplementalContent, "no source means no supplemental content")
+					assert.Equal(t, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, accepted.SupplementalContentCompression)
+					continue
+				}
+				supplement, err := msgcodec.Decompress(accepted.SupplementalContent, accepted.SupplementalContentCompression)
+				require.NoError(t, err)
+				decoded, err := agent.DecodeMessageSupplement(nil, supplement)
+				require.NoError(t, err)
+				assert.JSONEq(t, string(payload), string(decoded.Supplemental))
+			}
+		})
+	}
+}
+
+// Only a kind that the agent accepts may be queued, and a retry is no
+// exception: a child agent takes messages only.
+func TestAutoRetryRefusesAKindTheAgentDoesNotAccept(t *testing.T) {
+	t.Parallel()
+	_, database, store := newPriorityFixture(t)
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+	manager := NewManager(store, &recordingDispatcher{refusedKind: kind}, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+
+	err := manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	id, _ := storedRetryRow(t, database, kind)
+	assert.Empty(t, id, "a refused kind leaves no row")
+}
+
+// A provider source that the queue cannot store is dropped, and the retry it
+// came with is kept: the retry is the purpose, the source only explains it.
+func TestAutoRetryKeepsTheRetryWhenTheSourceCannotBeStored(t *testing.T) {
+	t.Parallel()
+	_, database, store := newPriorityFixture(t)
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+
+	for name, payload := range map[string][]byte{
+		"too large": make([]byte, MaxItemBytes+1),
+		"not JSON":  []byte("Error: overloaded"),
+	} {
+		require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind, SourcePayload: payload}), name)
+		id, _ := storedRetryRow(t, database, kind)
+		require.NotEmpty(t, id, name)
+		var stored []byte
+		require.NoError(t, database.QueryRowContext(t.Context(),
+			`SELECT source_payload FROM agent_input_queue_items WHERE id = ?`, id).Scan(&stored), name)
+		assert.Empty(t, stored, "%s: the source is dropped", name)
+	}
+}
+
+// The usage-limit jitter is a whole number of milliseconds and at least one,
+// so the millisecond floor of the stored deadline can never erase it.
+func TestAutoRetryUsageLimitJitterIsWholeMilliseconds(t *testing.T) {
+	t.Parallel()
+	for _, remaining := range []time.Duration{-time.Minute, 0, 10 * time.Second, time.Hour} {
+		for i := 0; i < 1000; i++ {
+			jitter := positiveRateLimitJitter(remaining)
+			require.Zero(t, jitter%time.Millisecond, "remaining %s: jitter %s", remaining, jitter)
+			require.GreaterOrEqual(t, jitter, time.Millisecond)
+			require.LessOrEqual(t, jitter, rateLimitJitterMax)
+		}
+	}
+}
+
+// An edit can clear a retry's schedule, as it can for any other row: a nil
+// schedule and a past one are the same immediate item.
+func TestAutoRetryEditCanClearTheSchedule(t *testing.T) {
+	t.Parallel()
+	_, _, store := newPriorityFixture(t)
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+	snapshot := scheduleRetry(t, store, kind, time.Time{}, nil)
+	require.Len(t, snapshot.Items, 1)
+	retryID := snapshot.Items[0].ID
+
+	snapshot, _, _, err := store.BeginEdit(t.Context(), "agent-1", retryID, "client", false)
+	require.NoError(t, err)
+	snapshot, err = store.Update(t.Context(), "agent-1", retryID, "client", snapshot.Items[0].Version, autoRetryText, nil, ReplaceSchedule(nil))
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Nil(t, snapshot.Items[0].ScheduledAt)
+	assert.Empty(t, snapshot.Items[0].ReorderGroup, "a cleared retry joins the immediate group")
+}
+
+// otherRetry returns the snapshot item whose ID is not exceptID, or fails the
+// test.
+func otherRetry(t *testing.T, snapshot Snapshot, exceptID string) SnapshotItem {
+	t.Helper()
+	for _, item := range snapshot.Items {
+		if item.ID != exceptID {
+			return item
+		}
+	}
+	require.FailNow(t, "the snapshot holds no other retry")
+	return SnapshotItem{}
+}
+
+// dispatchDueRetry schedules a server-error retry with the given source, moves
+// the clock to its deadline, and dispatches it.
+func dispatchDueRetry(t *testing.T, clock *quartz.Mock, store *Store, payload string) string {
+	t.Helper()
+	snapshot := scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(payload))
+	require.Len(t, snapshot.Items, 1)
+	clock.Set(*snapshot.Items[0].ScheduledAt)
+	prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	require.Equal(t, snapshot.Items[0].ID, prepared.Item.ID)
+	return prepared.Item.ID
+}
+
+// failDueRetry dispatches a due server-error retry and records the dispatch
+// as failed.
+func failDueRetry(t *testing.T, clock *quartz.Mock, store *Store, payload string) string {
+	t.Helper()
+	retryID := dispatchDueRetry(t, clock, store, payload)
+	_, err := store.FailDispatch(t.Context(), "agent-1", retryID, errors.New("the write failed"), false)
+	require.NoError(t, err)
+	return retryID
+}
+
+// A dispatch that returns a retry row to QUEUED without delivering it meets
+// the newer retry of its kind that a report scheduled meanwhile. The returning
+// row absorbs it: one row stays, with the first row's ID and the newer
+// deadline and source, as a reschedule after the return would have left it.
+func TestAutoRetryReturnedDispatchAbsorbsTheNewerCycleOfItsKind(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		requeue func(context.Context, *Store, string) (Snapshot, error)
+	}{
+		{"busy refusal", func(ctx context.Context, store *Store, id string) (Snapshot, error) {
+			return store.RequeueBusy(ctx, "agent-1", id, false)
+		}},
+		{"steer requeue", func(ctx context.Context, store *Store, id string) (Snapshot, error) {
+			return store.RequeuePrepared(ctx, "agent-1", id)
+		}},
+		{"requeue and pause", func(ctx context.Context, store *Store, id string) (Snapshot, error) {
+			return store.RequeueAndPause(ctx, "agent-1", id, errors.New("the agent is starting"), leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clock, database, store := newPriorityFixture(t)
+			firstID := dispatchDueRetry(t, clock, store, `{"e":1}`)
+			newer := otherRetry(t, scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(`{"e":2}`)), firstID)
+			require.NotNil(t, newer.ScheduledAt)
+
+			snapshot, err := tc.requeue(t.Context(), store, firstID)
+			require.NoError(t, err)
+			require.Len(t, snapshot.Items, 1, "one pending retry of the kind remains")
+			item := snapshot.Items[0]
+			assert.Equal(t, firstID, item.ID)
+			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, item.State)
+			require.NotNil(t, item.ScheduledAt)
+			assert.True(t, newer.ScheduledAt.Equal(*item.ScheduledAt), "the returning row takes the newer deadline")
+			assert.JSONEq(t, `{"e":2}`, string(storedItem(t, store, firstID).SourcePayload))
+			assert.Equal(t, int64(40000), storedServerErrorDelay(t, database), "the merge leaves the live cycle's backoff alone")
+		})
+	}
+}
+
+// A newer usage-limit report whose reset already passed can carry the earlier
+// deadline. The returning row then keeps its own deadline and source, and the
+// newer row still leaves the queue.
+func TestAutoRetryReturnedDispatchKeepsItsOwnLaterDeadline(t *testing.T) {
+	t.Parallel()
+	clock, _, store := newPriorityFixture(t)
+	ctx := t.Context()
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
+	first := scheduleRetry(t, store, kind, clock.Now().Add(time.Hour), []byte(`{"e":1}`)).Items[0]
+	clock.Set(*first.ScheduledAt)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	newer := otherRetry(t, scheduleRetry(t, store, kind, clock.Now().Add(-2*time.Hour), []byte(`{"e":2}`)), first.ID)
+	require.True(t, newer.ScheduledAt.Before(*first.ScheduledAt), "the newer report carries the earlier deadline")
+
+	snapshot, err := store.RequeueBusy(ctx, "agent-1", first.ID, false)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, first.ID, snapshot.Items[0].ID)
+	assert.True(t, first.ScheduledAt.Equal(*snapshot.Items[0].ScheduledAt), "the returning row keeps its own later deadline")
+	assert.JSONEq(t, `{"e":1}`, string(storedItem(t, store, first.ID).SourcePayload))
+}
+
+// A steered retry that the provider drops at the turn end returns to QUEUED
+// in the same transaction that ends the turn. A refused return would leave the
+// turn running forever.
+func TestAutoRetryTurnEndRequeueAbsorbsTheNewerCycleOfItsKind(t *testing.T) {
+	t.Parallel()
+	clock, _, store := newPriorityFixture(t)
+	ctx := t.Context()
+	first := scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(`{"e":1}`))
+	firstID := first.Items[0].ID
+	clock.Set(*first.Items[0].ScheduledAt)
+	_, _, err := store.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareSteer(ctx, "agent-1", firstID, true)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, err = store.HoldForEcho(ctx, *prepared)
+	require.NoError(t, err)
+	newer := otherRetry(t, scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(`{"e":2}`)), firstID)
+
+	snapshot, changed, err := store.TurnEnded(ctx, "agent-1", true)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.False(t, snapshot.ActiveTurn, "the turn ends")
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, firstID, snapshot.Items[0].ID)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	assert.True(t, newer.ScheduledAt.Equal(*snapshot.Items[0].ScheduledAt))
+	assert.JSONEq(t, `{"e":2}`, string(storedItem(t, store, firstID).SourcePayload))
+}
+
+// Two steers of one retry kind that the provider drops together merge into
+// one row, and the count states both drops.
+func TestAutoRetryTwoReturnedSteersOfOneKindMergeIntoOneRow(t *testing.T) {
+	t.Parallel()
+	clock, _, store := newPriorityFixture(t)
+	ctx := t.Context()
+	steerHead := func(id string) {
+		t.Helper()
+		prepared, _, err := store.PrepareSteer(ctx, "agent-1", id, true)
+		require.NoError(t, err)
+		require.NotNil(t, prepared)
+		_, err = store.HoldForEcho(ctx, *prepared)
+		require.NoError(t, err)
+	}
+	first := scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(`{"e":1}`))
+	clock.Set(*first.Items[0].ScheduledAt)
+	_, _, err := store.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	steerHead(first.Items[0].ID)
+	second := otherRetry(t, scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(`{"e":2}`)), first.Items[0].ID)
+	clock.Set(*second.ScheduledAt)
+	steerHead(second.ID)
+
+	snapshot, requeued, err := store.RequeueUnechoedSteers(ctx, "agent-1", -1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, requeued)
+	require.Len(t, snapshot.Items, 1)
+	item := snapshot.Items[0]
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, item.State)
+	assert.True(t, second.ScheduledAt.Equal(*item.ScheduledAt), "the merged row keeps the later deadline")
+	assert.JSONEq(t, `{"e":2}`, string(storedItem(t, store, item.ID).SourcePayload))
+}
+
+// A busy refusal of a dispatched retry, with a newer retry of its kind
+// scheduled during the dispatch, returns the row to the queue. A refused
+// return would leave it DISPATCHING, and the queue would stall until a
+// restart.
+func TestAutoRetryBusyRefusalAbsorbsTheRetryScheduledDuringTheDispatch(t *testing.T) {
+	t.Parallel()
+	clock, dispatcher, _, manager, _ := newDeadlineFixture(t)
+	release := make(chan struct{})
+	dispatcher.mu.Lock()
+	dispatcher.dispatchRelease = release
+	dispatcher.fail = &DeliveryError{Err: errors.New("a turn already runs"), Outcome: DispatchBusy}
+	dispatcher.mu.Unlock()
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
+
+	require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind, ResetAt: clock.Now().Add(-time.Minute)}))
+	snapshot, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	retryID := snapshot.Items[0].ID
+	eventuallyDispatches(t, dispatcher, []string{retryID})
+	require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind, ResetAt: clock.Now().Add(time.Hour)}))
+	close(release)
+	waitForDrainToSettle(t, manager, "agent-1")
+
+	snapshot, err = manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, retryID, snapshot.Items[0].ID)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	require.NotNil(t, snapshot.Items[0].ScheduledAt)
+	assert.True(t, snapshot.Items[0].ScheduledAt.After(clock.Now()), "the row waits for the newer reset")
+	assert.Equal(t, []string{retryID}, dispatchedIDs(dispatcher))
+}
+
+// The user's Retry of a failed retry, with a newer retry of its kind queued,
+// sends the user's row now and removes the newer one. One "Continue." goes
+// out, and the backoff of the live cycle stays.
+func TestAutoRetryUserRetryAbsorbsTheQueuedRetryOfItsKind(t *testing.T) {
+	t.Parallel()
+	clock, database, store := newPriorityFixture(t)
+	ctx := t.Context()
+	failedID := failDueRetry(t, clock, store, `{"e":1}`)
+	scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(`{"e":2}`))
+
+	snapshot, err := store.Retry(ctx, "agent-1", failedID, false)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, failedID, snapshot.Items[0].ID)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	assert.JSONEq(t, `{"e":1}`, string(storedItem(t, store, failedID).SourcePayload), "the user's row keeps its own source")
+	assert.Equal(t, int64(40000), storedServerErrorDelay(t, database))
+	retried, _, err := store.PrepareRetry(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, retried)
+	assert.Equal(t, failedID, retried.Item.ID)
+}
+
+// The user's save of an edit of a failed retry keeps the user's text and
+// schedule, and removes the newer retry of its kind.
+func TestAutoRetryEditSaveOfAFailedRetryAbsorbsTheQueuedRetryOfItsKind(t *testing.T) {
+	t.Parallel()
+	clock, database, store := newPriorityFixture(t)
+	ctx := t.Context()
+	failedID := failDueRetry(t, clock, store, `{"e":1}`)
+	scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, []byte(`{"e":2}`))
+	snapshot, _, _, err := store.BeginEdit(ctx, "agent-1", failedID, "client", false)
+	require.NoError(t, err)
+	var version uint64
+	for _, item := range snapshot.Items {
+		if item.ID == failedID {
+			version = item.Version
+		}
+	}
+	chosen := clock.Now().Add(2 * time.Hour)
+
+	snapshot, err = store.Update(ctx, "agent-1", failedID, "client", version, "Continue, carefully.", nil, ReplaceSchedule(&chosen))
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	item := snapshot.Items[0]
+	assert.Equal(t, failedID, item.ID)
+	assert.Equal(t, "Continue, carefully.", item.Text)
+	require.NotNil(t, item.ScheduledAt)
+	assert.True(t, chosen.Equal(*item.ScheduledAt), "the user's schedule wins")
+	assert.Equal(t, int64(40000), storedServerErrorDelay(t, database))
+}
+
+// Deleting a server-error retry resets the backoff only when no pending retry
+// of the kind remains. A stale failed row beside a live cycle keeps the
+// cycle's backoff.
+func TestAutoRetryDeleteResetsTheBackoffOnlyWhenNoRetryOfTheKindRemainsPending(t *testing.T) {
+	t.Parallel()
+	t.Run("beside a pending retry", func(t *testing.T) {
+		t.Parallel()
+		clock, database, store := newPriorityFixture(t)
+		failedID := failDueRetry(t, clock, store, `{"e":1}`)
+		pending := otherRetry(t, scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, nil), failedID)
+		require.Equal(t, int64(40000), storedServerErrorDelay(t, database))
+
+		_, err := store.Delete(t.Context(), "agent-1", failedID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(40000), storedServerErrorDelay(t, database), "the live cycle keeps its backoff")
+		_, err = store.Delete(t.Context(), "agent-1", pending.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(10000), storedServerErrorDelay(t, database), "deleting the pending retry ends the cycle")
+	})
+	t.Run("without a pending retry", func(t *testing.T) {
+		t.Parallel()
+		clock, database, store := newPriorityFixture(t)
+		failedID := failDueRetry(t, clock, store, `{"e":1}`)
+		require.Equal(t, int64(20000), storedServerErrorDelay(t, database))
+
+		_, err := store.Delete(t.Context(), "agent-1", failedID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(10000), storedServerErrorDelay(t, database))
+	})
+}
+
+// A save that keeps the schedule keeps a deadline that a provider moved while
+// the edit was open; a save that replaces it writes the user's value.
+func TestAutoRetryEditSaveKeepsAScheduleThatMovedDuringTheEdit(t *testing.T) {
+	t.Parallel()
+	clock, _, store := newPriorityFixture(t)
+	ctx := t.Context()
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
+	snapshot := scheduleRetry(t, store, kind, clock.Now().Add(time.Hour), nil)
+	retryID := snapshot.Items[0].ID
+	snapshot, _, _, err := store.BeginEdit(ctx, "agent-1", retryID, "client", false)
+	require.NoError(t, err)
+	version := snapshot.Items[0].Version
+	moved := scheduleRetry(t, store, kind, clock.Now().Add(3*time.Hour), nil)
+	require.Len(t, moved.Items, 1)
+	movedAt := *moved.Items[0].ScheduledAt
+
+	snapshot, err = store.Update(ctx, "agent-1", retryID, "client", version, autoRetryText, nil, KeepSchedule())
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.True(t, movedAt.Equal(*snapshot.Items[0].ScheduledAt), "a save that kept the schedule keeps the provider's new deadline")
+
+	snapshot, _, _, err = store.BeginEdit(ctx, "agent-1", retryID, "client", false)
+	require.NoError(t, err)
+	chosen := clock.Now().Add(5 * time.Hour)
+	snapshot, err = store.Update(ctx, "agent-1", retryID, "client", snapshot.Items[0].Version, autoRetryText, nil, ReplaceSchedule(&chosen))
+	require.NoError(t, err)
+	assert.True(t, chosen.Equal(*snapshot.Items[0].ScheduledAt))
 }

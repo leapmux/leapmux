@@ -1045,8 +1045,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			if command != "" {
-				if sendQueueError(sender, svc.enqueueSyntheticUserInput(
-					agentID, command, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)) {
+				if sendQueueError(sender, svc.enqueueSyntheticUserInput(agentID, command)) {
 					return
 				}
 			}
@@ -4145,12 +4144,12 @@ func (svc *Service) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 		applyOptionsSpec{live: false, notifyFirstSet: false})
 }
 
-// enqueueSyntheticUserInput enqueues input that the Worker composes. This
-// includes control feedback, plan continuation, and goal command messages.
-// Store.Accept derives the rail mark from the kind.
-func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leapmuxv1.AgentInputKind) error {
+// enqueueSyntheticUserInput enqueues a user message that the Worker
+// composes: the command text of a goal update, for a provider that takes a
+// goal as text. Store.Accept derives the rail mark from the kind.
+func (svc *Service) enqueueSyntheticUserInput(agentID, content string) error {
 	_, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
-		ID: id.Generate(), AgentID: agentID, Kind: kind, Text: content,
+		ID: id.Generate(), AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: content,
 	})
 	return err
 }

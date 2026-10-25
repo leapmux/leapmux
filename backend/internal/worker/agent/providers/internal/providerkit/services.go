@@ -59,13 +59,10 @@ func OpenToolSpanWithParent(sink ToolSpanServices, content agent.MessageContent,
 // buffer may be reused by the stdout reader before the schedule is consumed.
 func ScheduleOrCancelServerErrorAutoRetry(sink agent.AutoRetryServices, retry bool, payload []byte) {
 	if !retry {
-		sink.CancelAutoRetry(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+		sink.CancelServerErrorRetry()
 		return
 	}
-	sink.ScheduleAutoRetry(agent.AutoRetrySchedule{
-		Kind:          leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
-		SourcePayload: append([]byte(nil), payload...),
-	})
+	sink.ScheduleServerErrorRetry(append([]byte(nil), payload...))
 }
 
 // LogRegistryRefusal records a background-task write the registry REFUSED.
