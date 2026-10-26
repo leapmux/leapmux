@@ -20,6 +20,13 @@ import { createLogger } from './logger'
 
 const log = createLogger('channel')
 
+/**
+ * The first correlation id that a channel allocates. No request ever receives 0,
+ * so a zero-valued id stays distinguishable from an allocated one; the Go tunnel
+ * client's allocator skips 0 for the same reason (backend/tunnel/channel.go).
+ */
+export const FIRST_REQUEST_ID = 1
+
 export interface PendingRequest {
   resolve: (resp: InnerRpcResponse) => void
   reject: (err: Error) => void
@@ -428,5 +435,20 @@ export class ChannelRpcMux {
     return ch.pendingRequests.has(correlationId)
       || ch.streamListeners.has(correlationId)
       || correlationId === rekeyRequestId
+  }
+
+  /**
+   * Whether this channel ever allocated `correlationId`, whether its request is
+   * still live or has retired.
+   *
+   * Every id comes from `nextRequestId++`, and the counter only grows, so the
+   * channel allocated exactly the ids in [FIRST_REQUEST_ID, nextRequestId). This
+   * reads that range and keeps no record of its own. An inbound frame for an
+   * allocated id that has no handler answers a request that this side retired on
+   * purpose: an aborted or timed-out call, or a cancelled stream whose worker
+   * still sends its end frame. A frame for any other id is a protocol violation.
+   */
+  wasAllocated(ch: RpcChannel, correlationId: number): boolean {
+    return correlationId >= FIRST_REQUEST_ID && correlationId < ch.nextRequestId
   }
 }

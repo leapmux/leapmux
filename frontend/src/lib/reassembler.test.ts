@@ -34,9 +34,11 @@ describe('reassembler', () => {
   it('poison is idempotent and creates a tombstone even for an unseen id', () => {
     const r = new Reassembler(1000)
     r.poison(7) // over-cap breach can poison before any buffer exists
+    const tombstone = r.get(7)
     expect(r.size()).toBe(1)
     expect(r.liveCount()).toBe(0)
     r.poison(7)
+    expect(r.get(7)).toBe(tombstone)
     expect(r.liveCount()).toBe(0)
     expect(r.size()).toBe(1)
   })
@@ -64,14 +66,50 @@ describe('reassembler', () => {
     // leave both live buffers intact (they are what maxMessageSize protects), with
     // only the tombstones capped.
     const r = new Reassembler(1000, 2)
-    r.start(100)
-    r.start(200)
+    const first = r.start(100)
+    const second = r.start(200)
     for (let id = 1; id <= 10; id++)
       r.poison(id)
 
     expect(r.liveCount()).toBe(2)
     expect(r.get(100)?.poisoned).toBe(false)
     expect(r.get(200)?.poisoned).toBe(false)
+    expect(r.get(100)).toBe(first)
+    expect(r.get(200)).toBe(second)
+  })
+
+  it('poison keeps the existing buffer and releases its bytes', () => {
+    const r = new Reassembler(100)
+    const buf = r.start(1)
+    r.append(buf, new Uint8Array([1, 2, 3]))
+    r.poison(1)
+    expect(r.get(1)).toBe(buf)
+    expect(buf).toEqual({ parts: [], total: 0, poisoned: true })
+  })
+
+  it('keeps only the current tombstone when the incomplete limit is zero', () => {
+    const r = new Reassembler(100, 0)
+    r.poison(1)
+    expect(r.size()).toBe(1)
+    r.poison(2)
+    expect(r.size()).toBe(1)
+    expect(r.get(1)).toBeUndefined()
+    expect(r.get(2)?.poisoned).toBe(true)
+  })
+
+  it.each([{ bytes: [] }, { bytes: [7] }])('preserves empty first and final chunks around $bytes', ({ bytes }) => {
+    const r = new Reassembler(100)
+    expect(r.accept(1, new Uint8Array(), true, () => true).kind).toBe('buffered')
+    expect(r.get(1)?.parts).toEqual([])
+    expect(r.accept(1, new Uint8Array(bytes), true, () => true).kind).toBe('buffered')
+    expect(r.accept(1, new Uint8Array(), false, () => true))
+      .toEqual({ kind: 'deliver', plaintext: new Uint8Array(bytes) })
+    expect(r.size()).toBe(0)
+    r.poison(2)
+    expect(r.accept(2, new Uint8Array(), true, () => true).kind).toBe('drop-poisoned')
+    expect(r.get(2)?.parts).toEqual([])
+    expect(r.accept(2, new Uint8Array(), false, () => true).kind).toBe('drop-poisoned')
+    expect(r.size()).toBe(0)
   })
 
   it('append accumulates and reports a breach once the total exceeds the limit', () => {
@@ -84,6 +122,27 @@ describe('reassembler', () => {
     // buf.total to build the too-large outcome.
     expect(r.append(buf, chunk(41))).toEqual({ total: 101, breached: true })
     expect(buf.total).toBe(101)
+  })
+
+  it.each([-1, 0, 4])('retains no empty parts with a message limit of %i', (limit) => {
+    const r = new Reassembler(limit)
+    const buf = r.start(1)
+    for (let i = 0; i < 1024; i++)
+      expect(r.append(buf, new Uint8Array())).toEqual({ total: 0, breached: limit < 0 })
+    expect(buf.parts).toEqual([])
+  })
+
+  it('ignores empty continuation chunks and still delivers the ordered bytes', () => {
+    const r = new Reassembler(4)
+    expect(r.accept(1, new Uint8Array([1, 2]), true, () => true).kind).toBe('buffered')
+    const buf = r.get(1)!
+    const empty = new Uint8Array(1024).subarray(0, 0)
+    for (let i = 0; i < 1024; i++)
+      expect(r.accept(1, empty, true, () => true).kind).toBe('buffered')
+    expect(buf.parts).toHaveLength(1)
+    expect(r.accept(1, new Uint8Array([3, 4]), false, () => true))
+      .toEqual({ kind: 'deliver', plaintext: new Uint8Array([1, 2, 3, 4]) })
+    expect(r.size()).toBe(0)
   })
 
   // accept is the decision tree that used to live on ChannelManager.reassemble.

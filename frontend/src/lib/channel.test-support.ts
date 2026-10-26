@@ -14,8 +14,10 @@ import {
   RekeyAckSchema,
   RekeyRejectSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { makeIdentitySession } from '~/test-support/identitySession'
 import { ChannelManager } from './channel'
 import { frameBytes, unframeBytes } from './channelFraming'
+import { FIRST_REQUEST_ID } from './channelRpc'
 import { clearAllKeyPins, KeyPinStore } from './keyPinStore'
 import { generateRekeyEphemeral } from './noise-hybrid'
 
@@ -115,12 +117,12 @@ export function createTestSession(): { initiator: Session, responder: Session } 
 }
 
 /** Encode a ChannelMessage into the wire format (4-byte length prefix + protobuf). */
-export function encodeWireMessage(channelId: string, ciphertext: Uint8Array, opts?: { close?: boolean, id?: number }): ArrayBuffer {
+export function encodeWireMessage(channelId: string, ciphertext: Uint8Array, opts?: { close?: boolean, id?: number | bigint, flags?: number }): ArrayBuffer {
   const msg = create(ChannelMessageSchema, {
     protocolVersion: 1,
     channelId,
     ciphertext,
-    flags: opts?.close ? 2 : 0,
+    flags: opts?.close ? 2 : (opts?.flags ?? 0),
     correlationId: BigInt(opts?.id ?? 0),
   })
   return frameBytes(toBinary(ChannelMessageSchema, msg)).buffer as ArrayBuffer
@@ -131,8 +133,7 @@ export function encodeWireMessage(channelId: string, ciphertext: Uint8Array, opt
  * outside the range this client's own allocator can produce.
  */
 export function encodeWireMessageWithBigIntId(channelId: string, ciphertext: Uint8Array, id: bigint): ArrayBuffer {
-  const msg = create(ChannelMessageSchema, { protocolVersion: 1, channelId, ciphertext, correlationId: id })
-  return frameBytes(toBinary(ChannelMessageSchema, msg)).buffer as ArrayBuffer
+  return encodeWireMessage(channelId, ciphertext, { id })
 }
 
 /** Encode a close notification. */
@@ -336,11 +337,11 @@ export function mockHandshake2(_state: any, _message2: Uint8Array, _remoteSlhdsa
 
 /**
  * The correlation id of the FIRST request a test issues after openTestChannel:
- * the open itself consumes id 1 on each channel for its session-verifying Ping.
- * Naming it once keeps the coupling in one place -- if the open ever round-trips
- * another RPC, only this changes.
+ * the open itself consumes FIRST_REQUEST_ID on each channel for its
+ * session-verifying Ping. Naming it once keeps the coupling in one place -- if the
+ * open ever round-trips another RPC, only this changes.
  */
-export const FIRST_TEST_REQUEST_ID = 2
+export const FIRST_TEST_REQUEST_ID = FIRST_REQUEST_ID + 1
 
 /** Owns mgr/mockWs and the helpers that close over them for ChannelManager suites. */
 export class ChannelManagerTestHarness {
@@ -557,21 +558,10 @@ export class AutoOpenMockWebSocket extends EventTarget {
  * round-trips a no-op Ping to prove the E2EE session decrypts in both directions
  * before it resolves, so a mock worker must reply or the open never completes.
  * The mock sessions encrypt as identity, so the wire message is built directly.
- * The Ping is each channel's first request, hence correlation id 1.
+ * The Ping is each channel's first request, hence correlation id FIRST_REQUEST_ID.
  */
 export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: string) {
-  const resp = create(InnerRpcResponseSchema, { isError: false })
-  const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
-  const plaintext = toBinary(InnerMessageSchema, envelope)
-
-  const channelMsg = create(ChannelMessageSchema, {
-    protocolVersion: 1,
-    channelId,
-    ciphertext: plaintext,
-    correlationId: 1n,
-  })
-  const frame = frameBytes(toBinary(ChannelMessageSchema, channelMsg))
-  ws.dispatchEvent(new MessageEvent('message', { data: frame.buffer as ArrayBuffer }))
+  simulatePingResponseOnWs(ws, channelId, { isError: false })
 }
 
 /**
@@ -579,41 +569,20 @@ export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: str
  * with an error, i.e. the session is proven NOT to work.
  */
 export function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: string, message: string) {
-  const resp = create(InnerRpcResponseSchema, { isError: true, errorMessage: message, errorCode: 2 })
-  const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
-  const plaintext = toBinary(InnerMessageSchema, envelope)
-
-  const channelMsg = create(ChannelMessageSchema, {
-    protocolVersion: 1,
-    channelId,
-    ciphertext: plaintext,
-    correlationId: 1n,
-  })
-  const frame = frameBytes(toBinary(ChannelMessageSchema, channelMsg))
-  ws.dispatchEvent(new MessageEvent('message', { data: frame.buffer as ArrayBuffer }))
+  simulatePingResponseOnWs(ws, channelId, { isError: true, errorMessage: message, errorCode: 2 })
 }
 
-export function makeMockSession(): Session {
-  // `satisfies Session` (not `as unknown as`) so a future CipherState method
-  // addition fails to compile here instead of silently diverging the mock.
-  return {
-    send: {
-      encrypt: (pt: Uint8Array) => pt,
-      decrypt: (ct: Uint8Array) => ct,
-      needsRekey: () => false,
-      rekeyWithSecret: () => {},
-      clearPrev: () => {},
-      nonce: () => 0,
-    },
-    receive: {
-      encrypt: (pt: Uint8Array) => pt,
-      decrypt: (ct: Uint8Array) => ct,
-      needsRekey: () => false,
-      rekeyWithSecret: () => {},
-      clearPrev: () => {},
-      nonce: () => 0,
-    },
-  } satisfies Session
+function simulatePingResponseOnWs(
+  ws: AutoOpenMockWebSocket,
+  channelId: string,
+  response: { isError: boolean, errorMessage?: string, errorCode?: number },
+): void {
+  const resp = create(InnerRpcResponseSchema, response)
+  const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
+  const plaintext = toBinary(InnerMessageSchema, envelope)
+  ws.dispatchEvent(new MessageEvent('message', {
+    data: encodeWireMessage(channelId, plaintext, { id: FIRST_REQUEST_ID }),
+  }))
 }
 
 export function makeMockTransport(onCreateWs: () => AutoOpenMockWebSocket): ChannelTransport {
@@ -682,7 +651,7 @@ export function makeIdentityCipherManager(
 ): ChannelManager {
   return new ChannelManager(transport, {
     classicHandshake1: (_rs: Uint8Array) => ({ message1: new Uint8Array(48), handshakeState: {} as any }),
-    classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+    classicHandshake2: (_hs: any, _payload: Uint8Array) => makeIdentitySession(),
     idleRekeyIntervalMs: 0,
     installWakeListener: false,
     keyPins: acceptingKeyPins(),

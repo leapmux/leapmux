@@ -12,6 +12,10 @@ pub(crate) mod proto {
 #[cfg(test)]
 mod alloc_probe;
 
+// Test-only guards for the CSP that Tauri serves with the bundled frontend.
+#[cfg(test)]
+mod asset_csp;
+
 mod sidecar_ipc;
 
 // Windows-only connect/handshake + its tests. A single module-level `cfg`
@@ -25,6 +29,7 @@ mod windows_impl;
 // `sidecar_ipc` (transport) and `frame` (codec).
 mod sidecar;
 
+mod login_item;
 mod shutdown;
 
 // Streaming file-save subsystem (file_save_open/write/commit/abort chain).
@@ -50,7 +55,7 @@ use crate::frame::{get_sidecar_info_request, read_frame, write_frame};
 use crate::sidecar::bootstrap_sidecar;
 // The Windows-only connect/handshake surface (and its windows-only imports)
 // lives in `windows_impl`, behind a single module-level `#[cfg(windows)]` --
-// see `mod windows_impl` below -- so the next windows-only import lands there
+// see `mod windows_impl` above -- so the next windows-only import lands there
 // and cannot rot invisibly on a macOS dev host.
 // Unix-only peer-credential helpers; referenced by the unix sidecar-IPC tests.
 #[cfg(all(unix, test))]
@@ -1345,6 +1350,20 @@ fn launcher_url(local_app_url: &str, cleanup_errors: &[String]) -> Result<(Url, 
 // granted Full Disk Access waits for the window to come back. Forwarding argv
 // here would hide it into the tray instead.
 #[cfg(target_os = "macos")]
+fn restart_command(parent_pid: u32, app_bundle: &std::path::Path) -> Command {
+    let mut command = Command::new("/bin/sh");
+    // Filesystem paths are shell arguments, so the shell never interprets their
+    // dollar signs, quotes, or command substitutions as part of its program.
+    command
+        .arg("-c")
+        .arg("while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -n \"$2\"")
+        .arg("leapmux-restart")
+        .arg(parent_pid.to_string())
+        .arg(app_bundle);
+    command
+}
+
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn restart_app(
     shell: State<'_, Arc<DesktopShell>>,
@@ -1362,14 +1381,7 @@ async fn restart_app(
     // the primary is still alive, so the relaunch helper polls for the parent
     // PID to disappear before invoking the new instance via LaunchServices.
     let parent_pid = std::process::id();
-    Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!(
-            "while kill -0 {pid} 2>/dev/null; do sleep 0.1; done; \
-             exec /usr/bin/open -n {bundle:?}",
-            pid = parent_pid,
-            bundle = app_bundle,
-        ))
+    restart_command(parent_pid, &app_bundle)
         .spawn()
         .map_err(|err| format!("restart app: {err}"))?;
     shell.app_handle.exit(0);
@@ -1496,21 +1508,7 @@ fn apply_login_item(app: &AppHandle, start_on_login: bool) -> Result<(), String>
                 .to_string(),
         );
     }
-    let manager = app.autolaunch();
-    if start_on_login {
-        return manager
-            .enable()
-            .map_err(|err| format!("LeapMux could not add itself to your login items: {err}"));
-    }
-    // `is_enabled` is only a guard against a spurious error when nothing is
-    // registered. It must never block the ENABLE path: it compares the stored
-    // path against the current one, which is exactly what goes stale.
-    match manager.is_enabled() {
-        Ok(true) => manager
-            .disable()
-            .map_err(|err| format!("LeapMux could not remove itself from your login items: {err}")),
-        _ => Ok(()),
-    }
+    login_item::apply(&*app.autolaunch(), start_on_login)
 }
 
 /// Whether this build may touch the operating system's login items.
@@ -2102,6 +2100,48 @@ mod tests {
     use std::time::SystemTime;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn restart_command_keeps_paths_out_of_shell_source() {
+        for path in [
+            "/Applications/LeapMux.app",
+            "/Applications/LeapMux Desktop.app",
+            "/Applications/$HOME.app",
+            "/Applications/$(echo unwanted).app",
+            "/Applications/`echo unwanted`.app",
+            "/Applications/quotes\"'\\and\nnewlines.app",
+            "",
+        ] {
+            let command = restart_command(42, Path::new(path));
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(command.get_program(), OsStr::new("/bin/sh"));
+            assert_eq!(
+                args.len(),
+                5,
+                "the path must be a separate argument: {path:?}"
+            );
+            assert_eq!(args[0], "-c");
+            assert_eq!(args[1], "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -n \"$2\"");
+            assert_eq!(args[2], "leapmux-restart");
+            assert_eq!(args[3], "42");
+            assert_eq!(args[4], OsStr::new(path));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn restart_command_preserves_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/Applications/LeapMux\xff.app".to_vec(),
+        ));
+        let command = restart_command(u32::MAX, &path);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args.len(), 5);
+        assert_eq!(args[3], u32::MAX.to_string().as_str());
+        assert_eq!(args[4], path.as_os_str());
+    }
 
     // A private endpoint must be distinct from the shared one, and stable within a
     // process.

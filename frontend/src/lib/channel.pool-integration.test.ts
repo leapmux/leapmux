@@ -1,6 +1,7 @@
 import type { ChannelTransport } from './channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE } from '~/generated/contracts/wire'
+import { makeIdentitySession } from '~/test-support/identitySession'
 import { ChannelManager } from './channel'
 import {
   acceptingKeyPins,
@@ -12,7 +13,6 @@ import {
   decodeWireMessage,
   makeCountingTransport,
   makeIdentityCipherManager,
-  makeMockSession,
   makeMockTransport,
   mockHandshake1,
   mockHandshake2,
@@ -412,7 +412,7 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
         message1: new Uint8Array(48),
         handshakeState: {} as any,
       }),
-      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeIdentitySession(),
       keyPins: acceptingKeyPins(),
     })
 
@@ -454,7 +454,7 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
         message1: new Uint8Array(48),
         handshakeState: {} as any,
       }),
-      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeIdentitySession(),
       keyPins: acceptingKeyPins(),
     })
 

@@ -4,7 +4,7 @@ import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { InnerRpcResponseSchema, InnerStreamMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
-import { buildRequestPlaintext, buildStreamRequestPlaintext, ChannelRpcMux } from './channelRpc'
+import { buildRequestPlaintext, buildStreamRequestPlaintext, ChannelRpcMux, FIRST_REQUEST_ID } from './channelRpc'
 import { Reassembler } from './reassembler'
 
 function safeCall(fn: () => void): void {
@@ -359,5 +359,58 @@ describe('channelRpc', () => {
     expect(err).not.toBeNull()
     expect(err?.message).toMatch(/not registered/)
     expect(sent).toHaveLength(0)
+  })
+})
+
+describe('ChannelRpcMux wasAllocated', () => {
+  it('reports nothing as allocated on a channel that has sent no request', () => {
+    const ch = makeChannel({ nextRequestId: FIRST_REQUEST_ID })
+    const { mux } = makeMux()
+    expect(mux.wasAllocated(ch, 0)).toBe(false)
+    expect(mux.wasAllocated(ch, FIRST_REQUEST_ID)).toBe(false)
+  })
+
+  it('reports every id from the first one up to the counter as allocated', () => {
+    const ch = makeChannel({ nextRequestId: 5 })
+    const { mux } = makeMux()
+    expect([1, 2, 3, 4].map(id => mux.wasAllocated(ch, id))).toEqual([true, true, true, true])
+  })
+
+  it('reports the id that the counter hands out next as not allocated', () => {
+    const ch = makeChannel({ nextRequestId: 5 })
+    const { mux } = makeMux()
+    expect(mux.wasAllocated(ch, 5)).toBe(false)
+    expect(mux.wasAllocated(ch, 6)).toBe(false)
+    expect(mux.wasAllocated(ch, Number.MAX_SAFE_INTEGER)).toBe(false)
+  })
+
+  it('reports ids below the first one as not allocated', () => {
+    const ch = makeChannel({ nextRequestId: 5 })
+    const { mux } = makeMux()
+    expect(mux.wasAllocated(ch, 0)).toBe(false)
+    expect(mux.wasAllocated(ch, -1)).toBe(false)
+  })
+
+  it('keeps reporting an id as allocated after its call retires', async () => {
+    const ch = makeChannel()
+    const { mux, sent } = makeMux()
+    const controller = new AbortController()
+    const call = mux.callAfterRekey(ch, 'ch-1', 'Ping', new Uint8Array(), undefined, controller.signal)
+    const requestId = sent[0]!.requestId
+    expect(mux.wasAllocated(ch, requestId)).toBe(true)
+
+    controller.abort(new Error('caller left'))
+    await expect(call).rejects.toThrow('caller left')
+
+    expect(mux.hasHandler(ch, requestId, null)).toBe(false)
+    expect(mux.wasAllocated(ch, requestId)).toBe(true)
+  })
+
+  it('counts a stream id as allocated once the stream begins', () => {
+    const ch = makeChannel()
+    const { mux } = makeMux()
+    const handle = mux.beginStream(ch, 'WatchEvents', new Uint8Array())
+    expect(handle.requestId).toBe(FIRST_REQUEST_ID)
+    expect(mux.wasAllocated(ch, handle.requestId)).toBe(true)
   })
 })

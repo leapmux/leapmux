@@ -1,11 +1,12 @@
+import type { LoggerCapture } from '~/test-support/loggerCapture'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  ChannelMessageSchema,
   InnerMessageSchema,
   InnerRpcRequestSchema,
   InnerRpcResponseSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelManager } from './channel'
 import {
   channelInternals,
@@ -406,6 +407,134 @@ describe('ChannelManager stream', () => {
   })
 })
 
+const RETIRED_ID_MESSAGE = 'dropped a late frame for a retired correlation id'
+const NEVER_ALLOCATED_ID_MESSAGE = 'dropped a frame for a correlation id that this client never allocated'
+
+// The worker answers every request, so a request that this client stops waiting
+// for still receives its final frames: the response to an aborted or timed-out
+// call, and the end frame that answers a stream cancel. The client drops those
+// frames on purpose, so it must not warn about them -- that warning made healthy
+// traffic look broken in the console. A frame for an id that this client never
+// allocated is a protocol violation and still warns.
+describe('ChannelManager late frames', () => {
+  const h = new ChannelManagerTestHarness()
+  let capture: LoggerCapture
+  beforeEach(() => {
+    h.setup()
+    capture = captureLoggerOutput()
+  })
+  afterEach(() => {
+    capture.restore()
+    h.teardown()
+  })
+
+  function retiredDrops(): unknown[] {
+    return capture.messages('debug', 'channel').filter(message => message === RETIRED_ID_MESSAGE)
+  }
+
+  it('logs the late response to an aborted call at debug level instead of warning', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const controller = new AbortController()
+    const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+    controller.abort(new Error('aborted'))
+    await expect(callPromise).rejects.toThrow('aborted')
+
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(1)
+
+    // The drop leaves the channel healthy: the next call still gets its answer.
+    const nextCall = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([2]))
+    await expect(nextCall).resolves.toMatchObject({ payload: new Uint8Array([2]) })
+  })
+
+  it('logs the late response to a timed-out call at debug level instead of warning', async () => {
+    vi.useFakeTimers()
+    try {
+      const channelId = await h.openTestChannel('w1')
+      const callPromise = h.mgr.call(channelId, 'SlowMethod', new Uint8Array(), 1_000)
+      vi.advanceTimersByTime(1_000)
+      await expect(callPromise).rejects.toThrow('timed out after 1s')
+
+      h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+
+      expect(capture.messages('warn', 'channel')).toEqual([])
+      expect(retiredDrops()).toHaveLength(1)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('logs the frames that answer a stream cancel at debug level instead of warning', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const onMessage = vi.fn()
+    const onEnd = vi.fn()
+    handle.onMessage(onMessage)
+    handle.onEnd(onEnd)
+    handle.cancel()
+
+    // An event that the worker sent before it read the cancel, then the end frame
+    // that the cancel itself produces (watchSession.run sends End when its
+    // context ends).
+    h.sendStreamMessageFromWorker(channelId, handle.requestId, new Uint8Array([1]))
+    h.sendStreamEndFromWorker(channelId, handle.requestId)
+
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(onEnd).not.toHaveBeenCalled()
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(2)
+  })
+
+  it('logs each chunk of a late chunked response at debug level and buffers nothing', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const pair = sessions.get(channelId)!
+    const controller = new AbortController()
+    const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+    controller.abort(new Error('aborted'))
+    await expect(callPromise).rejects.toThrow('aborted')
+
+    const resp = create(InnerRpcResponseSchema, { payload: new Uint8Array([9, 9]), isError: false })
+    const plaintext = toBinary(InnerMessageSchema, create(InnerMessageSchema, { kind: { case: 'response', value: resp } }))
+    const mid = Math.floor(plaintext.length / 2)
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
+
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(2)
+    expect(channelInternals(h.mgr, channelId).reassembly.size()).toBe(0)
+  })
+
+  // The documented cost of reading the allocation range instead of recording why
+  // each id retired: a duplicate reply to a completed call looks the same as a
+  // late reply to an aborted one.
+  it('logs a duplicate response to a completed call at debug level', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+    await expect(callPromise).resolves.toMatchObject({ payload: new Uint8Array([1]) })
+
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([2]))
+
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(1)
+  })
+
+  it('warns for a frame whose correlation id this client never allocated', async () => {
+    const channelId = await h.openTestChannel('w1')
+
+    // FIRST_TEST_REQUEST_ID is the next id that the counter hands out, and no
+    // call has taken it yet.
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+
+    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
+    expect(retiredDrops()).toEqual([])
+  })
+})
+
 describe('ChannelManager message routing', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
@@ -437,22 +566,6 @@ describe('ChannelManager chunking', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
-
-  /** Encode a wire message with specific flags. */
-  function encodeWireMessageWithFlags(channelId: string, ciphertext: Uint8Array, opts: { correlationId: number, flags: number }): ArrayBuffer {
-    const msg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
-      channelId,
-      ciphertext,
-      correlationId: BigInt(opts.correlationId),
-      flags: opts.flags,
-    })
-    const data = toBinary(ChannelMessageSchema, msg)
-    const buf = new Uint8Array(4 + data.length)
-    new DataView(buf.buffer).setUint32(0, data.length)
-    buf.set(data, 4)
-    return buf.buffer
-  }
 
   it('should send a single chunk for small plaintext', async () => {
     const channelId = await h.openTestChannel('w1')
@@ -519,10 +632,10 @@ describe('ChannelManager chunking', () => {
     const ct2 = pair.responder.send.encrypt(chunk2)
 
     // Send chunk1 with flags=MORE.
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct1, { correlationId: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // Send chunk2 with flags=UNSPECIFIED (final).
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct2, { correlationId: FIRST_TEST_REQUEST_ID, flags: 0 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct2, { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
     const result = await callPromise
     expect(result.payload).toEqual(new Uint8Array([10, 20, 30, 40, 50]))
@@ -541,7 +654,7 @@ describe('ChannelManager chunking', () => {
     const resp = create(InnerRpcResponseSchema, { payload: new Uint8Array([9]), isError: false })
     const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
     const ct1 = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct1, { correlationId: FIRST_TEST_REQUEST_ID, flags: 3 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 3 }))
 
     // The dropped frame advanced the receive nonce: the peer's NEXT
     // ciphertext still decrypts and resolves the call.
@@ -574,12 +687,12 @@ describe('ChannelManager chunking', () => {
     // Send a chunk that's within limits.
     const chunk1Data = new Uint8Array(30)
     const ct1 = pair.responder.send.encrypt(chunk1Data)
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct1, { correlationId: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // Send another chunk that exceeds the 50-byte limit (total 60 > 50).
     const chunk2Data = new Uint8Array(30)
     const ct2 = pair.responder.send.encrypt(chunk2Data)
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct2, { correlationId: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct2, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // The call should be rejected with an error about the size limit.
     await expect(callPromise).rejects.toThrow('exceeds')
@@ -613,11 +726,11 @@ describe('ChannelManager chunking', () => {
 
     // A MORE chunk within limits.
     const ct1 = pair.responder.send.encrypt(new Uint8Array(30))
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct1, { correlationId: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // The FINAL chunk (flags: 0) pushes the total to 60 > 50.
     const ct2 = pair.responder.send.encrypt(new Uint8Array(30))
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct2, { correlationId: FIRST_TEST_REQUEST_ID, flags: 0 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct2, { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
     await expect(callPromise).rejects.toThrow('exceeds')
 
@@ -632,13 +745,13 @@ describe('ChannelManager chunking', () => {
     for (let i = 1; i <= 4; i++) {
       const chunk = new Uint8Array([i])
       const ct = pair.responder.send.encrypt(chunk)
-      h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct, { correlationId: i, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, ct, { id: i, flags: 1 }))
     }
 
     // 5th should be dropped (exceeded MAX_INCOMPLETE_CHUNKED).
     const chunk5 = new Uint8Array([5])
     const ct5 = pair.responder.send.encrypt(chunk5)
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct5, { correlationId: 5, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct5, { id: 5, flags: 1 }))
 
     // Channel should still be functional — close notification works.
     h.mockWs.simulateMessage(encodeCloseMessage(channelId))
@@ -690,11 +803,11 @@ describe('ChannelManager chunking', () => {
 
     // Send a first chunk within limits (30 bytes).
     const chunk1 = pair.responder.send.encrypt(new Uint8Array(30))
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, chunk1, { correlationId: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // Send a final chunk that pushes over (30 + 30 = 60 > 50).
     const chunk2 = pair.responder.send.encrypt(new Uint8Array(30))
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, chunk2, { correlationId: FIRST_TEST_REQUEST_ID, flags: 0 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk2, { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
     await expect(callPromise).rejects.toThrow('exceeds')
 
@@ -725,10 +838,10 @@ describe('ChannelManager chunking', () => {
 
     // Send chunks that exceed the limit, targeted at the stream's requestId.
     const chunk1 = pair.responder.send.encrypt(new Uint8Array(30))
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, chunk1, { correlationId: handle.requestId, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk1, { id: handle.requestId, flags: 1 }))
 
     const chunk2 = pair.responder.send.encrypt(new Uint8Array(30))
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, chunk2, { correlationId: handle.requestId, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk2, { id: handle.requestId, flags: 1 }))
 
     expect(errorFn).toHaveBeenCalledOnce()
     expect(errorFn.mock.calls[0]?.[0]?.message).toContain('exceeds')
@@ -743,7 +856,7 @@ describe('ChannelManager chunking', () => {
     // Start a chunked sequence.
     const chunk = new Uint8Array([1, 2, 3])
     const ct = pair.responder.send.encrypt(chunk)
-    h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, ct, { correlationId: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, ct, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // Close the channel — should not crash and should clean up.
     await h.mgr.closeChannel(channelId)
@@ -877,21 +990,6 @@ describe('ChannelManager reassembly lifetime', () => {
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
 
-  function encodeChunk(channelId: string, ciphertext: Uint8Array, correlationId: number, more: boolean): ArrayBuffer {
-    const msg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
-      channelId,
-      ciphertext,
-      correlationId: BigInt(correlationId),
-      flags: more ? 1 : 0,
-    })
-    const data = toBinary(ChannelMessageSchema, msg)
-    const buf = new Uint8Array(4 + data.length)
-    new DataView(buf.buffer).setUint32(0, data.length)
-    buf.set(data, 4)
-    return buf.buffer
-  }
-
   async function openSmallMgr(maxMessageSize: number, rpcTimeoutMs?: number): Promise<{ cm: ChannelManager, channelId: string }> {
     sessions.clear()
     const cm = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
@@ -926,14 +1024,14 @@ describe('ChannelManager reassembly lifetime', () => {
       handle.onError(errorFn)
 
       // 30 + 30 > 50: the breach.
-      h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, true))
-      h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, true))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       expect(errorFn).toHaveBeenCalledOnce()
 
       // The peer keeps shovelling. Not one byte may be buffered, and the failure is
       // not re-reported.
       for (let i = 0; i < 200; i++) {
-        h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, true))
+        h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       }
       expect(errorFn).toHaveBeenCalledOnce()
 
@@ -947,7 +1045,7 @@ describe('ChannelManager reassembly lifetime', () => {
       expect(ch.reassembly.liveCount()).toBe(0)
 
       // The message's final chunk reaps the tombstone.
-      h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, false))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 0 }))
       expect(ch.reassembly.size()).toBe(0)
       expect(errorFn).toHaveBeenCalledOnce()
     }
@@ -976,9 +1074,9 @@ describe('ChannelManager reassembly lifetime', () => {
 
       // 30 + 30 > 50: the breach. The throwing onError must not escape the message
       // dispatch.
-      h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, true))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       expect(() => {
-        h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, true))
+        h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       }).not.toThrow()
       expect(errorCalls).toBe(1)
 
@@ -989,7 +1087,7 @@ describe('ChannelManager reassembly lifetime', () => {
       expect(ch.reassembly.liveCount()).toBe(0)
 
       for (let i = 0; i < 50; i++)
-        h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, true))
+        h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       expect(errorCalls).toBe(1)
     }
     finally {
@@ -1006,7 +1104,7 @@ describe('ChannelManager reassembly lifetime', () => {
     const pair = sessions.get(channelId)!
 
     for (let id = 100; id < 104; id++) {
-      h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), id, true))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id, flags: 1 }))
     }
 
     const ch = channelInternals(h.mgr, channelId)
@@ -1019,8 +1117,8 @@ describe('ChannelManager reassembly lifetime', () => {
     const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
     const plaintext = toBinary(InnerMessageSchema, envelope)
     const mid = Math.floor(plaintext.length / 2)
-    h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), FIRST_TEST_REQUEST_ID, true))
-    h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), FIRST_TEST_REQUEST_ID, false))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
     await expect(callPromise).resolves.toMatchObject({ payload: new Uint8Array([9, 9]) })
   })
@@ -1033,7 +1131,7 @@ describe('ChannelManager reassembly lifetime', () => {
       const pair = sessions.get(channelId)!
       const callPromise = cm.call(channelId, 'Test', new Uint8Array())
 
-      h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), FIRST_TEST_REQUEST_ID, true))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
       const ch = channelInternals(cm, channelId)
       expect(ch.reassembly.size()).toBe(1)
       expect(ch.reassembly.liveCount()).toBe(1)
@@ -1053,7 +1151,7 @@ describe('ChannelManager reassembly lifetime', () => {
     const pair = sessions.get(channelId)!
     const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
 
-    h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(new Uint8Array(30)), handle.requestId, true))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
     const ch = channelInternals(h.mgr, channelId)
     expect(ch.reassembly.size()).toBe(1)
 
