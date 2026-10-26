@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -52,8 +53,7 @@ type WrapSpec struct {
 	// the private address of a daemon, for example. A value on cmd.Env instead
 	// reaches the shell first, and the profile can replace it. Wrap panics on a
 	// name that is not a plain identifier, because the wrapper writes the name
-	// into shell code unquoted. The value is quoted for the shell's dialect, with
-	// the same limit the arguments have: csh has no escape for a single quote.
+	// into shell code unquoted. The value is quoted for the shell's dialect.
 	SetEnv []string
 	// BaseArgs are always passed to the program, after Launch.PrefixArgs.
 	BaseArgs []string
@@ -256,56 +256,105 @@ func buildNuCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 
 // buildPwshCommand builds the inner command string for PowerShell.
 func buildPwshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
-	quotedBase := make([]string, len(spec.BaseArgs))
-	for i, arg := range spec.BaseArgs {
-		quotedBase[i] = pwshQuote(arg)
-	}
-
-	baseArgsStr := strings.Join(quotedBase, " ")
 	clearEnvPrefix := pwshClearEnv(spec.StripEnvKeys) + pwshSetEnv(spec.SetEnv)
-	// The call operator takes a quoted string, which is PowerShell's documented
-	// form for running a path that holds a space.
-	program := pwshQuote(spec.Launch.Program)
+	baseCommand := pwshInvocation(spec.Launch.Program, spec.BaseArgs)
 
-	// Simple path: no env gate. See buildPosixCommand.
-	//
-	// The try/catch pair answers two PowerShell behaviours that POSIX shells
-	// give for free. Without `exit $LASTEXITCODE`, pwsh -Command answers its
-	// own success status and swallows the native program's exit code, and a
-	// caller that maps exit codes (an absent CLI is the store's empty state)
-	// then reads every failure as 0 or 1. Without the catch, a command that
-	// no PATH entry supplies is a CommandNotFoundException that also exits 1,
-	// where POSIX answers 127. `$ErrorActionPreference = 'Stop'` turns the
-	// exception into a terminating one the catch can classify; a native
-	// program's own non-zero exit stays non-terminating and reaches the exit.
+	// Preserve native exit codes and report an absent command as 127, as the
+	// POSIX wrapper does. Native argument encoding belongs to the invocation.
 	gate := spec.EnvGated
 	if gate == nil {
-		return fmt.Sprintf("$ErrorActionPreference = 'Stop'; %stry { Write-Output '%s'; & %s %s; exit $LASTEXITCODE } catch [System.Management.Automation.CommandNotFoundException] { exit 127 }",
-			clearEnvPrefix, delimiter, program, baseArgsStr)
+		return fmt.Sprintf("$ErrorActionPreference = 'Stop'; %stry { Write-Output '%s'; %s } catch [System.Management.Automation.CommandNotFoundException] { exit 127 }",
+			clearEnvPrefix, delimiter, baseCommand)
 	}
 
-	// Conditional path.
-	quotedGated := make([]string, len(gate.Args))
-	for i, arg := range gate.Args {
-		quotedGated[i] = pwshQuote(arg)
-	}
-	gatedArgsStr := strings.Join(quotedGated, " ")
-
+	commandWithOptionalArgs := pwshInvocation(spec.Launch.Program, slices.Concat(spec.BaseArgs, gate.Args))
 	return fmt.Sprintf(
 		"$ErrorActionPreference = 'Stop'; %s"+
 			"try { "+
 			"if (%s) { "+
 			"Write-Output '%s%s=false'; "+
-			"Write-Output '%s'; & %s %s; exit $LASTEXITCODE "+
+			"Write-Output '%s'; %s "+
 			"} else { "+
 			"Write-Output '%s%s=true'; "+
-			"Write-Output '%s'; & %s %s %s; exit $LASTEXITCODE "+
+			"Write-Output '%s'; %s "+
 			"} "+
 			"} catch [System.Management.Automation.CommandNotFoundException] { exit 127 }",
 		clearEnvPrefix, pwshEnvCondition(gate.EnvVars),
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr,
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr, gatedArgsStr,
+		metaPrefix, gate.MetaKey, delimiter, baseCommand,
+		metaPrefix, gate.MetaKey, delimiter, commandWithOptionalArgs,
 	)
+}
+
+// pwshInvocation preserves native arguments under every PowerShell argument
+// passing mode. Legacy passing concatenates argument values into a command
+// line without escaping embedded quotes, and drops an empty argument. Supply
+// complete native command-line tokens and select Legacy within this invocation
+// so its parser reverses that encoding on both Windows and Unix.
+//
+// A profile may supply a function or an alias instead of an executable. Resolve
+// aliases before deciding whether the target is native. Functions and scripts
+// receive the original arguments and keep the profile's argument passing mode.
+func pwshInvocation(program string, arguments []string) string {
+	original := make([]string, len(arguments))
+	native := make([]string, len(arguments))
+	for index, argument := range arguments {
+		original[index] = pwshQuote(argument)
+		native[index] = pwshQuote(legacyNativeArgument(argument))
+	}
+	command := pwshQuote(program)
+	// Metadata lookup parses filesystem paths as wildcard patterns. Read an
+	// existing literal file directly instead. Namespace-only GetCommands keeps
+	// loaded aliases, functions and cmdlets ahead of files without importing a
+	// module that would otherwise lose to a native executable. Full lookup for
+	// bare names retains module discovery and implicit .ps1 resolution on PATH.
+	return fmt.Sprintf(
+		"& { $leapmuxTarget = %s; "+
+			"$leapmuxAliases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); "+
+			"while ($true) { if (-not $leapmuxAliases.Add($leapmuxTarget)) { exit 127 }; "+
+			"$leapmuxCommands = @($ExecutionContext.InvokeCommand.GetCommands($leapmuxTarget, ([System.Management.Automation.CommandTypes]::Alias -bor [System.Management.Automation.CommandTypes]::Function -bor [System.Management.Automation.CommandTypes]::Filter -bor [System.Management.Automation.CommandTypes]::Cmdlet), $false)); "+
+			"if ($leapmuxCommands.Count -gt 0) { $leapmuxCommand = $leapmuxCommands[0] } else { "+
+			"$leapmuxPath = $null; "+
+			"if ([System.IO.Path]::IsPathRooted($leapmuxTarget)) { $leapmuxPath = $leapmuxTarget } "+
+			"elseif ($leapmuxTarget.Contains('/') -or $leapmuxTarget.IndexOf([char]0x5c) -ge 0) { $leapmuxPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($leapmuxTarget) }; "+
+			"if ($null -ne $leapmuxPath -and [System.IO.File]::Exists($leapmuxPath)) { $leapmuxNative = [System.IO.Path]::GetExtension($leapmuxPath) -ine '.ps1'; break }; "+
+			"if ($null -ne $leapmuxPath -and [System.IO.File]::Exists($leapmuxPath + '.ps1')) { $leapmuxNative = $false; break }; "+
+			"$leapmuxCommand = $ExecutionContext.InvokeCommand.GetCommand($leapmuxTarget, [System.Management.Automation.CommandTypes]::All); "+
+			"if ($null -eq $leapmuxCommand) { exit 127 } }; "+
+			"if ($leapmuxCommand -is [System.Management.Automation.AliasInfo]) { $leapmuxTarget = $leapmuxCommand.Definition; continue }; "+
+			"$leapmuxNative = $leapmuxCommand.CommandType -eq [System.Management.Automation.CommandTypes]::Application; break }; "+
+			"if ($leapmuxNative) { "+
+			"$PSNativeCommandArgumentPassing = 'Legacy'; & %s %s "+
+			"} else { & %s %s }; exit $LASTEXITCODE }",
+		command, command, strings.Join(native, " "), command, strings.Join(original, " "),
+	)
+}
+
+// legacyNativeArgument quotes one token for the Windows native command-line
+// parser, which .NET also uses for ProcessStartInfo.Arguments on Unix. A run of
+// backslashes doubles before a quote or the closing delimiter, and a literal
+// quote needs one additional backslash.
+func legacyNativeArgument(argument string) string {
+	var token strings.Builder
+	token.Grow(len(argument) + 2)
+	token.WriteByte('"')
+	backslashes := 0
+	for index := 0; index < len(argument); index++ {
+		character := argument[index]
+		if character == '\\' {
+			backslashes++
+			continue
+		}
+		if character == '"' {
+			token.WriteString(strings.Repeat("\\", 2*backslashes+1))
+		} else {
+			token.WriteString(strings.Repeat("\\", backslashes))
+		}
+		token.WriteByte(character)
+		backslashes = 0
+	}
+	token.WriteString(strings.Repeat("\\", 2*backslashes))
+	token.WriteByte('"')
+	return token.String()
 }
 
 // buildCshCommand builds the inner command string for tcsh and csh.
@@ -322,9 +371,8 @@ func buildPwshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 // line's variables before it evaluates that line, so a guard and the read it guards
 // cannot share one line.
 //
-// The program word and the arguments keep POSIX quoting: csh reads the same single
-// quotes, and it has no `'\”` escape, which is why posixQuote's output is used as-is
-// and an argument holding a single quote is out of reach for both shells alike.
+// The program word and the arguments use posixQuote. Both csh and tcsh accept
+// its concatenation of quoted segments and escaped literal single quotes.
 func buildCshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	quotedBase := make([]string, len(spec.BaseArgs))
 	for i, arg := range spec.BaseArgs {
@@ -516,8 +564,8 @@ func pwshEnvCondition(vars []string) string {
 }
 
 // posixQuote wraps a string in single quotes for POSIX shells.
-// Single quotes within the string are escaped as '\" (end quote, escaped
-// literal quote, start quote).
+// It closes the quoted segment, emits a backslash-escaped single quote, and
+// starts another quoted segment for each single quote in the input.
 func posixQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -530,8 +578,17 @@ func nuQuote(s string) string {
 	return `"` + nuReplacer.Replace(s) + `"`
 }
 
-// pwshQuote wraps a string in single quotes for PowerShell.
-// Single quotes within the string are escaped by doubling them (").
+// pwshQuoteReplacer escapes every single-quote delimiter PowerShell accepts.
+var pwshQuoteReplacer = strings.NewReplacer(
+	"'", "''",
+	"\u2018", "\u2018\u2018",
+	"\u2019", "\u2019\u2019",
+	"\u201a", "\u201a\u201a",
+	"\u201b", "\u201b\u201b",
+)
+
+// pwshQuote wraps a string in single quotes for PowerShell. Its parser treats
+// ASCII and typographic single quotes as delimiters, so double each delimiter.
 func pwshQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	return "'" + pwshQuoteReplacer.Replace(s) + "'"
 }

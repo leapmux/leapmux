@@ -362,31 +362,7 @@ func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
 // thinking indicator an active row pins -- with no error anywhere to trace back
 // to the missing wiring.
 func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
-	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
-
-	key, err := noiseutil.GenerateCompositeKeypair()
-	require.NoError(t, err)
-
-	client := newTestHubClient(t, "http://127.0.0.1:0")
-	t.Cleanup(client.Stop)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	w := Wire(Params{
-		Ctx:            ctx,
-		Client:         client,
-		DB:             sqlDB,
-		CompositeKey:   key,
-		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-		WorkerID:       "worker-1",
-		Name:           "test",
-		HomeDir:        t.TempDir(),
-		DataDir:        t.TempDir(),
-	})
-	t.Cleanup(w.Shutdown)
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
 	handler := w.Service.Agents.ExitHandlerForTest()
 	require.NotNil(t, handler, "Wire constructs the manager with no exit handler and must install one")
@@ -405,7 +381,7 @@ func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
 		RowKey: "sub", Kind: bgtask.KindSubagent, Title: "review the diff", Status: bgtask.StatusRunning,
 	}))
 
-	handler("agent-1", 1, errors.New("boom"), false)
+	handler("agent-1", errors.New("boom"), false)
 
 	rows, err := w.Service.Queries.ListAgentBackgroundTasksNewestFirst(bg, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: "agent-1", Limit: 10,
@@ -440,40 +416,18 @@ func TestWiring_ShutdownFlushesTheOutboundQueue(t *testing.T) {
 }
 
 func TestWire_PropagatesMaxMessageSize(t *testing.T) {
-	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
-
-	key, err := noiseutil.GenerateCompositeKeypair()
-	require.NoError(t, err)
-
-	client := newTestHubClient(t, "http://127.0.0.1:0")
-	t.Cleanup(client.Stop)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
 	const configured = 2 << 20
-	w := Wire(Params{
-		Ctx:            ctx,
-		Client:         client,
-		DB:             sqlDB,
-		CompositeKey:   key,
-		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
-		WorkerID:       "worker-1",
-		Name:           "test",
-		HomeDir:        t.TempDir(),
-		DataDir:        t.TempDir(),
-		MaxMessageSize: configured,
+	var workerPublicKey []byte
+	w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(p *Params) {
+		p.MaxMessageSize = configured
+		workerPublicKey = p.CompositeKey.X25519Public
 	})
-	t.Cleanup(w.Service.Shutdown)
 	t.Cleanup(func() { agent.ConfigureMaxMessageSize(0) })
 
 	assert.Equal(t, configured, w.Service.MaxMessageSize,
 		"Wire must carry MaxMessageSize into the service producer ceiling")
 
-	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(key.X25519Public)
+	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(workerPublicKey)
 	require.NoError(t, err)
 	resp := w.Service.Channels.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        "ch-wired-max",

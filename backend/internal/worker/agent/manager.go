@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"slices"
 	"sync"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/config"
-	"google.golang.org/protobuf/proto"
 )
 
 // ErrAgentNotFound is returned when an agent process does not exist.
@@ -61,17 +59,6 @@ type Manager struct {
 	// turnRetries counts the goroutines that run accepted turn retries. Only
 	// WaitTurnRetriesForTest reads it: no production caller waits for a retry.
 	turnRetries sync.WaitGroup
-}
-
-// cachedCatalog holds the last catalog and the model that supplies it.
-// Offline reads can reuse or rebuild groups from that model.
-// registration identifies the runtime that supplied a live sample.
-// A persisted catalog has no registration.
-// Only that same registration can reuse the sample for a publication.
-type cachedCatalog struct {
-	groups       []*leapmuxv1.AvailableOptionGroup
-	model        string
-	registration *agentRegistration
 }
 
 // lifecycleEntry is a per-agent mutex whose refcount is guarded by Manager.mu.
@@ -412,14 +399,6 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		m.mu.Lock()
 		entry.exiting = true
 		m.mu.Unlock()
-		exitCode := 0
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = -1
-			}
-		}
 
 		// Read IsStopped once. It reflects mutable process state; reading it
 		// twice (once for the log, once for onExit) could diverge if it changed
@@ -452,7 +431,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		onExit := m.onExit
 		m.mu.RUnlock()
 		if onExit != nil {
-			onExit(opts.AgentID, exitCode, err, stopped)
+			onExit(opts.AgentID, err, stopped)
 		}
 
 		m.mu.Lock()
@@ -1014,550 +993,6 @@ func (m *Manager) ClearContext(agentID string) (string, error) {
 	return p.ClearContext()
 }
 
-// defaultModelIDForList resolves which model id should carry the default badge for a
-// (possibly account-specific) model list, given the list's ids, the id the list already
-// designates as default (marked) and the highest-preference entry present (first) --
-// both "" when the list designates none. It is the ONE place the badge ladder lives;
-// withModelGroupDefaultMarked reduces the projected "model" option group to these three
-// arguments on every OptionGroups read. Priority:
-//  1. The explicit LEAPMUX_*_DEFAULT_MODEL operator override.
-//  2. The DefaultModelSentinel entry, for a provider that reports the sentinel in
-//     its own catalog (Claude Code today). It tracks the account's own default
-//     across plan tiers (e.g. Sonnet vs Fable).
-//  3. The provider's configured default, when the list contains it. Codex's
-//     configured default is the sentinel too, and reconcileModelCatalog keeps the
-//     sentinel in the live catalog, so Codex badges the sentinel at this step for
-//     a stopped AND a running agent.
-//  4. A default the list itself designates -- what queryAvailableModels copied
-//     from the CLI's own isDefault. Reached when the configured default is absent
-//     from this account's list, so a stale registry default cannot move the badge
-//     off the model the CLI marked.
-//  5. The highest-preference entry present, so the picker always shows a badge.
-//
-// Returning "" means "don't touch the list's existing default": that's the case for a
-// provider with no configured default at all (ACP providers registered with nil
-// defaultModels, which self-mark the currently-selected model in buildACPModels). The
-// steps 4 and 5 run only for a non-empty configured default, precisely so they don't
-// clobber that per-agent marking.
-func (r *Registry) defaultModelIDForList(ids []string, marked, first string, provider leapmuxv1.AgentProvider) string {
-	if env := r.DefaultModelEnvOverride(provider); env != "" {
-		// Honor the operator override only when it actually names a model in this
-		// (possibly account-specific) list, matching by exact id or provider-
-		// normalized alias. A stale or differently-spelled override -- a fully-
-		// qualified "claude-opus-4-8[1m]" against the catalog's "opus[1m]", or a
-		// model the account simply doesn't offer -- falls through to the rest of
-		// the ladder so the picker still shows a default badge. Returning an absent
-		// id unconditionally would leave withModelGroupDefaultMarked pointing the
-		// group's DefaultValue at an id none of its options carry, badging nothing.
-		//
-		// This step outranks the sentinel (step 2) deliberately: an explicit operator
-		// override naming the account's resolved concrete model (which
-		// ensureSettledModelListed surfaces into the list once startup settles it)
-		// badges that concrete model rather than the "default" placeholder -- the
-		// sentinel does not retain the badge once a concrete identity the operator
-		// pinned is present.
-		if id := r.matchModelID(ids, provider, env); id != "" {
-			return id
-		}
-	}
-	// Each provider states for itself whether its catalog reports the sentinel, so
-	// this ladder stays provider-neutral. Only Claude Code answers true today.
-	if r.Plugin(provider).ReportsDefaultModelSentinel() && slices.Contains(ids, DefaultModelSentinel) {
-		return DefaultModelSentinel
-	}
-	configured := r.DefaultModel(provider)
-	if configured == "" {
-		// No configured default: preserve whatever IsDefault the per-agent list
-		// already set (e.g. buildACPModels marking the current model) instead of
-		// moving the badge to the first entry.
-		return ""
-	}
-	if slices.Contains(ids, configured) {
-		return configured
-	}
-	// The configured default isn't in this (account-specific) list. Respect a
-	// default the provider already designated on the list itself -- e.g. Codex's
-	// queryAvailableModels copies the CLI's isDefault onto an entry -- before
-	// falling back, so a stale registry default (configured but absent from the
-	// live list) doesn't move the badge off the model the CLI actually marked.
-	if marked != "" {
-		return marked
-	}
-	// Nothing designated: mark the highest-preference entry the list does contain
-	// so the picker always shows a default badge (e.g. a Claude CLI reporting
-	// concrete models but no "default" sentinel falls back to its first model).
-	return first
-}
-
-// matchModelID returns the id in the list the given id refers to, matched first by exact id
-// then by provider-normalized alias (so a fully-qualified spelling like "claude-opus-4-8[1m]"
-// resolves to the catalog's "opus[1m]"). Returns "" when the list contains no such id. Used
-// to resolve an operator default-model override against an account-specific catalog.
-func (r *Registry) matchModelID(ids []string, provider leapmuxv1.AgentProvider, id string) string {
-	if slices.Contains(ids, id) {
-		return id
-	}
-	want := r.NormalizeModelID(provider, id)
-	for _, mid := range ids {
-		if r.NormalizeModelID(provider, mid) == want {
-			return mid
-		}
-	}
-	return ""
-}
-
-// OptionGroups returns every configuration axis for an agent as config option
-// groups, preferring the running provider's runtime groups, then cached groups,
-// then static defaults. The model group's default badge is re-derived on every
-// read (it depends on the LEAPMUX_*_DEFAULT_MODEL operator override, which is
-// not intrinsic catalog data and must not be persisted stale).
-// currentModel is the agent's persisted/selected model id; it is only consulted
-// for the static-fallback path (a non-running agent with no cached catalog), so
-// the effort group reflects the agent's ACTUAL model -- not the provider default
-// -- and disappears for effort-less models (e.g. Haiku). A running agent's
-// groups already carry the correct per-model effort group; pass "" when the
-// model is unknown (the fallback then uses the provider default).
-// OptionGroups returns the agent's option-group catalog: the running provider's live catalog,
-// the cached catalog, or the static fallback, in that order of preference.
-//
-// The returned slice and its group pointers are READ-ONLY and may alias the in-memory cached
-// catalog (and, in the live case, the provider's own snapshot). Callers must clone-on-write
-// before mutating a group (as overlayOptionGroupCurrents / withModelGroupDefaultMarked do) --
-// appending to or mutating the result in place would corrupt the catalog served to every other
-// reader.
-func (m *Manager) OptionGroups(agentID string, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	groups, running, cached := m.resolveLiveCatalog(agentID, provider, currentModel)
-	if running {
-		return groups
-	}
-	return m.registry.withModelGroupDefaultMarked(m.registry.optionGroupsFromCached(cached, provider, currentModel), provider)
-}
-
-// LiveOptionGroups samples one live provider's catalog for a settings publication.
-// It returns nil if the provider exits or changes during the sample.
-// An empty sample uses only that process's existing live cache.
-// It uses no persisted catalog or static fallback.
-// The returned groups are read-only, as OptionGroups documents.
-// The process can exit after this snapshot, so a publication must carry no lifecycle status.
-func (m *Manager) LiveOptionGroups(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
-	m.mu.RLock()
-	entry := m.agents[agentID]
-	p := entry.providerOrNil()
-	exiting := entry != nil && entry.exiting
-	m.mu.RUnlock()
-	if p == nil || exiting {
-		return nil
-	}
-
-	live := p.OptionGroups()
-	m.mu.Lock()
-	exiting = entry.exiting
-	if m.agents[agentID] != entry || exiting {
-		m.mu.Unlock()
-		return nil
-	}
-	if len(live) > 0 {
-		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), registration: entry}
-	} else {
-		cached := m.cachedOptionGroups[agentID]
-		if cached.registration == entry {
-			live = cached.groups
-		} else {
-			live = nil
-		}
-	}
-	m.mu.Unlock()
-	return m.registry.withModelGroupDefaultMarked(live, provider)
-}
-
-// resolveLiveCatalog returns a RUNNING agent's served option-group catalog -- the provider's live
-// catalog (refreshing the shared cache), or, on a transiently-empty live read, the shared cached
-// catalog -- with the model default re-marked. `running` reports whether the agent was registered;
-// when false, `groups` is nil and the caller resolves the NOT-running catalog from its own source:
-// the shared cache for OptionGroups, the caller's row snapshot for OptionGroupsForRow. `cached` is
-// the snapshot read under the same lock, so a not-running OptionGroups caller stays self-consistent
-// with it. Extracting the running-agent resolution into one place keeps the two callers' live/cache
-// precedence (and the cache refresh) from drifting.
-func (m *Manager) resolveLiveCatalog(agentID string, provider leapmuxv1.AgentProvider, currentModel string) (groups []*leapmuxv1.AvailableOptionGroup, running bool, cached cachedCatalog) {
-	m.mu.RLock()
-	entry, ok := m.agents[agentID]
-	p := entry.providerOrNil()
-	cached = m.cachedOptionGroups[agentID]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, false, cached
-	}
-	// Snapshot the live catalog once: each p.OptionGroups() call re-locks the provider and rebuilds
-	// the slice, and calling it twice could also observe two different catalogs across a concurrent
-	// refresh.
-	if live := p.OptionGroups(); len(live) > 0 {
-		m.refreshCachedCatalog(agentID, entry, live)
-		return m.registry.withModelGroupDefaultMarked(live, provider), true, cached
-	}
-	// Transiently-empty live read: serve the freshest known cached catalog (refreshCachedCatalog
-	// keeps it), NOT a caller's persisted snapshot.
-	return m.registry.withModelGroupDefaultMarked(m.registry.optionGroupsFromCached(cached, provider, currentModel), provider), true, cached
-}
-
-// optionGroupsFromCached projects a not-running (or transiently-empty-live) agent's cached catalog
-// into the served option groups: the cache as-is when it is usable for the requested model, a
-// model-dependent rebuild when ONLY the per-model groups are stale, else the static fallback.
-// Shared by OptionGroups (which sources `cached` from the shared per-agent cache) and
-// OptionGroupsForRow (which sources it from a caller's own row snapshot), so both resolve a
-// not-running catalog identically. Does NOT mark the model default -- the caller does.
-func (r *Registry) optionGroupsFromCached(cached cachedCatalog, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	switch {
-	case r.cachedCatalogUsable(cached, currentModel, provider):
-		return cached.groups
-	case len(cached.groups) > 0 && r.providerHasModelDependentGroups(provider) && currentModel != "":
-		// The cache exists but is stale ONLY by model: its per-model effort/thinking groups were
-		// built for a different model (an offline model edit moved the model column without
-		// re-persisting the catalog -- see optionGroupsView). Rebuild just those for currentModel
-		// and keep every other cached group, so dynamically-discovered model-INDEPENDENT groups
-		// (Claude's Output Style / Fast Mode, surfaced only at runtime and absent from the static
-		// templates) and any live-filtered group survive the edit instead of vanishing from the
-		// settings popover until relaunch.
-		return r.withModelDependentGroupsRebuilt(cached.groups, provider, currentModel)
-	default:
-		return r.fallbackOptionGroups(provider, currentModel)
-	}
-}
-
-// ensureModelGroup guarantees the catalog surfaces the model axis when the row knows a model but
-// the projected groups carry no model group -- a dynamic-model ACP provider configured with a
-// LEAPMUX_*_DEFAULT_MODEL override but never run, so it has no discovered model list to build a
-// selectable group from. It prepends a read-only model group carrying that value, so the stored
-// model stays visible to a by-id reader (the remote CLI reads the model from the option groups,
-// not the options map). A no-op when a model group already exists or no model is known.
-func ensureModelGroup(groups []*leapmuxv1.AvailableOptionGroup, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	if currentModel == "" || optionids.GroupByID(groups, OptionIDModel) != nil {
-		return groups
-	}
-	model := ReadOnlyValueGroup(OptionIDModel, ModelGroupLabel, OptionOrderModel, currentModel, "")
-	return append([]*leapmuxv1.AvailableOptionGroup{model}, groups...)
-}
-
-// OptionGroupsForRow returns an agent's option-group catalog, preferring a running agent's live
-// catalog and otherwise building from `persisted` -- the CALLER'S OWN row snapshot -- rather than
-// the shared per-agent cache. For a NOT-running agent the row is authoritative (the cache entry was
-// dropped on exit and is only ever re-seeded from per-caller row snapshots via PreloadCache), so
-// reading the shared cache races concurrent readers holding different snapshots: last-writer-wins
-// could install a staler catalog that a broadcast/proto then serves. Sourcing the not-running
-// catalog from the caller's own snapshot makes each read self-consistent with the row that produced
-// it. It still warms the shared cache so the internal OptionGroups readers stay seeded.
-//
-// The returned slice and its group pointers are READ-ONLY, exactly as OptionGroups documents: a
-// not-running result may alias the caller's own `persisted` slice (and, via the warmed cache, the
-// shared cached catalog), so a caller that mutates a group must clone-on-write first.
-func (m *Manager) OptionGroupsForRow(agentID string, provider leapmuxv1.AgentProvider, currentModel string, persisted []*leapmuxv1.AvailableOptionGroup) []*leapmuxv1.AvailableOptionGroup {
-	// For a RUNNING agent the live catalog (or the shared cache on a transiently empty live read)
-	// is authoritative, exactly as OptionGroups resolves it -- shared via resolveLiveCatalog so the
-	// two can't drift. Only the NOT-running source differs: the caller's own row snapshot below,
-	// rather than the shared cache.
-	if groups, running, _ := m.resolveLiveCatalog(agentID, provider, currentModel); running {
-		return groups
-	}
-	m.PreloadCache(agentID, persisted)
-	rowCached := cachedCatalog{groups: persisted, model: optionids.CurrentValue(persisted, OptionIDModel)}
-	// Surface the row's model even when no selectable model group was built (a dynamic-model ACP
-	// provider with a model-default env override but no discovered catalog), so the remote CLI's
-	// by-id model read doesn't report "" for a model the row holds.
-	return ensureModelGroup(m.registry.withModelGroupDefaultMarked(m.registry.optionGroupsFromCached(rowCached, provider, currentModel), provider), currentModel)
-}
-
-// refreshCachedCatalog keeps the cache coherent with the live catalog while the agent
-// runs. StartAgent seeds it once (and only when the start-time catalog was non-empty), but
-// ACP dynamic-model providers report their models only after the handshake, and live
-// setting changes mutate the catalog afterward. Refreshing here means that if the running
-// provider later returns a transiently EMPTY live catalog (OptionGroups' fallback case), we
-// serve the freshest known catalog rather than the stale start-time one -- or none at all
-// for a provider that started empty. Identity-checked so a concurrent restart's new
-// provider isn't clobbered. (The entry is dropped on exit, so this does not carry the
-// catalog into the post-exit offline window; that is served from the persisted
-// option_groups column.)
-func (m *Manager) refreshCachedCatalog(agentID string, entry *agentRegistration, live []*leapmuxv1.AvailableOptionGroup) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.agents[agentID] == entry {
-		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), registration: entry}
-	}
-}
-
-// cachedCatalogUsable reports whether the cached catalog can be served for the requested
-// model, rather than falling through to the static fallback (rebuilt for the requested
-// model). It is NOT usable -- a model-dependent provider's cache is stale -- for a
-// MODEL-DEPENDENT provider (Claude/Codex/Pi -- per-model effort tiers, Claude's extended
-// thinking) whenever the requested model is known and the cache's stamp doesn't match it:
-// either a concrete-but-different stamp (an offline model edit) OR an UNSTAMPED cache
-// (model == "", e.g. a static-fallback catalog persisted before a model resolved, whose
-// effort group was built for the provider default). Serving such a cache would show the
-// wrong model's effort tiers.
-//
-// A stale-by-model cache is NOT discarded wholesale: OptionGroups rebuilds only the
-// model-dependent groups for the requested model (withModelDependentGroupsRebuilt) and keeps
-// the rest, because these providers CAN carry dynamically-discovered model-INDEPENDENT groups
-// that live only in the cache -- Claude surfaces Output Style (from availableOutputStyles) and
-// Fast Mode at runtime, neither of which fallbackOptionGroups reproduces. Dropping the
-// whole cache for the bare static fallback would lose those groups from the popover until the
-// agent relaunches. The caller then overlays the persisted currents.
-//
-// Providers WITHOUT model-dependent groups -- the ACP permission-mode / primary-agent
-// providers, whose effort/reasoning axes ARE model-independent server-driven config options
-// living only in the cache -- always keep serving the cache across a model edit (the caller
-// overlays the new model as current); falling through to their degenerate static fallback
-// would silently drop those option groups from the popover until relaunch. An unknown
-// requested model (currentModel == "") is also trusted as-is for everyone.
-func (r *Registry) cachedCatalogUsable(cached cachedCatalog, currentModel string, provider leapmuxv1.AgentProvider) bool {
-	return len(cached.groups) > 0 &&
-		(currentModel == "" || cached.model == currentModel || !r.providerHasModelDependentGroups(provider))
-}
-
-// providerHasModelDependentGroups reports whether a provider's catalog carries
-// model-dependent sub-groups (per-model effort tiers, and for Claude the per-model
-// extended-thinking group) that must be rebuilt when the model changes. A provider has
-// them exactly when it owns a model-dependent effort catalog -- Registry.ManagesEffort
-// (Claude/Codex/Pi, and native Copilot, whose account decides both the models and each
-// model's effort tiers). The ACP permission-mode / primary-agent providers do NOT:
-// although every provider shares the default EffortSubGroups builder, it produces nothing
-// for a model with no SupportedEfforts, and their effort/reasoning axes are
-// model-independent server-driven config options -- so a model change doesn't invalidate
-// any cached group, and falling through to the static fallback would needlessly drop
-// those config options.
-func (r *Registry) providerHasModelDependentGroups(provider leapmuxv1.AgentProvider) bool {
-	return r.ManagesEffort(provider)
-}
-
-// modelDependentGroups builds the model group plus the per-model sub-groups for currentModel:
-// its effort tiers, and for Claude the extended-thinking group whose label ("Adaptive" vs "On")
-// is per model. These are exactly the groups that must be rebuilt when the selected model
-// changes; the provider's static option-group templates (sandbox/network/permission/...) and
-// any dynamically-discovered group are model-INDEPENDENT and handled separately. Current values
-// are empty here; the caller overlays DB selections. Returns nil for an unknown provider.
-func (r *Registry) modelDependentGroups(provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	reg, ok := r.byProvider[provider]
-	if !ok {
-		return nil
-	}
-	if currentModel == "" {
-		currentModel = r.DefaultModel(provider)
-	}
-	var groups []*leapmuxv1.AvailableOptionGroup
-	if mg := ModelOptionGroup(reg.DefaultModels, "", reg.ModelSubGroups); mg != nil {
-		groups = append(groups, mg)
-		// Emit the current model's model-dependent groups (its effort tiers, and
-		// for Claude the extended-thinking group whose label is per model) as
-		// top-level groups. This fallback is served while an agent is restarting
-		// (not registered): without these, the settings popover briefly loses the
-		// effort/thinking groups mid-restart, which flickers and can race a click.
-		if reg.ModelSubGroups != nil {
-			if m := FindAvailableModel(reg.DefaultModels, currentModel); m != nil {
-				groups = append(groups, reg.ModelSubGroups(m)...)
-			}
-		}
-	}
-	return groups
-}
-
-// fallbackOptionGroups builds the fallback option groups for a provider
-// that is not running and has no cached catalog: the model-dependent groups for
-// currentModel (the agent's selected model, defaulting to the provider default when
-// unknown -- so a Haiku agent shows no effort group while a Sonnet agent shows Sonnet's
-// tiers), followed by the provider's static option-group templates. Current values are
-// empty here; the caller overlays DB selections.
-func (r *Registry) fallbackOptionGroups(provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	reg, ok := r.byProvider[provider]
-	if !ok {
-		return nil
-	}
-	return append(r.modelDependentGroups(provider, currentModel), reg.OptionGroups...)
-}
-
-// withModelDependentGroupsRebuilt returns the cached catalog with its model-dependent groups
-// (model, effort, and per-model sub-groups) rebuilt for currentModel, preserving every OTHER
-// cached group untouched. Served on an OFFLINE model edit of a model-dependent provider
-// (Claude/Codex/Pi): the cached catalog's per-model effort/thinking groups were built for the
-// PRIOR model and are stale, but the catalog also carries dynamically-discovered, model-
-// INDEPENDENT groups (Claude's Output Style / Fast Mode, surfaced only at runtime and absent
-// from the static templates) and any live-filtered group. Falling through to the bare static
-// fallback would drop those until the agent relaunches; this swaps only the stale per-model
-// groups and keeps the rest. The caller overlays the persisted currents afterward.
-//
-// The cached model group is the first source of the new model's groups. It is the catalog of the
-// last live run: it lists the models that the CLI reported, and each model option carries its own
-// sub_groups. The static seed is only a fallback for a catalog that states no per-model groups,
-// or does not list the new model. The seed can differ from the live list, and Pi and Cline seed a
-// single placeholder model. A rebuild from the seed alone replaces the live model list with the
-// seed, and it cannot describe a live model at all.
-//
-// The rebuild drops a stale group that the new model does not carry (the effort group after a
-// switch to a model with no effort axis), but only when a source lists the new model. When no
-// source lists it, the existing groups stay, as the browser does for the same case
-// (withSelectedModelSubGroups).
-func (r *Registry) withModelDependentGroupsRebuilt(cached []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	fresh := r.cachedModelDependentGroups(cached, provider, currentModel)
-	known := fresh != nil
-	if !known {
-		fresh = r.modelDependentGroups(provider, currentModel)
-		known = r.staticModelListed(provider, currentModel)
-	}
-	if len(fresh) == 0 {
-		return cached
-	}
-	freshByID := make(map[string]*leapmuxv1.AvailableOptionGroup, len(fresh))
-	for _, g := range fresh {
-		freshByID[g.GetId()] = g
-	}
-	// A group that varies by model is a sub_group of some model option, in the source that built
-	// `fresh` or in the cached catalog.
-	dependent := subGroupIDs(optionids.GroupByID(fresh, OptionIDModel))
-	for id := range subGroupIDs(optionids.GroupByID(cached, OptionIDModel)) {
-		dependent[id] = true
-	}
-	out := make([]*leapmuxv1.AvailableOptionGroup, 0, len(cached)+len(fresh))
-	rebuilt := make(map[string]bool, len(fresh))
-	for _, g := range cached {
-		if f, ok := freshByID[g.GetId()]; ok {
-			out = append(out, f)
-			rebuilt[g.GetId()] = true
-		} else if known && dependent[g.GetId()] {
-			continue
-		} else {
-			out = append(out, g)
-		}
-	}
-	// A model-dependent group the stale cache lacked (e.g. the new model offers an effort
-	// group the prior model had none of) must still appear; order is irrelevant since the
-	// frontend sorts by each group's Order field.
-	for _, f := range fresh {
-		if !rebuilt[f.GetId()] {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
-// cachedModelDependentGroups returns what modelDependentGroups returns, read from the cached
-// model group: the model group without a current value, then the sub_groups of the option for
-// currentModel. It returns nil when the cached catalog cannot state them, so that the caller falls
-// back to the static seed. That holds when the catalog has no model group, when no model option
-// carries sub_groups (a stub, or a provider that keeps no per-model groups), and when no option
-// matches currentModel. An option that matches and carries no sub_groups is an answer: that model
-// has no model-dependent groups.
-func (r *Registry) cachedModelDependentGroups(cached []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	mg := optionids.GroupByID(cached, OptionIDModel)
-	if len(subGroupIDs(mg)) == 0 {
-		return nil
-	}
-	var option *leapmuxv1.AvailableOption
-	for _, o := range mg.GetOptions() {
-		if o.GetId() == currentModel {
-			option = o
-			break
-		}
-	}
-	if option == nil {
-		want := r.NormalizeModelID(provider, currentModel)
-		for _, o := range mg.GetOptions() {
-			if r.NormalizeModelID(provider, o.GetId()) == want {
-				option = o
-				break
-			}
-		}
-	}
-	if option == nil {
-		return nil
-	}
-	model := proto.Clone(mg).(*leapmuxv1.AvailableOptionGroup)
-	model.CurrentValue = ""
-	return append([]*leapmuxv1.AvailableOptionGroup{model}, option.GetSubGroups()...)
-}
-
-// staticModelListed reports whether the static seed of the provider lists model. The seed states
-// the model-dependent groups of a listed model, so a group that such a model lacks is really absent.
-func (r *Registry) staticModelListed(provider leapmuxv1.AgentProvider, model string) bool {
-	reg, ok := r.byProvider[provider]
-	if !ok {
-		return false
-	}
-	if model == "" {
-		model = r.DefaultModel(provider)
-	}
-	return FindAvailableModel(reg.DefaultModels, model) != nil
-}
-
-// subGroupIDs collects the ids of the groups that the options of a model group carry as
-// sub_groups. Each id names a group that varies by model.
-func subGroupIDs(modelGroup *leapmuxv1.AvailableOptionGroup) map[string]bool {
-	ids := map[string]bool{}
-	for _, o := range modelGroup.GetOptions() {
-		for _, g := range o.GetSubGroups() {
-			ids[g.GetId()] = true
-		}
-	}
-	return ids
-}
-
-// withModelGroupDefaultMarked re-derives the "model" group's DefaultValue via the
-// LEAPMUX_*_DEFAULT_MODEL / sentinel / configured-default ladder (defaultModelIDForList).
-// Returns the input unchanged when there is no model group or the default is
-// already correct; otherwise returns a copy with only the model group replaced,
-// leaving the shared catalog groups untouched.
-func (r *Registry) withModelGroupDefaultMarked(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
-	mg := optionids.GroupByID(groups, OptionIDModel)
-	if mg == nil || len(mg.GetOptions()) == 0 {
-		return groups
-	}
-	ids := make([]string, 0, len(mg.GetOptions()))
-	for _, o := range mg.GetOptions() {
-		ids = append(ids, o.GetId())
-	}
-	// The group's existing DefaultValue is the already-designated default (the option flagged
-	// default), but only when it is actually one of the options; ids[0] is the highest-
-	// preference present entry. Reducing the group to these three ids is what lets the hot
-	// OptionGroups read path share the ladder without a proto<->ModelInfo round-trip.
-	marked := ""
-	if slices.Contains(ids, mg.GetDefaultValue()) {
-		marked = mg.GetDefaultValue()
-	}
-	def := r.defaultModelIDForList(ids, marked, ids[0], provider)
-	if def == "" || def == mg.GetDefaultValue() {
-		return groups
-	}
-	out := make([]*leapmuxv1.AvailableOptionGroup, len(groups))
-	for i, g := range groups {
-		if g.GetId() == OptionIDModel {
-			c := proto.Clone(g).(*leapmuxv1.AvailableOptionGroup)
-			c.DefaultValue = def
-			out[i] = c
-		} else {
-			out[i] = g
-		}
-	}
-	return out
-}
-
-// PreloadCache populates the cached option groups for an agent that is not
-// currently running. This restores DB-persisted catalog data so that
-// OptionGroups returns the correct values without the agent process being active.
-func (m *Manager) PreloadCache(agentID string, groups []*leapmuxv1.AvailableOptionGroup) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// Never clobber a running (or concurrently-starting) agent's cache with a persisted-row
-	// snapshot: callers gate on HasAgent first, but that check and this write aren't atomic,
-	// so a StartAgent/RestartAgent that registered the agent and seeded a fresh, model-correct
-	// cache in between would otherwise be reverted to the stale persisted stamp. Re-checking
-	// membership under the same lock closes that window -- a live agent's catalog (refreshed in
-	// OptionGroups) is authoritative over anything we would preload here.
-	if _, running := m.agents[agentID]; running {
-		return
-	}
-	if len(groups) > 0 {
-		// Stamp the entry with the model the groups were built for (the model group's
-		// current value), so OptionGroups can detect a since-changed model and rebuild.
-		m.cachedOptionGroups[agentID] = cachedCatalog{groups: groups, model: optionids.CurrentValue(groups, OptionIDModel)}
-	}
-}
-
 // UpdateSettings applies the included options to a running agent. The result
 // identifies live confirmations and values that still need a restart.
 func (m *Manager) UpdateSettings(agentID string, options optionmap.Map) SettingsApplyResult {
@@ -1671,11 +1106,15 @@ func (m *Manager) StopAll() {
 }
 
 // ExitHandler is called when an agent process exits.
-// agentID identifies the agent, exitCode is the process exit code, err is
-// non-nil if the process exited with an error, and stopped is true when the
-// exit was driven by an explicit Stop (a user interrupt, a relaunch, or a
-// shutdown) rather than a crash. The background-task registry uses stopped to
-// label rows 'stopped' vs 'interrupted'.
+// agentID identifies the agent, err is the error of the provider's Wait, and
+// stopped is true when the exit was driven by an explicit Stop (a user
+// interrupt, a relaunch, or a shutdown) rather than a crash. The
+// background-task registry uses stopped to label rows 'stopped' vs
+// 'interrupted'.
+//
+// err is nil after a clean exit. A non-zero exit status is an *exec.ExitError
+// inside err, which a provider's Wait can join with other errors, so read it
+// with errors.As, never with a type assertion.
 //
 // The Manager keeps the exiting provider registered until this handler returns.
 // This lets the handler pause durable input before the slot permits a restart.
@@ -1687,4 +1126,4 @@ func (m *Manager) StopAll() {
 // so an acquire here deadlocks the agent for the life of the process. Do the
 // work that needs the lock AFTER the lifecycle call returns, the way the
 // plan-execution path does.
-type ExitHandler func(agentID string, exitCode int, err error, stopped bool)
+type ExitHandler func(agentID string, err error, stopped bool)

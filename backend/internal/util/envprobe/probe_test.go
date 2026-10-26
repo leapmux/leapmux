@@ -2,6 +2,7 @@ package envprobe
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"io"
 	"os"
@@ -18,11 +19,12 @@ import (
 func TestRunCapturesOnlyRequestedNativeValues(t *testing.T) {
 	t.Setenv("LEAPMUX_PROBE_VALUE", "日本語=é\nline\r\n%$'")
 	t.Setenv("LEAPMUX_PROBE_SECRET", "not requested")
-	t.Setenv("LEAPMUX_PROBE_PATH", " \t./child/../file \t")
+	t.Setenv("LEAPMUX_PROBE_PATH", " \t\"./child/../file\" \t")
 	t.Chdir(t.TempDir())
 	cwd, err := syscall.Getwd()
 	require.NoError(t, err)
-	args, err := (Request{Variables: []string{"LEAPMUX_PROBE_VALUE", "LEAPMUX_PROBE_UNSET"}, PathVariables: map[string]string{"LEAPMUX_PROBE_PATH": " \t"}}).Arguments()
+	// The cutset holds a double quote, which the request must carry intact.
+	args, err := (Request{Variables: []string{"LEAPMUX_PROBE_VALUE", "LEAPMUX_PROBE_UNSET"}, PathVariables: map[string]string{"LEAPMUX_PROBE_PATH": " \t\""}}).Arguments()
 	require.NoError(t, err)
 	assert.NotContains(t, strings.Join(args, " "), os.Getenv("LEAPMUX_PROBE_VALUE"))
 	var out, diagnostic bytes.Buffer
@@ -46,13 +48,28 @@ func TestRunRejectsInvalidRequestsAndPassesOrdinaryArguments(t *testing.T) {
 		assert.False(t, handled)
 		assert.Empty(t, out.String())
 	}
-	for _, body := range []string{`{`, `{ "unknown":true}`, `{} {}`, `{"variables":["X;exit"]}`, `{"pathVariables":{"X-Y":" "}}`} {
+	const invalidRequest = "invalid internal environment probe request"
+	for request, wantDiagnostic := range map[string]string{
+		// Valid base64url that holds an invalid request
+		encodedRequest(``):                              invalidRequest,
+		encodedRequest(`{`):                             invalidRequest,
+		encodedRequest(`{ "unknown":true}`):             invalidRequest,
+		encodedRequest(`{} {}`):                         invalidRequest,
+		encodedRequest(`{"variables":["X;exit"]}`):      `environment variable "X;exit" is not a plain identifier`,
+		encodedRequest(`{"pathVariables":{"X-Y":" "}}`): `environment variable "X-Y" is not a plain identifier`,
+		// Not the canonical encoding of any request: plain JSON, padding,
+		// non-zero trailing bits, and a character of the standard alphabet
+		`{}`:   invalidRequest,
+		`e30=`: invalidRequest,
+		`e31`:  invalidRequest,
+		`e3/`:  invalidRequest,
+	} {
 		var out, diagnostic bytes.Buffer
-		code, handled := Run([]string{Argument, body}, &out, &diagnostic)
-		assert.True(t, handled)
-		assert.Equal(t, 2, code)
-		assert.Empty(t, out.String())
-		assert.NotEmpty(t, diagnostic.String())
+		code, handled := Run([]string{Argument, request}, &out, &diagnostic)
+		assert.True(t, handled, request)
+		assert.Equal(t, 2, code, request)
+		assert.Empty(t, out.String(), request)
+		assert.Contains(t, diagnostic.String(), wantDiagnostic, request)
 	}
 	var diagnostic bytes.Buffer
 	code, handled := Run([]string{Argument}, io.Discard, &diagnostic)
@@ -62,14 +79,41 @@ func TestRunRejectsInvalidRequestsAndPassesOrdinaryArguments(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// A shell passes the request to the probe as a native argument. Windows
+// PowerShell 5.1 passes each embedded double quote unescaped, so the probe's
+// command-line parser drops it. The request must reach the probe in an
+// alphabet that no shell and no command-line parser rewrites.
+func TestArgumentsEncodeTheRequestInAShellInertAlphabet(t *testing.T) {
+	t.Parallel()
+	for _, request := range []Request{
+		{},
+		{Variables: []string{"A", "B"}},
+		{Variables: []string{"A"}, PathVariables: map[string]string{"B": " \t\"'\\$%`"}},
+	} {
+		args, err := request.Arguments()
+		require.NoError(t, err)
+		require.Len(t, args, 2)
+		assert.Equal(t, Argument, args[0])
+		assert.Regexp(t, `^[A-Za-z0-9_-]+$`, args[1])
+	}
+}
+
+// encodedRequest is the probe argument that carries body, in the encoding
+// that Request.Arguments uses.
+func encodedRequest(body string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(body))
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
 
 func TestRunReportsOutputFailure(t *testing.T) {
 	t.Parallel()
+	args, err := (Request{}).Arguments()
+	require.NoError(t, err)
 	var diagnostic bytes.Buffer
-	code, handled := Run([]string{Argument, `{}`}, failingWriter{}, &diagnostic)
+	code, handled := Run(args, failingWriter{}, &diagnostic)
 	assert.True(t, handled)
 	assert.Equal(t, 1, code)
 	assert.Contains(t, diagnostic.String(), "could not complete")

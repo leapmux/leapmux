@@ -509,20 +509,18 @@ func (svc *Service) agentAPITimeout() time.Duration {
 // grown past what positional arguments can keep readable. Service embeds
 // it, so every field below is readable as svc.<Field>.
 type Config struct {
-	// Enforced: New panics without Channels or Send, since a Service
-	// missing either cannot answer a single RPC.
+	// Enforced: New panics if Channels, Send, or Agents is missing.
 	Channels *channel.Manager // E2EE channel manager (for session lookups)
 	Send     SendFunc         // Forwards messages to the Hub via WebSocket
+	Agents   *agent.Manager
 
-	// Supplied by every worker entry point, but NOT validated: a zero
-	// value here surfaces as a nil dereference at first use rather than a
-	// startup panic. Listed apart from the enforced pair above so the
-	// comment states what the code actually checks.
+	// Supplied by every worker entry point, but not validated by New.
+	// A nil dependency fails when an operation first uses it.
 	DB        *sql.DB
-	Agents    *agent.Manager
 	Terminals *terminal.Manager
-	HomeDir   string // Empty disables ~ expansion in workspace paths
-	DataDir   string // Empty makes data-dir-relative paths resolve to CWD
+
+	HomeDir string // Empty disables ~ expansion in workspace paths
+	DataDir string // Empty makes data-dir-relative paths resolve to CWD
 
 	// Optional.
 	WorkerID string // This worker's ID (set after registration)
@@ -556,12 +554,10 @@ type Config struct {
 
 // New creates a fully wired Service.
 //
-// It panics if Channels or Send are missing, because a Service without
-// either cannot answer a single RPC and the two worker entry points
-// always supply both. Config makes the omission visible at the struct
-// literal; this is the backstop for an empty or partially-filled one, so
-// the failure lands at the line that built it rather than on the first
-// request.
+// It panics if Channels, Send, or Agents is missing. Both worker entry
+// points supply all three. Config makes an omission visible at the struct
+// literal; these checks also reject an empty or partially filled value
+// during construction.
 //
 // There is no second Init step. There used to be, because Channels and
 // Send arrived after construction -- Config carries them now, so a
@@ -701,17 +697,20 @@ func New(cfg Config) *Service {
 }
 
 func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
+	start := svc.startAgentFn
+	if start == nil {
+		start = svc.Agents.StartAgent
+	}
+	return svc.startAgentWithTurnReset(ctx, opts, sink, start)
+}
+
+// startAgentWithTurnReset reconciles queue activity around a process startup.
+func (svc *Service) startAgentWithTurnReset(ctx context.Context, opts agent.Options, sink agent.ProviderServices, start agentLauncher) (map[string]string, error) {
 	// A new process owns no turn. See NoteAgentProcessStarted for why this does
 	// not wait for the old process's exit handler to have said so.
 	svc.Output.NoteAgentProcessStarted(opts.AgentID)
 	svc.abandonUnownedTurn(opts.AgentID)
-	var settings map[string]string
-	var err error
-	if svc.startAgentFn != nil {
-		settings, err = svc.startAgentFn(ctx, opts, sink)
-	} else {
-		settings, err = svc.Agents.StartAgent(ctx, opts, sink)
-	}
+	settings, err := start(ctx, opts, sink)
 	if err == nil {
 		// A handshake can publish provider activity before the process accepts
 		// input. Clear that unowned state after the handshake. A concurrent queue
@@ -730,20 +729,11 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 // the interactive entry point and then quietly exercise the wrong one, which is
 // exactly the distinction this pair exists to make.
 func (svc *Service) startBackgroundAgent(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
-	// Same rule as startAgent: a new process owns no turn.
-	svc.Output.NoteAgentProcessStarted(opts.AgentID)
-	svc.abandonUnownedTurn(opts.AgentID)
-	var settings map[string]string
-	var err error
-	if svc.startBackgroundAgentFn != nil {
-		settings, err = svc.startBackgroundAgentFn(ctx, opts, sink)
-	} else {
-		settings, err = svc.Agents.StartBackgroundAgent(ctx, opts, sink)
+	start := svc.startBackgroundAgentFn
+	if start == nil {
+		start = svc.Agents.StartBackgroundAgent
 	}
-	if err == nil {
-		svc.abandonUnownedTurn(opts.AgentID)
-	}
-	return settings, err
+	return svc.startAgentWithTurnReset(ctx, opts, sink, start)
 }
 
 // restartAgentLocked preserves Manager.RestartAgent's stop-before-start ordering
@@ -889,7 +879,7 @@ func logAutoRetryError(action, agentID string, err error, attributes ...any) {
 // explicit Stop, interrupted on a crash). It fires for every exit including a
 // relaunch's old-process stop; stopAndWait serializes this hook before a new
 // process registers, so fresh spawns can never be clobbered.
-func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
+func (svc *Service) HandleAgentProcessExit(agentID string, _ error, stopped bool) {
 	subtreeIDs := svc.agentSubtreeIDs(agentID)
 	for _, id := range subtreeIDs {
 		if _, err := svc.InputQueue.ResolveUnechoedSteers(bgCtx(), id, -1); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {

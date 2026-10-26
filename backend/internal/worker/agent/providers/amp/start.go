@@ -54,13 +54,13 @@ func startWithThreadExporter(ctx context.Context, opts agent.Options, sink agent
 	clock := quartz.NewReal()
 	bridge, err := newPermissionBridge(dir.Path(), clock)
 	if err != nil {
-		removeAgentDir(opts.AgentID, dir)
+		providerkit.RemoveAgentDir("amp", opts.AgentID, dir)
 		return nil, err
 	}
 	config, err := json.Marshal(helperConfig{Endpoint: bridge.endpoint(), Secret: bridge.secretText()})
 	if err != nil {
 		bridge.close(errAgentStopped)
-		removeAgentDir(opts.AgentID, dir)
+		providerkit.RemoveAgentDir("amp", opts.AgentID, dir)
 		return nil, fmt.Errorf("encode the Amp helper configuration: %w", err)
 	}
 	helperEnv, err := agent.WriteHelperSpec(filepath.Join(dir.Path(), helperSpecFileName), agent.HelperSpec{
@@ -70,7 +70,7 @@ func startWithThreadExporter(ctx context.Context, opts agent.Options, sink agent
 	})
 	if err != nil {
 		bridge.close(errAgentStopped)
-		removeAgentDir(opts.AgentID, dir)
+		providerkit.RemoveAgentDir("amp", opts.AgentID, dir)
 		return nil, err
 	}
 

@@ -206,9 +206,7 @@ func Wire(p Params) *Wiring {
 	// two settings-change notifications bracketing a model/effort switch
 	// stay in one thread and consolidate. Permanent teardown does the full
 	// cleanup via its own ClearAgentRuntimeState call.
-	agents.SetOnExit(func(agentID string, exitCode int, err error, stopped bool) {
-		svc.HandleAgentProcessExit(agentID, exitCode, err, stopped)
-	})
+	agents.SetOnExit(svc.HandleAgentProcessExit)
 
 	// Cap concurrent BACKGROUND agent startups. Applied here, before
 	// SetChannelMgr below makes the manager reachable from the connect loop, so

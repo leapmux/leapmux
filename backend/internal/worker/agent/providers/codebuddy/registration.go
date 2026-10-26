@@ -3,7 +3,9 @@ package codebuddy
 import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -27,16 +29,20 @@ func codebuddyThinkingGroup(current string) *leapmuxv1.AvailableOptionGroup {
 	return agent.SelectGroup(OptionThinking, "Extended Thinking", agent.OptionOrderProviderFirst, codebuddyThinkingValue(current), codebuddyThinkingModes)
 }
 
+// agentDirSpec states the private directory of a CodeBuddy agent. Only a
+// process that starts with settings has one, and it holds the settings file
+// (see writeStartupSettings).
+func agentDirSpec() agentdir.Spec {
+	return agentdir.Spec{Prefix: "codebuddy"}
+}
+
 // codebuddyLocator finds the CodeBuddy Code CLI on the user's PATH.
 // `cbc` is the short alias and resolves to the same executable.
 var codebuddyLocator = launch.Binaries("codebuddy", "cbc")
 
-// codebuddyPermissionModes are the four modes `get_available_modes` advertises.
-//
-// The CLI's --permission-mode flag accepts six words (the same set as
-// contracts/claude-protocol.json), but the runtime advertises only these four
-// and its plan description is a copy-paste from Claude Code. LeapMux offers the
-// advertised set until a live probe proves dontAsk and auto are enterable.
+// codebuddyPermissionModes are the modes LeapMux offers: the four modes
+// get_available_modes advertises, plus Auto. The native permission controls
+// accept Auto even though get_available_modes omits it.
 var codebuddyPermissionModes = []agent.OptionDef{
 	{Id: contracts.CodebuddyModeDefault, Name: "Default", Default: true, Description: "Prompts for dangerous operations."},
 	{Id: contracts.CodebuddyModeAcceptEdits, Name: "Accept Edits", Description: "Auto-accept file edit operations."},
@@ -92,5 +98,6 @@ func Registration() agent.Registration {
 		FixedPermissionModes: true,
 		EnvModelKey:          "LEAPMUX_CODEBUDDY_DEFAULT_MODEL",
 		EnvEffortKey:         "LEAPMUX_CODEBUDDY_DEFAULT_EFFORT",
+		AgentDir:             ptrconv.Ptr(agentDirSpec()),
 	}
 }

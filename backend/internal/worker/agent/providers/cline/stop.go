@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -156,7 +157,9 @@ func (a *Agent) teardown(completion agent.MessageCompletion, message string) {
 	a.teardownOnce.Do(func() {
 		a.finishOutput(completion, message)
 		a.releaseClaims()
-		a.removeDir()
+		// Remove the discovery record, private task database and attached files,
+		// and release the directory's lock after output and claims are settled.
+		providerkit.RemoveAgentDir("cline", a.AgentID(), a.dir)
 	})
 }
 
@@ -208,13 +211,4 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion, message string)
 	a.closeTeamRuns(status)
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.PublishTurnActive()
-}
-
-// removeDir removes the agent's private directory: the discovery record, the
-// private task database and the attached files. It releases the directory's
-// lock too. The removal runs once; a later call only logs its failure again.
-func (a *Agent) removeDir() {
-	if err := a.dir.Close(); err != nil {
-		slog.Warn("cline remove the agent directory", "agent_id", a.AgentID(), "error", err)
-	}
 }

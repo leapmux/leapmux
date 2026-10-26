@@ -8,6 +8,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -64,6 +65,11 @@ type Agent struct {
 	archiveChildJobs map[string]*codebuddyArchiveJob
 	archiveStopped   bool
 	archiveRetries   sync.WaitGroup
+
+	// directory holds the startup settings file of the process, or is nil for a
+	// process that starts with no settings. Wait removes it once the process
+	// exited, so the file stays for the whole life of the process that reads it.
+	directory *agentdir.Dir
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -361,18 +367,23 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
-	a.stopWorkflowArchiveRetries()
-	a.withdrawControls()
-	a.setTurnActive(false)
+	a.cleanupAfterProcessExit()
 }
 
-// Wait waits for the process to exit.
+// Wait waits for the process to exit, and then removes the agent's private
+// directory.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.cleanupAfterProcessExit()
+	providerkit.RemoveAgentDir("codebuddy", a.AgentID(), a.directory)
+	return err
+}
+
+// cleanupAfterProcessExit stops archive retries and clears controls and turn state.
+func (a *Agent) cleanupAfterProcessExit() {
 	a.stopWorkflowArchiveRetries()
 	a.withdrawControls()
 	a.setTurnActive(false)
-	return err
 }
 
 // ClearContext starts a fresh session. CodeBuddy keeps no in-process clear, so

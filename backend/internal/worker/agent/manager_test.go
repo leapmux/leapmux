@@ -2,6 +2,10 @@ package agent_test
 
 import (
 	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -378,13 +382,97 @@ type blockingStub struct {
 
 func (b *blockingStub) Wait() error { <-b.waitCh; return nil }
 
+// exitedStub is a stubProvider whose process already exited. Its Wait answers
+// err at once.
+type exitedStub struct {
+	stubProvider
+	err error
+}
+
+func (s *exitedStub) Wait() error { return s.err }
+
+// managerExitHelperEnv makes TestManagerExitHelper exit with the code that the
+// variable holds.
+const managerExitHelperEnv = "LEAPMUX_MANAGER_EXIT_HELPER"
+
+// TestManagerExitHelper is the process that exitStatusError runs. It does
+// nothing in the test process itself.
+func TestManagerExitHelper(t *testing.T) {
+	code := os.Getenv(managerExitHelperEnv)
+	if code == "" {
+		return
+	}
+	status, err := strconv.Atoi(code)
+	if err != nil {
+		os.Exit(2)
+	}
+	os.Exit(status)
+}
+
+// exitStatusError returns the error of the Wait of a process that exits with
+// code. Only a process that ran gives an *exec.ExitError.
+func exitStatusError(t *testing.T, code int) error {
+	t.Helper()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.Command(executable, "-test.run=^TestManagerExitHelper$")
+	cmd.Env = append(os.Environ(), managerExitHelperEnv+"="+strconv.Itoa(code))
+	err = cmd.Run()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	require.Equal(t, code, exitErr.ExitCode())
+	return err
+}
+
+// The exit handler receives the error of the provider's Wait unchanged. A
+// provider's Wait joins the process's *exec.ExitError with other errors, as
+// providerkit.Process.Wait does, so the handler reads the exit status with
+// errors.As.
+func TestManagerExitHandlerReceivesTheExitStatus(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		waitErr error
+		// wantCode is the exit status inside the error, or 0 for a clean exit.
+		wantCode int
+	}{
+		{name: "a clean exit", waitErr: nil},
+		{name: "a joined exit status", waitErr: errors.Join(exitStatusError(t, 3), nil), wantCode: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			exits := make(chan error, 1)
+			m := agent.NewManager(testRegistry, func(_ string, err error, _ bool) { exits <- err })
+			_, err := m.StartAgentWith(t.Context(), agent.Options{AgentID: "exited", WorkingDir: t.TempDir()}, agenttest.Nop(),
+				func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+					return &exitedStub{err: tc.waitErr}, nil
+				})
+			require.NoError(t, err)
+			var got error
+			select {
+			case got = <-exits:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the exit handler did not run")
+			}
+			assert.Equal(t, tc.waitErr, got)
+			if tc.wantCode == 0 {
+				assert.NoError(t, got)
+				return
+			}
+			var exitErr *exec.ExitError
+			require.ErrorAs(t, got, &exitErr)
+			assert.Equal(t, tc.wantCode, exitErr.ExitCode())
+		})
+	}
+}
+
 func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 	t.Parallel()
 
 	type exitView struct{ hasAgent, alive bool }
 	m := agent.NewManager(testRegistry, nil)
 	viewDuringExit := make(chan exitView, 1)
-	m.SetOnExit(func(agentID string, _ int, _ error, _ bool) {
+	m.SetOnExit(func(agentID string, _ error, _ bool) {
 		viewDuringExit <- exitView{hasAgent: m.HasAgent(agentID), alive: m.AgentAlive(agentID)}
 	})
 	provider := &blockingStub{waitCh: make(chan struct{})}
@@ -417,7 +505,7 @@ func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 	exited := make(chan struct{})
-	m.SetOnExit(func(string, int, error, bool) { close(exited) })
+	m.SetOnExit(func(string, error, bool) { close(exited) })
 
 	// Provider A blocks in Wait until released; it is registered with a cache entry.
 	old := &blockingStub{
@@ -480,7 +568,7 @@ func TestManager_StopAndWaitWaitsForOnExit(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 	onExitStarted := make(chan struct{})
 	releaseOnExit := make(chan struct{})
-	m.SetOnExit(func(string, int, error, bool) {
+	m.SetOnExit(func(string, error, bool) {
 		close(onExitStarted)
 		<-releaseOnExit // hold onExit open so the test can observe stopAndWait still blocked
 	})

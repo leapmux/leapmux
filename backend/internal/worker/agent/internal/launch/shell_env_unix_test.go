@@ -17,8 +17,38 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/util/procutil"
 )
+
+// PowerShell's Legacy argument passing, which Windows PowerShell 5.1 always
+// uses, passes an embedded double quote to a native program unescaped. The
+// request still reaches the probe. A profile selects the mode: on Unix, pwsh
+// reads its profile from XDG_CONFIG_HOME, which the test controls. On Windows
+// the profile is in the Documents known folder, which only the user's registry
+// redirects. The powershell case of
+// TestShellEnvUsesNativeUnicodeValuesThroughAvailableShells covers 5.1 there.
+func TestShellEnvReadsTheValuesThroughPowerShellLegacyArgumentPassing(t *testing.T) {
+	t.Parallel()
+	shell, home := testutil.RequirePowerShellArgumentPassing(t, "Legacy", "LEAPMUX_PROBE_MODE")
+	workingDir, err := filepath.EvalSymlinks(home)
+	require.NoError(t, err)
+	env := append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home,
+		`LEAPMUX_PROBE_VALUE=say "hi" to C:\Program Files\`, "LEAPMUX_PROBE_PATH= relative/file ")
+
+	snapshot, result := ShellEnv(t.Context(), ShellEnvOptions{Shell: shell, Env: env, WorkingDir: home,
+		Variables:     []string{"LEAPMUX_PROBE_MODE", "LEAPMUX_PROBE_VALUE", "LEAPMUX_PROBE_UNSET"},
+		PathVariables: map[string]string{"LEAPMUX_PROBE_PATH": " "}})
+	require.Equal(t, ProbeYes, result)
+	assert.Equal(t, map[string]string{
+		"LEAPMUX_PROBE_MODE":  "Legacy",
+		"LEAPMUX_PROBE_VALUE": `say "hi" to C:\Program Files\`,
+		"LEAPMUX_PROBE_UNSET": "",
+		"LEAPMUX_PROBE_PATH":  " relative/file ",
+	}, snapshot.Values)
+	assert.Equal(t, map[string]string{"LEAPMUX_PROBE_PATH": workingDir + "/relative/file"}, snapshot.Paths)
+	assert.Equal(t, workingDir, snapshot.WorkingDir)
+}
 
 // TestShellEnvOutputHolder is the subprocess fixture that retains inherited
 // stdout until the parent releases its connection.

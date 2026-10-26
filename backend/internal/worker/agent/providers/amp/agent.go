@@ -535,16 +535,8 @@ func (a *Agent) stop() {
 	// A process exit closes these rows also. Stop covers an agent that started no process.
 	a.closeAllShellRows(bgtask.StatusStopped)
 	a.sink.ReportProgress(agent.ResetProgress())
-	removeAgentDir(a.agentID, a.dir)
+	providerkit.RemoveAgentDir("amp", a.agentID, a.dir)
 	close(a.done)
-}
-
-// removeAgentDir removes the agent's directory, and logs a failure: neither a
-// stop nor a failed start has a caller that could act on it.
-func removeAgentDir(agentID string, dir *agentdir.Dir) {
-	if err := dir.Close(); err != nil {
-		slog.Warn("amp remove the agent directory", "agent_id", agentID, "error", err)
-	}
 }
 
 // errAgentStopped refuses work for an agent that Stop ended.

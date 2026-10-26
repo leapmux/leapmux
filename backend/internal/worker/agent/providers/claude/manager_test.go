@@ -24,13 +24,13 @@ func startMockAgent(ctx context.Context, opts agent.Options, sink agent.Provider
 }
 
 func TestManager_SetOnExit_FiresOnStop(t *testing.T) {
-	m := agent.NewManager(claudeTestRegistry, func(string, int, error, bool) {
+	m := agent.NewManager(claudeTestRegistry, func(string, error, bool) {
 		// Original handler: should be replaced by SetOnExit below.
 		t.Error("original onExit should not be called after SetOnExit")
 	})
 
 	exited := make(chan string, 1)
-	m.SetOnExit(func(agentID string, _ int, _ error, _ bool) {
+	m.SetOnExit(func(agentID string, _ error, _ bool) {
 		exited <- agentID
 	})
 

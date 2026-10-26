@@ -3,14 +3,18 @@ package codebuddy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/util/validate"
@@ -108,14 +112,18 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		baseArgs = append(baseArgs, "--model", model)
 	}
 	settings := codebuddyNativeSettings{OutputStyle: opts.Get(OptionOutputStyle), AlwaysThinkingEnabled: thinkingOverride}
-	if settings.OutputStyle != "" || settings.AlwaysThinkingEnabled != nil {
-		encodedSettings, err := json.Marshal(settings)
-		if err != nil {
-			cancel()
-			return nil, fmt.Errorf("encode CodeBuddy startup settings: %w", err)
-		}
-		baseArgs = append(baseArgs, "--settings", string(encodedSettings))
+	directory, settingsArgs, err := writeStartupSettings(ctx, opts.AgentDirs, settings)
+	if err != nil {
+		cancel()
+		return nil, err
 	}
+	startupComplete := false
+	defer func() {
+		if !startupComplete {
+			providerkit.RemoveAgentDir("codebuddy", opts.AgentID, directory)
+		}
+	}()
+	baseArgs = append(baseArgs, settingsArgs...)
 	baseArgs = append(baseArgs, sessionArgs...)
 
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
@@ -153,19 +161,25 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		thinkingChoice: thinking,
 		permissionMode: permissionModeWire(opts.PermissionMode()),
 		pendingControl: make(map[string]chan<- codebuddyControlResult),
+		directory:      directory,
 	}
 	if err := a.StartCmd(); err != nil {
 		cancel()
 		return nil, err
+	}
+	// A failed startup returns no agent, so nothing waits for the process.
+	// fail stops it before the deferred rollback removes its directory.
+	fail := func(phase string, err error) (agent.Agent, error) {
+		startupErr := a.FormatStartupError(phase, err)
+		a.Stop()
+		return nil, startupErr
 	}
 	a.DrainStderr(stderrPipe)
 	scanner := agent.NewStdoutScanner(stdout)
 	go a.readOutputLoop(scanner)
 	initialization, err := a.initializeCapabilities(opts.EffectiveStartupTimeout())
 	if err != nil {
-		startupErr := a.FormatStartupError("initialization", err)
-		a.Stop()
-		return nil, startupErr
+		return fail("initialization", err)
 	}
 	if initialization.HasOutputStyleCatalog {
 		a.mu.Lock()
@@ -179,9 +193,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		if catalogErr == nil {
 			catalogErr = a.ProcessExitError()
 		}
-		startupErr := a.FormatStartupError("model catalog", catalogErr)
-		a.Stop()
-		return nil, startupErr
+		return fail("model catalog", catalogErr)
 	default:
 	}
 	if catalogErr != nil {
@@ -193,14 +205,44 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			err = resumeErr
 		}
 		if err != nil {
-			startupErr := a.FormatStartupError("session restore", err)
-			a.Stop()
-			return nil, startupErr
+			return fail("session restore", err)
 		}
 	}
 
 	a.sink.UpdateSessionID(sessionID)
+	startupComplete = true
 	return a, nil
+}
+
+// startupSettingsFileName is the file in the agent's private directory that
+// holds the settings of one process.
+const startupSettingsFileName = "startup-settings.json"
+
+// writeStartupSettings writes the settings that override CodeBuddy's own for
+// one process into a new private directory of the agent. It returns the
+// directory and the arguments that point the process at the file. When
+// settings overrides nothing, it returns no directory and no arguments.
+//
+// The settings travel in a file, keeping their contents out of the command
+// line. The shared shell wrapper preserves the path as one native argument,
+// including quotes in a Unix path under PowerShell Legacy argument passing.
+func writeStartupSettings(ctx context.Context, dirs *agentdir.Dirs, settings codebuddyNativeSettings) (*agentdir.Dir, []string, error) {
+	if settings.OutputStyle == "" && settings.AlwaysThinkingEnabled == nil {
+		return nil, nil, nil
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode CodeBuddy startup settings: %w", err)
+	}
+	dir, err := dirs.New(ctx, agentDirSpec())
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare the CodeBuddy agent directory: %w", err)
+	}
+	path := filepath.Join(dir.Path(), startupSettingsFileName)
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("write CodeBuddy startup settings: %w", err), dir.Close())
+	}
+	return dir, []string{"--settings", path}, nil
 }
 
 // permissionModeFlag maps LeapMux's wire mode onto the flag vocabulary.

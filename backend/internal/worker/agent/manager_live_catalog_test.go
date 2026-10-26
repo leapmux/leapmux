@@ -144,7 +144,7 @@ func TestManager_LiveOptionGroupsRejectsTheRegisteredExitCallbackSlot(t *testing
 
 	m := agent.NewManager(catalogRegistry(), nil)
 	result := make(chan []*leapmuxv1.AvailableOptionGroup, 1)
-	m.SetOnExit(func(id string, _ int, _ error, _ bool) {
+	m.SetOnExit(func(id string, _ error, _ bool) {
 		assert.True(t, m.HasAgent(id), "the exit callback still owns the slot")
 		result <- m.LiveOptionGroups(id, staticCatalogProvider)
 	})
