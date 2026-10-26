@@ -3,6 +3,9 @@ package fastagent
 import (
 	"context"
 	"fmt"
+	"slices"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -22,8 +25,14 @@ func (fastagentProvider) ListStoredSessions(ctx context.Context, q agent.StoredS
 
 // ValidateAttachment permits the content blocks Fast Agent converts to model input.
 func (fastagentProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		if len(attachment.Data) == 0 || !slices.Contains(contracts.FastagentAudioMIMEMembers, attachment.MIMEType) {
+			return fmt.Errorf("cannot send Fast Agent audio attachment %q with media type %s", attachment.Filename, attachment.MIMEType)
+		}
+		return nil
+	}
 	switch attachment.Kind {
-	case agent.AttachmentKindText, agent.AttachmentKindImage, agent.AttachmentKindPDF:
+	case contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf:
 		return nil
 	default:
 		return fmt.Errorf("fast-agent cannot send the attachment %s", attachment.Filename)

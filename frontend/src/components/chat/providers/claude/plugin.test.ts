@@ -171,6 +171,7 @@ describe('claude plugin capabilities', () => {
       text: true,
       image: true,
       pdf: true,
+      audio: false,
       binary: false,
     })
   })

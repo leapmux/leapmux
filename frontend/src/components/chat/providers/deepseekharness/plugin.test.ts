@@ -24,7 +24,7 @@ describe('deepseek harness provider', () => {
 
   it('declares separate native plan and permission axes', () => {
     const plugin = providerFor(provider)
-    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, binary: true })
+    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, audio: false, binary: true })
     expect(plugin?.configuration?.planMode?.currentMode({})).toBe('act')
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
     // The status bar draws the Act and Plan axis as its mode chip. The permission preset has no chip.

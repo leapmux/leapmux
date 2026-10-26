@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -268,12 +270,12 @@ func TestClaudeStoredSessions_FirstPromptFollowsTheCLI(t *testing.T) {
 	dir := testutil.NativeAbsPath("/Users/dev/project")
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	notes := providerkit.BuildInlineTextAttachmentBlock(agent.ClassifiedAttachment{
-		Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("line one\nline two\n"), Kind: agent.AttachmentKindText,
+		Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("line one\nline two\n"), Kind: contracts.AttachmentMediaKindText,
 	})
 	image := map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
 	attachedNotes := func(body string) string {
 		return providerkit.BuildInlineTextAttachmentBlock(agent.ClassifiedAttachment{
-			Filename: "notes.md", MIMEType: "text/markdown", Data: []byte(body), Kind: agent.AttachmentKindText,
+			Filename: "notes.md", MIMEType: "text/markdown", Data: []byte(body), Kind: contracts.AttachmentMediaKindText,
 		})
 	}
 

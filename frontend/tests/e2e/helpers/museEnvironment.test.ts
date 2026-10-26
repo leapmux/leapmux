@@ -24,6 +24,16 @@ function options() {
 }
 
 describe('createMuseEnvironment', () => {
+  it('writes current native compaction settings and keeps ordinary turns below the thresholds', () => {
+    createMuseEnvironment({ ...options(), alternateModelID: 'muse-spark-fixture-alt' })
+    const settings = JSON.parse(readFileSync(join(home, '.config/muse/settings.json'), 'utf8'))
+    expect(settings.model_catalog.map((model: { context_limit: number }) => model.context_limit)).toEqual([128000, 128000])
+    expect(settings.context_compaction).toEqual({ strategy: 'summary-preserved-suffix/v1', soft_threshold: 0.5, hard_threshold: 0.8 })
+    expect(settings).not.toHaveProperty('compaction_strategy')
+    expect(settings).not.toHaveProperty('context_compaction_soft_threshold')
+    expect(settings).not.toHaveProperty('context_compaction_hard_threshold')
+  })
+
   it.each([
     { input: ['serve', '--trust-workspace'], expected: ['serve', '--trust-workspace', '--disable-sandbox'] },
     { input: ['--version'], expected: ['--version'] },

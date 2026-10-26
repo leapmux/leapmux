@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -32,9 +33,14 @@ type Agent struct {
 	requestHasText    bool
 	retryResolution   providerkit.RetryResolution
 	compressPending   *qwenCompactionRequest
+	// outputStyle is the launch value of the Output Style axis. Qwen reads it
+	// only at start, so a change restarts the process.
+	outputStyle string
 	// clock paces the readers of background transcripts. Start sets the real
 	// clock, and a test sets a mock.
 	clock quartz.Clock
+	// workflowStopping closes process-owned workflow admission before Stop joins readers.
+	workflowStopping bool
 }
 
 // qwenCompactionRequest identifies one admitted manual compaction.
@@ -90,6 +96,13 @@ func (q *steerQueue) take(limit int) []steerItem {
 // SteerInput queues text for the running turn. Qwen reads it after the running
 // tool batch, or, when the turn ends first, as the next prompt.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	// Native drains run on the RPC reader, so they cannot query the model's
+	// audio modality. Leave audio in the worker queue for a validated prompt.
+	for _, attachment := range agent.ClassifyAttachments(attachments) {
+		if attachment.Kind == contracts.AttachmentMediaKindAudio {
+			return agent.ErrSteeringUnsupported
+		}
+	}
 	if !a.PromptActive() {
 		return agent.ErrNoActiveTurn
 	}

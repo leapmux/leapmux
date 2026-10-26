@@ -6,6 +6,8 @@ import { providerFor, registerProvider } from '../registry'
 import { input } from '../testUtils'
 import { createACPProvider, registerACPProvider } from './registerACPProvider'
 
+const attachmentCapabilities = { text: true, image: true, pdf: true, audio: false, binary: true }
+
 describe('createACPProvider', () => {
   it('connects native notifications to classification and the context meter', () => {
     const nativeNotifications = {
@@ -13,7 +15,7 @@ describe('createACPProvider', () => {
       entries: (message: Record<string, unknown>): NotificationEntry[] => message.compacted === true ? [{ kind: 'compaction', phase: 'end' }] : [],
       compactionBoundary: (message: Record<string, unknown>) => message.compacted === true ? { post: 0 } : null,
     }
-    const options = { defaultPermissionMode: 'default' as const, nativeNotifications }
+    const options = { attachments: attachmentCapabilities, defaultPermissionMode: 'default' as const, nativeNotifications }
     const plugin = createACPProvider(options)
     const frame = { compacted: true }
     expect(plugin.transcript.notificationEntry).toBe(nativeNotifications.entries)
@@ -24,13 +26,13 @@ describe('createACPProvider', () => {
   })
 
   it('omits native notification hooks when the provider supplies none', () => {
-    const plugin = createACPProvider({ defaultPermissionMode: 'default' })
+    const plugin = createACPProvider({ attachments: attachmentCapabilities, defaultPermissionMode: 'default' })
     expect(plugin.transcript.notificationEntry).toBeUndefined()
     expect(plugin.session?.compactionBoundaryFromMessage).toBeUndefined()
   })
   it('forwards the provider path capability without wrapping or parsing it', () => {
     const outputFilePaths = vi.fn(() => ['/native/reported.log'])
-    const options = { defaultPermissionMode: 'default' as const, outputFilePaths }
+    const options = { attachments: attachmentCapabilities, defaultPermissionMode: 'default' as const, outputFilePaths }
 
     const plugin = createACPProvider(options)
 
@@ -39,12 +41,12 @@ describe('createACPProvider', () => {
   })
 
   it('omits the path capability when the provider supplies none', () => {
-    const plugin = createACPProvider({ defaultPermissionMode: 'default' })
+    const plugin = createACPProvider({ attachments: attachmentCapabilities, defaultPermissionMode: 'default' })
     expect(plugin.transcript.outputFilePaths).toBeUndefined()
   })
 
   it('constructs a captured base without registration and permits one composed registration', () => {
-    const base = createACPProvider({ defaultPermissionMode: 'default', planValue: 'plan' })
+    const base = createACPProvider({ attachments: attachmentCapabilities, defaultPermissionMode: 'default', planValue: 'plan' })
     expect(providerFor(AgentProvider.COMMAND_CODE)).toBeUndefined()
     const extractDivider: typeof base.transcript.extractDivider = (...args) => isObject(args[0]) && args[0].method === 'native/end'
       ? { label: 'Native turn ended' }
@@ -61,11 +63,7 @@ describe('createACPProvider', () => {
 
 describe('registerACPProvider', () => {
   it('rejects conflicting declarations of the mode group before registration', () => {
-    expect(() => registerACPProvider({
-      provider: AgentProvider.DEEPSEEK_HARNESS,
-      settingsConfig: { kind: 'permissionMode', defaultMode: 'default' },
-      defaultPermissionMode: 'normal',
-    })).toThrow('cannot combine settingsConfig and defaultPermissionMode')
+    expect(() => registerACPProvider({ attachments: attachmentCapabilities, provider: AgentProvider.DEEPSEEK_HARNESS, settingsConfig: { kind: 'permissionMode', defaultMode: 'default' }, defaultPermissionMode: 'normal' })).toThrow('cannot combine settingsConfig and defaultPermissionMode')
     expect(providerFor(AgentProvider.DEEPSEEK_HARNESS)).toBeUndefined()
   })
 
@@ -73,10 +71,7 @@ describe('registerACPProvider', () => {
   // settings shape; supplying NEITHER is a registration-time misconfiguration that must
   // fail loudly (before registerProvider) rather than register a provider with no axis.
   it('rejects a registration with neither settingsConfig nor defaultPermissionMode', () => {
-    expect(() => registerACPProvider({
-      provider: AgentProvider.REASONIX,
-      controlActionsFor: () => () => null,
-    })).toThrow(/settingsConfig or defaultPermissionMode/)
+    expect(() => registerACPProvider({ attachments: attachmentCapabilities, provider: AgentProvider.REASONIX, controlActionsFor: () => () => null })).toThrow(/settingsConfig or defaultPermissionMode/)
   })
 
   // The options a provider with its own methods passes: its elicitation reader, its
@@ -84,14 +79,7 @@ describe('registerACPProvider', () => {
   // reach the plugin it registers, and the shared defaults must stay for the rest.
   it('carries the optional hooks into the plugin it registers', () => {
     const elicitation = (payload: Record<string, unknown>) => payload.method === 'vendor/elicit' ? { mode: 'form', message: 'm' } : undefined
-    registerACPProvider({
-      provider: AgentProvider.GROK_BUILD,
-      defaultPermissionMode: 'default',
-      elicitation,
-      permissionRejectReason: (result, reason) => ({ ...result, reason }),
-      preservesSelectionNotes: true,
-      agentTurnEnd: parent => parent.method === 'vendor/end' ? 'end_turn' : undefined,
-    })
+    registerACPProvider({ attachments: attachmentCapabilities, provider: AgentProvider.GROK_BUILD, defaultPermissionMode: 'default', elicitation, permissionRejectReason: (result, reason) => ({ ...result, reason }), preservesSelectionNotes: true, agentTurnEnd: parent => parent.method === 'vendor/end' ? 'end_turn' : undefined })
     const plugin = providerFor(AgentProvider.GROK_BUILD)!
     expect(plugin.controls?.elicitation?.({ method: 'vendor/elicit' })).toEqual({ mode: 'form', message: 'm' })
     expect(plugin.controls?.preservesSelectionNotes).toBe(true)
@@ -106,7 +94,7 @@ describe('registerACPProvider', () => {
   // form an ordinary permission, and the row lost what the reader chose.
   it('reads a saved form answer through the provider\'s own elicitation reader', () => {
     const elicitation = (payload: Record<string, unknown>) => payload.method === 'vendor/elicit' ? { mode: 'form' as const, message: 'm' } : undefined
-    registerACPProvider({ provider: AgentProvider.KIRO, defaultPermissionMode: 'default', elicitation })
+    registerACPProvider({ attachments: attachmentCapabilities, provider: AgentProvider.KIRO, defaultPermissionMode: 'default', elicitation })
     const plugin = providerFor(AgentProvider.KIRO)!
     const saved = (response: Record<string, unknown>) => plugin.controls?.controlResponseDisplay?.({ requestId: 'r', claimToken: 'c', request: { method: 'vendor/elicit' }, response })
     expect(saved({ result: { action: 'decline' } })).toEqual({ kind: 'label', text: 'Rejected' })
@@ -116,7 +104,7 @@ describe('registerACPProvider', () => {
   })
 
   it('keeps the shared defaults when a provider passes none', () => {
-    registerACPProvider({ provider: AgentProvider.REASONIX, defaultPermissionMode: 'normal' })
+    registerACPProvider({ attachments: attachmentCapabilities, provider: AgentProvider.REASONIX, defaultPermissionMode: 'normal' })
     const plugin = providerFor(AgentProvider.REASONIX)!
     expect(plugin.controls?.preservesSelectionNotes).toBeUndefined()
     expect(plugin.controls?.elicitation?.({ method: 'elicitation/create', params: { message: 'Hi' } })?.message).toBe('Hi')

@@ -1,8 +1,10 @@
 import { expect } from '@playwright/test'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeScenarioModelContextText, nativeTextStep } from '../helpers/nativeScenario'
+import { exerciseSteerAfterTool, NATIVE_TOOL_STEERING_TEXT } from '../helpers/nativeToolSteering'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { steerQueuedInput } from '../helpers/steer'
-import { assistantBubbles, messageContents, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { applyPermissionPreset, assistantBubbles, messageContents, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { junieTest } from '../junie-fixtures'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
@@ -43,3 +45,15 @@ junieTest('carries a steer into its own turn through _session/steering', async (
     await expect(messageContents(page).filter({ hasText: 'Turn failed' })).toHaveCount(0)
   }
 })
+
+junieTest('injects steering into the turn while its native command runs', async ({ native }) => {
+  await exerciseSteerAfterTool(native, { prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  await native.page.reload()
+  await waitForAgentIdle(native.page)
+  await expect(userBubbles(native.page).filter({ hasText: NATIVE_TOOL_STEERING_TEXT })).toHaveCount(1)
+  await expect(assistantBubbles(native.page).filter({ hasText: 'finished steered' })).toHaveCount(1)
+  await expect(native.page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
+  await sendNativeAnswer(native, 'Reply once after the injected steering turn.', 'The next native turn completed.')
+})
+
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/519.

@@ -38,6 +38,7 @@ const ohMyPiPlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: false,
+      audio: false,
       binary: false,
     },
     // omp's one mode axis is its tool approval mode.

@@ -22,6 +22,14 @@
  */
 const REFUSAL_SENTENCE = /^The user has (?:permanently )?declined permission to use this tool: \S+$/
 
+/** Native shell result metadata and complete retained-file notices. */
+export const FAST_AGENT_SHELL = {
+  Metadata: 'fast-agent-shell-process-metadata',
+  ExitCode: 'exit_code',
+  OutputNotice: /^\[Output truncated: showing first \d+ bytes and last \d+ bytes of \d+ bytes \(~\d+ of ~\d+ tokens\); omitted \d+ middle bytes\. (?:The complete output is available during this session at ([^\r\n]+?)\.|The first \d+ bytes of the output are available during this session at ([^\r\n]+?); the temporary-file quota was reached\.) Use read_text_file for selected line ranges or run a targeted search against that file; avoid reading the entire file unless necessary\.\]$/gmu,
+  OutputPath: /(?:^|[/\\])fast-agent-output-[\w-]+[/\\]output-(?:0|[1-9]\d*)\.log$/u,
+} as const
+
 /** Whether one text is exactly the sentence of a call that the reader refused. */
 export function isFastAgentRefusalSentence(text: string): boolean {
   return REFUSAL_SENTENCE.test(text)

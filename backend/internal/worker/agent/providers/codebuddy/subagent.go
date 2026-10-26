@@ -209,7 +209,7 @@ func (a *Agent) handleTaskStarted(event *codebuddyTaskEvent) {
 	title := strings.TrimSpace(event.Description)
 	var kind bgtask.Kind
 	switch event.TaskType {
-	case "local_workflow":
+	case "local_workflow", "Workflow":
 		kind = bgtask.KindWorkflow
 		if name := strings.TrimSpace(event.WorkflowName); name != "" {
 			title = name
@@ -218,12 +218,12 @@ func (a *Agent) handleTaskStarted(event *codebuddyTaskEvent) {
 			title = "Workflow"
 		}
 		a.tasks.rememberWorkflow(event.TaskID, title)
-	case "local_agent":
+	case "local_agent", "Agent":
 		kind = bgtask.KindSubagent
 		if title == "" {
 			title = bgtask.FirstLine(event.Prompt)
 		}
-	case "local_bash":
+	case "local_bash", "Bash", "PowerShell":
 		kind = bgtask.KindShell
 		if title == "" {
 			title = bgtask.FirstLine(event.Prompt)

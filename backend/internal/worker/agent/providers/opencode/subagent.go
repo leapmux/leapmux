@@ -172,6 +172,8 @@ var errOpenCodeSubagentIdle = errors.New("the subagent finished, so it takes no 
 // openCodeChildSession is the session of one running subagent.
 type openCodeChildSession struct {
 	id string
+	// modelID is confirmed by this child's load response, independently of the root.
+	modelID string
 	// loaded is true once the agent loaded the session, so it streams the
 	// session's updates and takes a prompt for it.
 	loaded bool
@@ -209,11 +211,13 @@ func (b *FamilyBase) followChildSession(callID, childSessionID string) {
 	b.AttachChildSession(childSessionID, callID)
 	// The daemon reader must not wait for the agent's answer.
 	go func() {
-		if err := b.LoadChildSession(childSessionID); err != nil {
+		modelID, err := b.LoadChildSession(childSessionID)
+		if err != nil {
 			slog.Warn("load the OpenCode subagent session", "agent_id", b.AgentID(), "call_id", callID, "session_id", childSessionID, "error", err)
 			return
 		}
 		b.childSessionsMu.Lock()
+		child.modelID = modelID
 		child.loaded = true
 		b.childSessionsMu.Unlock()
 	}()

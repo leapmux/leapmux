@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -95,6 +97,9 @@ type Agent struct {
 	// built at many sites that do not go through Start, and a nil
 	// receiver would be reachable from every one of them.
 	tasks claudeTaskIndex
+	// workflows draws the agent rows of Workflow runs. A value, not a pointer,
+	// for the same reason as tasks.
+	workflows claudeWorkflowRuns
 }
 
 func (a *Agent) Stop() {
@@ -320,7 +325,7 @@ func (a *Agent) SupportsSteering() bool { return true }
 // comes before the turn check.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if attachment.Kind != agent.AttachmentKindText && attachment.Kind != agent.AttachmentKindImage {
+		if attachment.Kind != contracts.AttachmentMediaKindText && attachment.Kind != contracts.AttachmentMediaKindImage {
 			return fmt.Errorf("%w: a steered turn of Claude Code keeps text and images only, so %q goes in the next turn",
 				agent.ErrSteeringUnsupported, attachment.Filename)
 		}
@@ -445,12 +450,12 @@ func buildClaudeContentBlocks(content string, classified []agent.ClassifiedAttac
 // image. ValidateAttachment refuses a binary file before it reaches here.
 func claudeAttachmentBlock(attachment agent.ClassifiedAttachment) map[string]interface{} {
 	switch attachment.Kind {
-	case agent.AttachmentKindText:
+	case contracts.AttachmentMediaKindText:
 		return map[string]interface{}{
 			"type": "text",
 			"text": providerkit.BuildInlineTextAttachmentBlock(attachment),
 		}
-	case agent.AttachmentKindPDF:
+	case contracts.AttachmentMediaKindPdf:
 		return claudeBase64Block("document", attachment)
 	default:
 		return claudeBase64Block("image", attachment)

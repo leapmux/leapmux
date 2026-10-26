@@ -3,6 +3,8 @@ package fastagent
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,8 +22,8 @@ func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 func TestProviderRejectsOtherBinaryAttachments(t *testing.T) {
 	t.Parallel()
 	provider := fastagentProvider{}
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage, agent.AttachmentKindPDF} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf} {
 		assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Filename: "file", Kind: kind}))
 	}
-	require.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Filename: "file.bin", Kind: agent.AttachmentKindBinary}))
+	require.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Filename: "file.bin", Kind: contracts.AttachmentMediaKindBinary}))
 }

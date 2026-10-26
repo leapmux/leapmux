@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -18,7 +20,7 @@ const droidMaxPDFBytes = 3 * 1024 * 1024
 
 // ValidateAttachment checks file kinds and sizes independently of a live model.
 func (droidProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindPDF {
+	if attachment.Kind == contracts.AttachmentMediaKindPdf {
 		if len(attachment.Data) == 0 {
 			return fmt.Errorf("factory Droid does not support an empty PDF attachment: %s", attachment.Filename)
 		}
@@ -27,10 +29,10 @@ func (droidProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) e
 		}
 		return nil
 	}
-	if err := providerkit.RejectPDFAndBinaryAttachment(droidAttachmentLabel, attachment); err != nil {
+	if err := providerkit.ValidateTextAndImageAttachment(droidAttachmentLabel, attachment); err != nil {
 		return err
 	}
-	if attachment.Kind == agent.AttachmentKindImage && len(attachment.Data) == 0 {
+	if attachment.Kind == contracts.AttachmentMediaKindImage && len(attachment.Data) == 0 {
 		return fmt.Errorf("factory Droid does not support an empty image attachment: %s", attachment.Filename)
 	}
 	return nil
@@ -67,17 +69,17 @@ func buildUserMessage(content string, attachments []*leapmuxv1.Attachment) (droi
 			return droidUserMessage{}, err
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			images = append(images, droidInputImage{
 				Type: "base64", MediaType: attachment.MIMEType,
 				Data: base64.StdEncoding.EncodeToString(attachment.Data),
 			})
-		case agent.AttachmentKindPDF:
+		case contracts.AttachmentMediaKindPdf:
 			files = append(files, droidInputFile{
 				Type: "base64", MediaType: attachment.MIMEType,
 				Data: base64.StdEncoding.EncodeToString(attachment.Data), Name: attachment.Filename,
 			})
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			parts = append(parts, providerkit.BuildInlineTextAttachmentBlock(attachment))
 		default:
 			return droidUserMessage{}, fmt.Errorf("factory Droid cannot send the attachment %s", attachment.Filename)

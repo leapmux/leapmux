@@ -41,6 +41,7 @@ const claudeCodePlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: true,
+      audio: false,
       binary: false,
     },
     planMode: buildPlanMode('permissionMode', CLAUDE_MODE.Plan, CLAUDE_DEFAULT_MODE),

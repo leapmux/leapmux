@@ -6,6 +6,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -16,7 +18,7 @@ import (
 
 func TestInputBlocksKeepsTheRequiredEmptyTextField(t *testing.T) {
 	t.Parallel()
-	blocks, err := inputBlocks("", []agent.ClassifiedAttachment{{Kind: agent.AttachmentKindImage, Filename: "proof.png", MIMEType: "image/png", Data: []byte{0, 1, 2, 255}}})
+	blocks, err := inputBlocks("", []agent.ClassifiedAttachment{{Kind: contracts.AttachmentMediaKindImage, Filename: "proof.png", MIMEType: "image/png", Data: []byte{0, 1, 2, 255}}})
 	require.NoError(t, err)
 	raw, err := json.Marshal(blocks)
 	require.NoError(t, err)

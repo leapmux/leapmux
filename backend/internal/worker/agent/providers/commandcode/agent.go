@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -128,12 +130,12 @@ func inputBlocks(content string, attachments []agent.ClassifiedAttachment) ([]co
 			return nil, err
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			text := providerkit.BuildInlineTextAttachmentBlock(attachment)
 			blocks = append(blocks, contentBlock{Type: "text", Text: &text})
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			blocks = append(blocks, contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: attachment.MIMEType, Data: base64.StdEncoding.EncodeToString(attachment.Data)}})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
 			return nil, fmt.Errorf("the Command Code RPC cannot send %s attachments", attachment.Kind)
 		}
 	}
@@ -183,7 +185,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		return agent.ErrNoActiveTurn
 	}
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if attachment.Kind != agent.AttachmentKindText {
+		if attachment.Kind != contracts.AttachmentMediaKindText {
 			return agent.ErrSteeringUnsupported
 		}
 		content += "\n\n" + providerkit.BuildInlineTextAttachmentBlock(attachment)

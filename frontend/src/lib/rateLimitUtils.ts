@@ -65,6 +65,35 @@ export function getResetsAt(info: RateLimitInfo): number | undefined {
   return info.isUsingOverage ? info.overageResetsAt : info.resetsAt
 }
 
+/** Validate a native calendar date without assigning it a reset instant. */
+export function parseCalendarResetDate(value: unknown): string | undefined {
+  if (typeof value !== 'string')
+    return undefined
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match)
+    return undefined
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0
+  return year > 0 && day > 0 && day <= days ? value : undefined
+}
+
+/** An instant takes priority. A normal calendar reset does not describe overage. */
+export function getResetsOn(info: RateLimitInfo): string | undefined {
+  return info.isUsingOverage || getResetsAt(info) !== undefined ? undefined : parseCalendarResetDate(info.resetsOn)
+}
+
+/** Describe the native reset without converting a calendar date into a timestamp. */
+export function rateLimitResetTooltip(info: RateLimitInfo): string | undefined {
+  const resetsAt = getResetsAt(info)
+  if (resetsAt !== undefined)
+    return formatResetTimestamp(resetsAt)
+  const resetsOn = getResetsOn(info)
+  return resetsOn === undefined ? undefined : `Resets on ${resetsOn}`
+}
+
 /**
  * Pick the most important rate limit to display (exceeded > warning, then least remaining time).
  * Returns null if no rate limits are at warning or above.
@@ -99,9 +128,9 @@ export function formatRateLimitMessage(info: RateLimitInfo): string {
   const resetsAt = isUsingOverage ? info.overageResetsAt : info.resetsAt
 
   const knownLabel = rateLimitTypeLabel(rateLimitType)
-  const prefix = knownLabel
+  const prefix = info.label?.trim() || (knownLabel
     ? `${knownLabel} rate limit`
-    : rateLimitType ? `Rate limit (${rateLimitType})` : 'Rate limit'
+    : rateLimitType ? `Rate limit (${rateLimitType})` : 'Rate limit')
 
   const parts: string[] = []
   if (status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning)
@@ -115,6 +144,9 @@ export function formatRateLimitMessage(info: RateLimitInfo): string {
     if (countdown)
       parts.push(`resets in ${countdown}`)
   }
+  const resetsOn = getResetsOn(info)
+  if (resetsOn !== undefined)
+    parts.push(`resets on ${resetsOn}`)
 
   return parts.length > 0 ? `${prefix}: ${parts.join(' \u2014 ')}` : `${prefix} update`
 }
@@ -151,6 +183,9 @@ export function formatRateLimitSummary(info: RateLimitInfo): string {
     if (countdown)
       parts.push(`resets in ${countdown}`)
   }
+  const resetsOn = getResetsOn(info)
+  if (resetsOn !== undefined)
+    parts.push(`resets on ${resetsOn}`)
 
   return parts.length > 0 ? parts.join(', ') : 'Unknown'
 }

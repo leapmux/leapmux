@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -15,14 +17,14 @@ import (
 
 func TestValidateAttachment(t *testing.T) {
 	t.Parallel()
-	require.NoError(t, validateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindText, Filename: "a.txt", Data: []byte("x")}))
-	require.NoError(t, validateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindText, Filename: "big.txt", Data: make([]byte, maxTextAttachmentBytes)}), "the limit itself is accepted")
-	err := validateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindText, Filename: "huge.txt", Data: make([]byte, maxTextAttachmentBytes+1)})
+	require.NoError(t, validateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindText, Filename: "a.txt", Data: []byte("x")}))
+	require.NoError(t, validateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindText, Filename: "big.txt", Data: make([]byte, maxTextAttachmentBytes)}), "the limit itself is accepted")
+	err := validateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindText, Filename: "huge.txt", Data: make([]byte, maxTextAttachmentBytes+1)})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "huge.txt")
-	require.NoError(t, validateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindImage, Filename: "a.png"}))
-	assert.ErrorContains(t, validateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindPDF, Filename: "a.pdf"}), "PDF")
-	assert.ErrorContains(t, validateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "a.bin"}), "binary")
+	require.NoError(t, validateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindImage, Filename: "a.png"}))
+	assert.ErrorContains(t, validateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindPdf, Filename: "a.pdf"}), "PDF")
+	assert.ErrorContains(t, validateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, Filename: "a.bin"}), "binary")
 }
 
 func TestAttachmentFileNameStaysInsideAndUnique(t *testing.T) {

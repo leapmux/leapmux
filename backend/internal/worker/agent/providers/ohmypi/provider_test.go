@@ -130,11 +130,11 @@ func TestResolveProviderData(t *testing.T) {
 
 func TestValidateAttachment(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage} {
 		assert.NoError(t, ompProvider{}.ValidateAttachment(agent.ClassifiedAttachment{Filename: "a", Kind: kind}), kind)
 	}
-	assert.ErrorContains(t, ompProvider{}.ValidateAttachment(agent.ClassifiedAttachment{Filename: "a.pdf", Kind: agent.AttachmentKindPDF}), "Oh My Pi does not support PDF")
-	assert.ErrorContains(t, ompProvider{}.ValidateAttachment(agent.ClassifiedAttachment{Filename: "a.bin", Kind: agent.AttachmentKindBinary}), "Oh My Pi does not support binary")
+	assert.ErrorContains(t, ompProvider{}.ValidateAttachment(agent.ClassifiedAttachment{Filename: "a.pdf", Kind: contracts.AttachmentMediaKindPdf}), "Oh My Pi does not support PDF")
+	assert.ErrorContains(t, ompProvider{}.ValidateAttachment(agent.ClassifiedAttachment{Filename: "a.bin", Kind: contracts.AttachmentMediaKindBinary}), "Oh My Pi does not support binary")
 }
 
 func TestResolveResumeHandle(t *testing.T) {

@@ -736,8 +736,11 @@ func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	request := a.promptRequestLocked(parts, actor.id)
+	request, err := a.promptRequestLocked(parts, actor.id)
 	a.Mu.Unlock()
+	if err != nil {
+		return err
+	}
 	if sessionID == "" {
 		return fmt.Errorf("agent has no MiMo session")
 	}

@@ -5,16 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 type nativeRecord struct {
-	ID       string       `json:"id"`
-	Sequence int64        `json:"sequence"`
-	Stream   nativeStream `json:"stream"`
-	Payload  struct {
+	ID             string          `json:"id"`
+	Sequence       int64           `json:"sequence"`
+	Stream         nativeStream    `json:"stream"`
+	RetainedMarker json.RawMessage `json:"retained_marker,omitempty"`
+	SchemaVersion  int64           `json:"schema_version,omitempty"`
+	Position       *nativePosition `json:"position,omitempty"`
+	OmittedRecord  *struct {
+		RecordType           string `json:"record_type"`
+		Durability           string `json:"durability"`
+		PayloadType          string `json:"payload_type"`
+		PayloadSchemaVersion int64  `json:"payload_schema_version"`
+		PayloadKind          string `json:"payload_kind"`
+		OmissionClass        string `json:"omission_class"`
+	} `json:"omitted_record,omitempty"`
+	Payload struct {
 		Kind  string `json:"kind"`
 		RunID string `json:"run_id"`
 		Event struct {
@@ -57,6 +69,25 @@ func decodeNativeRecord(raw json.RawMessage, sessionID string) (nativeRecord, er
 	var record nativeRecord
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return record, err
+	}
+	if len(record.RetainedMarker) > 0 {
+		if record.ID != "" || record.Sequence != 0 {
+			return record, fmt.Errorf("the native Muse omission marker has a competing record identity")
+		}
+		if record.Position != nil {
+			record.ID, record.Sequence = record.Position.ID, record.Position.Sequence
+		}
+		var marker string
+		omitted := record.OmittedRecord
+		event := record.Payload.Event
+		if json.Unmarshal(record.RetainedMarker, &marker) != nil || marker != "omitted_live_only" || record.SchemaVersion != 1 || record.Position == nil || omitted == nil ||
+			strings.TrimSpace(omitted.RecordType) == "" || omitted.Durability != "ephemeral" || strings.TrimSpace(omitted.PayloadType) == "" ||
+			omitted.PayloadSchemaVersion <= 0 || strings.TrimSpace(omitted.PayloadKind) == "" || strings.TrimSpace(omitted.OmissionClass) == "" ||
+			record.Payload.Kind != "" || record.Payload.RunID != "" || event.Kind != "" || event.MessageID != "" || event.BatchID != "" || event.Calls != nil || event.Results != nil {
+			return record, fmt.Errorf("the native Muse omission marker is invalid")
+		}
+		// Retained markers occupy native positions but contain no event data.
+		// Keep their original bytes; only durable origins/results supply evidence.
 	}
 	if record.ID == "" || record.Sequence <= 0 || record.Stream.Kind != contracts.MuseStreamKindSession || record.Stream.ID != sessionID {
 		return record, fmt.Errorf("the native Muse record belongs to an invalid stream or position")

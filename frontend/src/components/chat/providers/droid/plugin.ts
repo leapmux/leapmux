@@ -30,6 +30,7 @@ const droidPlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: true,
+      audio: false,
       binary: false,
     },
     planMode: buildPlanMode('permissionMode', DROID_MODE.Spec, DROID_MODE.Default),

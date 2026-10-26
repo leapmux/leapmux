@@ -84,3 +84,13 @@ func TestProviderWritesToTheBaseState(t *testing.T) {
 	b.availableModes = modes
 	assert.Equal(t, modes, b.AvailableModes())
 }
+
+func TestCurrentModelReadsTheConfirmedSessionValue(t *testing.T) {
+	t.Parallel()
+	b := &Base{}
+	assert.Empty(t, b.CurrentModel())
+	b.SetCurrentModel("voice/provider")
+	assert.Equal(t, "voice/provider", b.CurrentModel())
+	b.SetCurrentModel("")
+	assert.Empty(t, b.CurrentModel())
+}

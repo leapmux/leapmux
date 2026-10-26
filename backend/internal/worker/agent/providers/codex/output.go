@@ -299,13 +299,16 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	a.clearCodexRawExecutionsBeforeTurn(threadID, turnID)
 	a.Mu.Lock()
 	a.mainTurn.finish()
-	a.mainTurn = codexMainTurn{id: turnID, ended: make(chan struct{})}
+	a.mainTurn = codexMainTurn{id: turnID, model: a.model, ended: make(chan struct{})}
 	pending := a.pendingStart
 	matched := pending != nil && pending.threadID == threadID
 	publishSettings := false
 	settled := false
 	if matched {
 		a.mainTurn.input = pending.input
+		if pending.settings.model != "" {
+			a.mainTurn.model = pending.settings.model
+		}
 		if pending.retry != nil {
 			if !pending.modelObserved && a.codexStartOwnsSettingLocked(pending, agent.OptionIDModel) {
 				a.model = pending.settings.model
@@ -1427,9 +1430,10 @@ func (a *Agent) handleSafetyBufferingUpdated(line *providerkit.ParsedLine) {
 	// The Codex TUI offers the retry only while the answer can still be replayed:
 	// a faster model, the running turn, no agent text yet, the turn's input
 	// retained, and no retry in flight.
+	// LeapMux also requires the replacement model to accept the retained audio.
 	eligible := a.turnRetrySupported && notif.ShowBufferingUI && notif.FasterModel != "" && notif.FasterModel != a.model &&
 		a.turnInputRetainedLocked(notif.TurnID) && !a.mainTurn.agentMessageStarted &&
-		a.retry == nil && a.pendingStart == nil
+		a.retry == nil && a.pendingStart == nil && a.validateCodexAudioInputLocked(a.mainTurn.input, notif.FasterModel) == nil
 	var offer *codexTurnRetryOffer
 	if eligible {
 		offer = &codexTurnRetryOffer{turnID: notif.TurnID, model: notif.FasterModel}

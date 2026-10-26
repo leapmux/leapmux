@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -23,18 +25,20 @@ type Agent struct {
 	dispatchMu sync.Mutex
 	// deferredGoalActions holds goal writes queued under dispatchMu that run
 	// after dispatch releases. See handleOutput.
-	deferredGoalActions []func()
-	finalizeMu          sync.Mutex
-	stateMu             sync.Mutex
-	controlMu           sync.Mutex
-	controlQueue        []*controlRecord
-	controlDraining     bool
-	approvalWork        providerkit.CoalescingWork
-	sessionID           string
-	settings            optionmap.Map
-	models              []*agent.ModelInfo
-	sessions            map[string]*sessionState
-	uncertainInput      *museUncertainInput // sendMu protects the pending native command identity.
+	deferredGoalActions    []func()
+	finalizeMu             sync.Mutex
+	stateMu                sync.Mutex
+	controlMu              sync.Mutex
+	controlQueue           []*controlRecord
+	controlDraining        bool
+	approvalWork           providerkit.CoalescingWork
+	viewWork               providerkit.CoalescingWork
+	sessionID              string
+	settings               optionmap.Map
+	models                 []*agent.ModelInfo
+	sessions               map[string]*sessionState
+	uncertainInput         *museUncertainInput           // sendMu protects the pending native command identity.
+	uncertainChildCommands map[string]museUncertainInput // sendMu protects child command identities.
 }
 
 type museUncertainInput struct {
@@ -44,30 +48,33 @@ type museUncertainInput struct {
 }
 
 type sessionState struct {
-	controls        map[string]controlState
-	sink            agent.ProviderServices
-	turnID          string
-	items           map[string]*itemState
-	itemIndex       *nativeItemIndex
-	completed       map[string]bool
-	log             *nativeLog
-	toolUses        int32
-	generation      providerkit.GenerationBuffer
-	retry           providerkit.RetryResolution
-	retryItems      map[string]bool
-	retryNotices    []agent.CapturedTranscript
-	compactionLive  map[string]bool
-	childKey        string
-	childID         string
-	parentSessionID string
-	subagentID      string
-	retired         bool
-	finalizations   []*turnFinalization
-	nextItemOrder   uint64
-	viewRecovery    *viewRecovery
-	viewTwins       map[string]bool
-	contextUsage    *nativeContextUsage
-	tokenUsage      *nativeTokenUsage
+	controls           map[string]controlState
+	sink               agent.ProviderServices
+	turnID             string
+	items              map[string]*itemState
+	itemIndex          *nativeItemIndex
+	completed          map[string]bool
+	log                *nativeLog
+	toolUses           int32
+	generation         providerkit.GenerationBuffer
+	retry              providerkit.RetryResolution
+	retryItems         map[string]bool
+	retryNotices       []agent.CapturedTranscript
+	compactionLive     map[string]bool
+	childKey           string
+	childID            string
+	parentSessionID    string
+	subagentID         string
+	retired            bool
+	finalizations      []*turnFinalization
+	nextItemOrder      uint64
+	viewRecovery       *viewRecovery
+	viewTwins          map[string]bool
+	childViewRequested bool
+	childViewPrefix    childViewPrefixState
+	lastViewCursor     string
+	contextUsage       *nativeContextUsage
+	tokenUsage         *nativeTokenUsage
 }
 
 type itemState struct {
@@ -103,12 +110,12 @@ func inputParts(text string, attachments []*leapmuxv1.Attachment) ([]inputPart, 
 			return nil, err
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			attachmentText := providerkit.BuildInlineTextAttachmentBlock(attachment)
 			parts = append(parts, inputPart{Type: "text", Text: &attachmentText})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
 			return nil, fmt.Errorf("the Muse MSP input does not accept %s attachments", attachment.Kind)
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			parts = append(parts, inputPart{Type: "image", MediaType: attachment.MIMEType, Base64Data: base64.StdEncoding.EncodeToString(attachment.Data)})
 		}
 	}
@@ -208,10 +215,12 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 func (a *Agent) HandleOutput(raw []byte) { a.handleOutput(providerkit.ParseLine(raw)) }
 func (a *Agent) Stop() {
 	_ = a.close()
+	a.viewWork.CloseAndWait()
 	a.retireHost(a.ProcessExitCompletion())
 }
 func (a *Agent) Wait() error {
 	err := a.wait()
+	a.viewWork.CloseAndWait()
 	a.retireHost(a.ProcessExitCompletion())
 	return err
 }

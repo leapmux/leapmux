@@ -12,6 +12,7 @@ import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-proto
 import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-protocol'
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek-harness-protocol'
+import { FASTAGENT_TOOL } from '../../../src/generated/contracts/fastagent-protocol'
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
@@ -35,6 +36,11 @@ import {
   CURSOR_WEB_FETCH_TOOL,
 } from './cursorSurface'
 import { quotePosixShellArgument } from './shellArguments'
+
+/** End a Muse workflow child's result contract through its native tool. */
+export function museSubmitResultToolCall(id: string, text: string): MockModelToolCall {
+  return { id, name: MUSE_TOOL.SubmitResult, namespace: MUSE_TOOL_NAMESPACE, arguments: { text, notes: null } }
+}
 
 /**
  * The mock returns the tool calls that each test scripts.
@@ -939,7 +945,7 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'execute_typescript', arguments: { code: source } }),
+    codeExecution: (id, source) => ({ id, name: 'execute_javascript', arguments: { code: source } }),
     workflowTools: null,
   },
   [AgentProvider.KIMI_CODE]: {
@@ -1976,8 +1982,8 @@ const TOOL_VOCABULARY = {
     // Fast Agent's -x shell runtime supplies these coding tools.
     // Their model names have no namespace prefix.
     // The ACP title can add local/ or environment/ for display.
-    // The execute tool runs shell commands.
-    // A bash call returns "Tool 'bash' is not available".
+    // The host-terminal mode offers execute. Withholding the host terminal
+    // selects the native bash/process runtime instead.
     bash: (id, command) => ({ id, name: 'execute', arguments: { command } }),
     // `edit_file` is an exact-string replace; an empty `old_string` creates.
     edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { path, old_string: before, new_string: after } }),
@@ -2061,6 +2067,37 @@ export function lettaMcpCatalogArguments(agentId: string, server: string): strin
     throw new Error('The native Letta MCP catalog requires valid agent and server IDs.')
   }
   return ['mcp', 'tools', server, '--full', '--agent', agentId]
+}
+
+/** Run Fast Agent's local shell when the host terminal capability is withheld. */
+export function fastAgentNativeBashToolCall(id: string, command: string): MockModelToolCall {
+  if (!id.trim() || !command.trim())
+    throw new Error('A native Fast Agent command requires a call ID and a command.')
+  return { id, name: FASTAGENT_TOOL.Bash, arguments: { command } }
+}
+
+/** A named background Agent creates a native CodeBuddy teammate. */
+export function codebuddyTeammateToolCall(id: string, request: Pick<SubagentRequest, 'description' | 'prompt'> & { teammateName: string }): MockModelToolCall {
+  if (!request.teammateName.trim())
+    throw new Error('A CodeBuddy teammate requires a nonempty name.')
+  const call = spawnSubagentToolCall(AgentProvider.CODEBUDDY, id, { description: request.description, prompt: request.prompt, background: true })
+  if (!call.arguments)
+    throw new Error('A CodeBuddy teammate requires structured Agent arguments.')
+  return { ...call, arguments: { ...call.arguments, name: request.teammateName } }
+}
+
+/** Read the native task snapshot without waiting for a persistent teammate to exit. */
+export function codebuddyTaskOutputToolCall(id: string, taskId: string): MockModelToolCall {
+  if (!id.trim() || !taskId.trim())
+    throw new Error('A CodeBuddy task output call requires a call ID and a task ID.')
+  return { id, name: 'TaskOutput', arguments: { task_id: taskId, block: false } }
+}
+
+/** Stop the exact native background task that the spawn receipt identifies. */
+export function codebuddyTaskStopToolCall(id: string, taskId: string): MockModelToolCall {
+  if (!id.trim() || !taskId.trim())
+    throw new Error('A CodeBuddy task stop call requires a call ID and a task ID.')
+  return { id, name: 'TaskStop', arguments: { task_id: taskId } }
 }
 
 /** Capture the actual CLI catalog through Letta's native Bash tool. */

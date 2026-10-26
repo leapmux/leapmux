@@ -1,4 +1,4 @@
-import type { AttachmentKind } from '../helpers/attachments'
+import type { AttachmentKind } from '../../../src/generated/contracts/attachment-media'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'

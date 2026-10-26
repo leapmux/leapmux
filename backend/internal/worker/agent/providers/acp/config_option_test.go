@@ -757,7 +757,7 @@ func TestACPSessionRPCs_ConcurrentWithClearContext(t *testing.T) {
 			assert.NoError(t, err)
 		})
 		run(func() { _ = a.setConfigOption(testThinkingEffort, "low") })
-		run(func() { _ = a.SetModelViaConfigOption("gpt-5") })
+		run(func() { _ = a.SetModelViaConfigOption("gpt-5", "gpt-5") })
 		run(func() { _ = a.cancelSession() })
 	}
 	wg.Wait()

@@ -1,0 +1,39 @@
+{
+  "_readme": "Attachment kinds and media types shared by browser and worker. The generated kind is the classification vocabulary in both languages. audioMimeTypes is a MIME vocabulary, not a provider allowlist. Provider policies select their own formats. Providers with a finite shared allowlist store that membership in their protocol contract. Image and document tables identify formats that both classifiers support. Filename inference and provider policies import these values directly.",
+  "kinds": {
+    "Text": "text",
+    "Image": "image",
+    "Pdf": "pdf",
+    "Audio": "audio",
+    "Binary": "binary"
+  },
+  "audioMimeTypes": {
+    "Wav": "audio/wav",
+    "XWav": "audio/x-wav",
+    "Wave": "audio/wave",
+    "VndWave": "audio/vnd.wave",
+    "Mpeg": "audio/mpeg",
+    "Mp3": "audio/mp3",
+    "Mp4": "audio/mp4",
+    "M4a": "audio/m4a",
+    "XM4a": "audio/x-m4a",
+    "Webm": "audio/webm",
+    "Ogg": "audio/ogg",
+    "Flac": "audio/flac",
+    "XFlac": "audio/x-flac",
+    "Aac": "audio/aac"
+  },
+  "imageMimeTypes": {
+    "Png": "image/png",
+    "Jpeg": "image/jpeg",
+    "Gif": "image/gif",
+    "Webp": "image/webp"
+  },
+  "documentMimeTypes": {
+    "Pdf": "application/pdf",
+    "Doc": "application/msword",
+    "Docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "Xls": "application/vnd.ms-excel",
+    "Xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  }
+}

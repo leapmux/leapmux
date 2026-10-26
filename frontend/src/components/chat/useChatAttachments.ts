@@ -82,8 +82,8 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
         : (item instanceof File ? undefined : item.filename)
       const attachment = await readFileAsAttachment(file, filename)
       const details = inferAttachmentDetails(attachment.filename, attachment.mimeType, attachment.data)
-      if (!isAttachmentSupported(details.kind, capabilities())) {
-        const reason = describeUnsupportedAttachment(details.kind, opts.providerLabel())
+      if (!isAttachmentSupported(details.kind, capabilities(), details.mimeType)) {
+        const reason = describeUnsupportedAttachment(details.kind, opts.providerLabel(), capabilities())
         rejectionReasons.set(reason, (rejectionReasons.get(reason) ?? 0) + 1)
         continue
       }

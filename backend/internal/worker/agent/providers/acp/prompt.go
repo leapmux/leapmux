@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -48,7 +50,7 @@ func (b *Base) sendPreparedPromptForSession(expected *string, content string, at
 			return err
 		}
 	}
-	err = b.SendPromptDetached(content, attachments, func(response json.RawMessage, err error) {
+	err = b.sendPromptDetachedLocked(sessionID, content, attachments, func(response json.RawMessage, err error) {
 		b.finishPromptRequest(sessionID, response, err)
 	})
 	if err != nil {
@@ -111,13 +113,31 @@ func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, e
 	b.endTurn(sessionID)
 }
 
-func (b *Base) SendPromptDetached(content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+// SendPromptDetached keeps validation and the write in the captured root session.
+func (b *Base) SendPromptDetached(sessionID, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
 	b.Mu.Lock()
-	sessionID := b.sessionID
+	err := providerkit.CheckInputSession(&sessionID, b.sessionID)
+	stopped := b.StoppedLocked()
 	b.Mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if stopped {
+		return fmt.Errorf("agent is stopped")
+	}
+	return b.sendPromptDetachedLocked(sessionID, content, attachments, handle)
+}
+
+func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+	blocks, err := b.preparePromptBlocks(sessionID, content, attachments)
+	if err != nil {
+		return err
+	}
 	fields := map[string]any{
 		"sessionId": sessionID,
-		"prompt":    BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
+		"prompt":    blocks,
 	}
 	if b.hooks.PromptParams != nil {
 		b.hooks.PromptParams(fields)
@@ -129,6 +149,19 @@ func (b *Base) SendPromptDetached(content string, attachments []*leapmuxv1.Attac
 	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
 }
 
+// preparePromptBlocks keeps the provider's validation on the original bytes.
+// The hook can rewrite the standard ACP blocks without decoding their blobs.
+func (b *Base) preparePromptBlocks(sessionID, content string, attachments []*leapmuxv1.Attachment) ([]map[string]any, error) {
+	classified := agent.ClassifyAttachments(attachments)
+	blocks := BuildPromptBlocks(content, classified)
+	if b.hooks.PreparePrompt != nil {
+		if err := b.hooks.PreparePrompt(sessionID, classified, blocks); err != nil {
+			return nil, err
+		}
+	}
+	return blocks, nil
+}
+
 // SendChildPromptDetached sends a prompt to sessionID, a session that a
 // subagent runs in, and returns without waiting for the turn. handle receives
 // the answer when the turn ends. The provider's PromptParams hook does not
@@ -137,10 +170,13 @@ func (b *Base) SendChildPromptDetached(sessionID, content string, attachments []
 	if sessionID == "" {
 		return fmt.Errorf("the subagent prompt has no session")
 	}
-	params, err := json.Marshal(map[string]any{
-		"sessionId": sessionID,
-		"prompt":    BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
-	})
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
+	blocks, err := b.preparePromptBlocks(sessionID, content, attachments)
+	if err != nil {
+		return err
+	}
+	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "prompt": blocks})
 	if err != nil {
 		return fmt.Errorf("marshal ACP prompt params: %w", err)
 	}
@@ -159,7 +195,7 @@ func BuildPromptBlocks(content string, classified []agent.ClassifiedAttachment) 
 		prompt = append(prompt, map[string]interface{}{"type": "text", "text": content})
 	}
 	for _, attachment := range classified {
-		if attachment.Kind == agent.AttachmentKindImage {
+		if attachment.Kind == contracts.AttachmentMediaKindImage {
 			prompt = append(prompt, map[string]interface{}{
 				"type":     "image",
 				"mimeType": attachment.MIMEType,
@@ -173,7 +209,7 @@ func BuildPromptBlocks(content string, classified []agent.ClassifiedAttachment) 
 			"uri":      attachment.Filename,
 			"mimeType": attachment.MIMEType,
 		}
-		if attachment.Kind == agent.AttachmentKindText {
+		if attachment.Kind == contracts.AttachmentMediaKindText {
 			resource["text"] = string(attachment.Data)
 		} else {
 			resource["blob"] = base64.StdEncoding.EncodeToString(attachment.Data)

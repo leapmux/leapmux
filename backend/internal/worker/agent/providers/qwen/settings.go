@@ -3,11 +3,45 @@ package qwen
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+// UpdateSettings applies a change of the Output Style through a restart,
+// because Qwen reads `--output-style` only at start. Every other axis goes to
+// the shared ACP writer.
+func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	if requested := strings.TrimSpace(options.Get(OptionOutputStyle)); requested != "" {
+		a.stateMu.Lock()
+		running := a.displayedOutputStyleLocked()
+		a.stateMu.Unlock()
+		if requested != running {
+			return agent.RestartRequiredSettings(options)
+		}
+	}
+	return a.Base.UpdateSettings(options)
+}
+
+// displayedOutputStyleLocked shows Auto for an agent that launched with Auto
+// or with no style.
+func (a *Agent) displayedOutputStyleLocked() string {
+	if strings.TrimSpace(a.outputStyle) == "" || a.outputStyle == qwenOutputStyleAuto {
+		return qwenOutputStyleAuto
+	}
+	return a.outputStyle
+}
+
+// outputStyleGroups serves the Output Style group with the launch value.
+func (a *Agent) outputStyleGroups() []*leapmuxv1.AvailableOptionGroup {
+	a.stateMu.Lock()
+	current := a.displayedOutputStyleLocked()
+	a.stateMu.Unlock()
+	return []*leapmuxv1.AvailableOptionGroup{qwenOutputStyleGroup(current, qwenBuiltinOutputStyles)}
+}
 
 // qwenModes lists Qwen's approval modes in the order its own session reports
 // them. The session replaces this list as soon as it reports its own.

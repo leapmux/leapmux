@@ -43,6 +43,7 @@ describe('zcode plugin metadata', () => {
       text: true,
       image: true,
       pdf: true,
+      audio: false,
       binary: false,
     })
   })

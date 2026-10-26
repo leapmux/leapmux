@@ -26,7 +26,7 @@ func (p commandcodeProvider) ResolveResumeHandle(handle, homeDir string) (string
 }
 
 func (commandcodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("Command Code", attachment)
+	return providerkit.ValidateTextAndImageAttachment("Command Code", attachment)
 }
 
 func (commandcodeProvider) ListStoredSessions(ctx context.Context, query agent.StoredSessionQuery) ([]agent.StoredSession, error) {

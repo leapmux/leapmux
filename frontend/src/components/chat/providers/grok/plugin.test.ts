@@ -18,7 +18,7 @@ function turnCompleted(update: Record<string, unknown>) {
 describe('grok provider', () => {
   const plugin = providerFor(AgentProvider.GROK_BUILD)!
 
-  describeACPProviderBasics(AgentProvider.GROK_BUILD, { text: true, image: true, pdf: true, binary: true })
+  describeACPProviderBasics(AgentProvider.GROK_BUILD, { text: true, image: true, pdf: true, audio: false, binary: true })
 
   it('carries plan mode on the permission-mode axis', () => {
     expect(plugin.configuration?.planMode).toMatchObject({ groupKey: 'permissionMode', planValue: 'plan', defaultValue: 'default' })

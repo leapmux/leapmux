@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -43,7 +44,16 @@ func (FamilyProvider) Classify(content json.RawMessage) agent.NotificationClassi
 // ValidateAttachment refuses a file type that the OpenCode family cannot send
 // through its model path.
 func (FamilyProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		if len(attachment.Data) == 0 || !slices.Contains(contracts.OpenCodeAudioMIMEMembers, attachment.MIMEType) {
+			return fmt.Errorf("cannot send the audio attachment %q with media type %s", attachment.Filename, attachment.MIMEType)
+		}
+		return nil
+	}
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
 		return fmt.Errorf("OpenCode protocol does not support binary attachments: %s", attachment.Filename)
 	}
 	return nil

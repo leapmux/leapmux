@@ -216,3 +216,29 @@ func TestGooseUnknownSessionUpdatePersists(t *testing.T) {
 		return sink
 	})
 }
+
+func TestGooseLiveOutputKeepsTheShellIdentity(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newGooseOutputAgent(agent.NewProviderServices(sink))
+	a.HooksForTest().ToolNotification = a.observeGooseToolNotification
+	a.HooksForTest().ToolOutput = a.gooseToolOutput
+	opening := `{"sessionUpdate":"tool_call","toolCallId":"shell-1","rawInput":{"command":"printf hello"},"_meta":{"goose":{"toolCall":{"toolName":"shell","extensionName":"developer"}}}}`
+	live := `{"sessionUpdate":"tool_call_update","toolCallId":"shell-1","status":"in_progress","_meta":{"toolNotification":{"type":"live_output","params":{"sequence":1,"chunks":[{"stream":"stdout","output":"hello"}]}}}}`
+	final := `{"sessionUpdate":"tool_call_update","toolCallId":"shell-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"hello"}}]}`
+	for _, frame := range []string{opening, live, live, final} {
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":` + frame + `}}`))
+	}
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.JSONEq(t, final, string(messages[1].Content))
+	resolved := acp.ResolveMessageContent(agent.MessageContent{Original: messages[1].Content, Supplemental: messages[1].SupplementalContent})
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(resolved, &fields))
+	assert.JSONEq(t, `{"goose":{"toolCall":{"toolName":"shell","extensionName":"developer"}}}`, string(fields["_meta"]))
+	progress := sink.ProgressUpdates()
+	require.Len(t, progress, 3)
+	assert.Equal(t, agent.ProgressOutputTotal, progress[0].Operation)
+	assert.Equal(t, agent.ProgressOutputTail, progress[1].Operation)
+	assert.Equal(t, "hello", progress[1].Text)
+}

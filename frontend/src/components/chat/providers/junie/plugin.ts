@@ -12,5 +12,5 @@ registerACPProvider({
   defaultPermissionMode: JUNIE_MODE.Default,
   planValue: JUNIE_MODE.Plan,
   permissionPresets: juniePermissionPresets,
-  attachments: { text: true, image: true, pdf: false, binary: false },
+  attachments: { text: true, image: true, pdf: false, audio: false, binary: false },
 })

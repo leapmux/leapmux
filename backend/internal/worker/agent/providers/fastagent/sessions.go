@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // fast-agent keeps each session in its own directory under
@@ -35,10 +36,24 @@ type fastagentSessionMeta struct {
 // fastagentHome resolves the home directory that holds the session store.
 // `FAST_AGENT_HOME` wins, then the working directory's `.fast-agent`.
 func fastagentHome(q agent.StoredSessionQuery) string {
-	if home := strings.TrimSpace(q.Env("FAST_AGENT_HOME")); home != "" {
-		return home
+	home := q.Env("FAST_AGENT_HOME")
+	if home == "" {
+		if !filepath.IsAbs(q.WorkingDir) {
+			return ""
+		}
+		return filepath.Join(q.WorkingDir, ".fast-agent")
 	}
-	return filepath.Join(q.WorkingDir, ".fast-agent")
+	home = pathutil.ExpandHome(home, q.Home())
+	if strings.HasPrefix(home, "~") {
+		return ""
+	}
+	if filepath.IsAbs(home) {
+		return filepath.Clean(home)
+	}
+	if !filepath.IsAbs(q.WorkingDir) {
+		return ""
+	}
+	return filepath.Join(q.WorkingDir, home)
 }
 
 // fastagentStoredSessions lists the resumable sessions of one working
@@ -47,7 +62,11 @@ func fastagentHome(q agent.StoredSessionQuery) string {
 // is a normal outcome of a killed process, and the picker must still offer the
 // sessions that are whole.
 func fastagentStoredSessions(_ context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
-	sessionsDir := filepath.Join(fastagentHome(q), "sessions")
+	home := fastagentHome(q)
+	if home == "" {
+		return nil, nil
+	}
+	sessionsDir := filepath.Join(home, "sessions")
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/google/uuid"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -122,9 +124,9 @@ func grokSteerContent(content string, attachments []agent.ClassifiedAttachment) 
 	var images []map[string]any
 	for _, attachment := range attachments {
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			parts = append(parts, providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			images = append(images, acp.BuildPromptBlocks("", []agent.ClassifiedAttachment{attachment})...)
 		default:
 			return "", nil, fmt.Errorf("a steer to Grok Build carries text and images only, so it cannot carry %s: send it as a new message", attachment.Filename)

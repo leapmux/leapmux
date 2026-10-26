@@ -28,6 +28,7 @@ const codebuddyPlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: true,
+      audio: true,
       binary: true,
     },
   },

@@ -77,13 +77,14 @@ func queryCodexCatalogPages[T any](a *Agent, method string, params map[string]an
 }
 
 type codexModelCatalogEntry struct {
-	ID                        string `json:"id"`
-	Model                     string `json:"model"`
-	DisplayName               string `json:"displayName"`
-	IsDefault                 bool   `json:"isDefault"`
-	Hidden                    bool   `json:"hidden"`
-	Description               string `json:"description"`
-	DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
+	InputModalities           []string `json:"inputModalities"`
+	ID                        string   `json:"id"`
+	Model                     string   `json:"model"`
+	DisplayName               string   `json:"displayName"`
+	IsDefault                 bool     `json:"isDefault"`
+	Hidden                    bool     `json:"hidden"`
+	Description               string   `json:"description"`
+	DefaultReasoningEffort    string   `json:"defaultReasoningEffort"`
 	SupportedReasoningEfforts []struct {
 		ReasoningEffort string `json:"reasoningEffort"`
 		Description     string `json:"description"`
@@ -106,9 +107,6 @@ func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
 
 	var models []*agent.ModelInfo
 	for _, m := range rawModels {
-		if m.Hidden {
-			continue
-		}
 		id := m.Model
 		if id == "" {
 			id = m.ID
@@ -150,13 +148,15 @@ func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
 		}
 
 		models = append(models, &agent.ModelInfo{
-			Id:               id,
-			DisplayName:      displayName,
-			Description:      description,
-			IsDefault:        m.IsDefault,
-			DefaultEffort:    m.DefaultReasoningEffort,
-			SupportedEfforts: efforts,
-			ContextWindow:    contextWindow,
+			Id:                 id,
+			Hidden:             m.Hidden,
+			SupportsAudioInput: slices.Contains(m.InputModalities, "audio"),
+			DisplayName:        displayName,
+			Description:        description,
+			IsDefault:          m.IsDefault,
+			DefaultEffort:      m.DefaultReasoningEffort,
+			SupportedEfforts:   efforts,
+			ContextWindow:      contextWindow,
 		})
 	}
 	return models

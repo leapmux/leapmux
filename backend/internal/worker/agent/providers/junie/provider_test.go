@@ -3,6 +3,8 @@ package junie
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -19,10 +21,10 @@ func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 func TestProviderRejectsPDFAndBinaryAttachments(t *testing.T) {
 	t.Parallel()
 	provider := junieProvider{}
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage} {
 		assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Filename: "file", Kind: kind}))
 	}
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindPDF, agent.AttachmentKindBinary} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary} {
 		require.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Filename: "file", Kind: kind}))
 	}
 }

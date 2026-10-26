@@ -25,8 +25,10 @@ export interface ContextUsageInfo {
 }
 
 export interface RateLimitInfo {
+  label?: string // Native plan or resource label.
   status?: string // "allowed" | "allowed_warning" | "exceeded" etc.
   resetsAt?: number // Unix timestamp (seconds)
+  resetsOn?: string // YYYY-MM-DD calendar date, without a timezone or reset instant.
   rateLimitType?: string // "five_hour" | "seven_day" etc.
   utilization?: number // 0.0–1.0, current usage fraction
   surpassedThreshold?: number // threshold that triggered warning (e.g. 0.75)

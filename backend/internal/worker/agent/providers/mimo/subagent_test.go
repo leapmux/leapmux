@@ -353,6 +353,22 @@ func TestChildInput(t *testing.T) {
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1, "only the steer reached MiMo")
 }
 
+func TestChildAudioInputValidatesTheModelWithoutChangingItsDeliveryTarget(t *testing.T) {
+	t.Parallel()
+	a, server := newTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255}}}
+	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments), "does not accept audio attachments")
+	assert.Empty(t, server.allRequests())
+	model := agent.FindAvailableModel(a.catalog.models, a.model)
+	require.NotNil(t, model)
+	model.SupportsAudioInput = true
+	require.NoError(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments))
+	requests := server.requestsTo("POST /session/ses_test/prompt_async")
+	require.Len(t, requests, 1)
+	assert.JSONEq(t, `{"parts":[{"type":"text","text":"Listen to this."},{"type":"file","mime":"audio/wav","url":"data:audio/wav;base64,AP8=","filename":"voice.wav"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`, string(requests[0].Body))
+}
+
 // MiMo runs a message to an idle subagent as a turn that no event reports: no
 // actor.status starts it or ends it. So the message is refused, with the reason,
 // before any request, and the queue records a failure that the user can read.

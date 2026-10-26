@@ -12,14 +12,15 @@
  *
  * ListAvailableModels supplies only the KIRO_MOCK_MODELS catalog.
  * Without its response, the session has no model.
+ * The account quota has its own native service operation and scenario-owned answer.
  * Other operations receive 400 responses.
- * Kiro then uses defaults for feature configuration, remote web tools, and usage limits.
+ * Kiro then uses defaults for feature configuration and remote web tools.
  *
  * Remote startup calls use Smithy RPC v2 with Concise Binary Object Representation (CBOR).
  * Native account catalogs return empty lists. Cloud configuration returns the native disabled exception.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { MockModelScriptHost } from './mockModelRequest'
+import type { MockModelScriptHost, MockSurface } from './mockModelRequest'
 import type { MockModelDeliveredError, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelStream } from './modelStream'
 import { Buffer } from 'node:buffer'
@@ -31,6 +32,7 @@ import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import { contentText, scenarioIDFromTexts } from './mockModelScript'
 import { createModelStream } from './modelStream'
+import { createScenarioQuota } from './scenarioQuota'
 
 /** The header that states the operation of an AWS JSON 1.0 call. */
 export const KIRO_TARGET_HEADER = 'x-amz-target'
@@ -40,6 +42,45 @@ const AWS_JSON_CONTENT_TYPE = 'application/x-amz-json-1.0'
 
 /** The one credential that the mock takes, as Kiro states it in `Authorization`. */
 const KIRO_E2E_AUTHORIZATION = `Bearer ${KIRO_E2E_API_KEY}`
+
+/** Configure one scenario's answer from Kiro's own account service. */
+export const KIRO_USAGE_CONTROL_PREFIX = '/__e2e/kiro/usage/'
+
+const KIRO_USAGE_TARGET = 'KiroControlPlaneBearerService.GetUsageLimits'
+
+/** Keep the process-wide account quota separate from model inference. */
+export function createKiroSurface(host: MockModelScriptHost): MockSurface {
+  const usage = createScenarioQuota<{ origin: string }>(host, KIRO_USAGE_CONTROL_PREFIX, 'Kiro account')
+  return {
+    async handleHttp(request, response, url) {
+      if (await usage.handleControl(request, response, url))
+        return true
+      if (request.headers[KIRO_TARGET_HEADER] !== KIRO_USAGE_TARGET)
+        return handleKiroHttp(request, response, url, host)
+      if (request.method !== 'POST') {
+        writeAwsError(response, 405, 'ValidationException', 'The native Kiro account operation requires POST.')
+        return true
+      }
+      let body: unknown
+      try {
+        body = await readJSONBody(request)
+      }
+      catch {
+        writeAwsError(response, 400, 'ValidationException', 'The native Kiro account operation requires JSON.')
+        return true
+      }
+      if (!isObject(body) || body.origin !== 'AI_EDITOR' || Object.keys(body).length !== 1) {
+        writeAwsError(response, 400, 'ValidationException', 'The native Kiro account operation requires only origin AI_EDITOR.')
+        return true
+      }
+      usage.answer(response, request.headers.authorization === KIRO_E2E_AUTHORIZATION, { origin: body.origin }, 'The Kiro account credential does not belong to this test.')
+      return true
+    },
+    clearScenario(scenarioId) {
+      usage.clearScenario(scenarioId)
+    },
+  }
+}
 
 const KIRO_REMOTE_RPC_PREFIX = '/service/KiroWebBearerService/operation/'
 const KIRO_REMOTE_RPC_RESPONSES: ReadonlyMap<string, { status: number, body: Buffer }> = new Map([

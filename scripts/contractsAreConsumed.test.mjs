@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'bun:test'
-import { PROVIDER_PROTOCOLS, tableReaders, unreadKeys } from './generate-contracts.mjs'
+import { PROVIDER_PROTOCOLS, resolveProviderSubsetParent, tableReaders, unreadKeys } from './generate-contracts.mjs'
 
 /**
  * Every generated table must be READ on each side that a contract says reads it, and
@@ -171,13 +171,22 @@ function startupGroupReaders(spec, table, contract, key, side, sources) {
 }
 
 /** A read subset also reads the parent keys that it selects on that language side. */
-function subsetReaders(spec, table, contract, key, side, sources) {
-  return spec.tables
-    .filter(subset => subset.subsetOf === table.key && tableReaders(subset).includes(side)
-      && (key === undefined || contract[subset.key]?.includes(key)))
-    .flatMap(subset => mentions(sources, side === 'go'
-      ? `contracts.${spec.goPrefix}${subset.goTable}Members`
-      : `${spec.tsPrefix}_${subset.tsTable}`))
+function subsetReaders(spec, table, contract, key, side, sources, context = { protocols: PROVIDER_PROTOCOLS, contracts }) {
+  const protocols = [spec, ...context.protocols.filter(candidate => candidate !== spec && (spec.name === undefined || candidate.name !== spec.name))]
+  return protocols.flatMap((owner) => {
+    const ownerData = owner === spec ? contract : context.contracts.get(owner.name)
+    return owner.tables.filter((subset) => {
+      if (subset.subsetOf === undefined || !tableReaders(subset).includes(side))
+        return false
+      const parent = resolveProviderSubsetParent(owner, subset, protocols)
+      const sameOwner = parent.spec === spec || (spec.name !== undefined && parent.spec.name === spec.name)
+      const members = ownerData?.[subset.key]
+      return sameOwner && parent.table.key === table.key && Array.isArray(members) && members.length > 0
+        && (key === undefined || members.includes(key))
+    }).flatMap(subset => mentions(sources, side === 'go'
+      ? `contracts.${owner.goPrefix}${subset.goTable}Members`
+      : `${owner.tsPrefix}_${subset.tsTable}`))
+  })
 }
 
 /** The Go files that read one key of one table. */
@@ -429,5 +438,35 @@ describe('subsetOf readers', () => {
     const goOnly = { ...spec, tables: [parent, { ...subset, readers: ['go'] }] }
     const sources = [{ path: 'reader', text: 'SUBSET_PROBE_PROBE_NOTICE.has(value)' }]
     expect(subsetReaders(goOnly, parent, contract, 'B', 'ts', sources)).toEqual([])
+  })
+
+  it('credits only selected parent keys through a foreign subset', () => {
+    const subject = { ...spec, name: 'parent-protocol', tables: [parent] }
+    const consumer = { name: 'consumer-protocol', goPrefix: 'Consumer', tsPrefix: 'CONSUMER', tables: [{ ...subset, subsetOf: 'parent-protocol.events' }] }
+    const context = { protocols: [subject, consumer], contracts: new Map([[consumer.name, { notices: ['B'] }]]) }
+    const go = [{ path: 'foreign-go', text: 'contracts.ConsumerProbeNoticeMembers' }]
+    const ts = [{ path: 'foreign-ts', text: 'CONSUMER_PROBE_NOTICE.has(value)' }]
+    expect(subsetReaders(subject, parent, contract, 'B', 'go', go, context)).toEqual(['foreign-go'])
+    expect(subsetReaders(subject, parent, contract, 'B', 'ts', ts, context)).toEqual(['foreign-ts'])
+    expect(subsetReaders(subject, parent, contract, 'A', 'go', go, context)).toEqual([])
+    expect(subsetReaders(subject, parent, contract, 'A', 'ts', ts, context)).toEqual([])
+  })
+
+  it('does not credit a foreign subset on an undeclared language side', () => {
+    const subject = { ...spec, name: 'parent-protocol', tables: [parent] }
+    const consumer = { name: 'consumer-protocol', goPrefix: 'Consumer', tsPrefix: 'CONSUMER', tables: [{ ...subset, subsetOf: 'parent-protocol.events', readers: ['go'] }] }
+    const context = { protocols: [subject, consumer], contracts: new Map([[consumer.name, { notices: ['B'] }]]) }
+    const sources = [{ path: 'foreign-reader', text: 'CONSUMER_PROBE_NOTICE.has(value)' }]
+    expect(subsetReaders(subject, parent, contract, 'B', 'ts', sources, context)).toEqual([])
+  })
+
+  it('does not credit matching keys from another parent table', () => {
+    const other = { ...parent, key: 'other', goTable: 'Other', tsTable: 'OTHER' }
+    const subject = { ...spec, name: 'parent-protocol', tables: [parent, other] }
+    const consumer = { name: 'consumer-protocol', goPrefix: 'Consumer', tsPrefix: 'CONSUMER', tables: [{ ...subset, subsetOf: 'parent-protocol.other' }] }
+    const context = { protocols: [subject, consumer], contracts: new Map([[consumer.name, { notices: ['B'] }]]) }
+    const sources = [{ path: 'foreign-reader', text: 'contracts.ConsumerProbeNoticeMembers' }]
+    expect(subsetReaders(subject, parent, contract, 'B', 'go', sources, context)).toEqual([])
+    expect(subsetReaders(subject, other, contract, 'B', 'go', sources, context)).toEqual(['foreign-reader'])
   })
 })

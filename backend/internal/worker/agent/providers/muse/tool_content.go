@@ -2,6 +2,7 @@ package muse
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -72,7 +73,16 @@ func (state *sessionState) logItemTargets(record nativeRecord) map[string]*itemS
 func (a *Agent) subscribeLog(id string, timeout time.Duration) error {
 	a.stateMu.Lock()
 	state := a.sessions[id]
+	existing := int64(0)
+	healthy := false
+	if state != nil && state.log != nil {
+		existing = state.log.subscriptionID
+		healthy = existing > 0 && state.log.unavailable == ""
+	}
 	a.stateMu.Unlock()
+	if healthy {
+		return nil
+	}
 	if state == nil {
 		return fmt.Errorf("the Muse log has no owned session")
 	}
@@ -80,52 +90,55 @@ func (a *Agent) subscribeLog(id string, timeout time.Duration) error {
 		a.markLogUnavailable(state, "The Muse host did not grant rawLog.")
 		return nil
 	}
-	var observedErr error
-	var tail nativePosition
-	_, err := a.request(methodLogSubscribe, map[string]any{"sessionId": id, "stream": nativeStream{Kind: contracts.MuseStreamKindSession, ID: id}}, timeout, func(raw json.RawMessage, err error) {
-		if err != nil {
-			observedErr = err
-			return
-		}
-		var result struct {
-			ID   int64           `json:"subscriptionId"`
-			Tail *nativePosition `json:"tail"`
-		}
-		if json.Unmarshal(raw, &result) != nil || result.ID <= 0 || result.Tail == nil || result.Tail.ID == "" || result.Tail.Sequence <= 0 {
-			observedErr = fmt.Errorf("the Muse log subscription acknowledgement is invalid")
-			return
-		}
-		a.stateMu.Lock()
-		defer a.stateMu.Unlock()
-		if a.sessions[id] != state || state.retired {
-			observedErr = fmt.Errorf("the Muse log session changed before subscription")
-			return
-		}
-		for otherID, other := range a.sessions {
-			if otherID != id && other.log != nil && other.log.subscriptionID == result.ID {
-				observedErr = fmt.Errorf("the Muse log subscription belongs to another session")
+	var err error
+	if existing > 0 {
+		err = a.readStoredLog(id, state, timeout)
+	} else {
+		var observedErr error
+		var tail nativePosition
+		_, err = a.request(methodLogSubscribe, map[string]any{"sessionId": id, "stream": nativeStream{Kind: contracts.MuseStreamKindSession, ID: id}}, timeout, func(raw json.RawMessage, err error) {
+			if err != nil {
+				observedErr = err
 				return
 			}
+			var result struct {
+				ID   int64           `json:"subscriptionId"`
+				Tail *nativePosition `json:"tail"`
+			}
+			if json.Unmarshal(raw, &result) != nil || result.ID <= 0 || result.Tail == nil || result.Tail.ID == "" || result.Tail.Sequence <= 0 {
+				observedErr = fmt.Errorf("the Muse log subscription acknowledgement is invalid")
+				return
+			}
+			a.stateMu.Lock()
+			defer a.stateMu.Unlock()
+			if a.sessions[id] != state || state.retired {
+				observedErr = fmt.Errorf("the Muse log session changed before subscription")
+				return
+			}
+			for otherID, other := range a.sessions {
+				if otherID != id && other.log != nil && other.log.subscriptionID == result.ID {
+					observedErr = fmt.Errorf("the Muse log subscription belongs to another session")
+					return
+				}
+			}
+			if state.log != nil {
+				state.log.subscriptionID = result.ID
+				tail = *result.Tail
+			}
+		})
+		if err == nil {
+			err = observedErr
 		}
-		if state.log != nil {
-			state.log.subscriptionID = result.ID
-			tail = *result.Tail
-		}
-	})
-	if err == nil {
-		err = observedErr
-	}
-	if err == nil {
-		var records []json.RawMessage
-		records, err = a.readLogPages(id, nil, tail, timeout)
-		a.stateMu.Lock()
-		for _, record := range records {
-			if addErr := state.log.add(record); addErr != nil {
-				err = addErr
-				break
+		if err == nil {
+			err = a.readLogTail(id, state, tail, timeout)
+		} else if state.childID != "" {
+			// A completed child has durable logs without a live subscription.
+			if storedErr := a.readStoredLog(id, state, timeout); storedErr == nil {
+				err = nil
+			} else {
+				err = errors.Join(err, storedErr)
 			}
 		}
-		a.stateMu.Unlock()
 	}
 	if err != nil {
 		a.markLogUnavailable(state, err.Error())
@@ -136,6 +149,58 @@ func (a *Agent) subscribeLog(id string, timeout time.Duration) error {
 	// A log failure leaves the stable transcript available.
 	return nil
 }
+
+func (a *Agent) readStoredLog(id string, state *sessionState, timeout time.Duration) error {
+	raw, err := a.request(methodLogStreams, map[string]string{"sessionId": id}, timeout, nil)
+	if err != nil {
+		return err
+	}
+	var reply struct {
+		Streams *[]struct {
+			Stream nativeStream    `json:"stream"`
+			Tail   *nativePosition `json:"tail"`
+		} `json:"streams"`
+	}
+	if json.Unmarshal(raw, &reply) != nil || reply.Streams == nil {
+		return fmt.Errorf("the Muse stored log stream list is invalid")
+	}
+	matches := 0
+	var tail nativePosition
+	for _, stream := range *reply.Streams {
+		if stream.Stream.Kind != contracts.MuseStreamKindSession || stream.Stream.ID != id {
+			continue
+		}
+		matches++
+		if stream.Tail == nil || stream.Tail.ID == "" || stream.Tail.Sequence <= 0 {
+			return fmt.Errorf("the Muse stored session stream has no valid tail")
+		}
+		tail = *stream.Tail
+	}
+	if matches != 1 {
+		return fmt.Errorf("the Muse stored log has no unique owned session stream")
+	}
+	return a.readLogTail(id, state, tail, timeout)
+}
+
+func (a *Agent) readLogTail(id string, state *sessionState, tail nativePosition, timeout time.Duration) error {
+	records, err := a.readLogPages(id, nil, tail, timeout)
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.sessions[id] != state || state.retired {
+		return fmt.Errorf("the Muse log owner changed during the read")
+	}
+	for _, record := range records {
+		if addErr := state.log.add(record); addErr != nil {
+			err = errors.Join(err, addErr)
+			break
+		}
+	}
+	if err == nil {
+		state.log.unavailable = ""
+	}
+	return err
+}
+
 func (a *Agent) handleLogRecord(raw []byte) {
 	var params struct {
 		ID     int64           `json:"subscriptionId"`

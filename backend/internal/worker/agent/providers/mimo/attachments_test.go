@@ -109,3 +109,26 @@ func TestBuildPromptParts(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+func TestBuildPromptPartsPreservesAudioFilesAndTheirOrder(t *testing.T) {
+	t.Parallel()
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 1, 255}},
+		{Filename: "tone.flac", MimeType: "audio/flac", Data: []byte{0xff, 0, 1}},
+	}
+	for _, content := range []string{"Compare these recordings.", ""} {
+		parts, err := buildPromptParts(content, attachments)
+		require.NoError(t, err)
+		if content != "" {
+			require.Len(t, parts, 3)
+			assert.Equal(t, mimoPromptPart{Type: promptPartText, Text: content}, parts[0])
+			parts = parts[1:]
+		}
+		require.Equal(t, []mimoPromptPart{
+			{Type: promptPartFile, Mime: "audio/wav", Filename: "voice.wav", URL: "data:audio/wav;base64,AAH/"},
+			{Type: promptPartFile, Mime: "audio/flac", Filename: "tone.flac", URL: "data:audio/flac;base64,/wAB"},
+		}, parts, "audio-only input contains no empty text block")
+	}
+	_, err := buildPromptParts("Read this recording.", []*leapmuxv1.Attachment{{Filename: "large.wav", MimeType: "audio/wav", Data: make([]byte, mimoMaxAttachmentBytes+1)}})
+	assert.ErrorContains(t, err, "exceed")
+}

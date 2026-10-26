@@ -936,8 +936,8 @@ func TestPromptParams_TheHookAdjustsTheFollowUpPrompt(t *testing.T) {
 
 // A follow-up prompt belongs to the session whose turn ended, and to a running
 // agent. When a context clear replaced that session first, or the agent
-// stopped, the prompt starts nowhere: the turn ends, and the reader learns that
-// the message never reached the agent.
+// stopped, the prompt starts nowhere. A replaced session keeps its own turn;
+// a stopped current session ends the turn and reports the unsent message.
 func TestFollowUpPrompt_AStaleTargetStartsNoPrompt(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -959,6 +959,11 @@ func TestFollowUpPrompt_AStaleTargetStartsNoPrompt(t *testing.T) {
 			b.sendFollowUpPrompt(tc.sessionID, "lost", nil)
 
 			assert.Empty(t, out.String(), "no prompt reaches the agent")
+			if !tc.stopped {
+				assert.True(t, b.PromptActive())
+				assert.Empty(t, sink.LeapMuxNotifications())
+				return
+			}
 			assert.False(t, b.PromptActive())
 			notifications := sink.LeapMuxNotifications()
 			require.Len(t, notifications, 1)
@@ -1024,4 +1029,13 @@ func TestAgentTurn_AFailedPromptOfADiscardingAgentWritesNoRow(t *testing.T) {
 	testutil.RequireEventually(t, func() bool { return b.AgentTurnActive() })
 
 	assert.Empty(t, closingRows(sink, "prompt-tool"))
+}
+
+func TestStaleContinuationFailurePreservesTheReplacementPrompt(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+	b.promptActive = true
+	b.sendFollowUpPrompt("retired-session", "old input", nil)
+	assert.True(t, b.PromptActive(), "the replacement prompt must remain active")
+	assert.Zero(t, sink.NotificationCount(), "a retired turn must not report an error in the replacement session")
 }

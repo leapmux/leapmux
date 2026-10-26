@@ -15,14 +15,27 @@ type Agent struct {
 	acp.Base
 	// bypassPermissions is the immutable --no-permissions choice for this process.
 	bypassPermissions bool
-	home              string
-	clock             quartz.Clock
-	childMu           sync.Mutex
-	childState        map[string]*fastagentChildState
-	childDone         map[string]struct{}
-	childClaims       map[string]*fastagentChildState
-	childStop         chan struct{}
-	archiveWG         sync.WaitGroup
+
+	audioQueryMu    sync.Mutex
+	audioQuery      *fastagentAudioQuery
+	nativeCommands  bool
+	workingDir      string
+	rootMu          sync.Mutex
+	rootSession     string
+	rootSeen        map[string]fastagentRootTool
+	rootLive        map[string]struct{}
+	rootPromptSeen  bool
+	rootBaselineErr error
+	rootClosing     bool
+	rootArchiveWG   sync.WaitGroup
+	home            string
+	clock           quartz.Clock
+	childMu         sync.Mutex
+	childState      map[string]*fastagentChildState
+	childDone       map[string]struct{}
+	childClaims     map[string]*fastagentChildState
+	childStop       chan struct{}
+	archiveWG       sync.WaitGroup
 }
 
 // This assertion makes a missing Agent method a compile error.

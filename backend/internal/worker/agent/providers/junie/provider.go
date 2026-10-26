@@ -22,5 +22,5 @@ func (junieProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessi
 
 // ValidateAttachment rejects resources that Junie's model input cannot read.
 func (junieProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("Junie", attachment)
+	return providerkit.ValidateTextAndImageAttachment("Junie", attachment)
 }

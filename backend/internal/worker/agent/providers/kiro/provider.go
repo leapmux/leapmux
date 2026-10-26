@@ -54,16 +54,6 @@ func (kiroProvider) Classify(content json.RawMessage) agent.NotificationClassifi
 	return agent.CompactionBoundaryNotification()
 }
 
-// ValidateAttachment states what a Kiro prompt carries: text as an embedded
-// resource, an image as an image block, and a PDF as an embedded blob. Kiro
-// drops any other binary without a word, so LeapMux refuses it up front.
-func (kiroProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
-		return fmt.Errorf("attachment %s is binary, and Kiro does not support binary attachments", attachment.Filename)
-	}
-	return nil
-}
-
 // ResolveControlResponse rewrites the answer of a dialog that Kiro cannot read
 // as the browser sends it, and forwards every other answer through the shared
 // ACP resolution.

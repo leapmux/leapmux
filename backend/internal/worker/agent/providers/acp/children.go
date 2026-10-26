@@ -341,10 +341,10 @@ func (b *Base) AttachChildSession(sessionID, rowKey string) {
 // that replays a loaded session sends its history first. The caller attaches
 // the session to the subagent's row before (AttachChildSession), so each
 // update reaches that transcript. The answer states the settings of the child
-// session, so the base applies none of it.
-func (b *Base) LoadChildSession(sessionID string) error {
+// session. The base returns its model without changing the root settings.
+func (b *Base) LoadChildSession(sessionID string) (string, error) {
 	if sessionID == "" {
-		return fmt.Errorf("the subagent session has no ID")
+		return "", fmt.Errorf("the subagent session has no ID")
 	}
 	params, err := json.Marshal(map[string]any{
 		"sessionId":  sessionID,
@@ -352,10 +352,18 @@ func (b *Base) LoadChildSession(sessionID string) error {
 		"mcpServers": []any{},
 	})
 	if err != nil {
-		return fmt.Errorf("marshal ACP session load params: %w", err)
+		return "", fmt.Errorf("marshal ACP session load params: %w", err)
 	}
-	_, err = b.SendRequest(MethodSessionLoad, params, b.APITimeout())
-	return err
+	raw, err := b.SendRequest(MethodSessionLoad, params, b.APITimeout())
+	if err != nil {
+		return "", err
+	}
+	session, err := parseACPSessionResult(raw)
+	if err != nil {
+		return "", fmt.Errorf("read ACP subagent settings: %w", err)
+	}
+	_, modelID := acpHandshakeModelInfos(session)
+	return modelID, nil
 }
 
 // SessionOwner returns the services of the transcript that owns sessionID:

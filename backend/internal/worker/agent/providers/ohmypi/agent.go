@@ -386,18 +386,18 @@ func promptPayload(content string, attachments []*leapmuxv1.Attachment) map[stri
 	images := make([]map[string]any, 0)
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			if message.Len() > 0 {
 				message.WriteString("\n\n")
 			}
 			message.WriteString(providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			images = append(images, map[string]any{
 				"type":     contentBlockImage,
 				"data":     base64.StdEncoding.EncodeToString(attachment.Data),
 				"mimeType": attachment.MIMEType,
 			})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
 			// ValidateAttachment refused these before the queue accepted them.
 		}
 	}

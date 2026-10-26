@@ -45,6 +45,11 @@ func TestHelperProcessGrokCLI(*testing.T) {
 	if os.Getenv(grokFakeCLIEnv) != "1" {
 		return
 	}
+	if path := os.Getenv("GROK_FAKE_CHILD_ENV_LOG"); path != "" {
+		if err := os.WriteFile(path, []byte(os.Getenv("GROK_ACTIVE_AGENT_MESSAGES")), 0o600); err != nil {
+			os.Exit(2)
+		}
+	}
 	log, err := os.OpenFile(os.Getenv(grokFakeRequestLog), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		os.Exit(2)
@@ -140,6 +145,15 @@ func startFakeGrokWith(t *testing.T, opts agent.Options, sink agent.ServiceFacet
 	args, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
 	return a, requests, strings.TrimSpace(string(args))
+}
+
+func TestStartGrokPinsActiveChildMessagesOverTheInheritedValue(t *testing.T) {
+	t.Setenv("GROK_ACTIVE_AGENT_MESSAGES", "0")
+	path := filepath.Join(t.TempDir(), "native-child-message-env")
+	startFakeGrokWith(t, agent.Options{}, &agenttest.Sink{}, "GROK_FAKE_CHILD_ENV_LOG="+path)
+	actual, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "1", string(actual))
 }
 
 func TestStartGrokRunsTheStdioAgentOnItsOwn(t *testing.T) {

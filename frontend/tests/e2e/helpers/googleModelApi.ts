@@ -10,7 +10,7 @@ import { lastUserText, stopReasonToken, systemText } from './mockModelScript'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput } from './modelStream'
 
-const MODEL_ROUTE = /^\/v1beta\/models\/([\w.-]+):(streamGenerateContent|generateContent|countTokens)$/
+const MODEL_ROUTE = /^\/v1(?:beta)?\/models\/([\w.-]+):(streamGenerateContent|generateContent|countTokens)$/
 
 function writeGoogleError(response: ServerResponse, code: number, status: string, message: string): void {
   writeMockJSON(response, code, { error: { code, status, message } })

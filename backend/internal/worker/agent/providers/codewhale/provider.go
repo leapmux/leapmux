@@ -73,6 +73,9 @@ func (codewhaleProvider) IsInterrupt(content string) bool {
 // policy: text and images, nothing else. The model-dependent image check runs
 // in SendInput. See attachments.go.
 func (codewhaleProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
 	return validateCodewhaleAttachment(attachment)
 }
 

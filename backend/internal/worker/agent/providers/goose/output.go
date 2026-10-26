@@ -173,8 +173,8 @@ func formatGooseCount(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
-// observeGooseToolNotification reads the live notifications that are neither
-// shell output nor a log line, and reports whether it claimed the update.
+// observeGooseToolNotification reads live notifications and reports whether
+// it claimed the update. Live output changes progress, not the retained tool metadata.
 //
 // `progress` is the runtime's own sentence about a call that still runs, so it goes
 // to the SAME ephemeral tail the shell output uses: the row draws it while the call
@@ -196,6 +196,16 @@ func (a *Agent) observeGooseToolNotification(update acp.ToolCallUpdateEnvelope) 
 		return false
 	}
 	switch meta.Type {
+	case "live_output":
+		if update.ToolCallID != "" {
+			if out, ok := a.gooseToolOutput(update); ok {
+				a.Sink().ReportProgress(agent.OutputTotalProgress(update.ToolCallID, out.Total, out.TotalIsMinimum))
+				if out.Tail != "" {
+					a.Sink().ReportProgress(agent.OutputTailProgress(update.ToolCallID, out.Tail, out.TailLost))
+				}
+			}
+		}
+		return true
 	case "progress":
 		line := gooseProgressLine(meta)
 		if line == "" || update.ToolCallID == "" {

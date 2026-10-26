@@ -157,6 +157,14 @@ describe('agent info card rate-limit rows', () => {
     return <div>{infoHoverCardContent()}</div>
   }
 
+  it('shows a native plan label and calendar reset without an invented countdown', () => {
+    const rateLimits = { credit: { label: 'Native Probe Plan — Credits', resetsOn: '2026-11-25', utilization: 0.255, status: 'allowed' } }
+    const { container } = render(() => <InfoCardWithInfo agent={agent(AgentProvider.KIRO, 's')} agentSessionInfo={{ rateLimits }} />)
+    expect(container).toHaveTextContent('Native Probe Plan — Credits')
+    expect(container).toHaveTextContent('Allowed, 26% used, resets on 2026-11-25')
+    expect(container).not.toHaveTextContent('resets in')
+  })
+
   it('renders a warning tier with label, utilization, and countdown', () => {
     const { container } = render(() => (
       <InfoCardWithInfo

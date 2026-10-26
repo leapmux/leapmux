@@ -12,6 +12,16 @@ import (
 // OptionOutputStyle selects a native style through the process settings override.
 const OptionOutputStyle = "outputStyle"
 
+// OptionSwarmMode selects native teammate event streaming at process launch.
+const OptionSwarmMode = "swarmMode"
+
+const codebuddyRestartNotice = "Changing this setting restarts the agent and stops any active turn."
+
+var codebuddySwarmGroup = agent.SelectGroup(OptionSwarmMode, "Swarm Mode", agent.OptionOrderProviderThird, "false", []agent.OptionDef{
+	{Id: "false", Name: "Off", Description: codebuddyRestartNotice + " Use standard headless operation.", Default: true},
+	{Id: "true", Name: "On", Description: codebuddyRestartNotice + " Enable native Swarm Mode and teammate event streaming."},
+})
+
 const (
 	OptionThinking        = "thinking"
 	codebuddyThinkingAuto = "auto"
@@ -87,6 +97,7 @@ func Registration() agent.Registration {
 			codebuddyEffortGroup(""),
 			codebuddyPermissionModeGroup(""),
 			codebuddyThinkingGroup(""),
+			codebuddySwarmGroup,
 		},
 		AdditionalOptionIDs: []string{agent.OptionIDEffort, OptionOutputStyle},
 		PermissionDefaults: agent.PermissionDefaults{

@@ -329,7 +329,7 @@ func TestSteerInputWithoutATurnWritesNothing(t *testing.T) {
 
 func TestProviderRejectsPDFAndBinaryAttachments(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindPDF, agent.AttachmentKindBinary} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary} {
 		err := qoderProvider{}.ValidateAttachment(agent.ClassifiedAttachment{Filename: "file", Kind: kind})
 		require.Error(t, err, "Qoder's stream user frame cannot carry %s bytes", kind)
 	}

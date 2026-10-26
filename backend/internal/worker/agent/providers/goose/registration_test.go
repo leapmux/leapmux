@@ -21,5 +21,5 @@ func TestGooseRegisteredSecondaryFallback(t *testing.T) {
 // is an option that the worker keeps before the daemon starts.
 func TestGooseRegistrationStatesItsServerDrivenOptionIDs(t *testing.T) {
 	t.Parallel()
-	assert.ElementsMatch(t, []string{contracts.GooseConfigThinkingEffort, ConfigProvider}, Registration().AdditionalOptionIDs)
+	assert.ElementsMatch(t, []string{contracts.GooseConfigThinkingEffort, ConfigProvider, OptionNativeCommands}, Registration().AdditionalOptionIDs)
 }

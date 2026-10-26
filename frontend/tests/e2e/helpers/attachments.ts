@@ -1,10 +1,13 @@
 import type { Page } from '@playwright/test'
+import type { AttachmentKind } from '../../../src/generated/contracts/attachment-media'
 import { Buffer } from 'node:buffer'
 import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
-import { createTestDirectory } from './runDirectory'
+import flacAudio from '../../../../testdata/flac-audio.json' with { type: 'json' }
+import shortVideo from '../../../../testdata/short-video.json' with { type: 'json' }
+import { createTestDirectory, isFileNameComponent } from './runDirectory'
 import { expectToastRecorded } from './toast'
 import { sendMessage, waitForNativeSettingsHydrated } from './ui'
 
@@ -96,8 +99,6 @@ function markedPdf(): Buffer {
   return Buffer.from(body, 'ascii')
 }
 
-export type AttachmentKind = 'text' | 'image' | 'pdf' | 'binary'
-
 export interface AttachmentOutcomeOptions {
   supported: boolean
   fileName?: string
@@ -106,6 +107,8 @@ export interface AttachmentOutcomeOptions {
 
 /** Write one fixture file of the given kind and return its absolute path. */
 export function writeAttachmentFixture(kind: AttachmentKind, name?: string): string {
+  if (kind === 'audio')
+    return writeAudioAttachmentFixture(name)
   const directory = createTestDirectory(`attachment-${kind}-`)
   switch (kind) {
     case 'text': {
@@ -129,6 +132,49 @@ export function writeAttachmentFixture(kind: AttachmentKind, name?: string): str
       return path
     }
   }
+}
+
+/** Construct a mono WAV with 16-bit pulse-code modulation and 160 silent samples. */
+function waveAudioBytes(): Buffer {
+  const sampleRate = 8000
+  const sampleCount = 160
+  const dataBytes = sampleCount * 2
+  const bytes = Buffer.alloc(44 + dataBytes)
+  bytes.write('RIFF', 0)
+  bytes.writeUInt32LE(bytes.length - 8, 4)
+  bytes.write('WAVEfmt ', 8)
+  bytes.writeUInt32LE(16, 16)
+  bytes.writeUInt16LE(1, 20)
+  bytes.writeUInt16LE(1, 22)
+  bytes.writeUInt32LE(sampleRate, 24)
+  bytes.writeUInt32LE(sampleRate * 2, 28)
+  bytes.writeUInt16LE(2, 32)
+  bytes.writeUInt16LE(16, 34)
+  bytes.write('data', 36)
+  bytes.writeUInt32LE(dataBytes, 40)
+  return bytes
+}
+
+/** Write a complete WAV or FLAC container under its matching filename. */
+export function writeAudioAttachmentFixture(name?: string, format: 'wav' | 'flac' = 'wav'): string {
+  if (format !== 'wav' && format !== 'flac')
+    throw new Error('The audio fixture format must be WAV or FLAC.')
+  const filename = name === undefined ? `voice.${format}` : name
+  if (typeof filename !== 'string' || !isFileNameComponent(filename) || !filename.toLowerCase().endsWith(`.${format}`))
+    throw new Error(`The audio fixture requires a ${format.toUpperCase()} filename without a directory.`)
+  const bytes = format === 'flac' ? Buffer.from(flacAudio.dataBase64, 'base64') : waveAudioBytes()
+  const path = join(createTestDirectory('attachment-audio-'), filename)
+  writeFileSync(path, bytes)
+  return path
+}
+
+/** Write a complete two-frame MP4 without relying on an installed media encoder. */
+export function writeVideoAttachmentFixture(name = 'clip.mp4'): string {
+  if (typeof name !== 'string' || !isFileNameComponent(name) || !name.toLowerCase().endsWith('.mp4'))
+    throw new Error('The video fixture requires an MP4 filename without a directory.')
+  const path = join(createTestDirectory('attachment-video-'), name)
+  writeFileSync(path, Buffer.from(shortVideo.dataBase64, 'base64'))
+  return path
 }
 
 /** Attach one file through the hidden composer input. */

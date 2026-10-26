@@ -53,7 +53,7 @@ describe('ohmypi plugin', () => {
 
   // The worker's ValidateAttachment refuses a PDF and a binary file with the same policy.
   it('accepts text and images, and no PDF or binary', () => {
-    expect(plugin.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, binary: false })
+    expect(plugin.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, audio: false, binary: false })
   })
 
   it('labels the settings trigger with the approval mode', () => {

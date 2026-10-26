@@ -15,6 +15,32 @@ import {
 /** Unix seconds `secs` in the future, for a deterministically-positive countdown. */
 const future = (secs: number): number => Math.floor(Date.now() / 1000) + secs
 
+describe('calendar quota resets', () => {
+  it('shows the native label and calendar date without a countdown', () => {
+    const info = { label: 'Native Probe Plan — Credits', status: 'allowed', utilization: 0.255, resetsOn: '2026-11-25' }
+    expect(formatRateLimitSummary(info)).toBe('Allowed, 26% used, resets on 2026-11-25')
+    expect(formatRateLimitMessage(info)).toBe('Native Probe Plan — Credits: 26% used — resets on 2026-11-25')
+  })
+
+  it.each(['2000-02-29', '2024-02-29', '2026-11-25'])('retains the valid calendar date %s', (resetsOn) => {
+    const info = { resetsOn, status: '' }
+    expect(formatRateLimitSummary(info)).toBe(`resets on ${resetsOn}`)
+  })
+
+  it.each(['', '1900-02-29', '2026-02-29', '2026-04-31', '2026-00-01', '2026-01-00', '2026-13-01', ' 2026-11-25', '2026-11-25T00:00:00Z', '0000-01-01'])('omits the invalid calendar date %s', (resetsOn) => {
+    const info = { resetsOn, status: '' }
+    expect(formatRateLimitSummary(info)).toBe('Unknown')
+  })
+
+  it('prefers a reset instant and keeps the normal reset separate from overage', () => {
+    const info = { status: 'allowed', resetsOn: '2026-11-25', resetsAt: future(3600) }
+    expect(formatRateLimitSummary(info)).toContain('resets in')
+    expect(formatRateLimitSummary(info)).not.toContain('resets on')
+    expect(formatRateLimitSummary({ ...info, resetsAt: 0 })).not.toContain('resets on')
+    expect(formatRateLimitSummary({ ...info, isUsingOverage: true })).toBe('Allowed, overage')
+  })
+})
+
 describe('rateLimitStatusLabel', () => {
   it.each([
     ['allowed', 'Allowed'],

@@ -4,7 +4,10 @@ package codex
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"testing"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -69,8 +72,7 @@ func TestNormalizeAttachmentsForProvider_RejectsUnsupportedBinary(t *testing.T) 
 func TestNormalizeAttachmentsForProvider_CodexRejectsPDFAndBinary(t *testing.T) {
 	t.Parallel()
 
-	// Codex and Pi share providerkit.RejectPDFAndBinaryAttachment; exercise BOTH branches for Codex so the
-	// shared helper's PDF and binary paths are each covered under the Codex label.
+	// Audio does not widen the PDF or unrelated-binary policy.
 	cases := map[string]struct {
 		att  *leapmuxv1.Attachment
 		want string
@@ -84,5 +86,93 @@ func TestNormalizeAttachmentsForProvider_CodexRejectsPDFAndBinary(t *testing.T) 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 		})
+	}
+}
+
+func TestBuildCodexInputBlocksAudio(t *testing.T) {
+	t.Parallel()
+	data := []byte{0, 1, 2, 3}
+	attachments := []*leapmuxv1.Attachment{{Filename: "sample.wav", MimeType: "audio/wav", Data: data}}
+	blocks := buildCodexInputBlocks("Listen.", agent.ClassifyAttachments(attachments))
+	require.Len(t, blocks, 2)
+	assert.Equal(t, "text", blocks[0]["type"])
+	assert.Equal(t, "audio", blocks[1]["type"])
+	assert.Equal(t, "data:audio/wav;base64,"+base64.StdEncoding.EncodeToString(data), blocks[1]["url"])
+	_, err := agenttest.MustNewRegistry(Registration()).NormalizeAttachments(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, attachments)
+	require.NoError(t, err)
+}
+
+func TestCodexAudioValidationRejectsEmptyAndUnrelatedBinary(t *testing.T) {
+	t.Parallel()
+	provider := Registration().Plugin
+	for _, mime := range []string{"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/webm", "audio/ogg"} {
+		attachment := agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, MIMEType: mime, Filename: "audio", Data: []byte{0, 1}}
+		require.NoError(t, provider.ValidateAttachment(attachment))
+		attachment.Data = nil
+		require.ErrorContains(t, provider.ValidateAttachment(attachment), "empty")
+	}
+	for _, mime := range []string{"audio/flac", "application/zip", "application/octet-stream", ""} {
+		require.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, MIMEType: mime, Data: []byte{0, 1}}))
+	}
+}
+
+func TestCodexAudioModelValidation(t *testing.T) {
+	t.Parallel()
+	a := &Agent{availableModels: []*agent.ModelInfo{nil, {Id: "audio", SupportsAudioInput: true}, {Id: "text"}}}
+	input := []map[string]interface{}{{"type": "audio", "url": "data:audio/wav;base64,AAE="}}
+	require.NoError(t, a.validateCodexAudioInputLocked(input, "audio"))
+	for _, model := range []string{"text", "", "unknown"} {
+		require.ErrorContains(t, a.validateCodexAudioInputLocked(input, model), "does not accept audio")
+	}
+	require.NoError(t, a.validateCodexAudioInputLocked(nil, "unknown"))
+	require.NoError(t, a.validateCodexAudioInputLocked([]map[string]interface{}{{"type": "text", "text": "Hello"}}, "text"))
+}
+
+func TestCodexAudioDispatchAndSteerKeepTheRunningModel(t *testing.T) {
+	t.Parallel()
+	var subject *Agent
+	a, _, requests := newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
+		if method == "turn/start" {
+			subject.handleMainTurnStarted("audio-turn")
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	subject = a
+	a.threadID = "audio-thread"
+	a.model = "audio-model"
+	a.availableModels = []*agent.ModelInfo{{Id: "audio-model", SupportsAudioInput: true}, {Id: "text-model"}}
+	attachments := []*leapmuxv1.Attachment{{Filename: "sample.wav", MimeType: "audio/wav", Data: []byte{0, 1}}}
+	require.NoError(t, a.SendInput("Listen.", attachments))
+	assert.Equal(t, "audio-model", a.mainTurn.model)
+	a.model = "text-model"
+	require.NoError(t, a.SteerInput("Listen again.", attachments))
+	recorded := requests()
+	require.Len(t, recorded, 2)
+	assert.Equal(t, "turn/start", recorded[0].Method)
+	assert.Equal(t, "turn/steer", recorded[1].Method)
+	for _, request := range recorded {
+		input, ok := request.Params["input"].([]interface{})
+		require.True(t, ok)
+		require.Len(t, input, 2)
+		assert.Equal(t, map[string]interface{}{"type": "audio", "url": "data:audio/wav;base64,AAE="}, input[1])
+	}
+}
+
+func TestCodexRefusesAudioBeforeNativeDispatch(t *testing.T) {
+	t.Parallel()
+	for _, current := range []string{"text-model", "unknown", ""} {
+		a, _, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
+		a.threadID = "audio-thread"
+		a.model = current
+		a.availableModels = []*agent.ModelInfo{{Id: "audio-model", SupportsAudioInput: true}, {Id: "text-model"}}
+		attachments := []*leapmuxv1.Attachment{{Filename: "sample.wav", MimeType: "audio/wav", Data: []byte{0, 1}}}
+		require.ErrorContains(t, a.SendInput("Listen.", attachments), "does not accept audio")
+		assert.Nil(t, a.pendingStart)
+		a.mainTurn = codexMainTurn{id: "text-turn", model: current}
+		a.model = "audio-model"
+		require.ErrorContains(t, a.SteerInput("Listen.", attachments), "does not accept audio")
+		assert.Zero(t, a.mainTurn.steers)
+		assert.Empty(t, a.pendingSteerCalls)
+		assert.Empty(t, requests())
 	}
 }

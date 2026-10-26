@@ -38,7 +38,8 @@ export interface AttachmentCapabilities {
   text: boolean
   image: boolean
   pdf: boolean
-  binary: boolean
+  audio: boolean | readonly string[]
+  binary: boolean | readonly string[]
 }
 
 export interface StartupOption {

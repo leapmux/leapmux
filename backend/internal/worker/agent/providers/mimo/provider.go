@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -17,11 +18,22 @@ type mimoProvider struct {
 	agent.ProviderDefaults
 }
 
-// ValidateAttachment accepts text, images and PDF files, and refuses any other
-// binary. See attachments.go for how each kind reaches MiMo, and why a binary
-// of an unknown type cannot.
+// ValidateAttachment permits MiMo's native audio formats alongside text, images
+// and PDF files. The input writer also requires an audio-capable model.
 func (mimoProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		if !slices.Contains(contracts.MiMoAudioMIMEMembers, attachment.MIMEType) {
+			return fmt.Errorf("the MiMo Code agent does not accept audio format %q", attachment.MIMEType)
+		}
+		if len(attachment.Data) == 0 {
+			return fmt.Errorf("the audio attachment %q is empty", attachment.Filename)
+		}
+		return nil
+	}
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
 		return fmt.Errorf("MiMo Code does not support binary attachments: %s", attachment.Filename)
 	}
 	return nil

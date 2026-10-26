@@ -23,7 +23,8 @@ func (a *Agent) openSession(resume string, timeout time.Duration) error {
 			return err
 		}
 		params["sessionId"] = id
-		params["excludeItems"] = true
+		params["excludeItems"] = false
+		params["history"] = "inline"
 		method = methodSessionResume
 	} else {
 		params["workspaceRoot"] = a.opts.WorkingDir
@@ -39,6 +40,8 @@ func (a *Agent) openSession(resume string, timeout time.Duration) error {
 		return err
 	}
 	var decodedErr error
+	var history json.RawMessage
+	var head string
 	_, err = a.request(method, payload, timeout, func(raw json.RawMessage, err error) {
 		if err != nil {
 			return
@@ -48,10 +51,11 @@ func (a *Agent) openSession(resume string, timeout time.Duration) error {
 			decodedErr = decode
 			return
 		}
-		if response.Session.ID == "" {
+		if response.Session.ID == "" || resume != "" && response.Session.ID != resume {
 			decodedErr = fmt.Errorf("the Muse host returned an invalid session")
 			return
 		}
+		history, head = response.History, response.ViewCursor
 		a.stateMu.Lock()
 		a.sessionID = response.Session.ID
 		a.settings = make(optionmap.Map)
@@ -82,6 +86,11 @@ func (a *Agent) openSession(resume string, timeout time.Duration) error {
 	}
 	if decodedErr != nil {
 		return decodedErr
+	}
+	if resume != "" {
+		if err := a.restoreChildRoutes(a.sessionID, history, head); err != nil {
+			return fmt.Errorf("restore the Muse child conversations: %w", err)
+		}
 	}
 	return a.subscribeLog(a.sessionID, timeout)
 }

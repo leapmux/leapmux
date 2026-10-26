@@ -1,6 +1,7 @@
 package dirac
 
 import (
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -27,7 +28,7 @@ func diracPromptParams(params map[string]any) {
 		filename, _ := resource["uri"].(string)
 		mimeType, _ := resource["mimeType"].(string)
 		text := providerkit.BuildInlineTextAttachmentBlock(agent.ClassifiedAttachment{
-			Filename: filename, MIMEType: mimeType, Data: []byte(content), Kind: agent.AttachmentKindText,
+			Filename: filename, MIMEType: mimeType, Data: []byte(content), Kind: contracts.AttachmentMediaKindText,
 		})
 		blocks[i] = map[string]interface{}{"type": "text", "text": text}
 	}

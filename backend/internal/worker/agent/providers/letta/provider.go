@@ -64,10 +64,10 @@ func (lettaProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 
 // ValidateAttachment accepts text and nonempty images of supported types.
 func (lettaProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if err := providerkit.RejectPDFAndBinaryAttachment(lettaAttachmentLabel, attachment); err != nil {
+	if err := providerkit.ValidateTextAndImageAttachment(lettaAttachmentLabel, attachment); err != nil {
 		return err
 	}
-	if attachment.Kind == agent.AttachmentKindImage && len(attachment.Data) == 0 {
+	if attachment.Kind == contracts.AttachmentMediaKindImage && len(attachment.Data) == 0 {
 		return fmt.Errorf("letta code cannot send an empty image attachment: %s", attachment.Filename)
 	}
 	return nil

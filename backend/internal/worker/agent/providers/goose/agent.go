@@ -15,6 +15,14 @@ const (
 	gooseSteerMethod    = "_goose/unstable/session/steer"
 )
 
+// gooseSteeringMethod supplies the native request even though Goose does not
+// advertise it. Goose 1.56.0 accepts the request and reports its active run
+// through session metadata. A removed method returns -32601, which SteerInput
+// maps to ErrSteeringUnsupported so the input returns to the queue.
+func gooseSteeringMethod([]byte) string {
+	return gooseSteerMethod
+}
+
 // Agent manages a single Goose CLI ACP process.
 type Agent struct {
 	acp.Base
@@ -27,6 +35,10 @@ type Agent struct {
 	goalLastMessageText string
 	// compactPending states that the running prompt is a manual /compact turn.
 	compactPending bool
+	// nativeCommands states the launch value of the Native Commands axis.
+	// Goose reads the terminal capability only in the initialize handshake,
+	// so a change restarts the process.
+	nativeCommands bool
 	// gooseChildRenames remembers each delegate ack's row rename, from the
 	// spawn toolCallId to the native session id the ack stated. A tool request
 	// that arrives after the ack still names the spawn id, so it must reach
@@ -60,6 +72,9 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		return fmt.Errorf("marshal ACP steer params: %w", err)
 	}
 	if _, err := a.SendRequest(method, params, a.APITimeout()); err != nil {
+		if providerkit.HasJSONRPCErrorCode(err, -32601) {
+			return agent.ErrSteeringUnsupported
+		}
 		if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
 			return agent.ErrNoActiveTurn
 		}

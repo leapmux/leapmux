@@ -22,7 +22,7 @@ describe('command code provider', () => {
 
   it('declares the native attachment and permission options', () => {
     const plugin = providerFor(provider)
-    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, binary: false })
+    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, audio: false, binary: false })
     expect(plugin?.configuration?.planMode?.currentMode({})).toBe('default')
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
     expect(plugin?.controls?.permissionPresets).toEqual({ bypass: { sets: { permissionMode: 'bypass' } } })

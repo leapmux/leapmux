@@ -19,7 +19,7 @@ type piProvider struct {
 
 // Pi accepts text and image blocks. Its input cannot represent PDF or binary attachments.
 func (piProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("pi", attachment)
+	return providerkit.ValidateTextAndImageAttachment("pi", attachment)
 }
 
 // ListStoredSessions reads Pi's native transcripts from sessions.go.

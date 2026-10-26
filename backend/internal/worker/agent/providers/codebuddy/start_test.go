@@ -51,6 +51,20 @@ func TestCodebuddyStartupHelper(t *testing.T) {
 	if scenario == "" {
 		return
 	}
+	swarmArguments := 0
+	for _, argument := range os.Args {
+		if argument == "--swarm" {
+			swarmArguments++
+		}
+	}
+	wantSwarmArguments := 0
+	if strings.Contains(scenario, "swarm") {
+		wantSwarmArguments = 1
+	}
+	if swarmArguments != wantSwarmArguments {
+		fmt.Fprintf(os.Stderr, "Expected %d native Swarm arguments, got %d.\n", wantSwarmArguments, swarmArguments)
+		os.Exit(24)
+	}
 	writeFrame := func(frame string) {
 		if _, err := fmt.Fprintln(os.Stdout, frame); err != nil {
 			os.Exit(25)
@@ -83,11 +97,12 @@ func TestCodebuddyStartupHelper(t *testing.T) {
 		}
 		return settings
 	}
-	if scenario == "legacy-style" && os.Getenv(codebuddyArgumentPassingEnv) != "Legacy" {
+	if strings.HasPrefix(scenario, "legacy-") && os.Getenv(codebuddyArgumentPassingEnv) != "Legacy" {
 		fmt.Fprintln(os.Stderr, "Expected the PowerShell profile to select Legacy argument passing.")
 		os.Exit(24)
 	}
-	if scenario == "explicit-style" || scenario == "resume-style" || scenario == "legacy-style" {
+	if scenario == "explicit-style" || scenario == "resume-style" || scenario == "legacy-style" ||
+		scenario == "swarm-style" || scenario == "resume-swarm-style" || scenario == "legacy-swarm-style" {
 		settings := readSettingsArgument()
 		var style string
 		if json.Unmarshal(settings["outputStyle"], &style) != nil || len(settings) != 1 || style != "Concise" {
@@ -148,7 +163,7 @@ func TestCodebuddyStartupHelper(t *testing.T) {
 			fmt.Fprintln(os.Stderr, "Expected only the native question capability.")
 			os.Exit(24)
 		}
-		if scenario == subtype+"-exit" {
+		if scenario == subtype+"-exit" || scenario == "swarm-"+subtype+"-exit" {
 			fmt.Fprintln(os.Stderr, "Controlled native startup failure:", subtype)
 			os.Exit(23)
 		}
@@ -161,7 +176,8 @@ func TestCodebuddyStartupHelper(t *testing.T) {
 				answer = codebuddyControlAnswer(`"invalid payload"`)(request.RequestID)
 			case "native-style":
 				answer = codebuddyControlAnswer(`{"output_style":"Explanatory","available_output_styles":["Default","Concise","Explanatory"]}`)(request.RequestID)
-			case "explicit-style", "resume-style", "legacy-style", "thinking-style", "thinking-auto-style":
+			case "explicit-style", "resume-style", "legacy-style", "thinking-style", "thinking-auto-style",
+				"swarm-style", "resume-swarm-style", "legacy-swarm-style":
 				answer = codebuddyControlAnswer(`{"output_style":"Concise","available_output_styles":["Default","Concise","Explanatory"]}`)(request.RequestID)
 			default:
 				answer = codebuddyControlAnswer(`{"commands":[],"output_style":"default","available_output_styles":[],"models":[],"account":null,"currentModelId":"custom-local:test"}`)(request.RequestID)
@@ -211,6 +227,7 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 		style     string
 		wantStyle string
 		thinking  string
+		swarm     bool
 		// settings is the JSON of the startup settings file, or "" for a start
 		// that needs none.
 		settings string
@@ -220,6 +237,8 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 		{name: "configured native style", scenario: "native-style", wantStyle: "Explanatory"},
 		{name: "explicit style", scenario: "explicit-style", style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise"}`},
 		{name: "resumed style", scenario: "resume-style", resume: "existing-session", style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise"}`},
+		{name: "swarm with style", scenario: "swarm-style", swarm: true, style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise"}`},
+		{name: "resumed swarm with style", scenario: "resume-swarm-style", swarm: true, resume: "existing-session", style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise"}`},
 		{name: "thinking on", scenario: "thinking-on", thinking: "true", settings: `{"alwaysThinkingEnabled":true}`},
 		{name: "thinking off", scenario: "thinking-off", thinking: "false", settings: `{"alwaysThinkingEnabled":false}`},
 		{name: "thinking auto", scenario: "thinking-auto", thinking: "auto"},
@@ -231,6 +250,7 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 		{name: "malformed initialization", scenario: "initialize-malformed", failure: "CodeBuddy sent an invalid control response."},
 		{name: "initialization exit", scenario: "initialize-exit", failure: "Controlled native startup failure: initialize"},
 		{name: "initialization exit with settings", scenario: "initialize-exit", style: "Concise", failure: "Controlled native startup failure: initialize"},
+		{name: "swarm initialization exit with settings", scenario: "swarm-initialize-exit", swarm: true, style: "Concise", failure: "Controlled native startup failure: initialize"},
 		{name: "catalog exit", scenario: "get_available_models-exit", failure: "Controlled native startup failure: get_available_models"},
 		{name: "catalog exit with settings", scenario: "get_available_models-exit", thinking: "true", failure: "Controlled native startup failure: get_available_models"},
 	} {
@@ -245,6 +265,9 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 			}
 			if tc.thinking != "" {
 				options["thinking"] = tc.thinking
+			}
+			if tc.swarm {
+				options[OptionSwarmMode] = "true"
 			}
 			started, err := Start(t.Context(), agent.Options{
 				Options:         options,
@@ -268,6 +291,7 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NotNil(t, started)
+			assert.Equal(t, tc.swarm, started.(*Agent).swarmMode)
 			require.Len(t, sink.SessionIDs(), 1)
 			assert.Empty(t, sink.Messages(), "native history must not duplicate the restored Worker transcript")
 			assert.NotEqual(t, "unknown", started.(*Agent).SettingsSnapshot().SurfacedOptions[agent.OptionIDModel])
@@ -403,4 +427,22 @@ func TestCodebuddyWaitRemovesSettingsAfterNaturalExit(t *testing.T) {
 	assert.Empty(t, agentDirsUnder(t, base))
 	assert.NoDirExists(t, a.directory.Path())
 	require.NoError(t, a.Wait(), "a repeated wait must keep cleanup idempotent")
+}
+
+func TestCodebuddyStartRejectsUnknownSwarmBeforeLaunch(t *testing.T) {
+	previous := codebuddyLocator
+	called := false
+	codebuddyLocator = launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+		called = true
+		return launch.Spec{Program: filepath.Join(t.TempDir(), "missing-agent")}, launch.Found
+	})
+	t.Cleanup(func() { codebuddyLocator = previous })
+	started, err := Start(t.Context(), agent.Options{Options: map[string]string{"swarmMode": "invalid"}}, agent.NewProviderServices(&agenttest.Sink{}))
+	if started != nil {
+		t.Cleanup(started.Stop)
+	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "swarmMode")
+	assert.False(t, called)
+	assert.Nil(t, started)
 }

@@ -36,7 +36,7 @@ for (const decision of ['allow', 'deny'] as const) {
         }
         else {
           expect(existsSync(file)).toBe(false)
-          expect(nativeToolResultContent(resultRequest, callId)).toBe('tool denied: approval aborted')
+          expect(nativeToolResultContent(resultRequest, callId)).toBe('tool denied: approval aborted\nThe user rejected this action. Don\'t retry it unless they ask.')
         }
       },
       viewProof: () => expectNoControlBanner(native.page),

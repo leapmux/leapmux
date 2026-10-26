@@ -66,7 +66,7 @@ describe('codewhale plugin', () => {
 
   // A turn takes text and inline images, and has no file field.
   it('accepts text and images, and refuses a PDF and any other binary', () => {
-    expect(plugin.configuration?.attachments).toStrictEqual({ text: true, image: true, pdf: false, binary: false })
+    expect(plugin.configuration?.attachments).toStrictEqual({ text: true, image: true, pdf: false, audio: false, binary: false })
   })
 
   it('drives the plan toggle and the trigger segment from the thread mode', () => {

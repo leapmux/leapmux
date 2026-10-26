@@ -159,6 +159,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		a.handleTurnStart()
 	case contracts.KiroKindTurnEnd:
 		a.handleTurnEnd(fieldString(fields, contracts.KiroMetaStopReason), update)
+		a.requestUsageRefresh()
 	case kiroKindTurnCompletion:
 		a.logTurnCompletion(raw)
 	case kiroKindContextUsage:
@@ -391,6 +392,7 @@ func (a *Agent) handleDisplayError(raw json.RawMessage) {
 // result, or that the reader stopped, writes no failure note, so the display
 // error is the only record of the reason.
 func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
+	a.requestUsageRefresh()
 	a.stateMu.Lock()
 	held := a.turns.heldError
 	a.turns.heldError = ""

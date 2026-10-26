@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/coder/quartz"
@@ -250,7 +251,11 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.Mu.Unlock()
 		return agent.ErrNoActiveTurn
 	}
-	request := a.promptRequestLocked(parts, "")
+	request, err := a.promptRequestLocked(parts, "")
+	if err != nil {
+		a.Mu.Unlock()
+		return err
+	}
 	manualFollowup := !steer && !turnActive && sessionID != "" && a.manualCompactionReady
 	if manualFollowup {
 		if a.manualFollowupSending {
@@ -312,7 +317,21 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 //
 // actorID addresses a child. An empty actorID addresses the main actor.
 // Mode applies only to the main actor. The caller holds a.Mu.
-func (a *Agent) promptRequestLocked(parts []mimoPromptPart, actorID string) mimoPromptRequest {
+func (a *Agent) promptRequestLocked(parts []mimoPromptPart, actorID string) (mimoPromptRequest, error) {
+	for _, part := range parts {
+		if part.Type != promptPartFile || !strings.HasPrefix(part.Mime, "audio/") {
+			continue
+		}
+		model := agent.FindAvailableModel(a.catalog.models, a.model)
+		if model == nil || !model.SupportsAudioInput {
+			description := "the current MiMo Code model"
+			if a.model != "" {
+				description = fmt.Sprintf("the MiMo Code model %q", a.model)
+			}
+			return mimoPromptRequest{}, fmt.Errorf("%s does not accept audio attachments; choose a model with audio input", description)
+		}
+		break
+	}
 	request := mimoPromptRequest{Parts: parts, AgentID: actorID}
 	if actorID == "" {
 		request.Agent = a.mode
@@ -321,7 +340,7 @@ func (a *Agent) promptRequestLocked(parts []mimoPromptPart, actorID string) mimo
 		request.Model = &ref
 		request.Variant = a.catalog.resolveEffort(a.model, a.effort)
 	}
-	return request
+	return request, nil
 }
 
 // errPromptRateLimited states MiMo's limit on its prompt route. See

@@ -34,4 +34,5 @@ export const MUSE_TOOL = {
   SnoozeReminder: 'snooze_reminder',
   WriteTodos: 'write_todos',
   Workflow: 'workflow',
+  SubmitResult: 'submit_result',
 } as const

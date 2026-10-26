@@ -9,7 +9,7 @@ import { juniePermissionPresets } from './permissionPresets'
 import './plugin'
 
 describe('junie provider', () => {
-  describeACPProviderBasics(AgentProvider.JUNIE, { text: true, image: true, pdf: false, binary: false })
+  describeACPProviderBasics(AgentProvider.JUNIE, { text: true, image: true, pdf: false, audio: false, binary: false })
 
   it('registers its own reader of output file paths', () => {
     expect(providerFor(AgentProvider.JUNIE)?.transcript.outputFilePaths).toBe(junieOutputFilePaths)

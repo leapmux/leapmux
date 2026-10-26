@@ -314,6 +314,13 @@ func TestGrokUnreadableStoredRequestTakesTheSharedRule(t *testing.T) {
 
 // The plugin states the child capabilities that the agent type implements. A
 // subagent tab reads them before its root runs.
+func TestGrokChildMessageCapabilityMatchesTheRuntime(t *testing.T) {
+	t.Parallel()
+	capabilities := Registration().Plugin.ChildCapabilities(nil)
+	assert.True(t, capabilities.AcceptsMessages)
+	assert.True(t, capabilities.AcceptsInterrupt)
+}
+
 func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))

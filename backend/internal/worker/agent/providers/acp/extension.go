@@ -292,9 +292,13 @@ type Hooks struct {
 	// when the host offers none, sets it: Gemini CLI then creates a new file,
 	// which it cannot do through the host.
 	DisableHostFileSystem bool
-	// PromptParams adjusts the params of each session/prompt before the base
-	// sends it, the follow-up prompt included. Grok Build states the prompt id
-	// there, so it can tell its own prompts from the turns the agent starts.
+	// PreparePrompt validates or converts blocks for the explicit target session.
+	// It receives read-only classified attachments and their mutable prompt blocks.
+	// It runs for root and child prompts under sessionMu, before any native write.
+	// It must not acquire sessionMu or wait on work that needs that mutex.
+	PreparePrompt func(sessionID string, attachments []agent.ClassifiedAttachment, prompt []map[string]any) error
+	// PromptParams adjusts the root params before the base sends them, including
+	// follow-up prompts. Grok Build uses it to identify its own prompts.
 	PromptParams func(params map[string]any)
 	// SessionParams adjusts the params of a session/new, a session/load or a
 	// session/resume request before the base sends it. A provider adds its own
@@ -365,6 +369,14 @@ func (b *Base) SetSteerRunID(runID string) {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	b.steerRunID = runID
+}
+
+// CurrentModel reads the model confirmed by the session's native settings.
+// A model-dependent prompt must read it inside PreparePrompt.
+func (b *Base) CurrentModel() string {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.model
 }
 
 // SetCurrentModel records model as the current model, after a provider wrote it

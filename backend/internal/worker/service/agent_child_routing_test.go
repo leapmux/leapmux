@@ -447,7 +447,7 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 	}{
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, false, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, true, true},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, false, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, true, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, false, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, true, false},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, false, true},

@@ -1,12 +1,14 @@
 package mimo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -37,6 +39,81 @@ func TestSendInputStatesTheSettings(t *testing.T) {
 	require.Len(t, requests, 2)
 	assert.JSONEq(t, `{"parts":[{"type":"text","text":"again"}],"agent":"plan","model":{"providerID":"mock","modelID":"beta"}}`,
 		string(requests[1].Body), "Auto and a model with no variant send no variant")
+}
+
+func TestAudioInputRequiresTheExactRequestModelBeforeAnyHTTPWrite(t *testing.T) {
+	t.Parallel()
+	for _, steer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("steer=%t", steer), func(t *testing.T) {
+			t.Parallel()
+			a, server := newTestAgent(t, nil)
+			a.turnActive = steer
+			attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255}}}
+			deliver := func() error {
+				if steer {
+					return a.SteerInput("Listen to the recording.", attachments)
+				}
+				return a.SendInputForSession(testSessionID, "Listen to the recording.", attachments)
+			}
+			for _, model := range []string{"mock/alpha", "unknown/model", ""} {
+				a.model = model
+				assert.ErrorContains(t, deliver(), "does not accept audio attachments")
+				assert.Empty(t, server.allRequests())
+				assert.Empty(t, a.inputSends)
+				assert.False(t, a.manualFollowupSending)
+			}
+			a.model = "mock/alpha"
+			model := agent.FindAvailableModel(a.catalog.models, a.model)
+			require.NotNil(t, model)
+			model.SupportsAudioInput = true
+			require.NoError(t, deliver())
+			requests := server.requestsTo("POST /session/ses_test/prompt_async")
+			require.Len(t, requests, 1)
+			assert.JSONEq(t, `{"parts":[{"type":"text","text":"Listen to the recording."},{"type":"file","mime":"audio/wav","url":"data:audio/wav;base64,AP8=","filename":"voice.wav"}],"agent":"build","model":{"providerID":"mock","modelID":"alpha"}}`, string(requests[0].Body))
+		})
+	}
+}
+
+func TestAudioInputKeepsItsValidatedModelDuringAConcurrentSettingsChange(t *testing.T) {
+	t.Parallel()
+	a, server := newTestAgent(t, nil)
+	model := agent.FindAvailableModel(a.catalog.models, a.model)
+	require.NotNil(t, model)
+	model.SupportsAudioInput = true
+	arrived, release := make(chan struct{}), make(chan struct{})
+	releaseInput := sync.OnceFunc(func() { close(release) })
+	defer releaseInput()
+	var observe sync.Once
+	server.handle("POST /session/ses_test/prompt_async", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		observe.Do(func() { close(arrived) })
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})
+	attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255}}}
+	result := make(chan error, 1)
+	go func() { result <- a.SendInput("Listen to the recording.", attachments) }()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-arrived:
+	case err := <-result:
+		require.NoError(t, err, "the supported recording must reach the native route")
+		t.Fatal("the audio send ended before the native route observed it")
+	case <-ctx.Done():
+		t.Fatal("the native route did not receive the audio request")
+	}
+	a.UpdateSettings(optionmap.Map{agent.OptionIDModel: "mock/beta"})
+	releaseInput()
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the accepted audio request did not return")
+	}
+	assert.ErrorContains(t, a.SendInput("Listen again.", attachments), "does not accept audio attachments")
+	requests := server.requestsTo("POST /session/ses_test/prompt_async")
+	require.Len(t, requests, 1)
+	assert.Equal(t, map[string]any{"providerID": "mock", "modelID": "alpha"}, decodeBody(t, requests[0])["model"])
 }
 
 func TestSendInputWithoutAModelLetsTheServerPick(t *testing.T) {

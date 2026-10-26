@@ -3051,41 +3051,45 @@ func (b *Base) sendSessionRPCObserved(method string, extraParams map[string]inte
 	return out, err
 }
 
-// SetModelViaConfigOption writes configId "model" through native session/set_config_option and leaves b.model unchanged.
-// Each caller stores its model ID. A provider can normalize the native ID before that write.
-// Thus a concurrent OptionGroups read cannot observe or persist a temporary native ID such as "default".
-//
-// This method serves providers that support the model config-option channel.
-// Its response must carry the complete refreshed configOptions snapshot.
-// That snapshot can add or remove the effort group or change its choices with the model.
-// The native session/set_model response supplies no such snapshot.
-// Providers that lack this config-option channel supply their own model writer through hooks.ModelSetter.
-func (b *Base) SetModelViaConfigOption(wireModel string) error {
-	resp, err := b.sendSessionRPC(MethodSessionSetConfigOption, map[string]interface{}{
+// SetModelViaConfigOption writes the native wire ID and records the canonical
+// model ID before the reader releases the acknowledgment. A provider supplies
+// its normalized ID separately, so no reader observes a temporary wire alias.
+// The same acknowledgment refreshes mutable options; a missing snapshot marks
+// them unresolved. A model change can add or remove the effort group or change
+// its choices. The legacy session/set_model reply carries no option snapshot.
+// Providers without this config-option channel supply hooks.ModelSetter.
+func (b *Base) SetModelViaConfigOption(wireModel, confirmedModel string) error {
+	var options []ConfigOption
+	_, err := b.sendSessionRPCObserved(MethodSessionSetConfigOption, map[string]interface{}{
 		"configId": ConfigOptionIDModel,
 		"value":    wireModel,
+	}, func(response json.RawMessage, replyErr error) {
+		if replyErr != nil {
+			return
+		}
+		options = parseACPConfigOptions(response)
+		b.Mu.Lock()
+		// applyOptionGroupsLocked skips the claimed model and mode channels.
+		// Record the canonical model separately in the same critical section.
+		// UpdateSettings publishes the changed catalog; context clear publishes
+		// its own refresh. A missing snapshot leaves known options unresolved.
+		if len(options) > 0 {
+			b.options.clearUnresolved()
+			b.applyOptionGroupsLocked(options)
+		} else {
+			b.options.markKnownUnresolved()
+		}
+		b.model = confirmedModel
+		b.Mu.Unlock()
 	})
 	if err != nil {
 		return err
 	}
-	// Refresh the mutable groups from the returned configOptions snapshot.
-	// applyOptionGroupsLocked skips claimed model and mode channels, so the caller still owns the model field.
-	// A missing snapshot marks the known options unresolved and preserves their stored data.
-	// UpdateSettings publishes a changed catalog. The context-clear path publishes its own refresh.
-	options := parseACPConfigOptions(resp)
-	if len(options) > 0 {
-		b.Mu.Lock()
-		b.options.clearUnresolved()
-		b.applyOptionGroupsLocked(options)
-		b.Mu.Unlock()
-	} else {
-		b.Mu.Lock()
-		b.options.markKnownUnresolved()
-		b.Mu.Unlock()
-	}
-	// A newly reported effort group can default to "none" and disable reasoning.
-	// raiseEffortOffNone selects an actual effort after this snapshot resolves the current value.
-	// Its native config-option write keeps the daemon and frontend aligned.
+	// A new effort group can default to none and disable reasoning. Raise it
+	// after acknowledgment so the native settings and frontend stay aligned.
+	// This can perform another RPC and take optionWriteMu. The model is already
+	// confirmed before the first session lock ends; preparation cannot read its
+	// previous value while the dependent effort write waits.
 	b.raiseEffortOffNone(options)
 	return nil
 }
@@ -3126,15 +3130,9 @@ func (b *Base) SetModeViaConfigOption(wireMode string, acknowledged func(string)
 	return err
 }
 
-// setModel writes the model via session/set_config_option and updates the local field.
+// setModel uses the same model ID on the wire and in the confirmed settings.
 func (b *Base) setModel(model string) error {
-	if err := b.SetModelViaConfigOption(model); err != nil {
-		return err
-	}
-	b.Mu.Lock()
-	b.model = model
-	b.Mu.Unlock()
-	return nil
+	return b.SetModelViaConfigOption(model, model)
 }
 
 // acpSetMode sends session/set_mode and acknowledges its accepted value before waiter delivery.

@@ -3,6 +3,8 @@ package goose
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/optionmap"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -77,4 +79,48 @@ func TestGooseModelSwitchToAModelThatDoesNotReasonSettlesOnWhatTheSessionShows(t
 	assert.Equal(t, []string{"model=model-b"}, acptest.ConfigWrites(requests()))
 	require.NotNil(t, result.Settlements[contracts.GooseConfigThinkingEffort].Value)
 	assert.Equal(t, "off", *result.Settlements[contracts.GooseConfigThinkingEffort].Value)
+}
+
+// A changed Native Commands value needs a restart; the running value and an
+// absent value reach the shared writer.
+func TestGooseUpdateSettingsRestartsOnANativeCommandsChange(t *testing.T) {
+	t.Parallel()
+	goose, _ := acptest.NewAgentForRPC(t,
+		func() *Agent { return &Agent{} },
+		func(agent *Agent) *acp.Base { return &agent.Base },
+	)
+	goose.nativeCommands = false
+
+	restart := goose.UpdateSettings(map[string]string{OptionNativeCommands: "true"})
+	assert.False(t, restart.AppliedLive, "Goose reads the terminal capability only in the handshake")
+
+	same := goose.UpdateSettings(map[string]string{OptionNativeCommands: "false"})
+	assert.True(t, same.AppliedLive)
+
+	absent := goose.UpdateSettings(map[string]string{agent.OptionIDModel: "m"})
+	assert.True(t, absent.AppliedLive)
+
+	groups := goose.nativeCommandGroups()
+	require.Len(t, groups, 1)
+	assert.Equal(t, "false", groups[0].GetCurrentValue())
+	goose.nativeCommands = true
+	groups = goose.nativeCommandGroups()
+	assert.Equal(t, "true", groups[0].GetCurrentValue())
+}
+
+func TestGooseRejectsInvalidNativeCommandsBeforeOtherSettings(t *testing.T) {
+	t.Parallel()
+	for _, current := range []bool{false, true} {
+		for _, value := range []string{"bogus", "0", "-1", "999999999999999999", "TRUE", " false "} {
+			a, requests := acptest.NewAgentForRPC(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base })
+			a.nativeCommands = current
+			a.HooksForTest().LocalOptionGroups = a.nativeCommandGroups
+			a.SetModelForTest("model-a")
+			before := a.SettingsSnapshot().ConfirmedOptions()
+			result := a.UpdateSettings(optionmap.Map{OptionNativeCommands: value, agent.OptionIDModel: "model-b"})
+			assert.True(t, result.AppliedLive, "an invalid choice must not restart the process")
+			assert.Equal(t, before, result.ConfirmedOptions())
+			assert.Empty(t, requests())
+		}
+	}
 }

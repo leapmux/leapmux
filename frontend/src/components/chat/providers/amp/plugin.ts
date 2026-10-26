@@ -24,6 +24,7 @@ const ampPlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: false,
+      audio: false,
       binary: false,
     },
     // Amp's one mode axis is its agent mode, which chooses the model and the effort.

@@ -55,7 +55,7 @@ func TestGeminiPluginUsesNativePlanModeValues(t *testing.T) {
 	assert.Equal(t, contracts.GeminiModePlan, plugin.PlanModePermissionMode(agent.PlanModeControlEnter))
 	assert.Equal(t, contracts.GeminiModeDefault, plugin.PlanModePermissionMode(agent.PlanModeControlExit))
 	assert.Empty(t, plugin.PlanModePermissionMode(0))
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage, agent.AttachmentKindPDF, agent.AttachmentKindBinary} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary} {
 		assert.NoError(t, plugin.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "native-input"}))
 	}
 }

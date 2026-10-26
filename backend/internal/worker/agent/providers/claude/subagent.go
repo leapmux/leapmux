@@ -81,18 +81,19 @@ const (
 // Every field is optional.
 // For an unknown subtype, claudeHandleTaskEvent returns false and preserves the ordinary persistence path.
 type claudeTaskEnvelope struct {
-	Subtype      string           `json:"subtype"`
-	TaskID       string           `json:"task_id"`
-	ToolUseID    string           `json:"tool_use_id"`
-	TaskType     string           `json:"task_type"` // local_agent | local_bash | local_workflow
-	Description  string           `json:"description"`
-	Prompt       string           `json:"prompt"` // task_started carries the spawn prompt
-	Status       string           `json:"status"` // task_notification: completed|failed|stopped
-	Summary      string           `json:"summary"`
-	OutputFile   string           `json:"output_file"`
-	WorkflowName string           `json:"workflow_name"`
-	LastToolName string           `json:"last_tool_name"`
-	Usage        *claudeTaskUsage `json:"usage"`
+	Subtype          string                        `json:"subtype"`
+	TaskID           string                        `json:"task_id"`
+	ToolUseID        string                        `json:"tool_use_id"`
+	TaskType         string                        `json:"task_type"` // local_agent | local_bash | local_workflow
+	Description      string                        `json:"description"`
+	Prompt           string                        `json:"prompt"` // task_started carries the spawn prompt
+	Status           string                        `json:"status"` // task_notification: completed|failed|stopped
+	Summary          string                        `json:"summary"`
+	OutputFile       string                        `json:"output_file"`
+	WorkflowName     string                        `json:"workflow_name"`
+	LastToolName     string                        `json:"last_tool_name"`
+	Usage            *claudeTaskUsage              `json:"usage"`
+	WorkflowProgress []claudeWorkflowProgressEntry `json:"workflow_progress"` // task_progress: a full snapshot of a run's agents
 }
 
 type claudeTaskUsage struct {
@@ -277,6 +278,12 @@ func (a *Agent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	}
 	if err := a.sink.UpsertBackgroundTask(upsert); err != nil {
 		slog.Warn("claude task_started upsert failed", "task_id", ev.TaskID, "error", err)
+	}
+
+	// A Workflow run's agents join the run's group (workflow.go), so the run's
+	// group must be recorded before the first task_progress snapshot arrives.
+	if startedKind == bgtask.KindWorkflow {
+		a.workflows.started(ev.TaskID, groupKey, groupLabel)
 	}
 
 	// task_started determines which Claude calls retain a span.
@@ -548,6 +555,11 @@ func (a *Agent) handleClaudeTaskProgress(ev *claudeTaskEnvelope) {
 	if err := a.sink.UpdateBackgroundTaskStatus(ev.TaskID, bgtask.StatusRunning, activity); err != nil {
 		slog.Warn("claude task_progress update failed", "task_id", ev.TaskID, "error", err)
 	}
+	// A Workflow run reports its agents in the same frame (workflow.go). The
+	// run row keeps its own activity update above.
+	for _, row := range a.workflows.progress(ev.TaskID, ev.WorkflowProgress) {
+		providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(row))
+	}
 }
 
 func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
@@ -597,6 +609,12 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	}
 	if err := a.sink.CloseBackgroundTask(ev.TaskID, status); err != nil {
 		slog.Warn("claude task_notification close failed", "task_id", ev.TaskID, "error", err)
+	}
+	// A Workflow run's agent rows close with it (workflow.go): a snapshot
+	// settles each agent that finished, and the run's own outcome ends the
+	// rest.
+	for _, row := range a.workflows.finished(ev.TaskID, status) {
+		providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(row))
 	}
 	// Drop the index entry.
 	a.tasks.forgetTaskIndex(ev.TaskID)

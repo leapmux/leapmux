@@ -20,7 +20,7 @@ describe('copilot provider', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
   it('accepts text, image and PDF attachments, and refuses a binary file', () => {
-    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, binary: false })
+    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, audio: false, binary: false })
   })
 
   // The tool result already states the completion, so the Worker drops this announcement.

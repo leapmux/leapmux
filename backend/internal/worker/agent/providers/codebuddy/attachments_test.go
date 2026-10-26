@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -23,6 +24,28 @@ func TestCodebuddyUserContentKeepsPlainText(t *testing.T) {
 	assert.Equal(t, "", codebuddyUserContent("", nil))
 }
 
+func TestCodebuddyAudioAttachmentPolicy(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		mime    string
+		data    []byte
+		allowed bool
+	}{
+		{mime: "audio/wav", data: []byte{0, 1}, allowed: true},
+		{mime: "audio/mpeg", data: []byte{0, 1}, allowed: true},
+		{mime: "audio/wav"},
+		{mime: "application/octet-stream", data: []byte{0, 1}},
+		{mime: "audio/", data: []byte{0, 1}},
+	} {
+		err := (codebuddyProvider{}).ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, Filename: "voice.wav", MIMEType: tc.mime, Data: tc.data})
+		if tc.allowed {
+			assert.NoError(t, err)
+		} else {
+			assert.Error(t, err)
+		}
+	}
+}
+
 func TestCodebuddyUserContentCarriesEveryAttachmentKind(t *testing.T) {
 	t.Parallel()
 
@@ -30,6 +53,7 @@ func TestCodebuddyUserContentCarriesEveryAttachmentKind(t *testing.T) {
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("file content")},
 		{Filename: "shot.png", MimeType: "image/png", Data: []byte("\x89PNG")},
 		{Filename: "report.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
+		{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 1}},
 		{Filename: "blob.bin", MimeType: "application/octet-stream", Data: []byte{0, 255}},
 	}
 	raw, err := json.Marshal(codebuddyUserContent("inspect these files", attachments))
@@ -40,6 +64,8 @@ func TestCodebuddyUserContentCarriesEveryAttachmentKind(t *testing.T) {
       {"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw=="}},
       {"type":"text","text":"Attached file \"report.pdf\" (application/pdf)"},
       {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERg=="}},
+      {"type":"text","text":"Attached file \"voice.wav\" (audio/wav)"},
+      {"type":"document","source":{"type":"base64","media_type":"audio/wav","data":"AAE="}},
       {"type":"text","text":"Attached file \"blob.bin\" (application/octet-stream)"},
       {"type":"document","source":{"type":"base64","media_type":"application/octet-stream","data":"AP8="}},
       {"type":"text","text":"inspect these files"}

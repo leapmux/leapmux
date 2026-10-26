@@ -3,6 +3,8 @@ package opencode
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -11,10 +13,10 @@ import (
 func TestOpenCodeRefusesBinaryAttachments(t *testing.T) {
 	t.Parallel()
 	provider := Registration().Plugin
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage, agent.AttachmentKindPDF} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf} {
 		assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "input"}), kind)
 	}
-	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "input.bin"}), "input.bin")
+	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, Filename: "input.bin"}), "input.bin")
 }
 
 // The plugin states the child capabilities that the agent type implements. A

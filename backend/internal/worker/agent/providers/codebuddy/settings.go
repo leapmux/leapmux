@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // OptionGroups returns every configuration axis this agent currently reports.
@@ -27,6 +29,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 		codebuddyEffortGroup(effort),
 		codebuddyPermissionModeGroup(mode),
 		codebuddyThinkingGroup(thinking),
+		providerkit.LiveGroup(codebuddySwarmGroup, strconv.FormatBool(a.swarmMode)),
 	}
 	if modelGroup := codebuddyModelGroup(models, model); modelGroup != nil {
 		groups = append([]*leapmuxv1.AvailableOptionGroup{modelGroup}, groups...)
@@ -45,6 +48,7 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 		agent.OptionIDEffort:         a.effort,
 		agent.OptionIDPermissionMode: a.permissionMode,
 		OptionThinking:               codebuddyThinkingValue(a.thinkingChoice),
+		OptionSwarmMode:              strconv.FormatBool(a.swarmMode),
 	}
 	if a.model != "" {
 		values[agent.OptionIDModel] = a.model
@@ -56,11 +60,20 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 }
 
 // UpdateSettings applies model, permission and explicit thinking changes live. CodeBuddy takes
-// effort from the launch arguments on every prompt. Its session also retains
-// the initial output style, so either change needs a session-preserving process
-// restart before any other option changes.
+// effort and Swarm mode from the launch arguments on every prompt. Its session
+// also retains the initial output style, so these changes require a process
+// restart before any live option changes.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	thinking, thinkingRequested := options[OptionThinking]
+	swarmValue, swarmRequested := options[OptionSwarmMode]
+	swarm := a.swarmMode
+	if swarmValue != "" {
+		var err error
+		swarm, err = options.Bool(OptionSwarmMode)
+		if err != nil {
+			return a.rejectSettings(options)
+		}
+	}
 	var thinkingOverride *bool
 	if thinkingRequested && thinking != "" {
 		var err error
@@ -87,6 +100,9 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		}
 	}
 	if effort, ok := options[agent.OptionIDEffort]; ok && effort != a.opts.Effort() {
+		return agent.RestartRequiredSettings(options)
+	}
+	if swarm != a.swarmMode {
 		return agent.RestartRequiredSettings(options)
 	}
 	if thinkingRequested && thinking == codebuddyThinkingAuto && currentThinking != codebuddyThinkingAuto {
@@ -135,8 +151,12 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 			result.Settlements[OptionThinking] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &confirmed}
 		}
 	}
+	if swarmRequested {
+		confirmed := strconv.FormatBool(a.swarmMode)
+		result.Settlements[OptionSwarmMode] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &confirmed}
+	}
 	for id := range options {
-		if id != agent.OptionIDModel && id != agent.OptionIDPermissionMode && id != agent.OptionIDEffort && id != OptionOutputStyle && id != OptionThinking {
+		if id != agent.OptionIDModel && id != agent.OptionIDPermissionMode && id != agent.OptionIDEffort && id != OptionOutputStyle && id != OptionThinking && id != OptionSwarmMode {
 			result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
 		}
 	}

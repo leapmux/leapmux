@@ -160,6 +160,47 @@ func TestLogPageFailureKeepsThePreviewAndMarksUnavailable(t *testing.T) {
 	assert.Contains(t, string(sink.Messages()[0].SupplementalContent), "native page unavailable")
 }
 
+func TestNativeLogPagesCountOmittedPositions(t *testing.T) {
+	t.Parallel()
+	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
+	marker := omittedTaskRecord("omitted", 2)
+	result := logRecord("result", "tool_result_batch_committed", "batch_id", 3, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
+	a, _ := testAgent(t)
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+		require.Equal(t, methodLogPage, method)
+		return agenttest.RPCReply{Result: json.RawMessage(`{"records":[` + string(origin) + `,` + string(marker) + `,` + string(result) + `],"nextCursor":{"stream":{"kind":"session","id":"session"},"after":{"id":"result","sequence":3}}}`)}
+	}})
+	records, err := a.readLogPages("session", nil, nativePosition{ID: "result", Sequence: 3}, time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, []json.RawMessage{origin, marker, result}, records)
+}
+
+func TestCompletedChildLogReadsTheStoredStreamWhenLiveSubscriptionRefuses(t *testing.T) {
+	a, _ := testAgent(t)
+	a.handshake.GrantedCapabilities = []string{"rawLog"}
+	state := &sessionState{sink: a.sink, childID: "child-agent", parentSessionID: "session", items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("child")}
+	a.sessions["child"] = state
+	origin := strings.ReplaceAll(string(logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{}"}]`)), `"id":"session"`, `"id":"child"`)
+	result := strings.ReplaceAll(string(logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"native result"}]`)), `"id":"session"`, `"id":"child"`)
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+		switch method {
+		case methodLogSubscribe:
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32020,"message":"session child not found","data":{"kind":"sessionNotFound"}}`)}
+		case methodLogStreams:
+			return agenttest.RPCReply{Result: json.RawMessage(`{"streams":[{"stream":{"kind":"session","id":"child"},"tail":{"id":"result","sequence":2},"firstAvailable":{"id":"origin","sequence":1},"prunedThrough":null}]}`)}
+		case methodLogPage:
+			return agenttest.RPCReply{Result: json.RawMessage(`{"records":[` + origin + `,` + result + `],"nextCursor":{"stream":{"kind":"session","id":"child"},"after":{"id":"result","sequence":2}}}`)}
+		default:
+			t.Errorf("unexpected native method %s", method)
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		}
+	}})
+	require.NoError(t, a.subscribeLog("child", time.Second))
+	assert.Empty(t, state.log.unavailable)
+	assert.Len(t, state.log.records, 2)
+	assert.Zero(t, state.log.subscriptionID, "stored history creates no imaginary live subscription")
+}
+
 func TestNativeLogPagesRejectInvalidPagesAndKeepTheReadPrefix(t *testing.T) {
 	valid := `{"id":"first","sequence":1,"stream":{"kind":"session","id":"session"},"payload":{}}`
 	cursor := `{"stream":{"kind":"session","id":"session"},"after":{"id":"first","sequence":1}}`
@@ -435,4 +476,27 @@ func TestMuseLogGapIgnoresARetiredSubscription(t *testing.T) {
 	state.retired = true
 	feed(t, a, "log/gap", map[string]any{"subscriptionId": 7})
 	assert.Empty(t, state.log.unavailable)
+}
+
+func TestStoredChildLogRefusesForeignAmbiguousAndInvalidTails(t *testing.T) {
+	for _, source := range []string{
+		`{}`, `{"streams":null}`, `{"streams":[]}`,
+		`{"streams":[{"stream":{"kind":"session","id":"foreign"},"tail":{"id":"record","sequence":1}}]}`,
+		`{"streams":[{"stream":{"kind":"session","id":"child"},"tail":null}]}`,
+		`{"streams":[{"stream":{"kind":"session","id":"child"},"tail":{"id":"record","sequence":0}}]}`,
+		`{"streams":[{"stream":{"kind":"session","id":"child"},"tail":{"id":"record","sequence":-1}}]}`,
+		`{"streams":[{"stream":{"kind":"session","id":"child"},"tail":{"id":"record","sequence":1}},{"stream":{"kind":"session","id":"child"},"tail":{"id":"record","sequence":1}}]}`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			a, _ := testAgent(t)
+			state := &sessionState{sink: a.sink, childID: "child-agent", log: newNativeLog("child")}
+			a.sessions["child"] = state
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+				require.Equal(t, methodLogStreams, method, "invalid stream metadata must never authorize a page read")
+				return agenttest.RPCReply{Result: json.RawMessage(source)}
+			}})
+			require.Error(t, a.readStoredLog("child", state, time.Second))
+			assert.Empty(t, state.log.records)
+		})
+	}
 }

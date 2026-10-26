@@ -113,7 +113,7 @@ export interface ACPProviderOptions {
    * Attachment capabilities. Defaults to full support; pass a restricted set for
    * providers that can't take every attachment kind (e.g. Reasonix is text-only).
    */
-  attachments?: AttachmentCapabilities
+  attachments: AttachmentCapabilities
   /**
    * The MCP elicitation reader. Defaults to {@link acpElicitation}, the protocol's own
    * `elicitation/create`; a provider that raises an elicitation under a method of its
@@ -205,7 +205,7 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
     ...(opts.preservesSelectionNotes ? { preservesSelectionNotes: true } : {}),
   }
   const configuration: ProviderConfigurationCapability = {
-    attachments: opts.attachments ?? { text: true, image: true, pdf: true, binary: true },
+    attachments: opts.attachments,
     ...(opts.planValue !== undefined ? { planMode: planModeFromConfig(sc, opts.planValue) } : {}),
     triggerModeGroupKey: triggerModeGroupKeyForConfig(sc),
     ...(opts.effortGroupKey !== undefined ? { effortGroupKey: opts.effortGroupKey } : {}),

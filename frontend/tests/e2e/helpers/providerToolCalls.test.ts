@@ -26,7 +26,10 @@ import {
   codebuddyFindWorkflowToolCall,
   codebuddyReplToolCall,
   codebuddyTaskCreateToolCall,
+  codebuddyTaskOutputToolCall,
+  codebuddyTaskStopToolCall,
   codebuddyTaskUpdateToolCall,
+  codebuddyTeammateToolCall,
   codebuddyWaitForMcpServersToolCall,
   codebuddyWorkflowToolCall,
   codeExecutionToolCall,
@@ -64,6 +67,7 @@ import {
   exitPlanModeFromFileToolCall,
   exitPlanModeToolCall,
   fastAgentHumanInputToolCall,
+  fastAgentNativeBashToolCall,
   geminiCompleteTaskToolCall,
   geminiTodoSnapshotToolCall,
   goosePermissionJudgmentToolCall,
@@ -88,6 +92,7 @@ import {
   mimoInteractiveBashToolCall,
   mimoTaskToolCall,
   mimoWorkflowToolCall,
+  museSubmitResultToolCall,
   ohMyPiTodoToolCall,
   ohMyPiYieldToolCall,
   piCodemodeToolCall,
@@ -442,7 +447,7 @@ describe('codeExecutionToolCall', () => {
     { provider: AgentProvider.OH_MY_PI, name: 'eval', field: 'code' },
     { provider: AgentProvider.ZCODE, name: 'mcp__node_repl__js', field: 'code' },
     { provider: AgentProvider.QWEN_CODE, name: 'exec', field: 'source' },
-    { provider: AgentProvider.GOOSE, name: 'execute_typescript', field: 'code' },
+    { provider: AgentProvider.GOOSE, name: 'execute_javascript', field: 'code' },
     { provider: AgentProvider.OPENCODE, name: 'execute', field: 'code' },
     { provider: AgentProvider.KILO, name: 'execute', field: 'code' },
     { provider: AgentProvider.DROID, name: 'Script', field: 'script' },
@@ -1292,6 +1297,43 @@ describe('mimoActorCancelToolCall', () => {
   it.each(['', ' ', '\n\t'])('rejects an empty actor ID %j', (actorId) => {
     expect(() => mimoActorCancelToolCall('cancel-empty', actorId))
       .toThrow('A MiMo actor cancellation requires an actor ID.')
+  })
+})
+
+describe('codebuddyTeammateToolCall', () => {
+  it('uses the native Agent builder and adds the teammate identity', () => {
+    expect(codebuddyTeammateToolCall('mate-call', { teammateName: 'native-mate', description: 'Native teammate task', prompt: 'Perform the actual child task.' })).toEqual({
+      id: 'mate-call',
+      name: 'Agent',
+      arguments: { description: 'Native teammate task', prompt: 'Perform the actual child task.', subagent_type: 'general-purpose', run_in_background: true, name: 'native-mate' },
+    })
+  })
+
+  it.each(['', ' '])('refuses an empty native teammate name: %j', (teammateName) => {
+    expect(() => codebuddyTeammateToolCall('mate-call', { teammateName, description: 'Native teammate task', prompt: 'Actual child task.' })).toThrow('nonempty name')
+  })
+})
+
+describe('native CodeBuddy background task calls', () => {
+  it('reads a native task without requesting a blocking wait', () => {
+    expect(codebuddyTaskOutputToolCall('output-call', 'agent-native')).toEqual({ id: 'output-call', name: 'TaskOutput', arguments: { task_id: 'agent-native', block: false } })
+    expect(codebuddyTaskStopToolCall('stop-call', 'agent-native')).toEqual({ id: 'stop-call', name: 'TaskStop', arguments: { task_id: 'agent-native' } })
+  })
+
+  it.each([['', 'agent-native'], ['call', ''], [' ', 'agent-native'], ['call', ' ']])('refuses an empty task identity: %j', (id, taskId) => {
+    expect(() => codebuddyTaskOutputToolCall(id!, taskId!)).toThrow('requires a call ID and a task ID')
+    expect(() => codebuddyTaskStopToolCall(id!, taskId!)).toThrow('requires a call ID and a task ID')
+  })
+})
+
+describe('fastAgentNativeBashToolCall', () => {
+  it('keeps the exact command and uses the native local shell', () => {
+    const command = 'printf \'native %s\\n\' computed'
+    expect(fastAgentNativeBashToolCall('native-call', command)).toEqual({ id: 'native-call', name: 'bash', arguments: { command } })
+  })
+
+  it.each([['', 'pwd'], ['call', ''], [' ', 'pwd'], ['call', ' ']])('refuses an empty call ID or command: %j', (id, command) => {
+    expect(() => fastAgentNativeBashToolCall(id!, command!)).toThrow('requires a call ID and a command')
   })
 })
 
@@ -2701,6 +2743,14 @@ describe('the ZCode background command', () => {
 })
 
 describe('Muse native tool builders', () => {
+  it.each(['', 'Done.', '界\n"quoted"'])('keeps the exact child result in its native contract: %j', (text) => {
+    expect(museSubmitResultToolCall('child-submit', text)).toEqual({
+      id: 'child-submit',
+      name: 'submit_result',
+      namespace: 'muse',
+      arguments: { text, notes: null },
+    })
+  })
   it('uses the proved full MCP function ID', () => {
     const tool = mcpToolCall(AgentProvider.MUSE_CODE, 'mcp-proof', { server: 'echo_probe', tool: 'echo', input: { value: 'proof' } })
     expect(tool.name).toBe('mcp__echo_probe__echo')

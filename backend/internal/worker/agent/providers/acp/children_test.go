@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1049,4 +1050,35 @@ func TestSubagentObservationChildUpdateFeedsTheChildConversation(t *testing.T) {
 	assert.Equal(t, agent.AssembledMessageKindText, kind)
 	assert.Equal(t, "Block one.", text)
 	assert.Equal(t, agent.MessageCompletionComplete, completion)
+}
+
+func TestLoadChildSessionReturnsItsOwnModelWithoutChangingTheRoot(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		raw   string
+		model string
+		fails bool
+	}{
+		"legacy model": {`{"models":{"currentModelId":"private/child"}}`, "private/child", false},
+		"legacy model wins when both channels report a model": {`{"models":{"currentModelId":"private/legacy"},"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/child","options":[{"value":"private/child","name":"Child"}]}]}`, "private/legacy", false},
+		"config-only model": {`{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/child","options":[{"value":"private/child","name":"Child"}]}]}`, "private/child", false},
+		"missing model":     {`{}`, "", false},
+		"malformed model":   {`{"models":42}`, "", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b, requests := acptest.NewAgentForRPCWithResponder(t, func() *Base { return &Base{} }, func(b *Base) *Base { return b }, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(tc.raw)} })
+			b.SetCurrentModel("private/parent")
+			model, err := b.LoadChildSession("child-session")
+			if tc.fails {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tc.model, model)
+			}
+			assert.Equal(t, "private/parent", b.CurrentModel())
+			require.Len(t, requests(), 1)
+			assert.Equal(t, "child-session", requests()[0].Params["sessionId"])
+		})
+	}
 }

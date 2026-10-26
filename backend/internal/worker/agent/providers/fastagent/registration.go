@@ -16,6 +16,14 @@ var fastagentLocator = launch.Binaries("fast-agent")
 
 const bypassRestartNote = "Changing this setting restarts the agent and stops any active turn."
 
+// OptionNativeCommands selects the native shell instead of the ACP host terminal.
+const OptionNativeCommands = "nativeCommands"
+
+var nativeCommandsGroup = agent.SelectGroup(OptionNativeCommands, "Native Commands", agent.OptionOrderProviderSecond, "false", []agent.OptionDef{
+	{Id: "false", Name: "Off", Description: bypassRestartNote + " Use the client terminal.", Default: true},
+	{Id: "true", Name: "On", Description: bypassRestartNote + " Requires Bypass Permissions because native commands do not request approval. Tool results appear when the turn ends."},
+})
+
 var bypassPermissionsGroup = agent.SelectGroup(contracts.FastagentOptionBypassPermissions, "Bypass Permissions", agent.OptionOrderProviderFirst, "false", []agent.OptionDef{
 	{Id: "false", Name: "Off", Description: bypassRestartNote + " Use native tool permission rules and prompts.", Default: true},
 	{Id: "true", Name: "On", Description: bypassRestartNote + " Skip native tool permission rules and prompts."},
@@ -38,7 +46,7 @@ func Registration() agent.Registration {
 		// string through its own model database and reports no catalog.
 		DefaultModels: nil,
 		// The session supplies modes and config options; this group describes the native launch policy.
-		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{bypassPermissionsGroup},
+		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{bypassPermissionsGroup, nativeCommandsGroup},
 		AdditionalOptionIDs: []string{agent.OptionIDPermissionMode},
 		PermissionDefaults: agent.PermissionDefaults{
 			Fallback: contracts.FastagentModeAgent,

@@ -66,6 +66,9 @@ type childState struct {
 	// tails holds the transcript reader of each background subagent, by
 	// tool-call id.
 	tails map[string]*transcriptTail
+	// workflows holds the task-list poller of each workflow run, by the tool
+	// call that started it.
+	workflows map[string]*workflowPoller
 	// stopped holds, by tool-call id, each subagent that the Interrupt of its
 	// tab stopped, until Qwen reports the end of its row. Qwen's task cancel
 	// aborts the subagent's model request, and Qwen then reports the subagent
@@ -177,6 +180,7 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 	case contracts.QwenToolAgent:
 		return a.spawnObservation(tc.ToolCallID, tc.RawInput, true)
 	case contracts.QwenToolWorkflow:
+		a.startWorkflowPoller(tc.ToolCallID, tc.RawInput)
 		return workflowObservation(tc.ToolCallID, tc.RawInput)
 	default:
 		return nil
@@ -199,8 +203,15 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 		return a.spawnUpdate(tcu, known.rawInput, final)
 	case contracts.QwenToolWorkflow:
 		if !final {
-			return nil
+			if len(tcu.RawInput) == 0 {
+				return nil
+			}
+			// The arguments arrive on a progress frame: the run's row and its
+			// group take the workflow's name from them, as a spawn's row takes
+			// its title.
+			return workflowObservation(tcu.ToolCallID, tcu.RawInput)
 		}
+		a.stopWorkflowPoller(tcu.ToolCallID, acp.FinalStatus(tcu.Status))
 		return &acp.SubagentObservation{RowKey: tcu.ToolCallID, Status: acp.FinalStatus(tcu.Status), CloseRow: true, Mode: acp.ModeCloseOnly}
 	case contracts.QwenToolRunShellCommand:
 		if final && tcu.Status == "completed" {
@@ -610,6 +621,11 @@ func (a *Agent) stopBackgroundTranscript(toolCallID string, drain bool) {
 
 // stopAllBackgroundTranscripts stops every reader, when the session goes.
 func (a *Agent) stopAllBackgroundTranscripts() {
+	a.stopAllWorkflowPollers()
+	a.stopAllBackgroundTails()
+}
+
+func (a *Agent) stopAllBackgroundTails() {
 	a.stateMu.Lock()
 	tails := a.children.tails
 	a.children.tails = nil

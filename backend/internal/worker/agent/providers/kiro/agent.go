@@ -20,9 +20,9 @@ const kiroSteerMethod = "_session/steer"
 type Agent struct {
 	acp.Base
 
-	// stateMu guards every field below. The reader goroutine writes most of
-	// them and the worker's goroutines read them, and none is held across a
-	// call into the base or the sink.
+	// stateMu guards the state below unless a field specifies its own
+	// synchronization. The reader goroutine writes most of it, and the worker
+	// goroutines read it. A caller never holds stateMu across a base or sink call.
 	stateMu    sync.Mutex
 	policy     policyState
 	turns      turnState
@@ -32,6 +32,11 @@ type Agent struct {
 	controls   controlIndex
 	output     toolOutputState
 	compaction compactionState
+	// The process owns one account-usage reader. The buffered channel coalesces
+	// refresh requests, and usageDone lets Wait join that reader after exit.
+	usageRefresh chan struct{}
+	usageDone    chan struct{}
+	usageStarted bool
 	// steers reports each steer's delivery from Kiro's own steering markers,
 	// in send order. earlySteerEchoes holds an injection that arrived before
 	// the steer reply stated its id; the reply completes it.

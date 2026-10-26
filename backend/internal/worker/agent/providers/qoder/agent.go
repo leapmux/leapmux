@@ -180,9 +180,9 @@ func qoderUserContent(content string, attachments []*leapmuxv1.Attachment) (any,
 			return nil, err
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			blocks = append(blocks, qoderTextBlock{Type: "text", Text: providerkit.BuildInlineTextAttachmentBlock(attachment)})
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			blocks = append(blocks, qoderImageBlock{
 				Type: "image",
 				Source: qoderImageSource{

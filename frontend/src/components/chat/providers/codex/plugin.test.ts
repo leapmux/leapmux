@@ -34,8 +34,15 @@ describe('codex provider capabilities', () => {
       text: true,
       image: true,
       pdf: false,
+      audio: ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave', 'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/webm', 'audio/ogg'],
       binary: false,
     })
+  })
+
+  it('keeps FLAC and AAC formats outside the Codex policy', () => {
+    expect(plugin.configuration?.attachments?.audio).not.toContain('audio/flac')
+    expect(plugin.configuration?.attachments?.audio).not.toContain('audio/x-flac')
+    expect(plugin.configuration?.attachments?.audio).not.toContain('audio/aac')
   })
 })
 

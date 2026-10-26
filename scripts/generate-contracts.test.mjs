@@ -23,6 +23,7 @@ import {
   checkHeaders,
   checkListen,
   checkProviderProtocol,
+  checkProviderProtocolDependencies,
   checkProviders,
   checkProviderStructs,
   checkRetry,
@@ -642,7 +643,7 @@ describe('subsetOf tables', () => {
     expectContractError(() => checkProviderProtocol(nested, { ...data(), nested: ['B'] }), 'subset of a subset')
   })
 
-  it.each(['frameKind', 'goSlice', 'defaultsFor', 'tsType'])('refuses %s on a subset', (field) => {
+  it.each(['frameKind', 'goSlice', 'defaultsFor', 'tsType', 'goType'])('refuses %s on a subset', (field) => {
     const marked = { ...spec, tables: [parent, { ...subset, [field]: field === 'frameKind' ? 'name' : true }] }
     expectContractError(() => checkProviderProtocol(marked, data()), `cannot state ${field}`)
   })
@@ -679,6 +680,124 @@ describe('subsetOf tables', () => {
   it('retains the declared reader checks for a subset', () => {
     const oneSide = { ...spec, tables: [parent, { ...subset, readers: ['go'] }] }
     expectContractError(() => checkProviderProtocol(oneSide, data()), 'readersWhy')
+  })
+})
+
+describe('cross-contract subsets', () => {
+  const subset = { key: 'selectedKinds', subsetOf: 'attachment-media.kinds', goTable: 'SelectedKind', tsTable: 'SELECTED_KIND', doc: 'selected attachment kinds' }
+  const spec = { name: 'consumer-protocol', title: 'Consumer', goPrefix: 'Consumer', tsPrefix: 'CONSUMER', tables: [subset] }
+  const data = () => ({ selectedKinds: ['Audio', 'Pdf'] })
+  const parent = () => JSON.parse(readFileSync(new URL('../contracts/attachment-media.json', import.meta.url), 'utf8'))
+  const read = name => name === 'attachment-media' ? parent() : undefined
+
+  it('validates membership against a registered foreign contract', () => {
+    expect(checkProviderProtocol(spec, data(), read)).toEqual({})
+  })
+
+  it('keeps the parent Go type and constant namespace', () => {
+    const output = emitGoProviderProtocol(spec, data())
+    expect(output).toContain('var ConsumerSelectedKindMembers = []AttachmentMediaKind{\n\tAttachmentMediaKindAudio,\n\tAttachmentMediaKindPdf,\n}')
+    expect(output).not.toContain('[]ConsumerKind')
+  })
+
+  it('imports and uses the foreign TypeScript table', () => {
+    const output = emitTsProviderProtocol(spec, data())
+    expect(output).toContain('import { ATTACHMENT_MEDIA_KIND } from \'./attachment-media\'')
+    expect(output).toContain('new Set([ATTACHMENT_MEDIA_KIND.Audio, ATTACHMENT_MEDIA_KIND.Pdf])')
+  })
+
+  it('deduplicates imports and retains multiple tables from one contract', () => {
+    const descriptor = { ...spec, tables: [
+      subset,
+      { ...subset, key: 'otherKinds', goTable: 'OtherKind', tsTable: 'OTHER_KIND' },
+      { ...subset, key: 'documents', subsetOf: 'attachment-media.documentMimeTypes', goTable: 'DocumentMIME', tsTable: 'DOCUMENT_MIME' },
+    ] }
+    const values = { ...data(), otherKinds: ['Text'], documents: ['Pdf'] }
+    expect(checkProviderProtocol(descriptor, values, read)).toEqual({})
+    const output = emitTsProviderProtocol(descriptor, values)
+    expect(output.match(/from '\.\/attachment-media'/g)).toHaveLength(1)
+    expect(output).toContain('import { ATTACHMENT_MEDIA_KIND, ATTACHMENT_MEDIA_DOCUMENT_MIME }')
+    expect(output).toContain('new Set([ATTACHMENT_MEDIA_KIND.Text])')
+    expect(output).toContain('new Set([ATTACHMENT_MEDIA_DOCUMENT_MIME.Pdf])')
+  })
+
+  it('treats a qualified local parent as local', () => {
+    const descriptor = { ...spec, tables: [
+      { key: 'values', goTable: 'Value', tsTable: 'VALUE', tsType: 'ConsumerValue', doc: 'local values' },
+      { ...subset, subsetOf: 'consumer-protocol.values' },
+    ] }
+    const values = { values: { Audio: 'audio', Pdf: 'pdf' }, ...data() }
+    expect(checkProviderProtocol(descriptor, values)).toEqual({})
+    const output = emitTsProviderProtocol(descriptor, values)
+    expect(output).not.toContain('from \'./consumer-protocol\'')
+    expect(output).toContain('new Set([CONSUMER_VALUE.Audio, CONSUMER_VALUE.Pdf])')
+  })
+
+  it('requires a reader and available foreign parent data', () => {
+    expectContractError(() => checkProviderProtocol(spec, data()), 'reader')
+    expectContractError(() => checkProviderProtocol(spec, data(), () => undefined), 'parent data')
+    expectContractError(() => checkProviderProtocol(spec, data(), () => ({})), 'parent table')
+  })
+
+  it('rejects unknown contracts, tables and malformed qualifications', () => {
+    for (const reference of ['missing.kinds', 'attachment-media.missing', 'attachment-media.kinds.extra']) {
+      const descriptor = { ...spec, tables: [{ ...subset, subsetOf: reference }] }
+      expect(() => checkProviderProtocol(descriptor, data(), read)).toThrow(ContractError)
+    }
+  })
+
+  it('rejects invalid foreign membership and non-string parent values', () => {
+    expectContractError(() => checkProviderProtocol(spec, { selectedKinds: ['Missing'] }, read), 'not a key')
+    expectContractError(() => checkProviderProtocol(spec, { selectedKinds: ['Audio', 'Audio'] }, read), 'repeats key')
+    expectContractError(() => checkProviderProtocol(spec, data(), () => ({ ...parent(), kinds: { Audio: 1, Pdf: 'pdf' } })), 'string value')
+  })
+
+  it('rejects a foreign parent that is itself a subset', () => {
+    const descriptor = { ...spec, tables: [{ ...subset, subsetOf: 'commandcode-protocol.notificationEvents' }] }
+    expectContractError(() => checkProviderProtocol(descriptor, data(), () => ({ notificationEvents: ['Audio'] })), 'subset of a subset')
+  })
+
+  it('rejects a foreign import that collides with a local declaration', () => {
+    const descriptor = { ...spec, tsPrefix: 'ATTACHMENT_MEDIA', tables: [
+      { key: 'local', goTable: 'Local', tsTable: 'KIND', tsType: 'ConsumerLocal', doc: 'local values' },
+      subset,
+    ] }
+    expectContractError(() => checkProviderProtocol(descriptor, { ...data(), local: { Local: 'local' } }, read), 'collides')
+  })
+
+  it('rejects equal imported symbols from different contracts', () => {
+    const foreign = { name: 'foreign-probe', title: 'Foreign', goPrefix: 'Foreign', tsPrefix: 'ATTACHMENT_MEDIA', tables: [{ key: 'kinds', goTable: 'Kind', tsTable: 'KIND', tsType: 'ForeignKind', doc: 'foreign kinds' }] }
+    PROVIDER_PROTOCOLS.push(foreign)
+    try {
+      const descriptor = { ...spec, tables: [subset, { ...subset, key: 'others', subsetOf: 'foreign-probe.kinds', goTable: 'OtherKind', tsTable: 'OTHER_KIND' }] }
+      expectContractError(() => checkProviderProtocol(descriptor, { ...data(), others: ['Other'] }, name => name === foreign.name ? { kinds: { Other: 'other' } } : read(name)), 'collides')
+    }
+    finally {
+      PROVIDER_PROTOCOLS.pop()
+    }
+  })
+})
+
+describe('checkProviderProtocolDependencies', () => {
+  const values = { key: 'values', goTable: 'Value', tsTable: 'VALUE', tsType: 'Value', doc: 'values' }
+  const descriptor = (name, dependency) => ({
+    name,
+    title: name,
+    goPrefix: name,
+    tsPrefix: name.toUpperCase(),
+    tables: [values, ...(dependency ? [{ key: 'selection', subsetOf: `${dependency}.values`, goTable: 'Selection', tsTable: 'SELECTION', doc: 'selected values' }] : [])],
+  })
+
+  it('accepts an acyclic dependency graph', () => {
+    expect(() => checkProviderProtocolDependencies([descriptor('first', 'second'), descriptor('second')])).not.toThrow()
+  })
+
+  it('rejects a cycle between module imports with its dependency path', () => {
+    expectContractError(() => checkProviderProtocolDependencies([descriptor('first', 'second'), descriptor('second', 'first')]), 'first -> second -> first')
+  })
+
+  it('keeps qualified local references out of the import graph', () => {
+    expect(() => checkProviderProtocolDependencies([descriptor('first', 'first')])).not.toThrow()
   })
 })
 
@@ -1148,6 +1267,7 @@ describe('generate', () => {
       'backend/generated/contracts/acp-protocol.go',
       'backend/generated/contracts/agent-input.go',
       'backend/generated/contracts/amp-protocol.go',
+      'backend/generated/contracts/attachment-media.go',
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
@@ -1202,6 +1322,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/acp-protocol.ts',
       'frontend/src/generated/contracts/agent-input.ts',
       'frontend/src/generated/contracts/amp-protocol.ts',
+      'frontend/src/generated/contracts/attachment-media.ts',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
@@ -1481,7 +1602,7 @@ describe('checkProviderStructs', () => {
   it('rejects a struct name that collides with a constant the domain emits', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
       ProbeSupplementOutput: { table: 'supplement', fields: [{ key: 'Output', type: 'string' }] },
-    })), 'takes the name of a constant or key slice this domain already emits')
+    })), 'takes the name of a generated declaration this domain already emits')
   })
 
   // emitGoProviderProtocol emits var <Prefix><Table>Keys for a goSlice table.
@@ -1494,7 +1615,7 @@ describe('checkProviderStructs', () => {
     }
     expectContractError(() => checkProviderStructs(sliced, withStructs({
       ProbeSupplementKeys: { table: 'supplement', fields: [{ key: 'Output', type: 'string' }] },
-    })), 'takes the name of a constant or key slice this domain already emits')
+    })), 'takes the name of a generated declaration this domain already emits')
   })
 
   // A #Name field embeds its value. Go rejects a cycle as an invalid recursive type.
@@ -2793,5 +2914,33 @@ describe('background-task status vocabulary', () => {
     delete vocab.backgroundTaskStatusTokens
     expect(validate(vocab)).toBe(false)
     expect(validate.errors).toContainEqual(expect.objectContaining({ keyword: 'required', params: { missingProperty: 'backgroundTaskStatusTokens' } }))
+  })
+})
+
+describe('typed string vocabulary', () => {
+  const table = { key: 'kinds', goTable: 'Kind', goType: 'Kind', tsTable: 'KIND', tsType: 'ProbeKind', doc: 'attachment kinds' }
+  const spec = { name: 'probe-protocol', title: 'Probe', goPrefix: 'Probe', tsPrefix: 'PROBE', tables: [table] }
+  const data = { kinds: { Text: 'text', Audio: 'audio' } }
+
+  it('emits a defined string type and typed constants', () => {
+    const code = emitGoProviderProtocol(spec, data)
+    expect(code).toContain('type ProbeKind string')
+    expect(code).toMatch(/ProbeKindText\s+ProbeKind\s+= "text"/)
+    expect(code).toMatch(/ProbeKindAudio\s+ProbeKind\s+= "audio"/)
+  })
+
+  it('uses the declared type for ordered memberships and subsets', () => {
+    const marked = { ...spec, tables: [{ ...table, goSlice: true }, { key: 'limited', subsetOf: 'kinds', goTable: 'LimitedKind', tsTable: 'LIMITED_KIND', doc: 'limited kinds' }] }
+    const code = emitGoProviderProtocol(marked, { ...data, limited: ['Audio'] })
+    expect(code).toContain('var ProbeKindKeys = []ProbeKind{')
+    expect(code).toContain('var ProbeLimitedKindMembers = []ProbeKind{')
+  })
+
+  it.each(['', 'string', '[]string', 'Kind.Name', null, false, 0, -1])('refuses an invalid generated type: %j', (goType) => {
+    expectContractError(() => checkProviderProtocol({ ...spec, tables: [{ ...table, goType }] }, data), 'goType')
+  })
+
+  it('rejects a struct that takes the generated type identifier', () => {
+    expectContractError(() => checkProviderStructs(spec, { ...data, structs: { ProbeKind: { table: 'kinds', fields: [{ key: 'Text', type: 'string' }] } } }), 'ProbeKind')
   })
 })

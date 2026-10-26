@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -13,7 +15,7 @@ import (
 )
 
 func image(name string, size int) agent.ClassifiedAttachment {
-	return agent.ClassifiedAttachment{Kind: agent.AttachmentKindImage, Filename: name, MIMEType: "image/png", Data: bytes.Repeat([]byte{1}, size)}
+	return agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindImage, Filename: name, MIMEType: "image/png", Data: bytes.Repeat([]byte{1}, size)}
 }
 
 func TestBuildTurnInput(t *testing.T) {
@@ -23,7 +25,7 @@ func TestBuildTurnInput(t *testing.T) {
 	assert.Equal(t, "Hi.", prompt)
 	assert.Nil(t, images)
 
-	text := agent.ClassifiedAttachment{Kind: agent.AttachmentKindText, Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("alpha")}
+	text := agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindText, Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("alpha")}
 	prompt, images, err = buildTurnInput("Look.", []agent.ClassifiedAttachment{text, image("a.png", 3)}, imageInputSupported)
 	require.NoError(t, err)
 	assert.Equal(t, "Look.\n\n"+providerkit.BuildInlineTextAttachmentBlock(text), prompt, "the message comes first, then each text block, and the image stays out of the prompt")
@@ -59,12 +61,12 @@ func TestBuildTurnInputRefusesWhatTheRuntimeRefuses(t *testing.T) {
 		attachments []agent.ClassifiedAttachment
 		want        string
 	}{
-		"a PDF":          {[]agent.ClassifiedAttachment{{Kind: agent.AttachmentKindPDF, Filename: "a.pdf"}}, "does not support PDF attachments: a.pdf"},
-		"a binary":       {[]agent.ClassifiedAttachment{{Kind: agent.AttachmentKindBinary, Filename: "a.bin"}}, "does not support binary attachments: a.bin"},
+		"a PDF":          {[]agent.ClassifiedAttachment{{Kind: contracts.AttachmentMediaKindPdf, Filename: "a.pdf"}}, "does not support PDF attachments: a.pdf"},
+		"a binary":       {[]agent.ClassifiedAttachment{{Kind: contracts.AttachmentMediaKindBinary, Filename: "a.bin"}}, "does not support binary attachments: a.bin"},
 		"a large image":  {[]agent.ClassifiedAttachment{image("big.png", maxTurnImageBytes+1)}, "the image big.png is larger than the 4 MiB"},
 		"too many bytes": {[]agent.ClassifiedAttachment{image("a.png", 3<<20), image("b.png", 3<<20)}, "the images of one message are larger than the 5 MiB"},
 		// A text block before the PDF does not stop the refusal.
-		"a PDF after a text": {[]agent.ClassifiedAttachment{{Kind: agent.AttachmentKindText, Filename: "a.txt", Data: []byte("x")}, {Kind: agent.AttachmentKindPDF, Filename: "b.pdf"}}, "b.pdf"},
+		"a PDF after a text": {[]agent.ClassifiedAttachment{{Kind: contracts.AttachmentMediaKindText, Filename: "a.txt", Data: []byte("x")}, {Kind: contracts.AttachmentMediaKindPdf, Filename: "b.pdf"}}, "b.pdf"},
 	} {
 		prompt, images, err := buildTurnInput("x", tc.attachments, imageInputSupported)
 		assert.ErrorContains(t, err, tc.want, name)

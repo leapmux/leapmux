@@ -21,7 +21,7 @@ func TestFastagentRegistrationStatesItsPermissionFallback(t *testing.T) {
 func TestFastAgentBypassRegistration(t *testing.T) {
 	t.Parallel()
 	groups := Registration().OptionGroups
-	require.Len(t, groups, 1)
+	require.Len(t, groups, 2)
 	assert.Equal(t, "bypassPermissions", groups[0].Id)
 	assert.Equal(t, "false", groups[0].DefaultValue)
 	assert.True(t, groups[0].Mutable)
@@ -32,4 +32,17 @@ func TestFastAgentBypassRegistration(t *testing.T) {
 		assert.Contains(t, choice.Description, "restarts the agent")
 		assert.Contains(t, choice.Description, "stops any active turn")
 	}
+}
+
+func TestFastAgentNativeCommandsRegistration(t *testing.T) {
+	t.Parallel()
+	var found bool
+	for _, group := range Registration().OptionGroups {
+		if group.Id == "nativeCommands" {
+			found = true
+			assert.Equal(t, "false", group.DefaultValue)
+			require.Len(t, group.Options, 2)
+		}
+	}
+	require.True(t, found, "the native command route needs an explicit option")
 }

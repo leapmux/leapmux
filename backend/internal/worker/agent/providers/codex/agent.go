@@ -164,6 +164,7 @@ type Agent struct {
 // codexMainTurn owns one main turn's identity and retry state. Agent.Mu protects it.
 // A retry keeps its own input copy and completion channel after this record ends.
 type codexMainTurn struct {
+	model               string
 	id                  string
 	input               []map[string]interface{}
 	agentMessageStarted bool
@@ -736,7 +737,7 @@ func (a *Agent) turnInputRetainedLocked(turnID string) bool {
 }
 
 // buildCodexInputBlocks converts text + classified attachments into Codex's
-// input format. Images use data URI format; text attachments are inlined.
+// input format. Images and audio use data URIs; text attachments are inlined.
 func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachment) []map[string]interface{} {
 	var input []map[string]interface{}
 	if content != "" {
@@ -744,19 +745,25 @@ func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachme
 	}
 	for _, attachment := range classified {
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			input = append(input, map[string]interface{}{
 				"type": "text",
 				"text": providerkit.BuildInlineTextAttachmentBlock(attachment),
 			})
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			input = append(input, map[string]interface{}{
 				"type": "image",
 				"url":  providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),
 			})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
-			// Codex's input items have no representation for either, so the
-			// attachment is omitted from the turn rather than sent as junk text.
+		case contracts.AttachmentMediaKindAudio:
+			if codexAudioMIME(attachment.MIMEType) {
+				input = append(input, map[string]interface{}{
+					"type": "audio",
+					"url":  providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),
+				})
+			}
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary:
+			// Codex has no PDF or general binary input item. Validation refuses these before dispatch.
 		}
 	}
 	return input

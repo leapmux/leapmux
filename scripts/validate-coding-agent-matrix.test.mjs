@@ -553,6 +553,248 @@ describe('validateCodingAgentMatrix', () => {
       })
     })
 
+    it('records native workflow grouping for Claude Code', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['workflow-grouping']['claude-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/claude-code/workflow-grouping.spec.ts',
+      })
+    })
+
+    it('records native workflow grouping for Qwen Code', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['workflow-grouping']['qwen-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qwen-code/workflow-grouping.spec.ts',
+      })
+    })
+
+    it('records the native output style for Qwen Code', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['output-style']['qwen-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/qwen-code/output-style.spec.ts',
+      })
+    })
+
+    it('records the native restriction on Copilot factories and dynamic workflows', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['workflow-grouping']['github-copilot']).toMatchObject({
+        support: 'agent-limit',
+        audit: 'unsupported',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/github-copilot/workflow-grouping.spec.ts',
+      })
+    })
+
+    it('records native account usage and calendar reset dates for Kiro', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['rate-limit-state'].kiro).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/kiro/rate-limit-state.spec.ts',
+      })
+    })
+
+    it('records native Word and Excel attachments for Kiro', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['other-binary-attachments'].kiro).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/kiro/other-binary-attachments.spec.ts',
+      })
+    })
+
+    it.each([
+      ['claude-code', 'agent-limit', 'Messages API'],
+      ['codex', 'supported', 'input_audio.audio_url'],
+      ['cursor', 'agent-limit', 'audit-8D7OZV'],
+      ['github-copilot', 'agent-limit', 'copilot-audit-1.log'],
+      ['kilo', 'supported', 'capabilities.input.audio'],
+      ['opencode', 'supported', 'capabilities.input.audio'],
+      ['goose', 'agent-limit', 'convert_acp_prompt_to_message'],
+      ['pi', 'agent-limit', 'pi-6wxxro'],
+      ['reasonix', 'agent-limit', 'FlattenPrompt'],
+      ['zcode', 'agent-limit', 'zcode-PbCD0M'],
+      ['codewhale', 'agent-limit', 'magic-format'],
+      ['kimi-code', 'agent-limit', 'ReadMediaFile'],
+      ['mimo-code', 'supported', 'capabilities.input.audio'],
+      ['qwen-code', 'supported', 'run-rUPUPT'],
+      ['oh-my-pi', 'agent-limit', 'pi-6wxxro'],
+      ['grok-build', 'agent-limit', '-32602'],
+      ['kiro', 'agent-limit', 'audit-8D7OZV'],
+      ['amp', 'agent-limit', 'message.content.1'],
+      ['cline', 'agent-limit', 'Cannot read binary file into context'],
+      ['codebuddy-code', 'supported', 'file.file_data'],
+      ['junie', 'agent-limit', 'audit-8D7OZV'],
+      ['letta-code', 'agent-limit', 'letta-lR905P'],
+      ['dirac', 'agent-limit', 'audit-l1x00T'],
+      ['qoder-cli', 'agent-limit', 'stream-aHFbCW'],
+      ['factory-droid', 'agent-limit', 'params.files.0'],
+      ['fast-agent', 'supported', '/model switch'],
+      ['command-code', 'agent-limit', '-32602'],
+      ['deepseek-harness', 'agent-limit', 'gateway/input-invalid'],
+      ['gemini-cli', 'supported', 'audit-zeZZxP'],
+      ['muse-code', 'agent-limit', 'UUIDv7'],
+    ])('records native audio attachment evidence for %s', (provider, support, evidence) => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['audio-attachments']?.[provider]
+      expect(cell).toMatchObject({
+        support,
+        audit: support === 'supported' ? 'source-verified' : 'unsupported',
+        verified: true,
+        testStatus: 'passed',
+        spec: `frontend/tests/e2e/${provider}/audio-attachments.spec.ts`,
+      })
+      expect(cell?.detailNote).toContain(evidence)
+      expect(cell?.userNote.length).toBeGreaterThan(0)
+    })
+
+    it('publishes audio apart from other binary attachments for every provider', () => {
+      const { checklist, features } = readCodingAgentMatrix()
+      const audio = features.features.find(feature => feature.id === 'audio-attachments')
+      expect(audio).toMatchObject({ label: 'Audio attachments', showInMatrix: true, group: 'attachments' })
+      expect(audio?.description).toContain('A text transcript alone does not count')
+      expect(features.features.find(feature => feature.id === 'other-binary-attachments')?.description)
+        .toContain('other than an image, PDF or audio recording')
+      const providerIDs = checklist.providerGroups.flat().map(provider => provider.id)
+      expect(Object.keys(checklist.cells['audio-attachments'] ?? {})).toEqual(providerIDs)
+      expect(features.features.filter(feature => feature.group === 'attachments').map(feature => feature.id))
+        .toEqual(['text-attachments', 'image-attachments', 'pdf-attachments', 'audio-attachments', 'other-binary-attachments'])
+    })
+
+    it('records the native Codex refusal of non-audio binary input', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['other-binary-attachments'].codex
+      expect(cell).toMatchObject({ support: 'agent-limit', audit: 'unsupported', verified: true, testStatus: 'passed', spec: 'frontend/tests/e2e/codex/other-binary-attachments.spec.ts' })
+      expect(cell.detailNote).toContain('0.164.0')
+      expect(cell.detailNote).toContain('-32600')
+      expect(cell.detailNote).toContain('run-CtskPt')
+      expect(cell.userNote).not.toContain('LeapMux does not send it yet')
+    })
+
+    it('records an independent native Gemini video attachment proof', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['other-binary-attachments']['gemini-cli']
+      expect(cell).toMatchObject({ support: 'supported', audit: 'source-verified', verified: true, testStatus: 'passed' })
+      expect(cell.detailNote).toContain('MP4')
+      expect(cell.detailNote).toContain('0.65.0')
+      expect(cell.userNote).toContain('video')
+    })
+
+    it('records native audio attachments for Codex', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['audio-attachments']?.codex).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codex/audio-attachments.spec.ts',
+      })
+    })
+
+    it('records native messages to a running Grok Build subagent', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['send-to-a-subagent']['grok-build']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/grok-build/send-to-a-subagent.spec.ts',
+      })
+    })
+
+    it('records native Swarm mode for CodeBuddy Code', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['swarm-mode']['codebuddy-code']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codebuddy-code/swarm-mode.spec.ts',
+      })
+    })
+
+    it('records native mid-turn steering for Junie', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['steer-mid-turn'].junie).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/junie/steer-mid-turn.spec.ts',
+      })
+    })
+
+    it('records native Operate orchestration for Codewhale', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['swarm-mode'].codewhale).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/codewhale/swarm-mode.spec.ts',
+      })
+    })
+
+    it('records native output file paths for Fast Agent', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['output-file-paths']['fast-agent']).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/fast-agent/output-file-paths.spec.ts',
+      })
+    })
+
+    it('records native output file paths for Goose', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['output-file-paths'].goose).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/goose/output-file-paths.spec.ts',
+      })
+    })
+
+    it('records native mid-turn steering for Goose', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['steer-mid-turn'].goose).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/goose/steer-mid-turn.spec.ts',
+      })
+    })
+
+    it('records the headless output style refusal of Factory Droid as an agent limit', () => {
+      const { checklist } = readCodingAgentMatrix()
+      expect(checklist.cells['output-style']['factory-droid']).toMatchObject({
+        support: 'agent-limit',
+        audit: 'unsupported',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/factory-droid/output-style.spec.ts',
+      })
+    })
+
     it('records native workflow grouping for ZCode', () => {
       const { checklist } = readCodingAgentMatrix()
       expect(checklist.cells['workflow-grouping'].zcode).toMatchObject({
@@ -742,6 +984,62 @@ describe('validateCodingAgentMatrix', () => {
       })
     })
 
+    it('records native Muse subagent-transcript-tab support', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['subagent-transcript-tab']['muse-code']
+      expect(cell).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/muse-code/subagent-transcript-tab.spec.ts',
+      })
+      expect(cell.detailNote).toContain('Muse 1.4.13')
+      expect(cell.detailNote).toContain('view/page')
+    })
+
+    it('records native Muse subagent-live-transcript support', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['subagent-live-transcript']['muse-code']
+      expect(cell).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/muse-code/subagent-live-transcript.spec.ts',
+      })
+      expect(cell.detailNote).toContain('Muse 1.4.13')
+      expect(cell.detailNote).toContain('view/subscribe')
+    })
+
+    it('records native Muse send-to-a-subagent support', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['send-to-a-subagent']['muse-code']
+      expect(cell).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/muse-code/send-to-a-subagent.spec.ts',
+      })
+      expect(cell.detailNote).toContain('Muse 1.4.13')
+      expect(cell.detailNote).toContain('subagent/sendMessage')
+    })
+
+    it('records native Muse interrupt-a-subagent support', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['interrupt-a-subagent']['muse-code']
+      expect(cell).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/muse-code/interrupt-a-subagent.spec.ts',
+      })
+      expect(cell.detailNote).toContain('Muse 1.4.13')
+      expect(cell.detailNote).toContain('subagent/interrupt')
+    })
+
     it('records the audited support totals and the native question and compaction corrections', () => {
       const { features, checklist, providerContract } = readCodingAgentMatrix()
       expect(validateCodingAgentMatrix(features, checklist, providerContract)).toEqual([])
@@ -772,7 +1070,7 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1156, 'agent-limit': 419, 'leapmux-limit': 15 })
+      expect(counts).toEqual({ 'supported': 1180, 'agent-limit': 440, 'leapmux-limit': 0 })
       expect(checklist.cells['agent-questions']['codebuddy-code']).toMatchObject({
         support: 'supported',
         audit: 'source-verified',
@@ -1006,6 +1304,7 @@ describe('validateCodingAgentMatrix', () => {
       ['attachments', 'text-attachments'],
       ['attachments', 'image-attachments'],
       ['attachments', 'pdf-attachments'],
+      ['attachments', 'audio-attachments'],
       ['attachments', 'other-binary-attachments'],
       ['conversation', 'thinking-in-the-transcript'],
       ['conversation', 'steer-mid-turn'],

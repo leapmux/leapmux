@@ -1,63 +1,79 @@
-/**
- * The shared evidence that Muse 1.4.4 offers no addressable native child session:
- * children run only inside a workflow item's fold, which carries a durable childId
- * and a lifecycle and no session of its own.
- */
+/** Native workflow-child scenarios with independently marked model requests. */
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { nativeModelToolNames } from '../helpers/nativeScenario'
-import { codeExecutionToolCall } from '../helpers/providerToolCalls'
-import { backgroundTaskRows, expandBackgroundTasksSection } from '../helpers/subagentRegistry'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
+import { bashToolCall, codeExecutionToolCall, museSubmitResultToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
+import { backgroundTaskRows, expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
+import { assistantBubbles, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
-/** The word the one fold child of the probe workflow reports. */
-const CHILD_WORD = 'FOLDCHILD'
+export const MUSE_CHILD_TASK = 'Inspect the native child transcript.'
+export const MUSE_CHILD_PROGRESS = 'The native child started its own command.'
+export const MUSE_CHILD_OUTPUT = 'MUSE_CHILD_OUTPUT_42'
+export const MUSE_CHILD_LATER_OUTPUT = 'MUSE_CHILD_LATER_77'
+export const MUSE_CHILD_RESULT = 'The native child completed its own work.'
+export const MUSE_CHILD_GATE = 'muse-child-next-boundary'
 
-/** The workflow script of the fold probe: one child agent call. */
-export function foldChildScript(childInput: string): string {
-  return [
-    'export default async function workflow(host) {',
-    `  const one = await host.agent({ input: ${JSON.stringify(childInput)} });`,
-    `  if (!one || one.error_kind) throw new Error('The fold child did not complete.');`,
-    `  return { word: ${JSON.stringify(CHILD_WORD)} };`,
-    '}',
-  ].join('\n')
-}
-
-/**
- * Run one workflow with a single child and settle, so the registry holds the
- * workflow row and its fold child. Return the rows and the recorded tool catalog.
- */
-export async function runFoldChildWorkflow(native: ManagedNativeScenarioContext, prompt: (text: string) => string) {
+/** Start one real child and return its actual registry link and native tab. */
+export async function openMuseChild(native: ManagedNativeScenarioContext, held: boolean) {
   const { page, modelScript } = native
-  const catalogRequest = await sendNativeAnswer(native, 'Record the native tool catalog.', 'The native catalog probe completed.')
-  const catalog = nativeModelToolNames(catalogRequest)
-  const childInput = prompt(`Reply with the single word ${CHILD_WORD}.`)
-  await modelScript.rule({
-    name: 'the fold child submits its result',
-    when: { body: ['Workflow child completion protocol', CHILD_WORD] },
-    once: true,
-    respond: { toolCalls: [{ id: 'fold-child-submit', name: 'submit_result', namespace: 'muse', arguments: { text: CHILD_WORD, notes: null } }] },
-  })
-  const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-fold-child', foldChildScript(childInput))] },
-    { text: 'The native workflow completed.' },
+  const parentId = await selectedAgentTabId(page)
+  const childInput = modelScript.prompt(MUSE_CHILD_TASK)
+  await modelScript.rule(
+    {
+      name: 'the Muse child runs its own command',
+      when: { body: ['Workflow child completion protocol', MUSE_CHILD_TASK] },
+      once: true,
+      respond: { text: MUSE_CHILD_PROGRESS, toolCalls: [bashToolCall(native.provider, 'muse-child-first', 'printf \'MUSE_CHILD_OUTPUT_%s\\n\' 42')] },
+    },
+    {
+      name: 'the Muse child reaches its next command boundary',
+      when: { body: ['Workflow child completion protocol', MUSE_CHILD_OUTPUT] },
+      once: true,
+      respond: { ...(held ? { gate: MUSE_CHILD_GATE } : {}), toolCalls: [bashToolCall(native.provider, 'muse-child-later', 'printf \'MUSE_CHILD_LATER_%s\\n\' 77')] },
+    },
+    {
+      name: 'the Muse child submits its own result',
+      when: { body: ['Workflow child completion protocol', MUSE_CHILD_LATER_OUTPUT] },
+      once: true,
+      respond: { text: MUSE_CHILD_RESULT, toolCalls: [museSubmitResultToolCall('muse-child-submit', 'The child result contract is complete.')] },
+    },
   )
-  await sendMessage(page, prompt('Run the fold child workflow and report its result.'))
-  await modelScript.waitForSteps(start + 2)
-  await waitForAgentIdle(page)
+  const start = await modelScript.queue(
+    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-child-workflow', `export default async function workflow(host) { return await host.agent({ input: ${JSON.stringify(childInput)} }); }`)] },
+    { text: 'The parent received the native child outcome.' },
+  )
+  await sendMessage(page, modelScript.prompt('Run the native child workflow.'))
+  if (held) {
+    await modelScript.waitForGate(MUSE_CHILD_GATE)
+  }
+  else {
+    await modelScript.waitForSteps(start + 2)
+    await waitForAgentIdle(page)
+  }
   await expandBackgroundTasksSection(page)
-  const rows = backgroundTaskRows(page)
-  const child = rows.filter({ hasText: /^Child /i }).first()
-  await expect(child).toBeVisible()
-  return { catalog, rows, child }
+  const row = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: MUSE_CHILD_TASK }).first()
+  await expect(row).toHaveAttribute('data-status', held ? 'running' : 'succeeded')
+  const childId = await openChildTabFromRow(page, row)
+  if (held) {
+    // The native model gate precedes the worker's asynchronous child-history read.
+    await retryUntilPass(async () => {
+      const queue = await readNativeInputQueue(native.leapmuxServer, childId)
+      expect(queue.activeTurn && queue.activeTurnSteerable).toBe(true)
+    })
+  }
+  const finish = async () => {
+    await modelScript.releaseGateIfHeld(MUSE_CHILD_GATE)
+    await modelScript.waitForSteps(start + 2)
+    await tabById(page, parentId).click()
+    await waitForAgentIdle(page)
+    await tabById(page, childId).click()
+    await waitForAgentIdle(page)
+  }
+  return { row, childId, parentId, finish }
 }
 
-/** Prove the recorded tool catalog offers no route that addresses a child session. */
-export function expectNoChildAddressingTools(catalog: readonly string[]): void {
-  expect(catalog, 'the model tool catalog holds no subagent spawn tool').not.toContain('subagent_spawn')
-  expect(catalog).not.toContain('subagent_send')
-  expect(catalog).not.toContain('subagent_interrupt')
-  expect(catalog).not.toContain('task')
+export async function expectMuseChildResult(native: ManagedNativeScenarioContext, result = MUSE_CHILD_RESULT) {
+  await expect(assistantBubbles(native.page).filter({ hasText: result })).toHaveCount(1)
 }

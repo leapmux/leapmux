@@ -47,11 +47,6 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 }
 
 func (a *Agent) setCursorModel(model string) error {
-	// Send the wire id but store the normalized (display) id, so b.model never
-	// transiently holds the wire form "default" (see SetModelViaConfigOption).
-	if err := a.SetModelViaConfigOption(cursorModelIDForWire(model)); err != nil {
-		return err
-	}
-	a.SetCurrentModel(model)
-	return nil
+	// Keep the canonical ID in the acknowledgment, even when the native ID is default.
+	return a.SetModelViaConfigOption(cursorModelIDForWire(model), model)
 }

@@ -22,6 +22,7 @@ describe('pi plugin metadata', () => {
       text: true,
       image: true,
       pdf: false,
+      audio: false,
       binary: false,
     })
   })

@@ -43,13 +43,13 @@ func TestProviderRecognizesTheInterruptFrame(t *testing.T) {
 func TestProviderValidatesAttachments(t *testing.T) {
 	t.Parallel()
 	provider := codewhaleProvider{}
-	assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindText, Filename: "a.txt"}))
-	assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindImage, Filename: "a.png"}))
-	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindPDF, Filename: "a.pdf"}), "Codewhale does not support PDF attachments: a.pdf")
-	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "a.bin"}), "Codewhale does not support binary attachments: a.bin")
+	assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindText, Filename: "a.txt"}))
+	assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindImage, Filename: "a.png"}))
+	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindPdf, Filename: "a.pdf"}), "Codewhale does not support PDF attachments: a.pdf")
+	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, Filename: "a.bin"}), "Codewhale does not support binary attachments: a.bin")
 	// The static check knows no model and no message, so an image passes it at
 	// any size. buildTurnInput applies the size limits when a message is sent.
-	assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindImage, Filename: "big.png", Data: make([]byte, maxTurnImageBytes+1)}))
+	assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindImage, Filename: "big.png", Data: make([]byte, maxTurnImageBytes+1)}))
 }
 
 func TestProviderConformance(t *testing.T) {

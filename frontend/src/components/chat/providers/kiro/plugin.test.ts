@@ -19,7 +19,13 @@ describe('kiro provider', () => {
   const plugin = providerFor(AgentProvider.KIRO)!
 
   // The same policy as the worker's ValidateAttachment.
-  describeACPProviderBasics(AgentProvider.KIRO, { text: true, image: true, pdf: true, binary: false })
+  describeACPProviderBasics(AgentProvider.KIRO, {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: false,
+    binary: ['application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  })
 
   it('carries plan mode on the permission-mode axis', () => {
     expect(plugin.configuration?.planMode).toMatchObject({ groupKey: 'permissionMode', planValue: 'plan', defaultValue: 'vibe' })

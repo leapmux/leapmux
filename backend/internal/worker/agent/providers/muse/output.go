@@ -30,6 +30,19 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	if line.Method == methodSessionApprovalChanged {
 		a.queuePermissionApprovals()
 	}
+	// A fresh native child can expose a live head before its stored view prefix.
+	// Retry that prefix on received child events. Replayed frames use
+	// dispatchOutput directly, so they cannot schedule their own reads.
+	if viewCursor(line.Raw) != "" {
+		id := providerkit.StringField(line.Params, "sessionId")
+		a.stateMu.Lock()
+		state := a.sessions[id]
+		needsPrefix := a.currentSessionState(id, state) && state.childID != "" && state.childViewPrefix == childViewPrefixPending
+		a.stateMu.Unlock()
+		if needsPrefix {
+			a.requestChildView(id)
+		}
+	}
 }
 
 func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
@@ -70,6 +83,13 @@ func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
 	}
 	if a.bufferViewFrame(line, state) {
 		return
+	}
+	if state.childID != "" {
+		if cursor := viewCursor(line.Raw); cursor != "" {
+			a.stateMu.Lock()
+			state.lastViewCursor = cursor
+			a.stateMu.Unlock()
+		}
 	}
 	switch line.Method {
 	case methodTurnStarted:
@@ -169,10 +189,6 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 			}
 		}
 		a.enrichToolGroup(state, existing, previous)
-	} else if item.Item.Kind == contracts.MuseItemKindUserMessage {
-		if state.childID != "" && finished {
-			a.persistItem(state, existing, false)
-		}
 	} else if item.Item.Kind == contracts.MuseItemKindCompaction {
 		a.stateMu.Lock()
 		publish := current && !finished && !state.compactionLive[item.Item.ID]
@@ -225,7 +241,9 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		a.flushRetryNotices(state)
 	}
 	if current && (item.Item.Kind == museItemSubagent || item.Item.Kind == contracts.MuseItemKindWorkflow || item.Item.Background) {
-		a.observeChildOrTask(item, state)
+		if err := a.observeChildOrTask(item, state, previous.Item); err != nil {
+			slog.Warn("publish Muse child metadata", "error", err)
+		}
 	}
 }
 
@@ -245,7 +263,9 @@ func (a *Agent) endSessionCompactions(state *sessionState) {
 
 // museSilentItem identifies native items that no transcript reader displays.
 func museSilentItem(item nativeItem) bool {
-	return item.Kind == museItemSubagent || item.Kind == museItemReminderChild ||
+	// The worker owns root and child user rows. Spawn metadata supplies the
+	// initial child prompt; the input queue supplies later human messages.
+	return item.Kind == contracts.MuseItemKindUserMessage || item.Kind == museItemSubagent || item.Kind == museItemReminderChild ||
 		item.Kind == contracts.MuseItemKindHookRun && item.Status == contracts.MuseItemStatusCompleted
 }
 
@@ -264,9 +284,6 @@ func (a *Agent) persistItem(state *sessionState, item *itemState, closing bool) 
 		span = agent.SpanInfo{SpanID: params.Item.ID, SpanType: params.Item.Tool, Closing: closing}
 	}
 	source := leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
-	if params.Item.Kind == contracts.MuseItemKindUserMessage {
-		source = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
-	}
 	content := museItemMessageContent(raw, params)
 	if err := state.sink.PersistMessage(source, content, span); err != nil {
 		slog.Warn("persist a Muse item", "item", params.Item.ID, "error", err)

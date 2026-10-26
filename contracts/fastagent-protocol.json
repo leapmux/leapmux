@@ -1,10 +1,31 @@
 {
-  "_readme": "Fast Agent owns the session mode IDs. Both languages read the mode that a default setup reports. Fast Agent modes select configured agents, and the native session reports them on the modes channel. LeapMux owns the BypassPermissions option ID: the worker uses it to select the native --no-permissions launch flag, and the browser uses it for the Bypass preset. Changing that flag requires a process restart.",
+  "_readme": "Fast Agent owns the session mode IDs. Both languages read the mode that a default setup reports. Fast Agent modes select configured agents, and the native session reports them on the modes channel. LeapMux owns the BypassPermissions option ID: the worker uses it to select the native --no-permissions launch flag, and the browser uses it for the Bypass preset. Changing that flag requires a process restart. Native bash and process tool results can be recovered from root-session archives. The archive table supplies the provenance keys retained in those ACP packets; the tool IDs and timestamps come from the native archive, because live ACP packets use unrelated call IDs. Native Google audio format membership is the audioMimeTypes subset of attachment-media; browser and worker consume the same subset. The worker checks the running native provider before forwarding audio.",
   "modes": {
     "Agent": "agent"
   },
   "defaultMode": "Agent",
   "options": {
     "BypassPermissions": "bypassPermissions"
-  }
+  },
+  "tools": {
+    "Bash": "bash",
+    "Process": "process"
+  },
+  "archive": {
+    "Namespace": "fast-agent/root-archive",
+    "SessionID": "sessionId",
+    "HistoryFile": "historyFile",
+    "Timestamp": "timestamp",
+    "CallID": "callId",
+    "ToolName": "toolName"
+  },
+  "audioMimeTypes": [
+    "Wav",
+    "Mpeg",
+    "Mp3",
+    "Aac",
+    "Ogg",
+    "Flac",
+    "Webm"
+  ]
 }

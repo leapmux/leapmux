@@ -277,7 +277,7 @@ func TestQwenRegistrationStatesTheSafeDefaults(t *testing.T) {
 	assert.Equal(t, contracts.QwenModeDefault, registration.PermissionDefaults.Fallback)
 	assert.Equal(t, contracts.QwenModeDefault, registration.PermissionDefaults.NewSession[agent.OptionIDPermissionMode],
 		"Qwen's own default is auto, whose classifier approves without asking")
-	assert.Equal(t, []string{contracts.QwenConfigReasoningEffort}, registration.AdditionalOptionIDs)
+	assert.Equal(t, []string{contracts.QwenConfigReasoningEffort, OptionOutputStyle}, registration.AdditionalOptionIDs)
 	assert.Equal(t, "LEAPMUX_QWEN_DEFAULT_MODEL", registration.EnvModelKey)
 	assert.Equal(t, "LEAPMUX_QWEN_DEFAULT_EFFORT", registration.EnvEffortKey)
 	assert.Equal(t, contracts.QwenModeDefault, launchApprovalMode(""))

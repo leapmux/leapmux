@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -14,10 +16,10 @@ import (
 func TestCursorRefusesEmbeddedBlobAttachments(t *testing.T) {
 	t.Parallel()
 	provider := Registration().Plugin
-	for _, kind := range []agentapi.AttachmentKind{agentapi.AttachmentKindText, agentapi.AttachmentKindImage} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage} {
 		assert.NoError(t, provider.ValidateAttachment(agentapi.ClassifiedAttachment{Kind: kind, Filename: "input"}), kind)
 	}
-	for _, kind := range []agentapi.AttachmentKind{agentapi.AttachmentKindPDF, agentapi.AttachmentKindBinary} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary} {
 		assert.ErrorContains(t, provider.ValidateAttachment(agentapi.ClassifiedAttachment{Kind: kind, Filename: "input"}), string(kind))
 	}
 }

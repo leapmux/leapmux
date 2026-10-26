@@ -1,6 +1,7 @@
 package grok
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -8,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -229,6 +232,194 @@ func TestGrokInterruptChildReportsARefusal(t *testing.T) {
 	a.HandleOutput(spawned(t, "sub-1", "helper", nil))
 
 	assert.Error(t, a.InterruptChild("sub-1", agent.StopContext{}))
+}
+
+func TestGrokChildMessageUsesItsOpaqueOwnedAddress(t *testing.T) {
+	t.Parallel()
+	const method = "_x.ai/subagent/message"
+	a, _, requests := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"message-1"}}`)}
+	})
+	steerer, ok := any(a).(agent.ChildSteerer)
+	require.True(t, ok, "the native child-message route must implement ChildSteerer")
+	a.HandleOutput(spawnCall(t, "spawn-1", "Owned child", "Run the task", true))
+	a.HandleOutput(spawned(t, "native-child", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, steerer.ActiveChildTurnState("spawn-1"))
+	assert.ErrorIs(t, steerer.SendChildInput("spawn-1", "queued", nil), agent.ErrAgentBusy)
+	text := "  Exact user text\nUnicode: 한글  "
+	require.NoError(t, steerer.SteerChildInput("spawn-1", text, nil))
+	sent := requestsFor(requests(), method)
+	require.Len(t, sent, 1)
+	assert.Equal(t, map[string]any{
+		"sessionId": grokTestSession, "agentAddress": "aa1.owned", "queue": false,
+		"content": []any{map[string]any{"type": "text", "text": text}},
+	}, sent[0].Params)
+	a.HandleOutput(finished(t, "native-child", "completed", "The child finished."))
+	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState("spawn-1"))
+	assert.ErrorIs(t, steerer.SteerChildInput("spawn-1", "late", nil), agent.ErrChildRouteNotReady)
+}
+
+func TestGrokChildMessageRejectsMissingRoutesAndInvalidContent(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
+	steerer, ok := any(a).(agent.ChildSteerer)
+	require.True(t, ok)
+	assert.ErrorIs(t, steerer.SendChildInput("missing", "text", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, steerer.SteerChildInput("missing", "text", nil), agent.ErrChildRouteNotReady)
+	a.HandleOutput(spawned(t, "no-address", "No address", nil))
+	assert.ErrorIs(t, steerer.SteerChildInput("no-address", "text", nil), agent.ErrChildRouteNotReady)
+	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState("no-address"))
+	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
+	assert.Error(t, steerer.SteerChildInput("owned", "", nil))
+	assert.Error(t, steerer.SteerChildInput("owned", "text", []*leapmuxv1.Attachment{{Filename: "note.txt", Data: []byte("note")}}))
+	syncPeer(t, a)
+	assert.Empty(t, requestsFor(requests(), "_x.ai/subagent/message"))
+}
+
+func TestGrokChildMessageOutcomes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result string
+		want   error
+		failed bool
+	}{
+		{name: "accepted", result: `{"result":{"kind":"accepted","messageId":"native-id"}}`},
+		{name: "not active", result: `{"result":{"kind":"not_active"}}`, want: agent.ErrNoActiveTurn},
+		{name: "rejected address", result: `{"result":{"kind":"rejected"}}`, want: agent.ErrChildIdentityRefused},
+		{name: "unsupported content", result: `{"result":{"kind":"unsupported_content"}}`, failed: true},
+		{name: "size limit", result: `{"result":{"kind":"limit","maxBytes":2,"observedBytes":3}}`, failed: true},
+		{name: "admission uncertain", result: `{"result":{"kind":"admission_uncertain"}}`, want: agent.ErrDeliveryUncertain},
+		{name: "not accepted before deadline", result: `{"result":{"kind":"not_accepted_before_deadline"}}`, failed: true},
+		{name: "saturated", result: `{"result":{"kind":"saturated","maxInFlight":1}}`, failed: true},
+		{name: "channel closed", result: `{"result":{"kind":"channel_closed"}}`, failed: true},
+		{name: "extension error", result: `{"result":null,"error":"native refusal"}`, failed: true},
+		{name: "missing result", result: `{}`, want: agent.ErrDeliveryUncertain},
+		{name: "unknown outcome", result: `{"result":{"kind":"new_outcome"}}`, want: agent.ErrDeliveryUncertain},
+		{name: "missing accepted ID", result: `{"result":{"kind":"accepted"}}`, want: agent.ErrDeliveryUncertain},
+		{name: "invalid accepted ID", result: `{"result":{"kind":"accepted","messageId":7}}`, want: agent.ErrDeliveryUncertain},
+		{name: "nonobject result", result: `[]`, want: agent.ErrDeliveryUncertain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, _ := newGrokAgent(t, agent.Options{}, func(agenttest.RecordedRequest) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(tc.result)}
+			})
+			steerer, ok := any(a).(agent.ChildSteerer)
+			require.True(t, ok)
+			a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
+			err := steerer.SteerChildInput("owned", "literal input", nil)
+			switch {
+			case tc.want != nil:
+				assert.ErrorIs(t, err, tc.want)
+			case tc.failed:
+				assert.Error(t, err)
+				assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+			default:
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestGrokChildMessageMethodNotFoundIsUnsupported(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newGrokAgent(t, agent.Options{}, func(agenttest.RecordedRequest) agenttest.RPCReply {
+		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32601,"message":"Method not found"}`)}
+	})
+	steerer, ok := any(a).(agent.ChildSteerer)
+	require.True(t, ok)
+	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
+	assert.ErrorIs(t, steerer.SteerChildInput("owned", "literal input", nil), agent.ErrChildOperationUnsupported)
+}
+
+func TestGrokChildMessageAddressReplacementAndContextClear(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+		if req.Method == "_x.ai/subagent/message" {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"accepted"}}`)}
+		}
+		return openingSession("replacement-root")(req)
+	})
+	steerer, ok := any(a).(agent.ChildSteerer)
+	require.True(t, ok)
+	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.before"}))
+	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.after"}))
+	require.NoError(t, steerer.SteerChildInput("owned", "first message", nil))
+	sent := requestsFor(requests(), "_x.ai/subagent/message")
+	require.Len(t, sent, 1)
+	assert.Equal(t, "aa1.after", sent[0].Params["agentAddress"])
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState("owned"))
+	assert.ErrorIs(t, steerer.SteerChildInput("owned", "old address", nil), agent.ErrChildRouteNotReady)
+	syncPeer(t, a)
+	assert.Len(t, requestsFor(requests(), "_x.ai/subagent/message"), 1, "context clear cannot revive the old child route")
+}
+
+func TestGrokChildMessageRequiresALiveRootSession(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		invalidate func(*Agent)
+	}{
+		{name: "missing root session", invalidate: func(a *Agent) { a.SetSessionIDForTest("") }},
+		{name: "stopped process", invalidate: func(a *Agent) { a.SetStoppedForTest(true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, requests := newGrokAgent(t, agent.Options{}, func(agenttest.RecordedRequest) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"invalid-owner"}}`)}
+			})
+			steerer, ok := any(a).(agent.ChildSteerer)
+			require.True(t, ok)
+			a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
+			tc.invalidate(a)
+			assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState("owned"))
+			err := steerer.SendChildInput("owned", "queued input", nil)
+			assert.Error(t, err)
+			assert.NotErrorIs(t, err, agent.ErrAgentBusy)
+			assert.Error(t, steerer.SteerChildInput("owned", "literal input", nil))
+			assert.Empty(t, requestsFor(requests(), "_x.ai/subagent/message"))
+		})
+	}
+}
+
+func TestGrokChildMessageTransportLossStaysUncertainAfterTheWrite(t *testing.T) {
+	t.Parallel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	a, _, requests := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+		if req.Method == "_x.ai/subagent/message" {
+			close(entered)
+			<-release
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"late"}}`)}
+	})
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a.SetContextForTest(ctx)
+	steerer, ok := any(a).(agent.ChildSteerer)
+	require.True(t, ok)
+	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
+	done := make(chan error, 1)
+	go func() { done <- steerer.SteerChildInput("owned", "literal input", nil) }()
+	deadline := testutil.DeadlineContext(t)
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("the message returned before reaching the native peer: %v", err)
+	case <-deadline.Done():
+		t.Fatal("the message did not reach the native peer")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	case <-deadline.Done():
+		t.Fatal("the message did not settle after transport cancellation")
+	}
+	assert.Len(t, requestsFor(requests(), "_x.ai/subagent/message"), 1)
 }
 
 func TestGrokWorkflowRunKeepsOneGroupedRow(t *testing.T) {

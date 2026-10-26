@@ -1,6 +1,7 @@
 package codebuddy
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,6 +56,56 @@ func TestCodebuddyAgentTaskLinksAndClosesItsChild(t *testing.T) {
 	child, ok = sink.BackgroundTask("child-task")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
+}
+
+func TestCodebuddyNativeStreamTaskKinds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		native string
+		kind   bgtask.Kind
+	}{
+		{native: "Agent", kind: bgtask.KindSubagent},
+		{native: "Bash", kind: bgtask.KindShell},
+		{native: "PowerShell", kind: bgtask.KindShell},
+		{native: "Workflow", kind: bgtask.KindWorkflow},
+	} {
+		t.Run(tc.native, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			frame, err := json.Marshal(map[string]any{"type": "system", "subtype": "task_started", "task_id": "native-task", "tool_use_id": "native-spawn", "task_type": tc.native, "description": "Native task"})
+			require.NoError(t, err)
+			a.HandleOutput(frame)
+			row, exists := sink.BackgroundTask("native-task")
+			require.True(t, exists)
+			assert.Equal(t, tc.kind, row.Kind)
+			assert.Equal(t, bgtask.StatusRunning, row.Status)
+		})
+	}
+}
+
+func TestCodebuddyNativeBackgroundAgentAckKeepsItsRunningChild(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"native-spawn","name":"Agent","input":{"name":"native-mate","description":"Native teammate","prompt":"Do the native task.","run_in_background":true}}]}}`))
+	before, exists := sink.BackgroundTask("native-spawn")
+	require.True(t, exists)
+	require.NotEmpty(t, before.ChildAgentID)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"agent-native","tool_use_id":"native-spawn","task_type":"Agent","description":"Native teammate"}`))
+	a.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"native-spawn","content":[{"type":"text","text":"Spawned successfully.\nagent_id: native-mate@_auto_session-1\nname: native-mate\nteam_name: _auto_session-1\ntask_id: agent-native\nThe agent is now running and will receive instructions via mailbox."}],"is_error":false}]}}`))
+	row, exists := sink.BackgroundTask("agent-native")
+	require.True(t, exists)
+	assert.Equal(t, before.ChildAgentID, row.ChildAgentID)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"native-spawn","message":{"role":"assistant","content":[{"type":"text","text":"Native teammate output"}]}}`))
+	messages := sink.Child(row.ChildAgentID).Messages()
+	require.Len(t, messages, 2)
+	assert.Contains(t, string(messages[1].Content), "Native teammate output")
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"agent-native","status":"killed","summary":"Native task stopped"}`))
+	row, exists = sink.BackgroundTask("agent-native")
+	require.True(t, exists)
+	assert.Equal(t, bgtask.StatusStopped, row.Status)
 }
 
 func TestCodebuddyForegroundAgentRoutesItsForwardedChildTranscript(t *testing.T) {

@@ -95,10 +95,11 @@ func (b *FamilyBase) SendRawInput(raw []byte, stop agent.StopContext) error {
 // A STOPPED agent states nothing: the reader ended the turn themselves, so a steer
 // that did not land is the outcome they asked for.
 func (b *FamilyBase) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	if !b.PromptActive() {
+	_, active, sessionID, _ := b.SteerTarget()
+	if !active {
 		return agent.ErrNoActiveTurn
 	}
-	return b.SendPromptDetached(content, attachments, func(_ json.RawMessage, err error) {
+	return b.SendPromptDetached(sessionID, content, attachments, func(_ json.RawMessage, err error) {
 		b.ReportSteerFailure(err)
 	})
 }

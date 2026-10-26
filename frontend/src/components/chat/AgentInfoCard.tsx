@@ -11,7 +11,7 @@ import { workingTreeBranchRowLabel, WorkingTreeIcon } from '~/components/common/
 import { RATE_LIMIT_STATUS } from '~/generated/contracts/session-info'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
-import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, rateLimitPopoverLabel, rateLimitStatusLabel } from '~/lib/rateLimitUtils'
+import { formatCountdown, formatResetTimestamp, getResetsAt, getResetsOn, pickUrgentRateLimit, rateLimitPopoverLabel, rateLimitStatusLabel } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
@@ -332,8 +332,8 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
             // `rateLimitPopoverLabel` reads the table with `Object.hasOwn`, so a wire
             // value that spells an `Object.prototype` member falls through to the generic
             // heading instead of rendering that function's source.
-            const typeLabel = rateLimitPopoverLabel(info.rateLimitType)
-              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
+            const typeLabel = info.label?.trim() || (rateLimitPopoverLabel(info.rateLimitType)
+              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit'))
 
             const status = info.status
             const exceeded = !!status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning
@@ -347,6 +347,9 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
               statusParts.push(`${Math.round(info.utilization * 100)}% used`)
             if (info.isUsingOverage)
               statusParts.push('overage')
+            const resetsOn = getResetsOn(info)
+            if (resetsOn !== undefined)
+              statusParts.push(`resets on ${resetsOn}`)
 
             const countdown = typeof resetsAt === 'number' ? formatCountdown(resetsAt) : null
 

@@ -17,7 +17,7 @@ describe('fast agent permission presets', () => {
 })
 
 describe('native output without a filesystem pointer', () => {
-  it('keeps a valid native result and omits the output path hook', () => {
+  it('keeps a valid host-terminal result without adding output paths', () => {
     const frame = {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'native-call',
@@ -47,7 +47,7 @@ describe('native output without a filesystem pointer', () => {
     expect(call?.outputFilePaths).toBeUndefined()
     const registered = providerFor(AgentProvider.FAST_AGENT)
     expect(registered).toBeDefined()
-    expect(registered?.transcript.outputFilePaths).toBeUndefined()
+    expect(registered?.transcript.outputFilePaths).toBeTypeOf('function')
   })
 })
 

@@ -101,6 +101,22 @@ func TestOpenCodeLoadsTheChildSessionOfARunningTask(t *testing.T) {
 	assert.Len(t, writtenRequests(stdin, "session/load"), 1)
 }
 
+func TestOpenCodeKeepsTheLoadedChildModelSeparateFromTheRoot(t *testing.T) {
+	t.Parallel()
+	a, _, stdin := newChildSessionAgent(t)
+	a.SetCurrentModel("private/parent")
+	a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Count slowly."))
+	a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
+	load := awaitRequest(t, stdin, "session/load", 1)
+	require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/voice","options":[{"value":"private/voice","name":"Voice"}]}]}`)})))
+	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable })
+	a.childSessionsMu.Lock()
+	model := a.childSessions["call-1"].modelID
+	a.childSessionsMu.Unlock()
+	assert.Equal(t, "private/voice", model)
+	assert.Equal(t, "private/parent", a.CurrentModel())
+}
+
 func TestOpenCodeFollowsOnlyARunningTaskWithAChildSession(t *testing.T) {
 	t.Parallel()
 	for name, event := range map[string]func(*testing.T) json.RawMessage{

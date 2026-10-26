@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Office attachment byte fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "documents"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "documents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["word", "spreadsheet"],
+      "properties": {
+        "word": {
+          "allOf": [
+            { "$ref": "#/$defs/document" },
+            { "type": "object", "properties": { "filename": { "const": "native-office.docx" }, "format": { "const": "docx" }, "mimeType": { "const": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" } } }
+          ]
+        },
+        "spreadsheet": {
+          "allOf": [
+            { "$ref": "#/$defs/document" },
+            { "type": "object", "properties": { "filename": { "const": "native-office.xlsx" }, "format": { "const": "xlsx" }, "mimeType": { "const": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } } }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "mimeType", "format", "originalBase64", "updatedBase64"],
+      "properties": {
+        "filename": { "type": "string", "minLength": 1 },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "format": { "type": "string", "enum": ["docx", "xlsx"] },
+        "originalBase64": { "$ref": "#/$defs/base64" },
+        "updatedBase64": { "$ref": "#/$defs/base64" }
+      }
+    },
+    "base64": { "type": "string", "minLength": 128, "pattern": "^[A-Za-z0-9+/]+={0,2}$" }
+  }
+}

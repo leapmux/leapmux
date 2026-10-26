@@ -19,7 +19,7 @@ describe('kilo classify', () => {
   // Attachment caps, assembled-text handling, config_option_update hiding (empty
   // payload), and the ACP interrupt request are the standard stub behaviours. Kilo's POPULATED
   // config_option_update case below is the genuine divergence and stays inline.
-  describeACPProviderBasics(AgentProvider.KILO, { text: true, image: true, pdf: true, binary: false })
+  describeACPProviderBasics(AgentProvider.KILO, { text: true, image: true, pdf: true, audio: ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/aac', 'audio/ogg', 'audio/flac', 'audio/webm'], binary: false })
 
   it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
     expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })

@@ -43,7 +43,7 @@ describe('opencode classify', () => {
 
   // Attachment caps, assembled-text handling and config_option_update hiding are the
   // standard Agent Client Protocol behaviours; the cases below are OpenCode's own.
-  describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: false })
+  describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, audio: ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/aac', 'audio/ogg', 'audio/flac', 'audio/webm'], binary: false })
 
   it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
     expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })

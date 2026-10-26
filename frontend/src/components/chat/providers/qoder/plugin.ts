@@ -31,6 +31,7 @@ const qoderPlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: false,
+      audio: false,
       binary: false,
     },
   },

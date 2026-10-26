@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
+import type { AttachmentKind } from '../../../src/generated/contracts/attachment-media'
 import type { AttachmentDeliveryOptions, QuadrantDecoder } from './attachmentModelProbe'
-import type { AttachmentKind } from './attachments'
 import type { MockModelProtocol, MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativeScenarioContext } from './nativeScenario'
@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { AMP_ACTOR_PATH_PREFIX } from './ampSurface'
-import { exerciseAttachmentDelivery, expectNativeAttachmentProof, expectNativeFilePart, expectNativeImagePart, expectNativePdfPart, expectRefusedAttachmentsAbsent, nativeUserStrings, scriptedRequest } from './attachmentModelProbe'
+import { exerciseAttachmentDelivery, expectNativeAttachmentProof, expectNativeAudioPart, expectNativeFilePart, expectNativeImagePart, expectNativePdfPart, expectRefusedAttachmentsAbsent, nativeUserStrings, scriptedRequest } from './attachmentModelProbe'
 import { writeAttachmentFixture } from './attachments'
 import { CURSOR_RUN_PATH } from './cursorSurface'
 
@@ -660,6 +660,20 @@ describe('expectNativePdfPart', () => {
 })
 
 describe('expectNativeFilePart', () => {
+  it.each([
+    ['doc', 'application/msword'],
+    ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['xls', 'application/vnd.ms-excel'],
+    ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ])('reads exact current AWS %s document bytes and rejects another format', (format, mime) => {
+    const source = Buffer.from([0x50, 0x4B, 3, 4, 0xFF])
+    const encoded = source.toString('base64')
+    expect(() => expectNativeFilePart(kiro([{ name: 'office', format, source: { bytes: encoded } }]), source, mime)).not.toThrow()
+    expect(() => expectNativeFilePart(kiro([{ name: 'office', format: 'pdf', source: { bytes: encoded } }]), source, mime)).toThrow('not')
+    expect(() => expectNativeFilePart(kiro([{ name: 'office', format, source: { bytes: Buffer.from([1, 2, 3]).toString('base64') } }]), source, mime)).toThrow('bytes with SHA-256')
+    expect(() => expectNativeFilePart(kiro([], [{ userInputMessage: { documents: [{ name: 'earlier', format, source: { bytes: encoded } }] } }]), source, mime)).toThrow('the current user turn of the scripted aws-event-stream request carries no typed')
+  })
+
   const wav = Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from([0x24, 0, 0, 0]), Buffer.from('WAVEfmt ', 'latin1')])
   const wavBase64 = wav.toString('base64')
 
@@ -981,6 +995,16 @@ describe('expectNativeImagePart', () => {
       await expect(expectNativeImagePart(request, png, decoderFor(webpURI), 'image/webp')).resolves.toBeUndefined()
     })
 
+    it('normalizes Google URL-safe bytes before the browser image decoder reads them', async () => {
+      const bytes = Buffer.from(webp)
+      bytes[bytes.length - 1] = 0xFF
+      const canonical = bytes.toString('base64')
+      const urlSafe = canonical.replaceAll('+', '-').replaceAll('/', '_')
+      expect(urlSafe).not.toBe(canonical)
+      const request = google({ role: 'user', parts: [{ inlineData: { mimeType: 'image/webp', data: urlSafe } }] })
+      await expect(expectNativeImagePart(request, png, decoderFor(`data:image/webp;base64,${canonical}`), 'image/webp')).resolves.toBeUndefined()
+    })
+
     it('rejects the exact PNG, which the provider does not send', async () => {
       await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(pngDataURI(pngBase64))] }), png, noDecode, 'image/webp'))
         .rejects
@@ -1072,29 +1096,29 @@ describe('expectNativeAttachmentProof', () => {
     await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { protocol: 'openai-chat-completions' })).resolves.toBeUndefined()
   })
 
-  it('applies a binary media type to a binary attachment only', async () => {
+  it('rejects a media type on a PDF attachment', async () => {
     const request = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
-    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { binaryMediaType: 'application/pdf' }))
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { mediaType: 'application/pdf' }))
       .rejects
-      .toThrow('a binary media type applies to a binary attachment, not to a pdf attachment')
+      .toThrow('a media type applies to an audio or binary attachment, not to a pdf attachment')
   })
 
   it('requires the media type of a binary attachment, so base64 in the user text never proves it', async () => {
     const inText = chat({ role: 'user', content: `Inspect this: ${binary.toString('base64')}` })
     await expect(expectNativeAttachmentProof(noBrowser, status(inText), 'binary', binaryPath))
       .rejects
-      .toThrow('a binary attachment proof needs the media type that its typed file part declares')
-    await expect(expectNativeAttachmentProof(noBrowser, status(inText), 'binary', binaryPath, { binaryMediaType: /^application\// }))
+      .toThrow('an audio or binary attachment proof needs the media type that its typed file part declares')
+    await expect(expectNativeAttachmentProof(noBrowser, status(inText), 'binary', binaryPath, { mediaType: /^application\// }))
       .rejects
       .toThrow('carries no typed /^application\\// part with the exact source bytes')
   })
 
   it('accepts a binary attachment in a typed file part of the declared type', async () => {
     const request = chat({ role: 'user', content: [chatFile(`data:application/macbinary;base64,${binary.toString('base64')}`)] })
-    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'binary', binaryPath, { protocol: 'openai-chat-completions', binaryMediaType: /^application\// }))
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'binary', binaryPath, { protocol: 'openai-chat-completions', mediaType: /^application\// }))
       .resolves
       .toBeUndefined()
-    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'binary', binaryPath, { binaryMediaType: 'application/octet-stream' }))
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'binary', binaryPath, { mediaType: 'application/octet-stream' }))
       .rejects
       .toThrow('declares file.file_data=data:application/macbinary, not application/octet-stream')
   })
@@ -1326,10 +1350,10 @@ function scriptedContext(textStep?: NativeScenarioContext['textStep']) {
 describe('exerciseAttachmentDelivery', () => {
   it.each<[string, AttachmentKind, AttachmentDeliveryOptions, string]>([
     ['a custom proof with a transcoded image type', 'image', { proof: () => undefined, transcodedImageType: 'image/webp' }, 'a custom attachment proof replaces the typed-part proof'],
-    ['a custom proof with a binary media type', 'binary', { proof: () => undefined, binaryMediaType: 'audio/wav' }, 'a custom attachment proof replaces the typed-part proof'],
+    ['a custom proof with a binary media type', 'binary', { proof: () => undefined, mediaType: 'audio/wav' }, 'a custom attachment proof replaces the typed-part proof'],
     ['a transcoded image type for a PDF', 'pdf', { transcodedImageType: 'image/png' }, 'a transcoded image type applies to an image attachment, not to a pdf attachment'],
-    ['a binary media type for a text file', 'text', { binaryMediaType: 'text/plain' }, 'a binary media type applies to a binary attachment, not to a text attachment'],
-    ['a binary file with no media type and no proof', 'binary', {}, 'a binary attachment proof needs the media type that its typed file part declares'],
+    ['a binary media type for a text file', 'text', { mediaType: 'text/plain' }, 'a media type applies to an audio or binary attachment, not to a text attachment'],
+    ['a binary file with no media type and no proof', 'binary', {}, 'an audio or binary attachment proof needs the media type that its typed file part declares'],
   ])('refuses %s before it queues a step', async (_name, kind, options, message) => {
     const { context, queue } = scriptedContext()
     await expect(exerciseAttachmentDelivery(context, kind, 'attachment.bin', options)).rejects.toThrow(message)
@@ -1394,5 +1418,101 @@ describe('scriptedRequest', () => {
 
   it('fails when the request uses another protocol than the caller states', () => {
     expect(() => scriptedRequest(status(chat()), 'anthropic-messages')).toThrow('the scripted request uses the model API of the provider')
+  })
+})
+
+describe('expectNativeAudioPart', () => {
+  const source = Buffer.from([0, 1, 2, 255])
+  const part = { inlineData: { mimeType: 'audio/wav', data: source.toString('base64') } }
+
+  it('requires typed audio with the exact original bytes in the current user turn', () => {
+    expect(() => expectNativeAudioPart(nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [part] }] }), source, 'audio/wav')).not.toThrow()
+  })
+
+  it.each([
+    ['wav', 'audio/wav'],
+    ['mp3', 'audio/mpeg'],
+    ['flac', 'audio/flac'],
+    ['m4a', 'audio/mp4'],
+    ['ogg', 'audio/ogg'],
+  ])('reads exact Chat audio bytes with native format %s', (format, mime) => {
+    const request = chat({ role: 'user', content: [{ type: 'input_audio', input_audio: { format, data: source.toString('base64') } }] })
+    expect(() => expectNativeAudioPart(request, source, mime)).not.toThrow()
+  })
+
+  it('reads a Chat audio data URI with its MIME alias and rejects a contradictory format', () => {
+    const audio = { format: 'wav', data: `data:audio/x-wav;base64,${source.toString('base64')}` }
+    expect(() => expectNativeAudioPart(chat({ role: 'user', content: [{ type: 'input_audio', input_audio: audio }] }), source, 'audio/x-wav')).not.toThrow()
+    expect(() => expectNativeAudioPart(chat({ role: 'user', content: [{ type: 'input_audio', input_audio: { ...audio, format: 'mp3' } }] }), source, 'audio/x-wav')).toThrow('no typed audio')
+  })
+
+  it.each([
+    { data: source.toString('base64') },
+    { format: 'unknown', data: source.toString('base64') },
+    { format: 'mpeg', data: source.toString('base64') },
+    { format: 'mp4', data: source.toString('base64') },
+    { format: 'webm', data: source.toString('base64') },
+    { format: 'aac', data: source.toString('base64') },
+    { format: 'wav' },
+    { format: 'wav', data: '' },
+    { format: 'wav', data: 'not base64' },
+    { format: 'wav', data: source.subarray(0, 2).toString('base64') },
+    { format: 'wav', data: 'https://example.invalid/voice.wav' },
+  ])('rejects malformed or mismatched Chat audio $format/$data', (input_audio) => {
+    expect(() => expectNativeAudioPart(chat({ role: 'user', content: [{ type: 'input_audio', input_audio }] }), source, 'audio/wav')).toThrow('no typed audio')
+  })
+
+  it('rejects Chat audio in earlier history, tool output and unrelated metadata', () => {
+    const audio = { type: 'input_audio', input_audio: { format: 'wav', data: source.toString('base64') } }
+    for (const request of [
+      chat({ role: 'user', content: [audio] }, { role: 'assistant', content: 'Earlier answer.' }, { role: 'user', content: 'A new turn.' }),
+      chat({ role: 'tool', content: [audio] }),
+      chat({ role: 'system', content: [audio] }),
+      chat({ role: 'user', content: 'Read the file.', metadata: audio }),
+    ]) {
+      expect(() => expectNativeAudioPart(request, source, 'audio/wav')).toThrow('no typed audio')
+    }
+  })
+
+  it.each(['inlineData', 'inline_data'])('reads Google %s with snake-case MIME and URL-safe padded bytes', (field) => {
+    const data = source.toString('base64').replaceAll('+', '-').replaceAll('/', '_')
+    const request = google({ role: 'user', parts: [{ [field]: { mime_type: 'audio/wav', data } }] })
+    expect(() => expectNativeAudioPart(request, source, 'audio/wav')).not.toThrow()
+    expect(nativeUserStrings(request.body)).toContain(data)
+  })
+
+  it('rejects conflicting Google MIME or wrapper aliases', () => {
+    const inline = { mime_type: 'audio/wav', data: source.toString('base64') }
+    for (const part of [
+      { inlineData: { ...inline, mimeType: 'audio/mpeg' } },
+      { inlineData: inline, inline_data: { ...inline, mime_type: 'audio/mpeg' } },
+    ]) {
+      expect(() => expectNativeAudioPart(google({ role: 'user', parts: [part] }), source, 'audio/wav')).toThrow('no typed audio')
+    }
+  })
+
+  it('reads a native Responses audio URL and rejects a file used in its place', () => {
+    const audio_url = `data:audio/wav;base64,${source.toString('base64')}`
+    expect(() => expectNativeAudioPart(responses({ role: 'user', content: [{ type: 'input_audio', audio_url }] }), source, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeAudioPart(responses({ role: 'user', content: [{ type: 'input_file', file_data: audio_url }] }), source, 'audio/wav')).toThrow('no typed audio')
+  })
+
+  it('does not mistake an invalid Anthropic audio document for an audio route', () => {
+    const request = anthropic({ role: 'user', content: [anthropicDocument(source.toString('base64'), 'audio/wav')] })
+    expect(() => expectNativeAudioPart(request, source, 'audio/wav')).toThrow('no typed audio')
+  })
+
+  it('rejects text transcripts and prior audio history', () => {
+    const request = nativeRequest('google-generative-language', { contents: [
+      { role: 'user', parts: [part] },
+      { role: 'model', parts: [{ text: 'Earlier answer' }] },
+      { role: 'user', parts: [{ text: 'A transcript of the earlier audio.' }] },
+    ] })
+    expect(() => expectNativeAudioPart(request, source, 'audio/wav')).toThrow('no typed audio')
+  })
+
+  it('rejects a binary MIME type even when the bytes and loose type pattern match', () => {
+    const request = nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [{ inlineData: { ...part.inlineData, mimeType: 'application/octet-stream' } }] }] })
+    expect(() => expectNativeAudioPart(request, source, /.*/u)).toThrow('no typed audio')
   })
 })

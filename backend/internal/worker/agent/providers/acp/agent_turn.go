@@ -294,6 +294,14 @@ func (b *Base) sendFollowUpPrompt(sessionID, content string, attachments []*leap
 	if err == nil {
 		return
 	}
+	b.sessionMu.RLock()
+	defer b.sessionMu.RUnlock()
+	b.Mu.Lock()
+	current := b.sessionID == sessionID
+	b.Mu.Unlock()
+	if !current {
+		return
+	}
 	slog.Error("acp follow-up prompt failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
 	b.sink.PersistLeapMuxNotification(map[string]any{
 		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
@@ -306,6 +314,8 @@ func (b *Base) sendFollowUpPrompt(sessionID, content string, attachments []*leap
 // attachments, while the turn state stays active. The fields of the turn that
 // ended go, as they go at any turn end, because they describe that turn alone.
 func (b *Base) continueWithPrompt(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
 	b.turnMu.Lock()
 	b.Mu.Lock()
 	if b.sessionID != sessionID || b.StoppedLocked() {
@@ -325,7 +335,7 @@ func (b *Base) continueWithPrompt(sessionID, content string, attachments []*leap
 	if b.hooks.PromptPrepared != nil {
 		b.hooks.PromptPrepared()
 	}
-	return b.SendPromptDetached(content, attachments, func(response json.RawMessage, err error) {
+	return b.sendPromptDetachedLocked(sessionID, content, attachments, func(response json.RawMessage, err error) {
 		b.finishPromptRequest(sessionID, response, err)
 	})
 }

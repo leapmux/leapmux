@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
-import { focusComposer } from './helpers/ui'
+import { focusComposer, queuePauseButton, visibleOnly } from './helpers/ui'
 
 /**
  * The Tab/Shift+Tab plugin (paragraph → heading promotion, list-item indent,
@@ -16,6 +16,20 @@ import { focusComposer } from './helpers/ui'
  * the rendered nested list.
  */
 test.describe('Markdown editor input — smoke', () => {
+  test('focuses the text beside action buttons in a narrow empty composer', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await page.setViewportSize({ width: 1200, height: 800 })
+    await page.addStyleTag({ content: '[data-testid="agent-editor-panel"] { max-width: 260px; }' })
+    const box = visibleOnly(page.getByTestId('composer-box'))
+    await expect(box).not.toHaveAttribute('data-expanded')
+    const editor = await focusComposer(page)
+    await expect(editor).toBeFocused()
+    await page.keyboard.type('A narrow draft')
+    await expect(editor).toHaveText('A narrow draft')
+    await expect(queuePauseButton(page)).toHaveText('Pause Queue')
+    await expect(page.getByTestId('schedule-send-popover')).toBeHidden()
+  })
+
   test('the bullet-list input rule + Tab produces a nested list in the live editor', async ({ page, authenticatedWorkspace }) => {
     const editor = await focusComposer(page)
     // `- ` is the bullet-list input rule; the formatting toolbar it replaced

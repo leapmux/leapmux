@@ -9,7 +9,7 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
-import { applyNotificationMetadata, handleAgentInactive, handleAgentSessionInfo, handleResultDivider } from './agentEvents'
+import { applyNotificationMetadata, handleAgentInactive, handleAgentSessionInfo, handleResultDivider, wireRateLimitUpdateFromSessionInfo } from './agentEvents'
 import { clearOfflineAgentState } from './useWorkspaceConnection'
 import '~/components/chat/providers'
 
@@ -37,6 +37,18 @@ function compactionMessage(content: unknown) {
     seq: 1n,
   })
 }
+
+describe('wireRateLimitUpdateFromSessionInfo calendar resets', () => {
+  it('decodes optional labels and valid dates while retaining zero usage', () => {
+    expect(wireRateLimitUpdateFromSessionInfo({ rate_limits: { mode: 'replace', values: {
+      credit: { label: 'Plan — Credits', resets_on: '2024-02-29', utilization: 0 },
+      malformed: { label: 42, resets_on: '2026-02-29' },
+    } } })).toEqual({ mode: 'replace', values: {
+      credit: { label: 'Plan — Credits', resetsOn: '2024-02-29', utilization: 0 },
+      malformed: {},
+    } })
+  })
+})
 
 describe('handleAgentSessionInfo compaction', () => {
   it('sets and clears the live compaction', () => {

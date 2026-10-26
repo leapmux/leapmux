@@ -59,6 +59,7 @@ func (a *Agent) finishStartup(handshake *acp.SessionResult, opts agent.Options) 
 	// A resumed goal can still run or wait in Kiro's own store.
 	// Its controls require the run ID that Kiro supplies.
 	a.recoverGoalRun(opts)
+	a.startUsageRefresh()
 	return nil
 }
 
@@ -68,6 +69,10 @@ func (a *Agent) finishStartup(handshake *acp.SessionResult, opts agent.Options) 
 func (a *Agent) configure(opts agent.Options) acp.Hooks {
 	a.stateMu.Lock()
 	a.policy.current = initialPolicyPreset(opts.Get(contracts.KiroOptionPolicyPreset))
+	if a.usageRefresh == nil {
+		a.usageRefresh = make(chan struct{}, 1)
+		a.usageDone = make(chan struct{})
+	}
 	a.stateMu.Unlock()
 	return acp.Hooks{
 		WithBypassPermission: func(claim func()) {
@@ -126,6 +131,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		SteersByOwnRoute:   true,
 		ClearProviderState: a.clearProviderState,
 		RetireSession:      a.retireSession,
+		BeforeWaitCleanup:  a.waitUsageRefresh,
 	}
 }
 

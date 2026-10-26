@@ -29,7 +29,7 @@ const QUESTION = {
 describe('qwen provider', () => {
   const plugin = providerFor(AgentProvider.QWEN_CODE)!
 
-  describeACPProviderBasics(AgentProvider.QWEN_CODE, { text: true, image: true, pdf: true, binary: false })
+  describeACPProviderBasics(AgentProvider.QWEN_CODE, { text: true, image: true, pdf: true, audio: ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave', 'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/ogg', 'audio/flac', 'audio/x-flac'], binary: false })
 
   it('states its own reasoning axis for the effort chip', () => {
     expect(plugin.configuration?.effortGroupKey).toBe('reasoning_effort')

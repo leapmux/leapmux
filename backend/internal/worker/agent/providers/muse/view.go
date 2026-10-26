@@ -15,6 +15,14 @@ type viewRecovery struct {
 	buffer [][]byte
 }
 
+type childViewPrefixState uint8
+
+const (
+	childViewPrefixUnrequested childViewPrefixState = iota
+	childViewPrefixPending
+	childViewPrefixReady
+)
+
 func viewCursor(raw []byte) string {
 	var frame struct {
 		Params struct {
@@ -25,6 +33,65 @@ func viewCursor(raw []byte) string {
 		return ""
 	}
 	return frame.Params.Cursor
+}
+
+// syncView reads a session prefix before its buffered live overlap. Child
+// refresh and native gap recovery share one keyed, process-owned operation.
+func (a *Agent) syncView(id string) {
+	a.dispatchMu.Lock()
+	a.stateMu.Lock()
+	state := a.sessions[id]
+	if !a.currentSessionState(id, state) {
+		a.stateMu.Unlock()
+		a.dispatchMu.Unlock()
+		return
+	}
+	childRefresh := state.childViewRequested
+	state.childViewRequested = false
+	recovery := state.viewRecovery
+	if childRefresh && recovery == nil {
+		after := ""
+		if state.childViewPrefix == childViewPrefixReady {
+			after = state.lastViewCursor
+		} else {
+			state.childViewPrefix = childViewPrefixPending
+		}
+		recovery = &viewRecovery{after: after}
+		state.viewRecovery = recovery
+	}
+	if recovery != nil && state.childID != "" && state.childViewPrefix == childViewPrefixPending {
+		// A later live gap cannot establish that the initial prefix was read.
+		recovery.after = ""
+	}
+	a.stateMu.Unlock()
+	a.dispatchMu.Unlock()
+	if recovery == nil {
+		return
+	}
+	if childRefresh {
+		_, err := a.request(methodViewSubscribe, map[string]string{"sessionId": id}, a.APITimeout(), func(raw json.RawMessage, nativeErr error) {
+			if nativeErr != nil {
+				return
+			}
+			var reply struct {
+				Cursor string `json:"viewCursor"`
+			}
+			if json.Unmarshal(raw, &reply) != nil || reply.Cursor == "" {
+				return
+			}
+			a.stateMu.Lock()
+			if state.viewRecovery == recovery {
+				recovery.next = reply.Cursor
+			}
+			a.stateMu.Unlock()
+		})
+		if err != nil {
+			// Completed children have stored views without a live runtime.
+			slog.Debug("Muse child live view is unavailable; read its stored view", "session", id, "error", err)
+		}
+		_ = a.subscribeLog(id, a.APITimeout())
+	}
+	a.runViewRecovery(id, state, recovery)
 }
 
 // readViewPages keeps native cursors opaque and requires each page to advance.
@@ -124,7 +191,7 @@ func (a *Agent) recoverView(raw []byte, state *sessionState) {
 	recovery := &viewRecovery{after: gap.After, next: gap.Next}
 	state.viewRecovery = recovery
 	a.stateMu.Unlock()
-	go a.runViewRecovery(gap.SessionID, state, recovery)
+	a.viewWork.Run(gap.SessionID, func() { a.syncView(gap.SessionID) })
 }
 
 func (a *Agent) runViewRecovery(id string, state *sessionState, recovery *viewRecovery) {
@@ -161,6 +228,17 @@ func (a *Agent) runViewRecovery(id string, state *sessionState, recovery *viewRe
 		buffer := recovery.buffer
 		state.viewRecovery = nil
 		retired := state.retired
+		if !retired && a.sessions[id] == state && state.childID != "" && state.childViewPrefix == childViewPrefixPending && readErr == nil && len(paged) > 0 {
+			// Fresh projections can return a partial page with no next cursor.
+			// Only the stored prefix reaching the observed head completes this
+			// read. Live overlap cannot prove that earlier history was read.
+			reachedHead := recovery.next == "" || slices.ContainsFunc(paged, func(raw json.RawMessage) bool {
+				return viewCursor(raw) == recovery.next
+			})
+			if reachedHead {
+				state.childViewPrefix = childViewPrefixReady
+			}
+		}
 		if state.viewTwins == nil {
 			state.viewTwins = make(map[string]bool)
 		}

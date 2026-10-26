@@ -9,7 +9,7 @@ export const kimiConfiguration: ProviderConfigurationCapability = {
   // only as bytes, so a PDF and a binary file are refused. The worker's
   // `ValidateAttachment` states the same rule, and it also refuses an image for a model
   // that takes none.
-  attachments: { text: true, image: true, pdf: false, binary: false },
+  attachments: { text: true, image: true, pdf: false, audio: false, binary: false },
   // Plan mode is one value of the permission-mode axis, as it is for Claude and ZCode.
   triggerModeGroupKey: 'permissionMode',
   planMode: buildPlanMode('permissionMode', KIMI_MODE.Plan, KIMI_DEFAULT_MODE),

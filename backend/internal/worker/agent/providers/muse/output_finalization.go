@@ -73,7 +73,7 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 			for _, scope := range item.generationScopes {
 				state.generation.Discard(scope)
 			}
-			if item.persistedRevision >= params.Item.Revision || params.Item.Kind == contracts.MuseItemKindUserMessage && state.childID == "" || params.Item.Kind == contracts.MuseItemKindCompaction {
+			if item.persistedRevision >= params.Item.Revision || params.Item.Kind == contracts.MuseItemKindCompaction {
 				continue
 			}
 		} else if !tool {
@@ -94,9 +94,6 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 		}
 		message := pendingMessage{source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, item: item, revision: params.Item.Revision,
 			content: museItemMessageContent(slices.Clone(item.raw), params)}
-		if params.Item.Kind == contracts.MuseItemKindUserMessage {
-			message.source = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
-		}
 		if tool {
 			message.span = agent.SpanInfo{SpanID: params.Item.ID, SpanType: params.Item.Tool, Closing: true}
 		}

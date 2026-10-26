@@ -94,6 +94,7 @@ func FamilyHooks(f *FamilyBase) acp.Hooks {
 		SegmentText:              f.segmentText,
 		CaptureTurnOutputCleanup: f.captureDaemonCleanup,
 		PromptPrepared:           f.resetDaemonGeneration,
+		PreparePrompt:            f.prepareAudioPrompt,
 		ClearProviderState:       f.resetDaemonGeneration,
 		PromptEnded: func(err error, stopped bool) acp.PromptEnding {
 			f.retryResolution.Reset()

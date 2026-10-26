@@ -20,14 +20,16 @@ import (
 //   - effort: the reasoning effort. The runtime takes it PER TURN only -- its
 //     thread update has no effort field -- so LeapMux holds the value and sends
 //     it with each turn. EffortAuto sends none, and the runtime uses its own.
-//   - codewhale_mode: agent or plan. Plan mode is a thread setting: the runtime
-//     refuses every mutating call centrally, and no tool asks to leave it.
+//   - codewhale_mode: agent, plan or operate. Plan mode refuses mutating calls.
+//     Operate directs goals, workflows and parallel agents toward verified completion.
 //   - permissionMode: the thread's permission posture.
 //   - outputStyle: native response verbosity, selected through the process environment.
 //     The thread and turn APIs expose no verbosity field, so changing it requires a restart.
 
 // ModeLabel labels the mode axis.
 const ModeLabel = "Mode"
+
+const codewhaleModeOperate = "operate"
 
 // PostureLabel labels the permission-posture axis.
 const PostureLabel = "Permission Posture"
@@ -44,6 +46,7 @@ var codewhaleModeGroup = &leapmuxv1.AvailableOptionGroup{
 	Options: []*leapmuxv1.AvailableOption{
 		{Id: contracts.CodewhaleModeAgent, Name: "Agent", Description: "Read, edit files and run commands"},
 		{Id: contracts.CodewhaleModePlan, Name: "Plan", Description: "Research and plan; the runtime refuses edits and commands"},
+		{Id: codewhaleModeOperate, Name: "Operate", Description: "Carry the request through to verified completion with workflows and parallel agents"},
 	},
 }
 
@@ -176,7 +179,7 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 			*update.Model = value
 			patched = true
 		case contracts.CodewhaleOptionMode:
-			if !slices.Contains([]string{contracts.CodewhaleModeAgent, contracts.CodewhaleModePlan}, value) {
+			if !slices.ContainsFunc(codewhaleModeGroup.Options, func(option *leapmuxv1.AvailableOption) bool { return option.GetId() == value }) {
 				continue
 			}
 			update.Mode = new(string)

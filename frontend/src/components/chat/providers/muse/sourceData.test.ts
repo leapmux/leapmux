@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { museNativeResult } from './sourceData'
+import { museToolResultSources } from './toolResults.fixtures'
 
 function sources() {
-  const payload = { method: 'item/completed', params: { sessionId: 'session', sourceRange: { stream: { kind: 'session', id: 'session' }, first: { id: 'origin', sequence: 1 } }, item: { itemId: 'item', kind: 'toolCall', turnId: 'turn', callId: 'call', tool: 'bash', args: '{}' } } }
-  const origin = { id: 'origin', sequence: 1, stream: { kind: 'session', id: 'session' }, payload: { kind: 'run', run_id: 'turn', event: { kind: 'assistant_tool_calls_committed', message_id: 'batch', tool_calls: [{ call_id: 'call', name: 'bash', args: '{}' }] } } }
-  const result = { id: 'result', sequence: 2, stream: { kind: 'session', id: 'session' }, payload: { kind: 'run', run_id: 'turn', event: { kind: 'tool_result_batch_committed', batch_id: 'batch', results: [{ tool_call_id: 'call', tool_call_index: 0, text: '{"exit_code":7}' }] } } }
-  return { payload, origin, result, supplement: { nativeRecords: [origin, result] } }
+  return museToolResultSources('{"exit_code":7}')
 }
 
 describe('museNativeResult', () => {

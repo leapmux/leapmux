@@ -33,7 +33,7 @@ func (diracProvider) Classify(content json.RawMessage) agent.NotificationClassif
 }
 
 func (diracProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("Dirac", attachment)
+	return providerkit.ValidateTextAndImageAttachment("Dirac", attachment)
 }
 
 // ListStoredSessions reads Dirac's own task-history store; see sessions.go.

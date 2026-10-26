@@ -269,6 +269,13 @@ describe('AgentEditorPanel', () => {
     expect(tooltip?.textContent).toContain(formatResetTimestamp(0))
   })
 
+  it('shows a calendar reset tooltip for an exceeded account quota', () => {
+    const rateLimits = { credit: { status: 'exceeded', resetsOn: '2026-11-25' } }
+    renderPanel({ agentSessionInfo: { rateLimits } })
+    const exceeded = within(screen.getByTestId('agent-info-trigger')).getByText('Exceeded', { exact: true })
+    expect(hoverForTooltip(exceeded)?.textContent).toContain('Resets on 2026-11-25')
+  })
+
   it('identifies the focused editor before and after the agent changes', () => {
     const repoGitStore = createRepoGitStore()
     let selectAgent: ((id: string) => void) | undefined

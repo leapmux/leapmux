@@ -12,6 +12,9 @@ import (
 
 type geminiProvider struct{ acp.Provider }
 
+// ValidateAttachment accepts native Gemini media, including audio resources.
+func (geminiProvider) ValidateAttachment(agent.ClassifiedAttachment) error { return nil }
+
 func (geminiProvider) ListStoredSessions(ctx context.Context, query agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return geminiStoredSessions(ctx, query)
 }

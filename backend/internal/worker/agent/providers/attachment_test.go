@@ -17,7 +17,41 @@ func attachmentSet() []*leapmuxv1.Attachment {
 	}
 }
 
-func TestNormalizeAttachmentsForProvider_DefaultAcceptsEverything(t *testing.T) {
+func TestNormalizeAttachmentsForProvider_RequiresAnImplementedAudioPolicy(t *testing.T) {
+	t.Parallel()
+	registry := Registry()
+	audio := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 1}}}
+	supported := map[leapmuxv1.AgentProvider]bool{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:      true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI: true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:  true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:  true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:  true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT: true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:       true,
+	}
+	for _, registration := range Registrations() {
+		t.Run(registration.Provider.String(), func(t *testing.T) {
+			provider := registration.Provider
+			got, err := registry.NormalizeAttachments(provider, audio)
+			if supported[provider] {
+				require.NoError(t, err)
+				require.Len(t, got, 1)
+				require.Equal(t, audio[0].Data, got[0].Data)
+			} else {
+				require.Error(t, err, "provider %s must not implicitly accept audio", provider)
+			}
+		})
+	}
+
+	for provider := range supported {
+		_, err := registry.NormalizeAttachments(provider, []*leapmuxv1.Attachment{{Filename: "empty.wav", MimeType: "audio/wav"}})
+		require.ErrorContains(t, err, "empty")
+	}
+}
+
+func TestNormalizeAttachmentsForProvider_DefaultAcceptsNonAudioAttachments(t *testing.T) {
 	t.Parallel()
 
 	registry := Registry()

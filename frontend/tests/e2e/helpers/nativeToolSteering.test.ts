@@ -61,6 +61,7 @@ function fake(name: string): FakeLocator {
 }
 
 vi.mock('./ui', () => ({
+  waitForNativeSettingsHydrated: async () => { harness.events.push('hydrate settings') },
   sendMessage: async (_page: Page, text: string) => {
     harness.sent.push(text)
     harness.events.push(`send:${text}`)
@@ -366,6 +367,27 @@ describe('exerciseSteerAfterTool', () => {
     const outputs = harness.events.filter(event => /output|release|steer:/.test(event))
     expect(outputs).toEqual(['first output', `steer:${steering}`, 'release first', 'second output', 'release final', 'release first', 'release final'])
     expect(harness.events).toContain('request:1')
+  })
+
+  it('prepares the native policy between two live catalog checks', async () => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'NATIVEFIRSTMARKER', 'yyyy-second-tail'))
+    await exerciseSteerAfterTool(context(script), {
+      expectDisplayedOutput: false,
+      prepare: async () => { harness.events.push('prepare native policy') },
+    })
+    expect(harness.events.slice(0, 3)).toEqual(['hydrate settings', 'prepare native policy', 'hydrate settings'])
+  })
+
+  it('starts no model turn when native policy preparation fails', async () => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering))
+    const failure = new Error('The native permission change was refused.')
+    await expect(exerciseSteerAfterTool(context(script), {
+      prepare: async () => {
+        throw failure
+      },
+    })).rejects.toBe(failure)
+    expect(script.queue).not.toHaveBeenCalled()
+    expect(harness.events).toEqual(['hydrate settings'])
   })
 
   it('accepts a tool result whose middle the provider dropped, with the end of the second output kept', async () => {
