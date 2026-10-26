@@ -1,3 +1,4 @@
+import type { LoggerCapture } from '~/test-support/loggerCapture'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -6,6 +7,7 @@ import {
   InnerRpcRequestSchema,
   InnerRpcResponseSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelManager } from './channel'
 import {
   channelInternals,
@@ -22,6 +24,21 @@ import {
   sessions,
 } from './channel.test-support'
 import { ChannelError } from './channelError'
+
+function encodeChunk(channelId: string, ciphertext: Uint8Array, correlationId: number, more: boolean): ArrayBuffer {
+  const msg = create(ChannelMessageSchema, {
+    protocolVersion: 1,
+    channelId,
+    ciphertext,
+    correlationId: BigInt(correlationId),
+    flags: more ? 1 : 0,
+  })
+  const data = toBinary(ChannelMessageSchema, msg)
+  const buf = new Uint8Array(4 + data.length)
+  new DataView(buf.buffer).setUint32(0, data.length)
+  buf.set(data, 4)
+  return buf.buffer
+}
 
 describe('ChannelManager call', () => {
   const h = new ChannelManagerTestHarness()
@@ -403,6 +420,134 @@ describe('ChannelManager stream', () => {
     const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
     await h.mgr.closeChannel(channelId)
     expect(() => handle.cancel()).not.toThrow()
+  })
+})
+
+const RETIRED_ID_MESSAGE = 'dropped a late frame for a retired correlation id'
+const NEVER_ALLOCATED_ID_MESSAGE = 'dropped a frame for a correlation id that this client never allocated'
+
+// The worker answers every request, so a request that this client stops waiting
+// for still receives its final frames: the response to an aborted or timed-out
+// call, and the end frame that answers a stream cancel. The client drops those
+// frames on purpose, so it must not warn about them -- that warning made healthy
+// traffic look broken in the console. A frame for an id that this client never
+// allocated is a protocol violation and still warns.
+describe('ChannelManager late frames', () => {
+  const h = new ChannelManagerTestHarness()
+  let capture: LoggerCapture
+  beforeEach(() => {
+    h.setup()
+    capture = captureLoggerOutput()
+  })
+  afterEach(() => {
+    capture.restore()
+    h.teardown()
+  })
+
+  function retiredDrops(): unknown[] {
+    return capture.messages('debug', 'channel').filter(message => message === RETIRED_ID_MESSAGE)
+  }
+
+  it('logs the late response to an aborted call at debug level instead of warning', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const controller = new AbortController()
+    const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+    controller.abort(new Error('aborted'))
+    await expect(callPromise).rejects.toThrow('aborted')
+
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(1)
+
+    // The drop leaves the channel healthy: the next call still gets its answer.
+    const nextCall = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([2]))
+    await expect(nextCall).resolves.toMatchObject({ payload: new Uint8Array([2]) })
+  })
+
+  it('logs the late response to a timed-out call at debug level instead of warning', async () => {
+    vi.useFakeTimers()
+    try {
+      const channelId = await h.openTestChannel('w1')
+      const callPromise = h.mgr.call(channelId, 'SlowMethod', new Uint8Array(), 1_000)
+      vi.advanceTimersByTime(1_000)
+      await expect(callPromise).rejects.toThrow('timed out after 1s')
+
+      h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+
+      expect(capture.messages('warn', 'channel')).toEqual([])
+      expect(retiredDrops()).toHaveLength(1)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('logs the frames that answer a stream cancel at debug level instead of warning', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const onMessage = vi.fn()
+    const onEnd = vi.fn()
+    handle.onMessage(onMessage)
+    handle.onEnd(onEnd)
+    handle.cancel()
+
+    // An event that the worker sent before it read the cancel, then the end frame
+    // that the cancel itself produces (watchSession.run sends End when its
+    // context ends).
+    h.sendStreamMessageFromWorker(channelId, handle.requestId, new Uint8Array([1]))
+    h.sendStreamEndFromWorker(channelId, handle.requestId)
+
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(onEnd).not.toHaveBeenCalled()
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(2)
+  })
+
+  it('logs each chunk of a late chunked response at debug level and buffers nothing', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const pair = sessions.get(channelId)!
+    const controller = new AbortController()
+    const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+    controller.abort(new Error('aborted'))
+    await expect(callPromise).rejects.toThrow('aborted')
+
+    const resp = create(InnerRpcResponseSchema, { payload: new Uint8Array([9, 9]), isError: false })
+    const plaintext = toBinary(InnerMessageSchema, create(InnerMessageSchema, { kind: { case: 'response', value: resp } }))
+    const mid = Math.floor(plaintext.length / 2)
+    h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), FIRST_TEST_REQUEST_ID, true))
+    h.mockWs.simulateMessage(encodeChunk(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), FIRST_TEST_REQUEST_ID, false))
+
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(2)
+    expect(channelInternals(h.mgr, channelId).reassembly.size()).toBe(0)
+  })
+
+  // The documented cost of reading the allocation range instead of recording why
+  // each id retired: a duplicate reply to a completed call looks the same as a
+  // late reply to an aborted one.
+  it('logs a duplicate response to a completed call at debug level', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+    await expect(callPromise).resolves.toMatchObject({ payload: new Uint8Array([1]) })
+
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([2]))
+
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(retiredDrops()).toHaveLength(1)
+  })
+
+  it('warns for a frame whose correlation id this client never allocated', async () => {
+    const channelId = await h.openTestChannel('w1')
+
+    // FIRST_TEST_REQUEST_ID is the next id that the counter hands out, and no
+    // call has taken it yet.
+    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+
+    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
+    expect(retiredDrops()).toEqual([])
   })
 })
 
@@ -876,21 +1021,6 @@ describe('ChannelManager reassembly lifetime', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
-
-  function encodeChunk(channelId: string, ciphertext: Uint8Array, correlationId: number, more: boolean): ArrayBuffer {
-    const msg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
-      channelId,
-      ciphertext,
-      correlationId: BigInt(correlationId),
-      flags: more ? 1 : 0,
-    })
-    const data = toBinary(ChannelMessageSchema, msg)
-    const buf = new Uint8Array(4 + data.length)
-    new DataView(buf.buffer).setUint32(0, data.length)
-    buf.set(data, 4)
-    return buf.buffer
-  }
 
   async function openSmallMgr(maxMessageSize: number, rpcTimeoutMs?: number): Promise<{ cm: ChannelManager, channelId: string }> {
     sessions.clear()

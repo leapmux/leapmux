@@ -16,6 +16,7 @@ import {
 } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelManager } from './channel'
 import { frameBytes, unframeBytes } from './channelFraming'
+import { FIRST_REQUEST_ID } from './channelRpc'
 import { clearAllKeyPins, KeyPinStore } from './keyPinStore'
 import { generateRekeyEphemeral } from './noise-hybrid'
 
@@ -336,11 +337,11 @@ export function mockHandshake2(_state: any, _message2: Uint8Array, _remoteSlhdsa
 
 /**
  * The correlation id of the FIRST request a test issues after openTestChannel:
- * the open itself consumes id 1 on each channel for its session-verifying Ping.
- * Naming it once keeps the coupling in one place -- if the open ever round-trips
- * another RPC, only this changes.
+ * the open itself consumes FIRST_REQUEST_ID on each channel for its
+ * session-verifying Ping. Naming it once keeps the coupling in one place -- if the
+ * open ever round-trips another RPC, only this changes.
  */
-export const FIRST_TEST_REQUEST_ID = 2
+export const FIRST_TEST_REQUEST_ID = FIRST_REQUEST_ID + 1
 
 /** Owns mgr/mockWs and the helpers that close over them for ChannelManager suites. */
 export class ChannelManagerTestHarness {
@@ -557,7 +558,7 @@ export class AutoOpenMockWebSocket extends EventTarget {
  * round-trips a no-op Ping to prove the E2EE session decrypts in both directions
  * before it resolves, so a mock worker must reply or the open never completes.
  * The mock sessions encrypt as identity, so the wire message is built directly.
- * The Ping is each channel's first request, hence correlation id 1.
+ * The Ping is each channel's first request, hence correlation id FIRST_REQUEST_ID.
  */
 export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: string) {
   const resp = create(InnerRpcResponseSchema, { isError: false })
@@ -568,7 +569,7 @@ export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: str
     protocolVersion: 1,
     channelId,
     ciphertext: plaintext,
-    correlationId: 1n,
+    correlationId: BigInt(FIRST_REQUEST_ID),
   })
   const frame = frameBytes(toBinary(ChannelMessageSchema, channelMsg))
   ws.dispatchEvent(new MessageEvent('message', { data: frame.buffer as ArrayBuffer }))
@@ -587,7 +588,7 @@ export function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: stri
     protocolVersion: 1,
     channelId,
     ciphertext: plaintext,
-    correlationId: 1n,
+    correlationId: BigInt(FIRST_REQUEST_ID),
   })
   const frame = frameBytes(toBinary(ChannelMessageSchema, channelMsg))
   ws.dispatchEvent(new MessageEvent('message', { data: frame.buffer as ArrayBuffer }))

@@ -15,6 +15,7 @@ import type { WorkerKeyBundle } from './workerKeyBundle'
 import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
+import { FIRST_REQUEST_ID } from './channelRpc'
 import { formatErrorMessage } from './errors'
 import { KeyPinRejectedError } from './keyPinStore'
 import { monotonicNow } from './monotonicNow'
@@ -185,7 +186,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         pendingRequests: new Map(),
         streamListeners: new Map(),
         reassembly: new Reassembler(limits.reassembled),
-        nextRequestId: 1,
+        nextRequestId: FIRST_REQUEST_ID,
         state: 'opening' as const,
         lastRekeyAt: monotonicNow(),
         rekeyNotBefore: 0,

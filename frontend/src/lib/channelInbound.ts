@@ -182,7 +182,17 @@ export class ChannelInbound<T extends InboundChannel = InboundChannel> {
       case 'drop-poisoned':
         return null
       case 'drop-unknown':
-        log.warn('dropped chunk for an unknown correlation id', { channel_id: ch.channelId, correlation_id: correlationId })
+        // The worker answers every request, so a request that this side stops
+        // waiting for still gets its final frames: the response to an aborted or
+        // timed-out call, or the end frame that answers a stream cancel. Those are
+        // expected traffic, so they log at debug level. A duplicate reply to a
+        // request that already completed lands here too, because nothing records
+        // why an id retired. An id that this side never allocated is a protocol
+        // violation and keeps the warning.
+        if (this.deps.rpc.wasAllocated(ch, correlationId))
+          log.debug('dropped a late frame for a retired correlation id', { channel_id: ch.channelId, correlation_id: correlationId })
+        else
+          log.warn('dropped a frame for a correlation id that this client never allocated', { channel_id: ch.channelId, correlation_id: correlationId })
         return null
       case 'too-many':
         log.error('Too many incomplete chunked messages', { channel_id: ch.channelId, correlation_id: correlationId })

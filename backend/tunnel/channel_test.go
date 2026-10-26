@@ -23,6 +23,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 type rollbackChannelService struct {
@@ -1837,6 +1838,73 @@ func TestReassembleDropsOutOfSpecFlags(t *testing.T) {
 	ch.mu.Lock()
 	assert.Empty(t, ch.reassembly, "a dropped out-of-spec frame must leave no reassembly state")
 	ch.mu.Unlock()
+}
+
+// A first chunk whose correlation id has no handler is dropped either way. The
+// next two tests pin the LEVEL of the log line. An id that this client allocated
+// and then retired -- a CallRPC that timed out, a stream that CancelStream
+// released -- still receives the worker's late reply or the data that was in
+// flight, which is expected traffic and logs at debug. An id that this client
+// never allocated is a protocol violation and keeps the warning.
+func TestReassembleLogsLateChunkForRetiredIDAtDebug(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	ch := newReassemblyTestChannel(t)
+	ch.mu.Lock()
+	reqID := ch.allocateReqIDLocked()
+	ch.pending[reqID] = make(chan *leapmuxv1.InnerRpcResponse, 1)
+	ch.mu.Unlock()
+	// The call timed out, so CallRPC's deferred UnregisterPending retired the id.
+	ch.UnregisterPending(reqID)
+
+	more := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
+	payload, complete := ch.reassemble(reqID, more, []byte("late"))
+
+	assert.False(t, complete, "a chunk for a retired id must not complete a message")
+	assert.Nil(t, payload)
+	ch.mu.Lock()
+	assert.Empty(t, ch.reassembly, "a chunk for a retired id must buffer nothing")
+	ch.mu.Unlock()
+	out := logs.String()
+	assert.Contains(t, out, `level=DEBUG msg="tunnel channel dropped a late chunk for a retired correlation id"`)
+	assert.NotContains(t, out, "level=WARN", "a late reply to a retired request is expected traffic")
+}
+
+func TestReassembleClassifiesChunkWithNoHandlerByAllocation(t *testing.T) {
+	const (
+		retired        = `level=DEBUG msg="tunnel channel dropped a late chunk for a retired correlation id"`
+		neverAllocated = `level=WARN msg="tunnel channel dropped a chunk for a correlation id that it never allocated"`
+	)
+	for _, tc := range []struct {
+		name          string
+		nextReqID     uint64
+		correlationID uint64
+		want          string
+	}{
+		{name: "the last allocated id", nextReqID: 4, correlationID: 4, want: retired},
+		{name: "the first allocated id", nextReqID: 4, correlationID: 1, want: retired},
+		{name: "the id after the last allocated one", nextReqID: 4, correlationID: 5, want: neverAllocated},
+		{name: "id zero, which the allocator skips", nextReqID: 4, correlationID: 0, want: neverAllocated},
+		{name: "any id before the first allocation", nextReqID: 0, correlationID: 1, want: neverAllocated},
+		{name: "the largest id", nextReqID: 4, correlationID: ^uint64(0), want: neverAllocated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			ch := newReassemblyTestChannel(t)
+			ch.nextReqID = tc.nextReqID
+
+			more := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
+			_, complete := ch.reassemble(tc.correlationID, more, []byte("stray"))
+
+			assert.False(t, complete)
+			out := logs.String()
+			assert.Contains(t, out, tc.want)
+			for _, other := range []string{retired, neverAllocated} {
+				if other != tc.want {
+					assert.NotContains(t, out, other)
+				}
+			}
+		})
+	}
 }
 
 // The ordinary path must still work: chunks reassemble into the original message.

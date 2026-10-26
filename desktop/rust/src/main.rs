@@ -12,6 +12,10 @@ pub(crate) mod proto {
 #[cfg(test)]
 mod alloc_probe;
 
+// Test-only guards for the CSP that Tauri serves with the bundled frontend.
+#[cfg(test)]
+mod asset_csp;
+
 mod sidecar_ipc;
 
 // Windows-only connect/handshake + its tests. A single module-level `cfg`

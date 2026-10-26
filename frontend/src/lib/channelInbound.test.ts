@@ -1,7 +1,8 @@
 import type { InboundChannel } from './channelInbound'
 import type { Session } from './noise'
+import type { LoggerCapture } from '~/test-support/loggerCapture'
 import { create, toBinary } from '@bufbuild/protobuf'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ChannelMessageFlags,
   ChannelMessageSchema,
@@ -9,6 +10,7 @@ import {
   InnerRpcResponseSchema,
   RekeyAckSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelRpcMux } from './channelRpc'
@@ -208,5 +210,80 @@ describe('channelInbound', () => {
     })
     inbound.handleMessage('ch-1', encryptInner(ch, toBinary(InnerMessageSchema, envelope), 9))
     expect(wait).toHaveBeenCalledWith(true, 0)
+  })
+})
+
+const RETIRED_ID_MESSAGE = 'dropped a late frame for a retired correlation id'
+const NEVER_ALLOCATED_ID_MESSAGE = 'dropped a frame for a correlation id that this client never allocated'
+
+function responsePlaintext(): Uint8Array {
+  return toBinary(InnerMessageSchema, create(InnerMessageSchema, {
+    kind: { case: 'response', value: create(InnerRpcResponseSchema, { payload: new Uint8Array([7]) }) },
+  }))
+}
+
+// A frame whose correlation id has no handler is dropped either way. What these
+// pin is the LEVEL: a late frame for an id this client retired on purpose (an
+// aborted or timed-out call, a cancelled stream's end frame) is expected traffic,
+// while an id this client never allocated is a protocol violation.
+describe('ChannelInbound frames with no handler', () => {
+  let capture: LoggerCapture
+  beforeEach(() => {
+    capture = captureLoggerOutput()
+  })
+  afterEach(() => capture.restore())
+
+  // The counter stands at 5, so ids 1..4 were allocated and have since retired.
+  function deliver(correlationId: number, flags = ChannelMessageFlags.UNSPECIFIED) {
+    const ch = makeChannel({ nextRequestId: 5 })
+    const { inbound } = makeInbound(ch)
+    inbound.handleMessage('ch-1', encryptInner(ch, responsePlaintext(), correlationId, flags))
+    return ch
+  }
+
+  it('logs a frame for a retired correlation id at debug level instead of warning', () => {
+    deliver(4)
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(capture.messages('debug', 'channel')).toContain(RETIRED_ID_MESSAGE)
+  })
+
+  it('treats the first id that a channel allocates as retired', () => {
+    deliver(1)
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(capture.messages('debug', 'channel')).toContain(RETIRED_ID_MESSAGE)
+  })
+
+  it('logs a MORE chunk for a retired correlation id at debug level and buffers nothing', () => {
+    const ch = deliver(3, ChannelMessageFlags.MORE)
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(capture.messages('debug', 'channel')).toContain(RETIRED_ID_MESSAGE)
+    expect(ch.reassembly.size()).toBe(0)
+  })
+
+  it('warns for the id that the counter has not handed out yet', () => {
+    deliver(5)
+    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
+    expect(capture.messages('debug', 'channel')).not.toContain(RETIRED_ID_MESSAGE)
+  })
+
+  it('warns for correlation id 0, which no request ever receives', () => {
+    deliver(0)
+    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
+  })
+
+  it('warns for the largest correlation id that the client still routes', () => {
+    deliver(Number.MAX_SAFE_INTEGER)
+    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
+  })
+
+  it('logs nothing about dropping a frame that has a live handler', () => {
+    const ch = makeChannel({ nextRequestId: 5 })
+    const resolve = vi.fn()
+    ch.pendingRequests.set(4, { resolve, reject: () => {} })
+    const { inbound } = makeInbound(ch)
+    inbound.handleMessage('ch-1', encryptInner(ch, responsePlaintext(), 4))
+    expect(resolve).toHaveBeenCalledOnce()
+    expect(capture.messages('warn', 'channel')).toEqual([])
+    expect(capture.messages('debug', 'channel')).not.toContain(RETIRED_ID_MESSAGE)
   })
 })

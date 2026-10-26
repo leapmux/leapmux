@@ -783,6 +783,18 @@ func (ch *Channel) allocateReqIDLocked() uint64 {
 	}
 }
 
+// allocatedLocked reports whether this client ever allocated reqID, whether its
+// request is still live or has retired.
+//
+// Every id comes from allocateReqIDLocked, which only increments nextReqID and
+// skips 0, so the client allocated exactly the ids in [1, nextReqID]. This reads
+// that range and keeps no record of its own. The counter never wraps in practice
+// (see channel.proto's correlation_id), so the range stays exact. Caller holds
+// ch.mu.
+func (ch *Channel) allocatedLocked(reqID uint64) bool {
+	return reqID != 0 && reqID <= ch.nextReqID
+}
+
 // hasHandlerLocked reports whether reqID still has a live response or stream
 // handler -- i.e. whether an inbound message for it can still be delivered.
 // Caller holds ch.mu.
@@ -949,8 +961,16 @@ const (
 	// reassembleActBuffered: the chunk was buffered, or a poisoned id's chunk was
 	// dropped. reassemble moves on to the next frame.
 	reassembleActBuffered reassembleAction = iota
-	// reassembleActDropUnknownID: a first chunk arrived for a correlation id with
-	// no live handler. reassemble logs it and drops the chunk.
+	// reassembleActDropRetiredID: a first chunk arrived for a correlation id that
+	// this client allocated and has since retired: the late reply to a CallRPC
+	// that timed out, or tunnel data that was in flight when CancelStream released
+	// the stream. That is expected traffic, so reassemble logs it at debug level
+	// and drops the chunk. A duplicate chunked reply to a request that already
+	// completed lands here too, because nothing records why an id retired.
+	reassembleActDropRetiredID
+	// reassembleActDropUnknownID: a first chunk arrived for a correlation id that
+	// this client never allocated, which is a protocol violation. reassemble logs
+	// a warning and drops the chunk.
 	reassembleActDropUnknownID
 	// reassembleActTooLarge: the message breached the size cap or the in-flight
 	// cap. reassemble delivers the error to the offending request only.
@@ -1025,6 +1045,9 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 			// unregisterRequest) keeps the cap a genuine backstop rather than the
 			// only bound.
 			if !ch.hasHandlerLocked(correlationID) {
+				if ch.allocatedLocked(correlationID) {
+					return reassembleOutcome{action: reassembleActDropRetiredID}
+				}
 				return reassembleOutcome{action: reassembleActDropUnknownID}
 			}
 			if ch.liveReassemblyLocked() >= contracts.DefaultMaxIncompleteChunked {
@@ -1106,8 +1129,12 @@ func (ch *Channel) reassemble(correlationID uint64, flags leapmuxv1.ChannelMessa
 	switch out.action {
 	case reassembleActBuffered:
 		return nil, false
+	case reassembleActDropRetiredID:
+		slog.Debug("tunnel channel dropped a late chunk for a retired correlation id",
+			"channel_id", ch.channelID, "correlation_id", correlationID)
+		return nil, false
 	case reassembleActDropUnknownID:
-		slog.Warn("tunnel channel dropped chunk for an unknown correlation id",
+		slog.Warn("tunnel channel dropped a chunk for a correlation id that it never allocated",
 			"channel_id", ch.channelID, "correlation_id", correlationID)
 		return nil, false
 	case reassembleActTooLarge:
