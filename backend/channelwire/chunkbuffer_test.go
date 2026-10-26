@@ -1,6 +1,7 @@
 package channelwire
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,31 @@ func TestChunkBufferAppendChunkAccumulatesAndReportsBreach(t *testing.T) {
 	assert.Equal(t, 11, total)
 
 	assert.Len(t, b.Parts, 3, "every appended chunk is retained until poison or join")
+}
+
+func TestChunkBufferAppendChunkDoesNotRetainEmptyParts(t *testing.T) {
+	for _, limit := range []int{-1, 0, 4} {
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			var b ChunkBuffer
+			for range 1024 {
+				total, breached := b.AppendChunk(nil, limit)
+				assert.Zero(t, total)
+				assert.Equal(t, limit < 0, breached)
+			}
+			assert.Empty(t, b.Parts, "empty chunks must retain no list entries")
+			assert.Empty(t, b.Join())
+		})
+	}
+
+	var b ChunkBuffer
+	b.AppendChunk([]byte("ab"), 4)
+	backing := make([]byte, 1024)
+	b.AppendChunk(backing[:0], 4)
+	total, breached := b.AppendChunk([]byte("cd"), 4)
+	assert.Equal(t, 4, total)
+	assert.False(t, breached)
+	assert.Len(t, b.Parts, 2, "an empty slice must not retain its backing allocation")
+	assert.Equal(t, []byte("abcd"), b.Join())
 }
 
 // Poison releases the accumulated parts and total but marks the entry so its

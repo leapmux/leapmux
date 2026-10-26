@@ -1869,6 +1869,87 @@ func TestReassembleLogsLateChunkForRetiredIDAtDebug(t *testing.T) {
 	assert.NotContains(t, out, "level=WARN", "a late reply to a retired request is expected traffic")
 }
 
+func TestReassembleDropsFinalChunkAfterRequestRetires(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	ch := newReassemblyTestChannel(t)
+	ch.mu.Lock()
+	id := ch.allocateReqIDLocked()
+	ch.pending[id] = make(chan *leapmuxv1.InnerRpcResponse, 1)
+	ch.mu.Unlock()
+	_, complete := ch.reassemble(id, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte{0x12})
+	require.False(t, complete)
+	ch.UnregisterPending(id)
+	payload, complete := ch.reassemble(id, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte{0xff})
+	assert.False(t, complete, "a retired request must not send a fragment to the decoder")
+	assert.Nil(t, payload)
+	assert.Empty(t, ch.reassembly)
+	assert.NotContains(t, logs.String(), "level=WARN")
+	assert.Contains(t, logs.String(), "dropped a late chunk for a retired correlation id")
+}
+
+func TestReassembleAdmitsChunkedRekeyReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		message *leapmuxv1.InnerMessage
+	}{
+		{name: "ack", message: &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_RekeyAck{RekeyAck: &leapmuxv1.RekeyAck{DhPub: []byte{1, 2, 0xff}}}}},
+		{name: "reject", message: &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_RekeyReject{RekeyReject: &leapmuxv1.RekeyReject{RetryAfterMs: 123}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := newReassemblyTestChannel(t)
+			ch.nextReqID = 2
+			ch.rekey.rekeyReqID = 2
+			ch.rekey.rekeyWaiters = []chan rekeyOutcome{make(chan rekeyOutcome, 1)}
+			plaintext, err := proto.Marshal(tc.message)
+			require.NoError(t, err)
+			_, complete := ch.reassemble(2, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, nil)
+			require.False(t, complete)
+			require.Contains(t, ch.reassembly, uint64(2), "an empty first chunk still starts reassembly")
+			assert.Empty(t, ch.reassembly[2].Parts)
+			_, complete = ch.reassemble(2, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, plaintext)
+			require.False(t, complete)
+			payload, complete := ch.reassemble(2, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, nil)
+			require.True(t, complete)
+			assert.Equal(t, plaintext, payload)
+			assert.Empty(t, ch.reassembly)
+			payload, complete = ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, plaintext)
+			assert.False(t, complete, "a previous rekey has no consumer")
+			assert.Nil(t, payload)
+		})
+	}
+}
+
+func TestRecvLoopDropsRetiredFragmentsBeforeDecoding(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	ch, peer, peerWS := pairedRekeyChannel(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	retired, err := ch.SendRPCNoWait(ctx, "Late", nil, RPCHandlers{Response: make(chan *leapmuxv1.InnerRpcResponse, 1)})
+	require.NoError(t, err)
+	ch.UnregisterPending(retired)
+	responses := make(chan *leapmuxv1.InnerRpcResponse, 1)
+	live, err := ch.SendRPCNoWait(ctx, "Live", nil, RPCHandlers{Response: responses})
+	require.NoError(t, err)
+	send := func(id uint64, flags leapmuxv1.ChannelMessageFlags, plaintext []byte) {
+		ciphertext, encryptErr := peer.Encrypt(plaintext)
+		require.NoError(t, encryptErr)
+		require.NoError(t, channelwire.WriteChannelMessage(ctx, peerWS, channelwire.NewChannelMessage(ch.channelID, id, flags, ciphertext)))
+	}
+	send(retired, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte{0xff})
+	send(retired, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte{0xff})
+	plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Response{Response: &leapmuxv1.InnerRpcResponse{Payload: []byte("live response")}}})
+	require.NoError(t, err)
+	send(live, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, plaintext)
+	select {
+	case response := <-responses:
+		assert.Equal(t, []byte("live response"), response.GetPayload())
+	case <-ctx.Done():
+		t.Fatal("the live response did not arrive after the retired fragments")
+	}
+	assert.NotContains(t, logs.String(), "tunnel channel unmarshal error")
+	assert.False(t, ch.Closed())
+}
+
 func TestReassembleClassifiesChunkWithNoHandlerByAllocation(t *testing.T) {
 	const (
 		retired        = `level=DEBUG msg="tunnel channel dropped a late chunk for a retired correlation id"`
@@ -1892,15 +1973,21 @@ func TestReassembleClassifiesChunkWithNoHandlerByAllocation(t *testing.T) {
 			ch := newReassemblyTestChannel(t)
 			ch.nextReqID = tc.nextReqID
 
-			more := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
-			_, complete := ch.reassemble(tc.correlationID, more, []byte("stray"))
-
-			assert.False(t, complete)
-			out := logs.String()
-			assert.Contains(t, out, tc.want)
-			for _, other := range []string{retired, neverAllocated} {
-				if other != tc.want {
-					assert.NotContains(t, out, other)
+			for _, flags := range []leapmuxv1.ChannelMessageFlags{
+				leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+				leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
+			} {
+				logs.Reset()
+				payload, complete := ch.reassemble(tc.correlationID, flags, []byte("stray"))
+				assert.False(t, complete)
+				assert.Nil(t, payload)
+				assert.Empty(t, ch.reassembly)
+				out := logs.String()
+				assert.Contains(t, out, tc.want)
+				for _, other := range []string{retired, neverAllocated} {
+					if other != tc.want {
+						assert.NotContains(t, out, other)
+					}
 				}
 			}
 		})
@@ -1950,9 +2037,41 @@ func TestReassemblePassesThroughUnchunked(t *testing.T) {
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
+	ch.pending[1] = make(chan *leapmuxv1.InnerRpcResponse, 1)
 	payload, complete := ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte("solo"))
 	require.True(t, complete)
 	assert.Equal(t, "solo", string(payload))
+}
+
+func TestReassemblePreservesEmptyChunkTransitions(t *testing.T) {
+	for _, body := range []string{"", "payload"} {
+		t.Run(body, func(t *testing.T) {
+			ch := newReassemblyTestChannel(t)
+			ch.pending[1] = make(chan *leapmuxv1.InnerRpcResponse, 1)
+			for range 1024 {
+				_, complete := ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, nil)
+				require.False(t, complete)
+			}
+			require.Contains(t, ch.reassembly, uint64(1))
+			assert.Empty(t, ch.reassembly[1].Parts)
+			_, complete := ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte(body))
+			require.False(t, complete)
+			payload, complete := ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, nil)
+			require.True(t, complete)
+			assert.Equal(t, body, string(payload))
+			assert.Empty(t, ch.reassembly)
+
+			ch.mu.Lock()
+			ch.poisonReassemblyLocked(1)
+			ch.mu.Unlock()
+			_, complete = ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, nil)
+			assert.False(t, complete)
+			assert.Empty(t, ch.reassembly[1].Parts)
+			_, complete = ch.reassemble(1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, nil)
+			assert.False(t, complete)
+			assert.Empty(t, ch.reassembly)
+		})
+	}
 }
 
 // streamErrorChannel builds a reassembly-only Channel plus a stream-only handler

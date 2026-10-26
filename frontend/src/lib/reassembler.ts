@@ -120,11 +120,7 @@ export class Reassembler {
    * breach is detected before any buffer exists, yet still needs a tombstone. Idempotent.
    */
   poison(correlationId: number): void {
-    let buf = this.buffers.get(correlationId)
-    if (!buf) {
-      buf = { parts: [], total: 0, poisoned: false }
-      this.buffers.set(correlationId, buf)
-    }
+    const buf = this.buffers.get(correlationId) ?? this.start(correlationId)
     buf.poisoned = true
     buf.parts = []
     buf.total = 0
@@ -143,7 +139,7 @@ export class Reassembler {
    * without a log line for each (see ChannelRpcMux.failReassembly); evicting the
    * OLDEST when the cap is exceeded -- Map preserves insertion order -- at worst
    * restores those lines for the message least likely to still have chunks in
-   * flight. A later stray chunk for the evicted id, its terminal chunk included,
+   * flight. A later stray chunk for the evicted id, its final chunk included,
    * has no live handler, so `accept` returns 'drop-unknown' for it before anything
    * deserializes it: it is discarded, not misrouted. The channel allocated that
    * id, so ChannelInbound logs the drop at debug level.
@@ -191,7 +187,9 @@ export class Reassembler {
    * of `buf.total`) to size the too-large outcome and the reassembled buffer.
    */
   append(buf: ChunkBuffer, chunk: Uint8Array): { total: number, breached: boolean } {
-    buf.parts.push(chunk)
+    // Retaining empty chunks would grow this list without reaching the byte limit.
+    if (chunk.length > 0)
+      buf.parts.push(chunk)
     buf.total += chunk.length
     return { total: buf.total, breached: buf.total > this.maxMessageSize }
   }

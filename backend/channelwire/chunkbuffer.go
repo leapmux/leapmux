@@ -8,7 +8,7 @@ package channelwire
 // It is DELIBERATELY only the primitive, not the reassembly state machine. Each
 // receiver wraps it in its own machine with different cap, reap, and locking
 // semantics -- the tunnel client reaps tombstones through its handler registry under
-// a lock; the worker counts tombstones toward its cap, reaps on the terminal chunk,
+// a lock; the worker caps tombstones separately, reaps on the final chunk,
 // and runs single-goroutine with no registry. Read those types before changing this
 // one: the struct is shared, but the machines around it encode each receiver's own
 // trust model. (The Hub's channelmgr.chunkTracker tracks only an estimated size --
@@ -33,13 +33,17 @@ func (b *ChunkBuffer) Poison() {
 	b.Total = 0
 }
 
-// AppendChunk appends chunk to the buffer, adds its length to the running total, and
+// AppendChunk retains nonempty chunks, adds their length to the running total, and
 // reports the new total plus whether it now breaches limit. It is the
 // accumulate-and-check step both the MORE and final-chunk branches of a receiver's
 // reassembly share; the divergent response to a breach -- tombstone mid-sequence,
 // reap on the terminal chunk -- stays with each caller.
 func (b *ChunkBuffer) AppendChunk(chunk []byte, limit int) (total int, breached bool) {
-	b.Parts = append(b.Parts, chunk)
+	// Empty chunks still advance the caller's framing state, but retaining them
+	// would grow the parts list without ever reaching the byte limit.
+	if len(chunk) > 0 {
+		b.Parts = append(b.Parts, chunk)
+	}
 	b.Total += len(chunk)
 	return b.Total, b.Total > limit
 }
@@ -67,9 +71,8 @@ func (b *ChunkBuffer) Join() []byte {
 // count because its tombstones are reaped by handler unregistration; the worker
 // session (internal/worker/channel.reassembler.counts) takes both because it
 // bounds tombstones itself. Derived by scanning rather than kept as running
-// totals so neither count can drift from the map it describes; the map is
-// bounded (live plus tombstones, each capped at the receiver's max-incomplete),
-// so the scan is trivial.
+// totals so neither count can drift from the map it describes. Each receiver
+// controls the map size through its buffer limits and request cleanup.
 func CountByState(buffers map[uint64]*ChunkBuffer) (live, tombstones int) {
 	for _, buf := range buffers {
 		if buf.Poisoned {

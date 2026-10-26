@@ -84,7 +84,7 @@ type Channel struct {
 // The per-message chunk buffer (accumulate, cap, poison) is the shared
 // channelwire.ChunkBuffer. The worker session (internal/worker/channel.reassembler)
 // wraps the SAME struct in a DELIBERATELY different state machine -- peer-initiated
-// requests, no handler registry, tombstones counted toward the cap, terminal-chunk
+// requests, no handler registry, separate live and tombstone caps, final-chunk
 // reaping, single-goroutine access. Read that type before changing the reassembly
 // here: the struct is shared, but the machines around it encode each receiver's own
 // trust model.
@@ -101,7 +101,7 @@ type Channel struct {
 // unlike the worker session which bounds tombstones itself). Derived rather than
 // kept as a running total so it can never drift from the map it describes. Caller
 // holds ch.mu. The browser client derives the same count
-// (frontend/src/lib/channel.ts's Reassembler.liveCount).
+// (frontend/src/lib/reassembler.ts, Reassembler.liveCount).
 func (ch *Channel) liveReassemblyLocked() int {
 	live, _ := channelwire.CountByState(ch.reassembly)
 	return live
@@ -325,14 +325,6 @@ type initiatorHandshaker struct {
 	finish func(hs *noiseutil.HandshakeState, message2 []byte) (*noiseutil.Session, error)
 }
 
-// newInitiatorHandshaker selects the handshake pair for the worker's encryption mode,
-// reading params.EncryptionMode exactly once.
-//
-// Every mode but CLASSIC gets the hybrid pair. That is deliberate rather than a
-// fallthrough: UNSPECIFIED already means POST_QUANTUM by the time it reaches a client
-// (ChannelService.GetWorkerHandshakeParams normalises it), and defaulting an unknown
-// future mode to the stronger handshake fails it closed on a handshake error rather
-// than silently downgrading the channel to X25519-only.
 // mlkemPubForRekey returns the worker's static ML-KEM encapsulation key to
 // retain for in-band rekey, or nil on classical-mode channels (which send no
 // PQ entropy during rekey). Matches newInitiatorHandshaker's single read of the
@@ -344,6 +336,14 @@ func mlkemPubForRekey(params *leapmuxv1.GetWorkerHandshakeParamsResponse) []byte
 	return params.GetMlkemPublicKey()
 }
 
+// newInitiatorHandshaker selects the handshake pair for the worker's encryption mode,
+// reading params.EncryptionMode exactly once.
+//
+// Every mode but CLASSIC gets the hybrid pair. That is deliberate rather than a
+// fallthrough: UNSPECIFIED already means POST_QUANTUM by the time it reaches a client
+// (ChannelService.GetWorkerHandshakeParams normalises it), and defaulting an unknown
+// future mode to the stronger handshake fails it closed on a handshake error rather
+// than silently downgrading the channel to X25519-only.
 func newInitiatorHandshaker(params *leapmuxv1.GetWorkerHandshakeParamsResponse) initiatorHandshaker {
 	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		return initiatorHandshaker{
@@ -1032,24 +1032,21 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 		return reassembleOutcome{action: reassembleActBuffered}
 	}
 
+	// Every new inbound message needs a consumer, regardless of its chunk flags.
+	// Otherwise a late final chunk would reach the decoder without its prefix.
+	// Rekey replies use their own registration, rather than the RPC handler maps.
+	// Both rekey fields are guarded by ch.mu; taking rekeyMu here would invert
+	// the rekeyMu -> ch.mu order used when a rekey starts.
+	inFlightRekey := len(ch.rekey.rekeyWaiters) > 0 && ch.rekey.rekeyReqID == correlationID
+	if !buffering && !ch.hasHandlerLocked(correlationID) && !inFlightRekey {
+		if ch.allocatedLocked(correlationID) {
+			return reassembleOutcome{action: reassembleActDropRetiredID}
+		}
+		return reassembleOutcome{action: reassembleActDropUnknownID}
+	}
+
 	if more {
 		if !buffering {
-			// Reassembly state belongs to the request that will consume it. Every
-			// inbound chunked message correlates to a request THIS side registered
-			// (recvLoop dispatches no peer-initiated requests), so a first chunk for
-			// an id with no live handler can never be completed: buffering it would
-			// pin up to maxReassembled until the channel died, and four such orphans
-			// would exhaust the cap and permanently reject every subsequent chunked
-			// message on an otherwise healthy channel. Tying the buffer's lifetime to
-			// the registration (created only for a live request here, dropped by
-			// unregisterRequest) keeps the cap a genuine backstop rather than the
-			// only bound.
-			if !ch.hasHandlerLocked(correlationID) {
-				if ch.allocatedLocked(correlationID) {
-					return reassembleOutcome{action: reassembleActDropRetiredID}
-				}
-				return reassembleOutcome{action: reassembleActDropUnknownID}
-			}
 			if ch.liveReassemblyLocked() >= contracts.DefaultMaxIncompleteChunked {
 				// Tombstone the rejected id BEFORE erroring it, exactly as the oversize
 				// path below does. Erroring without one left chunks 2..N of the message

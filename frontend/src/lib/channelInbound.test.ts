@@ -10,6 +10,7 @@ import {
   InnerRpcResponseSchema,
   RekeyAckSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { makeIdentitySession } from '~/test-support/identitySession'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelError } from './channelError'
 import { ChannelInbound } from './channelInbound'
@@ -18,37 +19,11 @@ import { ChannelSession } from './channelSession'
 import { generateRekeyEphemeral } from './noise-hybrid'
 import { Reassembler } from './reassembler'
 
-function mockSession(): Session {
-  // `satisfies Session` (not `as unknown as`) so a future CipherState method
-  // addition fails to compile here instead of silently diverging the mock.
-  // Each half carries the full CipherStateLike surface; the unused direction's
-  // method is a no-op never called.
-  const noop = () => new Uint8Array()
-  return {
-    send: {
-      encrypt: (pt: Uint8Array) => new Uint8Array(pt),
-      decrypt: noop,
-      needsRekey: () => false,
-      rekeyWithSecret: vi.fn(),
-      clearPrev: vi.fn(),
-      nonce: () => 0,
-    },
-    receive: {
-      encrypt: noop,
-      decrypt: (ct: Uint8Array) => new Uint8Array(ct),
-      needsRekey: () => false,
-      rekeyWithSecret: vi.fn(),
-      clearPrev: vi.fn(),
-      nonce: () => 0,
-    },
-  } satisfies Session
-}
-
 function makeChannel(overrides?: Partial<InboundChannel>): InboundChannel {
   return {
     channelId: 'ch-1',
     workerId: 'w1',
-    session: mockSession(),
+    session: makeIdentitySession(),
     maxReassembledMessageSize: 1024,
     pendingRequests: new Map(),
     streamListeners: new Map(),
@@ -102,11 +77,7 @@ function makeInbound(ch: InboundChannel, opts?: {
 }
 
 function encryptInner(ch: InboundChannel, plaintext: Uint8Array, correlationId: number, flags = ChannelMessageFlags.UNSPECIFIED) {
-  const ciphertext = ch.session.receive.decrypt === ch.session.send.encrypt
-    ? plaintext
-    : plaintext
-  // Decrypt path uses receive.decrypt which is identity in mockSession.
-  void ciphertext
+  // Identity-session fixtures use the plaintext as their ciphertext.
   return create(ChannelMessageSchema, {
     protocolVersion: 1,
     channelId: ch.channelId,

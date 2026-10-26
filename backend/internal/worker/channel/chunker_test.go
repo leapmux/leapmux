@@ -47,6 +47,34 @@ func TestReassemblerBuffersThenDeliversChunkedMessage(t *testing.T) {
 	assert.Empty(t, r.buffers, "delivery must free the sequence's slot")
 }
 
+func TestReassemblerPreservesEmptyChunkTransitions(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{"", "payload"} {
+		t.Run(body, func(t *testing.T) {
+			r := newReassembler(100, 4)
+			require.Equal(t, reassemblyBuffered, r.accept(1, nil, true).action)
+			require.Contains(t, r.buffers, uint64(1))
+			for range 1024 {
+				require.Equal(t, reassemblyBuffered, r.accept(1, nil, true).action)
+			}
+			assert.Empty(t, r.buffers[1].Parts)
+			require.Equal(t, reassemblyBuffered, r.accept(1, []byte(body), true).action)
+			out := r.accept(1, nil, false)
+			require.Equal(t, reassemblyDeliver, out.action)
+			assert.Equal(t, body, string(out.plaintext))
+			assert.True(t, out.chunked)
+			assert.Empty(t, r.buffers)
+
+			require.Equal(t, reassemblyBuffered, r.accept(2, nil, true).action)
+			r.buffers[2].Poison()
+			assert.Equal(t, reassemblyDropPoisoned, r.accept(2, nil, true).action)
+			assert.Empty(t, r.buffers[2].Parts)
+			assert.Equal(t, reassemblyDropPoisoned, r.accept(2, nil, false).action)
+			assert.Empty(t, r.buffers)
+		})
+	}
+}
+
 func TestReassemblerRefusesNewSequencePastTheLiveCap(t *testing.T) {
 	t.Parallel()
 
