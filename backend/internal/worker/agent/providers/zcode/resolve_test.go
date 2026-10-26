@@ -2,13 +2,20 @@ package zcode
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -829,4 +836,214 @@ func TestListAvailableProvidersUsesTheLaunchResolver(t *testing.T) {
 				slices.Contains(providers, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE))
 		})
 	}
+}
+
+func TestZCodeInstallRoot(t *testing.T) {
+	t.Parallel()
+
+	mac := filepath.Join("Applications", "ZCode.app", "Contents")
+	assert.Equal(t, mac, zcodeInstallRoot(filepath.Join(mac, "Resources", "glm", "zcode.cjs")))
+	install := filepath.Join("opt", "ZCode")
+	assert.Equal(t, install, zcodeInstallRoot(filepath.Join(install, "resources", "glm", "zcode.cjs")))
+}
+
+func TestZCodeInstalledScript(t *testing.T) {
+	t.Parallel()
+
+	nothing := func(string) bool { return false }
+	assert.Equal(t, "/custom/zcode.cjs",
+		zcodeInstalledScript(launch.Spec{Program: "/usr/bin/node", PrefixArgs: []string{"/custom/zcode.cjs"}}, nothing),
+		"a spec that runs the script carries it")
+
+	script, _ := zcodeStubScript()
+	installed := func(p string) bool { return p == script }
+	assert.Equal(t, script, zcodeInstalledScript(launch.Spec{Program: "zcode"}, installed),
+		"a launcher on PATH beside an installed application finds the application's script")
+	assert.Empty(t, zcodeInstalledScript(launch.Spec{Program: "zcode"}, nothing),
+		"a launcher on PATH with no installed application has no script")
+}
+
+// zcodeTestAsar writes an asar archive whose header lists entries and whose data holds
+// files, in the layout that Electron writes: a pickle with the size of the header
+// pickle, the header pickle with the JSON header, padding to 4 bytes, then the data.
+func zcodeTestAsar(t *testing.T, path, headerJSON string, data []byte) {
+	t.Helper()
+	header := []byte(headerJSON)
+	payload := 4 + len(header)
+	if payload%4 != 0 {
+		payload += 4 - payload%4
+	}
+	var out []byte
+	out = binary.LittleEndian.AppendUint32(out, 4)
+	out = binary.LittleEndian.AppendUint32(out, uint32(payload+4))
+	out = binary.LittleEndian.AppendUint32(out, uint32(payload))
+	out = binary.LittleEndian.AppendUint32(out, uint32(len(header)))
+	out = append(out, header...)
+	out = append(out, make([]byte, payload-4-len(header))...)
+	out = append(out, data...)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, out, 0o600))
+}
+
+// zcodeTestPackageAsar writes an asar archive whose root package.json states version,
+// beside a nested package.json that states another one.
+func zcodeTestPackageAsar(t *testing.T, path, version string) {
+	t.Helper()
+	nested := []byte(`{"version":"9.9.9"}`)
+	pkg := []byte(`{"name":"@zcode/desktop","version":` + strconv.Quote(version) + `}`)
+	zcodeTestAsar(t, path, fmt.Sprintf(
+		`{"files":{"node_modules":{"files":{"x":{"files":{"package.json":{"size":%d,"offset":"0"}}}}},"package.json":{"size":%d,"offset":"%d"}}}`,
+		len(nested), len(pkg), len(nested)), append(nested, pkg...))
+}
+
+// Each case lays the installation out inside the test's own directory, and the lookup
+// reads only the archive beside the glm directory, so no file outside the directory can
+// decide a case.
+func TestZCodeAppVersion(t *testing.T) {
+	t.Parallel()
+
+	macScript := filepath.Join("ZCode.app", "Contents", "Resources", "glm", "zcode.cjs")
+	macArchive := filepath.Join("ZCode.app", "Contents", "Resources", "app.asar")
+	for _, test := range []struct {
+		name   string
+		write  func(t *testing.T, dir string)
+		script string
+		want   string
+	}{
+		{
+			name:   "the macOS bundle's archive",
+			write:  func(t *testing.T, dir string) { zcodeTestPackageAsar(t, filepath.Join(dir, macArchive), "3.16.3") },
+			script: macScript,
+			want:   "3.16.3",
+		},
+		{
+			name: "a Windows or Linux installation's archive",
+			write: func(t *testing.T, dir string) {
+				zcodeTestPackageAsar(t, filepath.Join(dir, "ZCode", "resources", "app.asar"), "3.16.4")
+			},
+			script: filepath.Join("ZCode", "resources", "glm", "zcode.cjs"),
+			want:   "3.16.4",
+		},
+		{
+			name: "an unpacked package.json",
+			write: func(t *testing.T, dir string) {
+				archive := filepath.Join(dir, macArchive)
+				zcodeTestAsar(t, archive, `{"files":{"package.json":{"size":20,"unpacked":true}}}`, nil)
+				require.NoError(t, os.MkdirAll(archive+".unpacked", 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(archive+".unpacked", "package.json"), []byte(`{"version":"3.17.0"}`), 0o600))
+			},
+			script: macScript,
+			want:   "3.17.0",
+		},
+		{
+			name: "only a nested package.json",
+			write: func(t *testing.T, dir string) {
+				zcodeTestAsar(t, filepath.Join(dir, macArchive),
+					`{"files":{"node_modules":{"files":{"package.json":{"size":19,"offset":"0"}}}}}`, []byte(`{"version":"9.9.9"}`))
+			},
+			script: macScript,
+			want:   zcodeUnknownAppVersion,
+		},
+		{
+			name: "a file that is not an asar archive",
+			write: func(t *testing.T, dir string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, filepath.Dir(macArchive)), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, macArchive), []byte("PK\x03\x04 not an asar archive"), 0o600))
+			},
+			script: macScript,
+			want:   zcodeUnknownAppVersion,
+		},
+		{
+			name: "a header longer than the file",
+			write: func(t *testing.T, dir string) {
+				zcodeTestPackageAsar(t, filepath.Join(dir, macArchive), "3.16.3")
+				archive := filepath.Join(dir, macArchive)
+				data, err := os.ReadFile(archive)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(archive, data[:40], 0o600))
+			},
+			script: macScript,
+			want:   zcodeUnknownAppVersion,
+		},
+		{
+			name: "an offset past the end of the file",
+			write: func(t *testing.T, dir string) {
+				zcodeTestAsar(t, filepath.Join(dir, macArchive), `{"files":{"package.json":{"size":20,"offset":"4096"}}}`, []byte(`{"version":"3.16.3"}`))
+			},
+			script: macScript,
+			want:   zcodeUnknownAppVersion,
+		},
+		{
+			name:   "a value that is not a version",
+			write:  func(t *testing.T, dir string) { zcodeTestPackageAsar(t, filepath.Join(dir, macArchive), "${version}") },
+			script: macScript,
+			want:   zcodeUnknownAppVersion,
+		},
+		{
+			name: "a value with a control character",
+			write: func(t *testing.T, dir string) {
+				zcodeTestPackageAsar(t, filepath.Join(dir, macArchive), "3.16.3\nX-Injected: 1")
+			},
+			script: macScript,
+			want:   zcodeUnknownAppVersion,
+		},
+		{
+			name:   "no archive",
+			write:  func(*testing.T, string) {},
+			script: macScript,
+			want:   zcodeUnknownAppVersion,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			test.write(t, dir)
+			assert.Equal(t, test.want, zcodeAppVersion(filepath.Join(dir, test.script)))
+		})
+	}
+
+	assert.Equal(t, zcodeUnknownAppVersion, zcodeAppVersion(""), "no script")
+	assert.Equal(t, zcodeUnknownAppVersion, zcodeAppVersion(macScript),
+		"a relative script identifies no installation, so the worker's directory is never read")
+}
+
+// An update of the application replaces the archive, and the memo reads the new one.
+func TestZCodeAppVersion_ReadsAnUpdatedArchive(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "ZCode.app", "Contents", "Resources", "app.asar")
+	script := filepath.Join(dir, "ZCode.app", "Contents", "Resources", "glm", "zcode.cjs")
+	zcodeTestPackageAsar(t, archive, "3.16.3")
+	assert.Equal(t, "3.16.3", zcodeAppVersion(script))
+
+	zcodeTestPackageAsar(t, archive, "3.16.4")
+	later := time.Now().Add(time.Hour)
+	require.NoError(t, os.Chtimes(archive, later, later))
+	assert.Equal(t, "3.16.4", zcodeAppVersion(script))
+}
+
+func TestZCodeAppVersionCache_CoalescesConcurrentArchiveReads(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var cache zcodeAppVersionCache
+		var reads atomic.Int32
+		release := make(chan struct{})
+		reader := func(string, int64) (string, error) { reads.Add(1); <-release; return "3.16.3", nil }
+		key := zcodeAppVersionKey{path: "archive", size: 100, modTime: 1}
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() { assert.Equal(t, "3.16.3", cache.load(key, reader)) })
+		}
+		synctest.Wait()
+		assert.Equal(t, int32(1), reads.Load(), "one archive generation is read once")
+		close(release)
+		wg.Wait()
+		assert.Equal(t, "3.16.3", cache.load(key, reader))
+		assert.Equal(t, int32(1), reads.Load())
+		key.modTime++
+		assert.Equal(t, "3.16.3", cache.load(key, reader))
+		assert.Equal(t, int32(2), reads.Load())
+	})
 }

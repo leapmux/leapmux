@@ -1,9 +1,9 @@
 /**
  * ZCode fixtures use the shared agent workspace lifetime.
- * The skip check requires a launcher or bundled script and a usable provider configuration.
- * These checks match the worker's launch requirements.
+ * The skip check requires a launcher or bundled script.
+ * The suite supplies private provider configuration and a mock credential.
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { findBinary, unusableBinaryReason } from './helpers/binaryOnPath'
@@ -24,7 +24,6 @@ export const ZCODE_E2E_SKIP_REASON: string | null = computeZCodeE2ESkipReason({
   platform: process.platform,
   home: homedir(),
   env: hubSpawnEnv(),
-  readConfig: path => (existsSync(path) ? readFileSync(path, 'utf-8') : null),
 })
 
 export const zcodeTest = createProviderTest({

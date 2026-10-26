@@ -8,10 +8,26 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRunAgentHelperDispatchesTheNativeProbeBeforeProviderHelpers(t *testing.T) {
+	t.Setenv(contracts.EnvAgentHelper, "/provider-spec.json")
+	t.Setenv("LEAPMUX_NATIVE_PROBE_TEST", "é日本語\nvalue")
+	args, err := (envprobe.Request{Variables: []string{"LEAPMUX_NATIVE_PROBE_TEST"}}).Arguments()
+	require.NoError(t, err)
+	var stdout, stderr bytes.Buffer
+	code, handled := RunAgentHelper(args, strings.NewReader(""), &stdout, &stderr)
+	require.True(t, handled)
+	require.Zero(t, code, stderr.String())
+	snapshot, err := envprobe.Decode(stdout.Bytes())
+	require.NoError(t, err)
+	assert.Equal(t, "é日本語\nvalue", snapshot.Values["LEAPMUX_NATIVE_PROBE_TEST"])
+	assert.Equal(t, "/provider-spec.json", os.Getenv(contracts.EnvAgentHelper))
+}
 
 func TestRunAgentHelperRunsOnlyWithNoArgumentAndTheVariable(t *testing.T) {
 	t.Parallel()

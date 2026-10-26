@@ -2,10 +2,22 @@ package zcode
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -14,22 +26,149 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// zcodeBuiltinZAIAccountConfig holds the Z.ai account rules of an installed release, with
+// the model lists that the release ships.
 const zcodeBuiltinZAIAccountConfig = `{
   "revision":30,
   "config":{"providerConfigRules":{"providerRules":[
-    {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
-    {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"}}},
-    {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"}}}
+    {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"},"builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]}},
+    {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"},"builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]}},
+    {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"},"builtinModelIds":["GLM-5.3-Flash","GLM-5.2","GLM-5-Turbo"]}}
   ]}}
 }`
 
-func seedZCodeAccountBridgeForTests(catalog *zcodeCatalog) {
-	catalog.accountProviderIDs = map[string]string{
-		"builtin:zai-coding-plan": "account:zai-individual-coding-plan",
+// zcodeTestRelease writes content as an installed zcode-builtin.json and loads it,
+// so a test states exactly the account rules it needs.
+func zcodeTestRelease(t *testing.T, content string) (zcodeBuiltinProviderFile, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	release, basedOn, err := loadZCodeBuiltinProviderFile(path)
+	require.NoError(t, err)
+	return release, basedOn
+}
+
+// zcodeTestBindings binds the account plans of catalog against the release in content
+// and the credential store in credentials.
+func zcodeTestBindings(t *testing.T, catalog zcodeCatalog, content string, credentials zcodeCredentials) []zcodeAccountBinding {
+	t.Helper()
+	release, _ := zcodeTestRelease(t, content)
+	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, credentials)
+	require.NoError(t, err)
+	return bindings
+}
+
+// zcodeTestAccountPayload builds the account snapshot of catalog against the release in
+// content, with no credential store and the Start Plan entitlements in startPlans.
+func zcodeTestAccountPayload(t *testing.T, catalog zcodeCatalog, content string, startPlans map[string]zcodeAccountEntitlement) zcodeAccountProviderPayload {
+	t.Helper()
+	release, basedOn := zcodeTestRelease(t, content)
+	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, zcodeCredentials{})
+	require.NoError(t, err)
+	return newZCodeAccountProviderPayload(bindings, basedOn, "leapmux-agent", startPlans)
+}
+
+// zcodeTestAccountBridge records the account bridge of catalog against the release in
+// content, as an accepted account snapshot does.
+func zcodeTestAccountBridge(t *testing.T, catalog *zcodeCatalog, content string) {
+	t.Helper()
+	catalog.recordAccountBridge(zcodeTestBindings(t, *catalog, content, zcodeCredentials{}))
+}
+
+// zcodeTestCredentialSecret is the secret of every test credential store.
+const zcodeTestCredentialSecret = "leapmux-test-secret"
+
+// zcodeTestCredentialGetenv supplies the test secret as ZCODE_CREDENTIAL_SECRET.
+func zcodeTestCredentialGetenv(name string) string {
+	if name == zcodeCredentialSecretEnv {
+		return zcodeTestCredentialSecret
 	}
-	catalog.legacyProviderIDs = map[string]string{
-		"account:zai-individual-coding-plan": "builtin:zai-coding-plan",
+	return ""
+}
+
+// zcodeTestEncryptCredential encrypts plain as ZCode's credential cipher does.
+func zcodeTestEncryptCredential(t *testing.T, key [sha256.Size]byte, plain string) string {
+	t.Helper()
+	iv := make([]byte, zcodeCredentialIVBytes)
+	_, err := rand.Read(iv)
+	require.NoError(t, err)
+	block, err := aes.NewCipher(key[:])
+	require.NoError(t, err)
+	gcm, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	sealed := gcm.Seal(nil, iv, []byte(plain), nil)
+	ciphertext, tag := sealed[:len(sealed)-zcodeCredentialTagBytes], sealed[len(sealed)-zcodeCredentialTagBytes:]
+	encode := base64.RawURLEncoding.EncodeToString
+	return zcodeCredentialCipherPrefix + encode(iv) + "." + encode(tag) + "." + encode(ciphertext)
+}
+
+// zcodeTestCredentialStore writes values, encrypted, into a credential store under a
+// new home directory, and opens it with the test secret.
+func zcodeTestCredentialStore(t *testing.T, values map[string]string) zcodeCredentialStore {
+	t.Helper()
+	store := newZCodeCredentialStore(t.TempDir(), zcodeTestCredentialGetenv)
+	encrypted := map[string]string{}
+	for key, value := range values {
+		encrypted[key] = zcodeTestEncryptCredential(t, store.key, value)
 	}
+	data, err := json.Marshal(encrypted)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+	require.NoError(t, os.WriteFile(store.path, data, 0o600))
+	return store
+}
+
+// zcodeTestReadCredentials reads a test credential store.
+func zcodeTestReadCredentials(t *testing.T, store zcodeCredentialStore) zcodeCredentials {
+	t.Helper()
+	credentials, err := store.read()
+	require.NoError(t, err)
+	return credentials
+}
+
+// zcodeTestUserInfo is the stored profile of a signed-in Z.ai account: the raw
+// profile of the Z.ai user API, which the desktop stores for Z.ai.
+func zcodeTestUserInfo(id string) string {
+	return `{"email":"u@example.com","name":"User","user_id":"` + id + `"}`
+}
+
+// zcodeOfflineTransport fails the test on any request, so a test agent can never reach
+// ZCode's billing API.
+type zcodeOfflineTransport struct{ t *testing.T }
+
+func (o zcodeOfflineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	o.t.Errorf("a test agent sent a request to %s", req.URL.Redacted())
+	return nil, errors.New("the test agent is offline")
+}
+
+// zcodeTestStartPlanServer is a billing/balance endpoint over TLS. It returns the
+// server and the client that trusts it, with the redirect policy of production.
+func zcodeTestStartPlanServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *http.Client) {
+	t.Helper()
+	server := httptest.NewTLSServer(handler)
+	t.Cleanup(server.Close)
+	return server, newZCodeStartPlanHTTPClient(server.Client().Transport)
+}
+
+// seedZCodeAccountStateForTests binds the agent's catalog against the Z.ai release and
+// the agent's credential store, and records the result as an accepted account
+// snapshot, as pushAccountProviderConfig does.
+func seedZCodeAccountStateForTests(t *testing.T, a *Agent) {
+	t.Helper()
+	credentials, err := a.credentials.read()
+	require.NoError(t, err)
+	bindings := zcodeTestBindings(t, a.catalog, zcodeBuiltinZAIAccountConfig, credentials)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	a.catalog.recordAccountBridge(bindings)
+	entitlements := map[string]zcodeAccountEntitlement{}
+	for _, binding := range bindings {
+		if binding.rule.isStartPlan() {
+			require.NotEmpty(t, binding.rule.Config.BuiltinModelIDs)
+			entitlements[binding.legacyID] = zcodeAvailable(binding.rule.Config.BuiltinModelIDs...)
+		}
+	}
+	a.account = newZCodeAccountState(zcodeAccountSnapshotInputs{bindings: bindings}, entitlements, a.Clock().Now())
 }
 
 // zcodeRecordedStdin is the stdin a test agent writes its requests to.
@@ -73,6 +212,16 @@ func (w *zcodeRecordedStdin) Requests(t *testing.T) []zcodeSentRequest {
 	return out
 }
 
+// zcodeAwaitReplies waits until stdin holds n frames and returns them decoded. A
+// reply that the agent sends from a goroutine of its own needs it.
+func zcodeAwaitReplies(t *testing.T, stdin *zcodeRecordedStdin, n int) []zcodeSentRequest {
+	t.Helper()
+	require.Eventually(t, func() bool { return len(stdin.Frames()) >= n }, 30*time.Second, time.Millisecond)
+	requests := stdin.Requests(t)
+	require.Len(t, requests, n)
+	return requests
+}
+
 // zcodeSentRequest is a frame LeapMux wrote, in either direction: a request of our
 // own (method + params) or a reply to a server request (id + result).
 type zcodeSentRequest struct {
@@ -96,6 +245,13 @@ func newZCodeTestAgent(t *testing.T, sink agent.ProviderServices) *Agent {
 
 func newZCodeTestAgentWithStdin(t *testing.T, sink agent.ProviderServices, stdin *zcodeRecordedStdin) *Agent {
 	t.Helper()
+	return newZCodeTestAgentWithClock(t, sink, stdin, nil)
+}
+
+// newZCodeTestAgentWithClock builds a test agent whose timers run on clock. A nil
+// clock selects the real one.
+func newZCodeTestAgentWithClock(t *testing.T, sink agent.ProviderServices, stdin *zcodeRecordedStdin, clock quartz.Clock) *Agent {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	// A handler may start an RPC whose reply never comes (nothing answers this
 	// stdin). Cancelling at cleanup unblocks that goroutine instead of leaving it
@@ -108,12 +264,17 @@ func newZCodeTestAgentWithStdin(t *testing.T, sink agent.ProviderServices, stdin
 			Cancel:      cancel,
 			ProcessDone: make(chan struct{}),
 			Stdin:       stdin,
+			Clock:       clock,
 		}),
-		sink:            sink,
-		workingDir:      "/tmp/zcode-workspace",
-		workspace:       zcodeWorkspaceFor("/tmp/zcode-workspace"),
-		sessionID:       "sess-1",
-		mode:            contracts.ZCodeDefaultMode,
+		sink:          sink,
+		workingDir:    "/tmp/zcode-workspace",
+		workspace:     zcodeWorkspaceFor("/tmp/zcode-workspace"),
+		sessionID:     "sess-1",
+		mode:          contracts.ZCodeDefaultMode,
+		identity:      zcodeClientIdentity{appVersion: zcodeUnknownAppVersion, deviceMid: "00000000-0000-4000-8000-000000000000"},
+		startPlanHTTP: newZCodeStartPlanHTTPClient(zcodeOfflineTransport{t: t}),
+		projectTokens: newZCodeProjectTokenClient(newZCodeStartPlanHTTPClient(zcodeOfflineTransport{t: t}),
+			zcodeProductionAccountEndpoints, quartz.NewReal(), func() float64 { return 0 }),
 		toolCalls:       map[string]*zcodeToolCall{},
 		pendingControls: map[string]*pendingControl{},
 	}

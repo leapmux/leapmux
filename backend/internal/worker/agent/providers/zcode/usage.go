@@ -39,7 +39,6 @@ func (u zcodeUsage) empty() bool {
 
 // zcodeRuntimeState is the `runtime` object of a state snapshot or patch.
 type zcodeRuntimeState struct {
-	EventSeq      int64              `json:"eventSeq"`
 	ActiveTurnID  string             `json:"activeTurnId"`
 	ContextUsage  *zcodeContextUsage `json:"contextUsage"`
 	StateRevision int64              `json:"stateRevision"`
@@ -114,42 +113,31 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 	return out
 }
 
-// applyZCodeRuntimeState records the runtime readout and broadcasts it.
-func (a *Agent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
+// applyZCodeRuntimeStateLocked records an incremental runtime observation.
+// Caller holds Mu and broadcasts the returned fields after releasing it.
+func (a *Agent) applyZCodeRuntimeStateLocked(runtime *zcodeRuntimeState) map[string]any {
 	if runtime == nil {
-		return
+		return nil
 	}
-	a.noteZCodeStateRevision(runtime.StateRevision)
+	a.noteZCodeStateRevisionLocked(runtime.StateRevision)
 	info := map[string]any{}
-
 	if usage := zcodeContextUsageFromRuntime(runtime.ContextUsage); len(usage) > 0 {
-		a.Mu.Lock()
 		a.latestContextUsage = usage
 		if runtime.ContextUsage.Size > 0 {
 			a.contextWindow = runtime.ContextUsage.Size
 		}
-		a.Mu.Unlock()
 		info[contracts.SessionInfoKeyContextUsage] = maps.Clone(usage)
 	}
-	// A cost in another currency is omitted, not converted. `total_cost_usd` states
-	// its unit, and filling it from a non-dollar amount would be a wrong number.
+	// A cost in another currency is omitted, not converted. total_cost_usd
+	// states its unit, so a non-dollar amount would be a wrong number.
 	if c := runtime.ContextUsage.costOrNil(); c != nil && c.Currency == zcodeUsageCurrencyUSD {
-		a.Mu.Lock()
 		a.sessionCostUsd = c.Amount
 		a.sessionCostKnown = true
-		a.Mu.Unlock()
 		info[contracts.SessionInfoKeyTotalCostUsd] = c.Amount
 	}
-	if runtime.EventSeq > 0 {
-		a.Mu.Lock()
-		if runtime.EventSeq > a.lastSeq {
-			a.lastSeq = runtime.EventSeq
-		}
-		a.Mu.Unlock()
-	}
-	if len(info) > 0 {
-		a.sink.BroadcastSessionInfo(info)
-	}
+	// A snapshot sequence can cover buffered notifications that have not arrived.
+	// Only adoption, subscription replay, and event dispatch advance lastSeq.
+	return info
 }
 
 // costOrNil reads the cost off a possibly-absent context usage, so the caller needs
@@ -215,13 +203,11 @@ func (a *Agent) refreshZCodeUsageFromSession() {
 		slog.Warn("zcode session/read unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if !a.isCurrentZCodeSession(sessionID) {
-		return
-	}
-	a.applyZCodeRuntimeState(state.Runtime)
+	body := zcodeStatePatchBody{Runtime: state.Runtime}
 	if state.Settings != nil {
-		a.applyZCodeSettingsSnapshot(state.Settings)
+		body.zcodeSettingsSnapshot = *state.Settings
 	}
+	a.applyZCodeSessionObservation(sessionID, body, nil)
 }
 
 // zcodeUsageSnapshot is the usage state one persisted envelope carries.
@@ -280,14 +266,15 @@ func zcodeTurnContent(raw []byte, snap zcodeUsageSnapshot) agent.MessageContent 
 // One writer for three sources -- the session snapshot, a runtime state patch,
 // and the reply to a session/goal -- so the rule is stated once.
 func (a *Agent) noteZCodeStateRevision(revision int64) {
-	if revision <= 0 {
-		return
-	}
 	a.Mu.Lock()
-	if revision > a.stateRevision {
+	a.noteZCodeStateRevisionLocked(revision)
+	a.Mu.Unlock()
+}
+
+func (a *Agent) noteZCodeStateRevisionLocked(revision int64) {
+	if revision > 0 && revision > a.stateRevision {
 		a.stateRevision = revision
 	}
-	a.Mu.Unlock()
 }
 
 // currentZCodeContextWindow returns the context window to label usage with,

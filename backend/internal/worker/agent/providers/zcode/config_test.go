@@ -2,8 +2,11 @@ package zcode
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,6 +15,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLoadZCodeBuiltinProviderFile_ReadsSymlinkSegmentsBeforeNormalizingTheHash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a Windows symlink requires privileges")
+	}
+	root, target := t.TempDir(), t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(target, "child"), 0o700))
+	require.NoError(t, os.Symlink(filepath.Join(target, "child"), filepath.Join(root, "link")))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "release.json"), []byte(`{"revision":1}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "release.json"), []byte(`{"revision":2}`), 0o600))
+	path := filepath.Join(root, "link") + string(filepath.Separator) + ".." + string(filepath.Separator) + "release.json"
+	release, revision, err := loadZCodeBuiltinProviderFile(path)
+	require.NoError(t, err)
+	require.NotNil(t, release.Revision)
+	assert.Equal(t, int64(2), *release.Revision)
+	assert.Equal(t, "zcode-builtin:2:"+zcodeSHA256Hex(filepath.Clean(path)), revision)
+}
 
 func TestZCodeConfigPath(t *testing.T) {
 	t.Parallel()
@@ -575,56 +595,351 @@ func TestZCodeCatalog_RegistryPayloadNestsTheRegistryObject(t *testing.T) {
 	}
 }
 
+// zcodeTestStartAndCodingPlanConfig holds a Z.ai Coding Plan that config.json enables and
+// a Z.ai Start Plan that it does not, as when the user selected the Coding Plan.
+const zcodeTestStartAndCodingPlanConfig = `{
+  "provider": {
+    "builtin:zai-coding-plan": {
+      "kind": "anthropic", "enabled": true,
+      "options": {"apiKey": "plan-key"},
+      "models": {"GLM-5.3": {}, "GLM-5.3-Flash": {}}
+    },
+    "builtin:zai-start-plan": {
+      "kind": "anthropic", "enabled": false,
+      "options": {"apiKey": "start-key"},
+      "models": {"GLM-5.3-Flash": {}}
+    }
+  }
+}`
+
+// zcodeTestStartPlanConfig holds a Z.ai Start Plan alone, which config.json does not
+// enable.
+const zcodeTestStartPlanConfig = `{
+  "provider": {
+    "builtin:zai-start-plan": {
+      "kind": "anthropic", "enabled": false,
+      "options": {"apiKey": "start-key"},
+      "models": {"GLM-5.3-Flash": {}}
+    }
+  }
+}`
+
+// zcodeTestCodingPlanConfig holds a Z.ai Coding Plan alone, which config.json enables.
+const zcodeTestCodingPlanConfig = `{
+  "provider": {
+    "builtin:zai-coding-plan": {
+      "kind": "anthropic", "enabled": true,
+      "options": {"apiKey": "plan-key"},
+      "models": {"GLM-5.3": {}}
+    }
+  }
+}`
+
+// zcodeAccountPayloadWire decodes the encoded snapshot, so a test can tell an absent
+// field from an empty one.
+func zcodeAccountPayloadWire(t *testing.T, payload zcodeAccountProviderPayload) map[string]map[string]json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	require.NoError(t, err)
+	var wire struct {
+		Providers map[string]map[string]json.RawMessage `json:"providers"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &wire))
+	return wire.Providers
+}
+
 func TestZCodeCatalog_AccountProviderPayloadUsesTheInstalledRelease(t *testing.T) {
 	t.Parallel()
 
-	catalog := zcodeTestCatalog(t, `{
-      "provider": {
-        "builtin:zai-coding-plan": {
-          "kind": "anthropic", "enabled": true,
-          "options": {"apiKey": "plan-key"},
-          "models": {"GLM-5.3": {}, "GLM-5.3-Flash": {}}
-        },
-        "builtin:zai-start-plan": {
-          "kind": "anthropic", "enabled": false,
-          "options": {"apiKey": "start-key"},
-          "models": {"GLM-5.3-Flash": {}}
-        }
-      }
-	    }`)
-	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{
-      "revision":30,
-      "config":{"providerConfigRules":{"providerRules":[
-        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
-        {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"}}},
-        {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"}}}
-      ]}}
-    }`), 0o600))
-
-	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
-	require.NoError(t, err)
+	catalog := zcodeTestCatalog(t, zcodeTestStartAndCodingPlanConfig)
+	payload := zcodeTestAccountPayload(t, catalog, zcodeBuiltinZAIAccountConfig, map[string]zcodeAccountEntitlement{
+		"builtin:zai-start-plan": {Availability: zcodeAvailabilityAvailable, Models: []string{"GLM-5.3-Flash", "GLM-5.3"}},
+	})
 	assert.Equal(t, "leapmux-agent", payload.Revision)
 	assert.True(t, strings.HasPrefix(payload.BasedOnZCodeBuiltinRevision, "zcode-builtin:30:"))
 	assert.Len(t, strings.TrimPrefix(payload.BasedOnZCodeBuiltinRevision, "zcode-builtin:30:"), 64)
+	assert.ElementsMatch(t, []string{"account:zai-individual-coding-plan", "account:zai-start-plan"},
+		slices.Collect(maps.Keys(payload.Providers)),
+		"the snapshot holds the selected coding plan and the Start Plan, and no team plan")
 
-	provider, ok := payload.Providers["account:zai-individual-coding-plan"]
-	require.True(t, ok)
-	assert.Equal(t, []string{"GLM-5.3", "GLM-5.3-Flash"}, provider.BuiltinModelIDs)
-	assert.Equal(t, "zhipu-account", provider.Access.Type)
-	assert.True(t, provider.Access.Entitled)
-	assert.Equal(t, zcodeAccountProviderState{Availability: "available", Entitled: true, Current: true},
-		payload.States["account:zai-individual-coding-plan"])
+	plan := payload.Providers["account:zai-individual-coding-plan"]
+	assert.Equal(t, "zhipu-account", plan.Access.Type)
+	assert.True(t, plan.Access.Entitled)
 	start := payload.Providers["account:zai-start-plan"]
-	assert.False(t, start.Access.Entitled)
-	assert.Equal(t, zcodeAccountProviderState{
-		Availability: "unavailable", UnavailableReason: "not-entitled",
-	}, payload.States["account:zai-start-plan"])
+	assert.True(t, start.Access.Entitled,
+		"an available Start Plan is entitled although config.json does not enable it")
 
+	wire := zcodeAccountPayloadWire(t, payload)
+	assert.NotContains(t, wire["account:zai-individual-coding-plan"], "builtinModelIds",
+		"a coding plan omits the list, so the app-server keeps the installed rule's list")
+	assert.JSONEq(t, `["GLM-5.3-Flash","GLM-5.3"]`, string(wire["account:zai-start-plan"]["builtinModelIds"]))
 	encoded, err := json.Marshal(payload)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "plan-key", "the account snapshot must not put the credential on the wire")
 	assert.NotContains(t, string(encoded), "start-key", "the account snapshot must not put any credential on the wire")
+}
+
+func TestZCodeCatalog_AccountProviderPayloadReportsTheStartPlanEntitlement(t *testing.T) {
+	t.Parallel()
+
+	effectiveAt := 1.9e9
+	for _, test := range []struct {
+		name string
+		// entitlement is nil when the check gave no result for the plan.
+		entitlement  *zcodeAccountEntitlement
+		wantEntitled bool
+		// wantModels is the JSON of builtinModelIds, or "" when the field is absent.
+		wantModels string
+		wantState  zcodeAccountProviderState
+	}{
+		{
+			name:         "an available plan offers its models",
+			entitlement:  &zcodeAccountEntitlement{Availability: zcodeAvailabilityAvailable, Models: []string{"GLM-5.3"}},
+			wantEntitled: true,
+			wantModels:   `["GLM-5.3"]`,
+			wantState:    zcodeAccountProviderState{Availability: zcodeAvailabilityAvailable, Entitled: true, Current: true},
+		},
+		{
+			name:         "an available plan with no model offers none",
+			entitlement:  &zcodeAccountEntitlement{Availability: zcodeAvailabilityAvailable, Models: []string{}},
+			wantEntitled: true,
+			wantModels:   `[]`,
+			wantState:    zcodeAccountProviderState{Availability: zcodeAvailabilityAvailable, Entitled: true, Current: true},
+		},
+		{
+			name: "a pending plan is not entitled yet",
+			entitlement: &zcodeAccountEntitlement{
+				Availability: zcodeAvailabilityPending, EffectiveAt: &effectiveAt, Models: []string{},
+			},
+			wantModels: `[]`,
+			wantState: zcodeAccountProviderState{
+				Availability: zcodeAvailabilityPending, Current: true, EffectiveAt: &effectiveAt,
+			},
+		},
+		{
+			name: "an account without the plan is not entitled",
+			entitlement: &zcodeAccountEntitlement{
+				Availability: zcodeAvailabilityUnavailable, UnavailableReason: zcodeUnavailableNotEntitled,
+			},
+			wantState: zcodeAccountProviderState{
+				Availability: zcodeAvailabilityUnavailable, Current: true, UnavailableReason: zcodeUnavailableNotEntitled,
+			},
+		},
+		{
+			name: "a refused credential is not entitled",
+			entitlement: &zcodeAccountEntitlement{
+				Availability: zcodeAvailabilityUnavailable, UnavailableReason: zcodeUnavailableCredentialFailed,
+			},
+			wantState: zcodeAccountProviderState{
+				Availability: zcodeAvailabilityUnavailable, Current: true, UnavailableReason: zcodeUnavailableCredentialFailed,
+			},
+		},
+		{
+			name:        "an unknown entitlement fails closed",
+			entitlement: &zcodeUnknownEntitlement,
+			wantState:   zcodeAccountProviderState{Availability: zcodeAvailabilityUnknown, Current: true},
+		},
+		{
+			name:      "a plan that no check answered fails closed",
+			wantState: zcodeAccountProviderState{Availability: zcodeAvailabilityUnknown, Current: true},
+		},
+		{
+			name:        "an entitlement without availability reads as unknown",
+			entitlement: &zcodeAccountEntitlement{},
+			wantState:   zcodeAccountProviderState{Availability: zcodeAvailabilityUnknown, Current: true},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			catalog := zcodeTestCatalog(t, zcodeTestStartPlanConfig)
+			startPlans := map[string]zcodeAccountEntitlement{}
+			if test.entitlement != nil {
+				startPlans["builtin:zai-start-plan"] = *test.entitlement
+			}
+			payload := zcodeTestAccountPayload(t, catalog, zcodeBuiltinZAIAccountConfig, startPlans)
+
+			assert.Equal(t, test.wantEntitled, payload.Providers["account:zai-start-plan"].Access.Entitled)
+			assert.Equal(t, test.wantState, payload.States["account:zai-start-plan"])
+			models, present := zcodeAccountPayloadWire(t, payload)["account:zai-start-plan"]["builtinModelIds"]
+			if test.wantModels == "" {
+				assert.False(t, present, "the installed rule's list stays, and the plan is not entitled")
+			} else {
+				require.True(t, present)
+				assert.JSONEq(t, test.wantModels, string(models))
+			}
+		})
+	}
+}
+
+func TestZCodeCatalog_AccountProviderPayloadCodingPlanIgnoresStartPlanResults(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, zcodeTestCodingPlanConfig)
+	payload := zcodeTestAccountPayload(t, catalog, zcodeBuiltinZAIAccountConfig, map[string]zcodeAccountEntitlement{
+		"builtin:zai-coding-plan": {
+			Availability: zcodeAvailabilityUnavailable, UnavailableReason: zcodeUnavailableNotEntitled,
+			Models: []string{"SHOULD-NOT-APPEAR"},
+		},
+	})
+	plan := payload.Providers["account:zai-individual-coding-plan"]
+	assert.True(t, plan.Access.Entitled, "the credential is the only entitlement evidence for a coding plan")
+	assert.Nil(t, plan.BuiltinModelIDs, "a coding plan keeps the installed rule's model list")
+	assert.Equal(t, zcodeAccountProviderState{Availability: zcodeAvailabilityAvailable, Entitled: true, Current: true},
+		payload.States["account:zai-individual-coding-plan"])
+}
+
+func TestZCodeCatalog_AccountProviderPayloadCopiesEntitlementModels(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, zcodeTestStartPlanConfig)
+	models := []string{"GLM-5.3-Flash", "GLM-5.3"}
+	payload := zcodeTestAccountPayload(t, catalog, zcodeBuiltinZAIAccountConfig, map[string]zcodeAccountEntitlement{
+		"builtin:zai-start-plan": {Availability: zcodeAvailabilityAvailable, Models: models},
+	})
+	start := payload.Providers["account:zai-start-plan"]
+	require.Len(t, start.BuiltinModelIDs, 2)
+	start.BuiltinModelIDs[0] = "MUTATED"
+	assert.Equal(t, "GLM-5.3-Flash", models[0], "the payload must hold a copy, not alias the entitlement result")
+}
+
+// zcodeTestTwoFamilyRelease holds the account rules of both provider families.
+const zcodeTestTwoFamilyRelease = `{
+  "revision":33,
+  "config":{"providerConfigRules":{"providerRules":[
+    {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
+    {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"}}},
+    {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"}}},
+    {"providerId":"account:bigmodel-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"bigmodel","mode":"individual-coding-plan"}}},
+    {"providerId":"account:bigmodel-start-plan","config":{"access":{"type":"zhipu-account","accountType":"bigmodel","mode":"start-plan"}}}
+  ]}}
+}`
+
+// zcodeTestTwoFamilyConfig holds a key for each plan of both families. config.json enables
+// both coding plans, as it can after the user switched families.
+const zcodeTestTwoFamilyConfig = `{
+  "provider": {
+    "builtin:zai-coding-plan": {"kind": "anthropic", "enabled": true, "options": {"apiKey": "zai-plan-key"}, "models": {"GLM-5.3": {}}},
+    "builtin:zai-start-plan": {"kind": "anthropic", "enabled": false, "options": {"apiKey": "zai-start-key"}, "models": {"GLM-5.3-Flash": {}}},
+    "builtin:bigmodel-coding-plan": {"kind": "anthropic", "enabled": true, "options": {"apiKey": "bigmodel-plan-key"}, "models": {"GLM-5.3": {}}},
+    "builtin:bigmodel-start-plan": {"kind": "anthropic", "enabled": false, "options": {"apiKey": "bigmodel-start-key"}, "models": {"GLM-5.3-Flash": {}}}
+  }
+}`
+
+// The app-server requires exactly one current coding plan, and serves a Start Plan beside
+// it. config.json's enabled flag cannot state that: it enabled both coding plans here.
+func TestZCodeCatalog_AccountProviderPayloadDerivesCurrentFromTheSelectedConnection(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		selection zcodeAccountSelection
+		// config is config.json, or zcodeTestTwoFamilyConfig when empty.
+		config string
+		want   map[string]bool
+	}{
+		{
+			name: "the current family's selected mode and its Start Plan",
+			selection: zcodeAccountSelection{domain: "zai", planKinds: map[string]string{
+				"zai": "individual-coding-plan", "bigmodel": "individual-coding-plan",
+			}},
+			want: map[string]bool{
+				"account:zai-individual-coding-plan": true, "account:zai-start-plan": true,
+				"account:bigmodel-individual-coding-plan": false, "account:bigmodel-start-plan": false,
+			},
+		},
+		{
+			name:      "a team selection binds the team plan and marks it",
+			selection: zcodeAccountSelection{domain: "zai", planKinds: map[string]string{"zai": "team-coding-plan"}},
+			want: map[string]bool{
+				"account:zai-team-coding-plan": true, "account:zai-start-plan": true,
+				"account:bigmodel-individual-coding-plan": false, "account:bigmodel-start-plan": false,
+			},
+		},
+		{
+			name:      "a family with no selected mode has no current coding plan",
+			selection: zcodeAccountSelection{domain: "zai"},
+			want: map[string]bool{
+				"account:zai-individual-coding-plan": false, "account:zai-start-plan": true,
+				"account:bigmodel-individual-coding-plan": false, "account:bigmodel-start-plan": false,
+			},
+		},
+		{
+			name:      "the other family",
+			selection: zcodeAccountSelection{domain: "bigmodel", planKinds: map[string]string{"bigmodel": "individual-coding-plan"}},
+			want: map[string]bool{
+				"account:zai-individual-coding-plan": false, "account:zai-start-plan": false,
+				"account:bigmodel-individual-coding-plan": true, "account:bigmodel-start-plan": true,
+			},
+		},
+		{
+			name: "no stated family and two enabled coding plans leave neither current",
+			want: map[string]bool{
+				"account:zai-individual-coding-plan": false, "account:zai-start-plan": true,
+				"account:bigmodel-individual-coding-plan": false, "account:bigmodel-start-plan": true,
+			},
+		},
+		{
+			name:   "no stated family and one enabled coding plan make it current",
+			config: strings.Replace(zcodeTestTwoFamilyConfig, `"builtin:bigmodel-coding-plan": {"kind": "anthropic", "enabled": true`, `"builtin:bigmodel-coding-plan": {"kind": "anthropic", "enabled": false`, 1),
+			want: map[string]bool{
+				"account:zai-individual-coding-plan": true, "account:zai-start-plan": true,
+				"account:bigmodel-individual-coding-plan": false, "account:bigmodel-start-plan": true,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := test.config
+			if config == "" {
+				config = zcodeTestTwoFamilyConfig
+			}
+			catalog := zcodeTestCatalog(t, config)
+			catalog.accountSelection = test.selection
+			payload := zcodeTestAccountPayload(t, catalog, zcodeTestTwoFamilyRelease, nil)
+			current := map[string]bool{}
+			for id, state := range payload.States {
+				current[id] = state.Current
+			}
+			assert.Equal(t, test.want, current)
+		})
+	}
+}
+
+// config.json can be stale, because the desktop records the selection in setting.json. A
+// coding plan that setting.json selects is current although config.json disables it.
+func TestZCodeCatalog_AccountProviderPayloadSelectedCodingPlanIsCurrentWhenConfigDisablesIt(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {"kind": "anthropic", "enabled": false, "options": {"apiKey": "plan-key"}, "models": {"GLM-5.3": {}}}
+      }
+    }`)
+	catalog.accountSelection = zcodeAccountSelection{domain: "zai", planKinds: map[string]string{"zai": "individual-coding-plan"}}
+	payload := zcodeTestAccountPayload(t, catalog, zcodeBuiltinZAIAccountConfig, nil)
+	assert.True(t, payload.States["account:zai-individual-coding-plan"].Current)
+}
+
+func TestZCodeCatalog_AccountProviderBindingsBindOnlyProvidersThatARuleServes(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-start-plan": {"kind": "anthropic", "options": {"apiKey": "start-key"}, "models": {"GLM-5.3-Flash": {}}},
+        "custom:team-start-plan": {"kind": "anthropic", "options": {"apiKey": "custom-key", "baseURL": "https://api.example.com/v1/messages"}, "models": {"m": {}}},
+        "builtin:zai": {"kind": "anthropic", "options": {"apiKey": "zai-key"}, "models": {"GLM-5.3": {}}}
+      }
+    }`)
+	bindings := zcodeTestBindings(t, catalog, zcodeBuiltinZAIAccountConfig, zcodeCredentials{})
+	require.Len(t, bindings, 1,
+		"a provider whose id merely ends in -start-plan has no account rule, so no entitlement check sends its key")
+	assert.Equal(t, "builtin:zai-start-plan", bindings[0].legacyID)
+	require.NotNil(t, bindings[0].provider)
+	assert.Equal(t, "start-key", bindings[0].startPlanCredential())
+	assert.Equal(t, "account:zai-start-plan", bindings[0].accountID)
+	assert.True(t, bindings[0].rule.isStartPlan())
 }
 
 func TestZCodeCatalog_AccountProvidersComeFromTheInstalledRules(t *testing.T) {
@@ -639,8 +954,7 @@ func TestZCodeCatalog_AccountProvidersComeFromTheInstalledRules(t *testing.T) {
         }
       }
     }`)
-	catalog.accountPlanKinds = map[string]string{"acme": "team-coding-plan"}
-	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	catalog.accountSelection = zcodeAccountSelection{planKinds: map[string]string{"acme": "team-coding-plan"}}
 	release := `{
       "revision": 31,
       "config": {"providerConfigRules": {"providerRules": [
@@ -648,19 +962,16 @@ func TestZCodeCatalog_AccountProvidersComeFromTheInstalledRules(t *testing.T) {
         {"providerId":"account:acme-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"acme","mode":"team-coding-plan"}}}
       ]}}
     }`
-	require.NoError(t, os.WriteFile(path, []byte(release), 0o600))
-
-	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
-	require.NoError(t, err)
+	payload := zcodeTestAccountPayload(t, catalog, release, nil)
 	provider, ok := payload.Providers["account:acme-team-coding-plan"]
 	require.True(t, ok, "the installed account rule selects a provider without an adapter switch case")
-	assert.Equal(t, []string{"ACME-1"}, provider.BuiltinModelIDs)
-	key, ok := catalog.inlineAPIKey("account:acme-team-coding-plan")
-	assert.True(t, ok)
-	assert.Equal(t, "acme-key", key)
+	assert.Nil(t, provider.BuiltinModelIDs, "a coding plan keeps the installed rule's model list")
+	bindings := zcodeTestBindings(t, catalog, release, zcodeCredentials{})
+	require.Len(t, bindings, 1)
+	assert.Equal(t, "acme-key", bindings[0].configKey())
 }
 
-func TestZCodeBuiltinProviderRevision_RejectsInvalidRelease(t *testing.T) {
+func TestLoadZCodeBuiltinProviderFile_RejectsInvalidRelease(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
@@ -675,72 +986,136 @@ func TestZCodeBuiltinProviderRevision_RejectsInvalidRelease(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "zcode-builtin.json")
 			require.NoError(t, os.WriteFile(path, []byte(test.content), 0o600))
-			_, err := zcodeBuiltinProviderRevision(path)
+			_, _, err := loadZCodeBuiltinProviderFile(path)
 			require.Error(t, err)
 		})
 	}
 
-	_, err := zcodeBuiltinProviderRevision("")
+	_, _, err := loadZCodeBuiltinProviderFile("")
 	require.Error(t, err)
-	_, err = zcodeBuiltinProviderRevision(filepath.Join(t.TempDir(), "missing.json"))
+	_, _, err = loadZCodeBuiltinProviderFile(filepath.Join(t.TempDir(), "missing.json"))
 	require.Error(t, err)
 }
 
-func TestZCodeCatalog_InlineAPIKeyResolvesAccountProviderIDs(t *testing.T) {
+// Building the snapshot must leave the catalog unchanged: the bridge describes a
+// snapshot that the app-server accepted, so only the accepted push records it.
+func TestZCodeCatalog_AccountProviderPayloadRecordsNoBridge(t *testing.T) {
 	t.Parallel()
 
-	catalog := zcodeTestCatalog(t, `{
-      "provider": {
-        "builtin:zai-coding-plan": {
-          "kind": "anthropic", "enabled": true,
-          "options": {"apiKey": "plan-key"},
-          "models": {"GLM-5.3": {}}
-        }
-      }
-	    }`)
-	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{
-      "revision":30,
-      "config":{"providerConfigRules":{"providerRules":[
-        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}}
-      ]}}
-    }`), 0o600))
-	_, err := catalog.accountProviderPayload(path, "leapmux-agent")
-	require.NoError(t, err)
+	catalog := zcodeTestCatalog(t, zcodeTestCodingPlanConfig)
+	_, basedOn := zcodeTestRelease(t, zcodeBuiltinZAIAccountConfig)
+	bindings := zcodeTestBindings(t, catalog, zcodeBuiltinZAIAccountConfig, zcodeCredentials{})
+	payload := newZCodeAccountProviderPayload(bindings, basedOn, "leapmux-agent", nil)
+	require.Contains(t, payload.Providers, "account:zai-individual-coding-plan")
+	_, ok := catalog.accountProviderID("builtin:zai-coding-plan")
+	assert.False(t, ok, "building the snapshot records no bridge")
 
-	key, ok := catalog.inlineAPIKey("account:zai-individual-coding-plan")
+	catalog.recordAccountBridge(bindings)
+	accountID, ok := catalog.accountProviderID("builtin:zai-coding-plan")
 	assert.True(t, ok)
-	assert.Equal(t, "plan-key", key)
-	_, ok = catalog.inlineAPIKey("account:bigmodel-individual-coding-plan")
-	assert.False(t, ok)
+	assert.Equal(t, "account:zai-individual-coding-plan", accountID)
 }
 
 func TestZCodeCatalog_AccountProviderIDUsesTheSelectedPlan(t *testing.T) {
 	t.Parallel()
 
-	catalog := zcodeTestCatalog(t, `{
-      "provider": {
-        "builtin:zai-coding-plan": {
-          "kind": "anthropic", "enabled": true,
-          "options": {"apiKey": "plan-key"},
-          "models": {"GLM-5.3": {}}
-        }
-      }
-    }`)
-	catalog.accountPlanKinds = map[string]string{"zai": "team-coding-plan"}
-	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{
-      "revision":30,
-      "config":{"providerConfigRules":{"providerRules":[
-        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
-        {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"}}}
-      ]}}
-    }`), 0o600))
-	_, err := catalog.accountProviderPayload(path, "leapmux-agent")
-	require.NoError(t, err)
+	catalog := zcodeTestCatalog(t, zcodeTestCodingPlanConfig)
+	catalog.accountSelection = zcodeAccountSelection{domain: "zai", planKinds: map[string]string{"zai": "team-coding-plan"}}
+	zcodeTestAccountBridge(t, &catalog, zcodeBuiltinZAIAccountConfig)
 	providerID, ok := catalog.accountProviderID("builtin:zai-coding-plan")
 	assert.True(t, ok)
 	assert.Equal(t, "account:zai-team-coding-plan", providerID)
+}
+
+func TestZCodeBuiltinProviderFile_CanonicalAccountModelIDs(t *testing.T) {
+	t.Parallel()
+
+	release, _ := zcodeTestRelease(t, `{
+      "revision": 33,
+      "config": {
+        "providerConfigRules": {"providerRules": [
+          {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"},"builtinModelIds":["GLM-5.3-Flash"," GLM-5.2 "]}},
+          {"providerId":"openrouter","config":{"builtinModelIds":["z-ai/glm-5.3"]}}
+        ]},
+        "modelConfigRules": {"builtinProviderModelRules": [
+          {"providerId":"account:zai-start-plan","modelId":"GLM-5.3"},
+          {"providerId":"account:zai-start-plan","modelId":"glm-5.3-flash"},
+          {"providerId":"openrouter","modelId":"glm-5.1"}
+        ]}
+      }
+    }`)
+	assert.Equal(t, map[string]string{
+		"glm-5.3-flash": "GLM-5.3-Flash",
+		"glm-5.2":       "GLM-5.2",
+		"glm-5.3":       "GLM-5.3",
+	}, release.canonicalAccountModelIDs(),
+		"only account providers' models count, and the first spelling in file order wins")
+}
+
+func TestLoadZCodeAccountSelection(t *testing.T) {
+	t.Parallel()
+
+	writeSettings := func(t *testing.T, content string) string {
+		t.Helper()
+		home := t.TempDir()
+		path := filepath.Join(append([]string{home}, zcodeDesktopSettingsRelPath...)...)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return home
+	}
+
+	t.Run("reads the family and the selected modes", func(t *testing.T) {
+		t.Parallel()
+		home := writeSettings(t, `{
+          "providerFamilyDomain": " zai ",
+          "providerFamilyConnectionSelections": {"zai": {"kind": "team-coding-plan"}, "bigmodel": {"kind": " "}}
+        }`)
+		assert.Equal(t, zcodeAccountSelection{
+			domain:    "zai",
+			planKinds: map[string]string{"zai": "team-coding-plan"},
+			teams:     map[string]zcodeTeamProject{},
+		}, loadZCodeAccountSelection(home), "a blank kind selects nothing, and a team plan without a project states no team")
+	})
+	t.Run("reads the team project of a team coding plan", func(t *testing.T) {
+		t.Parallel()
+		home := writeSettings(t, `{
+          "providerFamilyDomain": "bigmodel",
+          "providerFamilyConnectionSelections": {
+            "bigmodel": {"kind": "team-coding-plan", "organizationId": " org-1 ", "projectId": "proj-1", "productId": "prod-1"},
+            "zai": {"kind": "individual-coding-plan", "organizationId": "ignored", "projectId": "ignored"}
+          }
+        }`)
+		assert.Equal(t, zcodeAccountSelection{
+			domain:    "bigmodel",
+			planKinds: map[string]string{"bigmodel": "team-coding-plan", "zai": "individual-coding-plan"},
+			teams:     map[string]zcodeTeamProject{"bigmodel": {organizationID: "org-1", projectID: "proj-1", productID: "prod-1"}},
+		}, loadZCodeAccountSelection(home))
+	})
+	t.Run("a file without a family states none", func(t *testing.T) {
+		t.Parallel()
+		home := writeSettings(t, `{"providerFamilyConnectionSelections": {"zai": {"kind": "individual-coding-plan"}}}`)
+		selection := loadZCodeAccountSelection(home)
+		assert.Empty(t, selection.domain)
+		assert.Equal(t, map[string]string{"zai": "individual-coding-plan"}, selection.planKinds)
+	})
+	t.Run("a missing, malformed, or homeless file selects nothing", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, zcodeAccountSelection{}, loadZCodeAccountSelection(t.TempDir()))
+		assert.Equal(t, zcodeAccountSelection{}, loadZCodeAccountSelection(writeSettings(t, `{`)))
+		assert.Equal(t, zcodeAccountSelection{}, loadZCodeAccountSelection(""))
+	})
+}
+
+func TestZCodeCatalog_LaunchModel(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	assert.Equal(t, "builtin:zai/GLM-5.3", catalog.launchModel("GLM-5.3"), "a bare id resolves against the catalog")
+	assert.Equal(t, "builtin:zai/GLM-5.3", catalog.launchModel(`builtin:zai\GLM-5.3`))
+	assert.Equal(t, "account:zai-start-plan/GLM-5.3", catalog.launchModel(" account:zai-start-plan/GLM-5.3 "),
+		"a model that config.json does not list stays for the live list to resolve")
+	assert.Equal(t, "GLM-9", catalog.launchModel("GLM-9"))
+	assert.Equal(t, "", catalog.launchModel("  "))
 }
 
 func TestZCodeCatalog_RuntimeModelForCarriesTheProvidersKey(t *testing.T) {
@@ -786,9 +1161,8 @@ func TestLoadZCodeCatalog_MissingMalformedAndKeylessConfigurations(t *testing.T)
 	t.Run("file does not exist", func(t *testing.T) {
 		t.Parallel()
 		_, err := loadZCodeCatalog(t.TempDir())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "ZCode is not configured")
-		assert.Contains(t, err.Error(), "config.json", "the message must name the file the user has to create")
+		require.ErrorIs(t, err, errZCodeConfigMissing, "the credential store can still serve, so Start decides")
+		assert.Contains(t, err.Error(), "config.json")
 	})
 
 	t.Run("malformed json", func(t *testing.T) {

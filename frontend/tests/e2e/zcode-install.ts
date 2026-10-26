@@ -49,58 +49,8 @@ export function zcodeScriptCandidatePaths(
 }
 
 /**
- * The path of the configuration `zcode.Start` reads, matching `zcodeConfigRelPath` in
- * `backend/internal/worker/agent/providers/zcode/config.go`.
- */
-export function zcodeConfigPath(platform: NodeJS.Platform, home: string): string {
-  return joinFor(platform, home, '.zcode', 'v2', 'config.json')
-}
-
-/**
- * Whether the configuration carries a provider `zcode.Start` could actually run on.
- *
- * The same two filters `buildZCodeCatalog` applies: an API key that is not blank, and
- * at least one model. A provider that fails either is skipped there, and a
- * configuration with no surviving provider fails the launch.
- */
-export function zcodeConfigHasUsableProvider(text: string): boolean {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  }
-  catch {
-    return false
-  }
-  if (typeof parsed !== 'object' || parsed === null)
-    return false
-  const providers = (parsed as { provider?: unknown }).provider
-  if (typeof providers !== 'object' || providers === null)
-    return false
-  return Object.values(providers as Record<string, unknown>).some((entry) => {
-    if (typeof entry !== 'object' || entry === null)
-      return false
-    const options = (entry as { options?: unknown }).options
-    const apiKey = typeof options === 'object' && options !== null
-      ? (options as { apiKey?: unknown }).apiKey
-      : undefined
-    if (typeof apiKey !== 'string' || apiKey.trim() === '')
-      return false
-    const models = (entry as { models?: unknown }).models
-    return typeof models === 'object' && models !== null && Object.keys(models).length > 0
-  })
-}
-
-/**
- * The skip message, or null when a ZCode install is usable.
- *
- * FOUR states, not three. `zcode.Start` resolves the launch AND reads
- * `~/.zcode/v2/config.json`, and it fails on either — so a machine that has the desktop
- * application but was never signed in must SKIP, not run six specs that each time out
- * at `sendMessage` with a message that names nothing.
- *
- * `launcherUnusableReason` states why the run cannot start the launcher on PATH,
- * such as a mise shim. The worker takes that launcher before the bundled script, so
- * an unusable launcher skips even when a bundled script exists.
+ * The skip message, or null when the launcher or bundled script can start.
+ * The suite supplies private provider configuration and a mock credential.
  */
 export function computeZCodeE2ESkipReason(opts: {
   scriptOverride: string | undefined
@@ -110,7 +60,6 @@ export function computeZCodeE2ESkipReason(opts: {
   platform: NodeJS.Platform
   home: string
   env: NodeJS.ProcessEnv
-  readConfig: (path: string) => string | null
 }): string | null {
   const installed = opts.scriptOverride
     ? (opts.scriptExists(opts.scriptOverride)
@@ -124,11 +73,5 @@ export function computeZCodeE2ESkipReason(opts: {
   if (installed)
     return installed
 
-  const configPath = zcodeConfigPath(opts.platform, opts.home)
-  const text = opts.readConfig(configPath)
-  if (text === null || !zcodeConfigHasUsableProvider(text)) {
-    return `ZCode E2E requires ${configPath} to carry a model provider with an API key `
-      + '(sign in with the ZCode application once)'
-  }
   return null
 }

@@ -30,14 +30,15 @@ type zcodeCatalog struct {
 	// refs maps a composite model id back to its {providerId, modelId} pair and the
 	// provider entry that carries its credential.
 	refs map[string]zcodeModelRef
-	// accountPlanKinds selects the current coding-plan provider for each family.
-	// It comes from ZCode's setting.json and distinguishes an individual plan from
-	// a team plan, which the legacy provider id folds into one word.
-	accountPlanKinds map[string]string
-	// accountProviderIDs and legacyProviderIDs are the two directions of the
-	// bridge derived from the installed account-provider rules.
+	// accountSelection is the account connection that ZCode's setting.json
+	// selects: the current provider family, and for each family the coding-plan
+	// mode, which distinguishes an individual plan from a team plan that the
+	// legacy provider id folds into one word.
+	accountSelection zcodeAccountSelection
+	// accountProviderIDs translates configured legacy model IDs into account IDs.
+	// Accepted snapshots rebuild it from the installed account-provider rules.
+	// Readers and writers of a shared Agent catalog hold Agent.Mu.
 	accountProviderIDs map[string]string
-	legacyProviderIDs  map[string]string
 }
 
 // zcodeModelIDSeparator joins a provider id and a model id into the single string
@@ -151,12 +152,13 @@ type zcodeProviderSkip struct {
 // session's default -- so a keyless entry at the front would make every fresh
 // session fail until the model is pinned.
 //
-// `enabled` is a PREFERENCE, not a filter. An enabled provider is pushed ahead of
-// a disabled one, so the default lands on a provider the user actually chose, but a
-// disabled provider that holds a key is still offered: ZCode disables a provider
-// for reasons of its own (an inactive OAuth plan, an entitlement it could not
-// verify), and dropping it would leave a user whose every provider is disabled with
-// no models at all rather than a working choice.
+// `enabled` is a PREFERENCE, not a filter. ZCode enables the provider of the
+// connection kind that the user selected, and an enabled provider is pushed ahead
+// of a disabled one, so the default lands on a provider the user actually chose.
+// A disabled provider that holds a key is still offered: it can be a plan that the
+// account holds beside the selected connection, such as a Start Plan beside a
+// Coding Plan, and dropping it would leave a user whose every provider is disabled
+// with no models at all rather than a working choice.
 func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) {
 	type candidate struct {
 		providerID string
@@ -266,11 +268,15 @@ func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) 
 // `zcode.priority` ascending, then by model id.
 //
 // The order is load-bearing twice over. It is the order of the `models` array in
-// the registry push, and the app-server starts a session on the FIRST model of the
-// FIRST provider -- so an alphabetical order would open every ZCode agent on
-// whichever model sorts first, which for the shipped Z.ai plans is the weakest one.
-// It is also the order of the catalog LeapMux shows, and markZCodeDefaultModel
-// marks its first entry.
+// the legacy registry push (workspace/updateProviderRegistry), and a legacy
+// app-server starts a session on the FIRST model of the FIRST provider -- so an
+// alphabetical order would open every ZCode agent on whichever model sorts first,
+// which for the shipped Z.ai plans is the weakest one. It is also the order of the
+// catalog LeapMux shows, and markZCodeDefaultModel marks its first entry.
+//
+// The account snapshot (provider/updateAccountConfig) carries no such array. A
+// current app-server orders its models by its own rules, and the snapshot's
+// `model.current` replaces this order's default before Start returns.
 //
 // A model that states no priority sorts LAST, behind every ranked one: an entry the
 // user added by hand has no claim to be the default, and the id keeps the order
@@ -547,10 +553,12 @@ func zcodeModelInfo(composite, providerLabel, modelID string, model zcodeConfigM
 // markZCodeDefaultModel flags the catalog's default model.
 //
 // The configuration specifies no default, so the FIRST entry is used -- which is the
-// same model the app-server itself starts a session on. The providers are ordered
+// same model a legacy app-server starts a session on. The providers are ordered
 // enabled-first and their models by ZCode's own `zcode.priority` (see
 // zcodeModelOrder), so the choice is stable and lands on the best model of a
-// provider the user enabled.
+// provider the user enabled. A current app-server chooses the session model itself
+// (its configured default, or the first executable model in its own order), and
+// the snapshot's `model.current` replaces this flag before Start returns.
 func markZCodeDefaultModel(models []*agent.ModelInfo) {
 	for _, m := range models {
 		if m != nil {
@@ -566,17 +574,11 @@ func markZCodeDefaultModel(models []*agent.ModelInfo) {
 // It answers the app-server's interaction/requestProviderRuntimeHeaders honestly:
 // LeapMux mints no OAuth header, so the only authorization it can claim is the key
 // it already pushed with the registry. An empty provider id asks about ANY
-// provider, which is what a request that gives none means.
+// provider, which is what a request that gives none means. It shares the lookup
+// of inlineAPIKey.
 func (c zcodeCatalog) hasInlineAPIKey(providerID string) bool {
-	for _, provider := range c.Providers {
-		if providerID != "" && provider.ProviderID != providerID {
-			continue
-		}
-		if provider.APIKey != nil && provider.APIKey.Source == zcodeAPIKeySourceInline && provider.APIKey.Value != "" {
-			return true
-		}
-	}
-	return false
+	_, ok := c.inlineAPIKey(providerID)
+	return ok
 }
 
 // resolveModelID maps whatever spelling a caller supplied onto a catalog id.
@@ -603,6 +605,23 @@ func (c zcodeCatalog) resolveModelID(model string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// launchModel returns the model that a launch asks for, before any session exists.
+//
+// A requested model may be spelled bare ("GLM-5.3"); the catalog resolves it to the
+// composite id the option groups carry. A request that the catalog cannot resolve
+// stays as the user spelled it: config.json lists only part of what a current
+// app-server offers, so applyStartupSettings resolves the request against the live
+// model list once the session exists. When the app-server does not offer it either,
+// the session keeps the model that the app-server chose -- which the settings
+// snapshot reports back, so the user still sees the truth.
+func (c zcodeCatalog) launchModel(requested string) string {
+	model := normalizeZCodeModelID(requested)
+	if resolved, ok := c.resolveModelID(model); ok {
+		return resolved
+	}
+	return model
 }
 
 // defaultThoughtLevel returns the thought level ZCode's configuration declares for a

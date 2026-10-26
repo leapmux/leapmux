@@ -3,6 +3,7 @@ package zcode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -31,15 +32,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 
-	// ZCode's credentials are read BEFORE the process starts. Without a provider
-	// registry every turn fails with a message that identifies the app-server rather
-	// than the missing configuration, so the real cause is reported here instead.
-	catalog, err := loadZCodeCatalog(opts.HomeDir)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
 	// The app-server has no working-directory flag: it takes the workspace path in
 	// every request. Wrap still sets cmd.Dir, which is what the
 	// tools it runs inherit.
@@ -53,6 +45,21 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// Wrap already prepended spec.PrefixArgs and seeded
 	// spec.Env onto cmd, so this is the same finalization every provider runs.
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
+	// Read credentials before the process starts, using its finalized environment
+	// and shell profile. Current desktops can sign in without config.json.
+	accountEnvironment, err := resolveZCodeAccountEnvironment(ctx, opts, cmd.Environ())
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	opts.HomeDir = accountEnvironment.home
+	credentials := accountEnvironment.credentials
+	catalog, err := loadZCodeCatalog(opts.HomeDir)
+	legacyConfigurationError := err
+	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
+		cancel()
+		return nil, err
+	}
 	storeLocation, err := zcodeToolStorePaths(ctx, agent.StoredSessionQuery{
 		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: cmd.Environ(),
 		Shell: opts.Shell, LoginShell: opts.LoginShell,
@@ -74,11 +81,19 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		workingDir:                opts.WorkingDir,
 		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
 		catalog:                   catalog,
+		legacyConfigurationError:  legacyConfigurationError,
 		registryRevision:          "leapmux-" + opts.AgentID,
-		builtinProviderConfigPath: zcodeLaunchEnvValue(cmd.Env, zcodeBuiltinProviderConfigEnv),
-		mode:                      contracts.ZCodeDefaultMode,
-		toolCalls:                 map[string]*zcodeToolCall{},
-		pendingControls:           map[string]*pendingControl{},
+		builtinProviderConfigPath: accountEnvironment.builtinProviderConfigPath,
+		credentials:               credentials,
+		identity: zcodeClientIdentity{
+			appVersion: zcodeAppVersion(zcodeInstalledScript(spec, fileExists)),
+			deviceMid:  loadZCodeDeviceMid(opts.HomeDir),
+		},
+		startPlanHTTP:   zcodeStartPlanHTTPClient,
+		projectTokens:   zcodeProjectTokens,
+		mode:            contracts.ZCodeDefaultMode,
+		toolCalls:       map[string]*zcodeToolCall{},
+		pendingControls: map[string]*pendingControl{},
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
@@ -88,13 +103,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		location.sessionID = a.sessionID
 		return location
 	})
-	// A requested model may be spelled bare ("GLM-5.3"); the catalog resolves it to
-	// the composite id the option groups carry. An unresolvable request leaves the
-	// model empty, and the app-server then picks the registry default -- which the
-	// settings snapshot reports back, so the user still sees the truth.
-	if model, ok := catalog.resolveModelID(opts.Model()); ok {
-		a.model = model
-	}
+	a.model = catalog.launchModel(opts.Model())
 	a.thoughtLevel = opts.Effort()
 	// No goroutine reads the agent yet. The lock is the contract of the two helpers.
 	a.Mu.Lock()
@@ -169,13 +178,25 @@ func zcodeLaunchEnvValue(env []string, key string) string {
 
 // pushProviderRegistry hands the app-server the model providers it may use.
 func (a *Agent) pushProviderRegistry(timeout time.Duration) error {
+	// The account snapshot's inputs need nothing from the app-server, so LeapMux
+	// gathers them while the app-server boots and answers the legacy request
+	// below. A legacy build never reads them, and stop ends a Start Plan check
+	// that nothing waits for.
+	account := a.prepareAccountSnapshot(timeout)
+	defer account.stop()
 	params := a.catalog.registryPayload(a.workspace, a.registryRevision, time.Now().UnixMilli())
 	raw, err := a.sendZCodeRequest(MethodUpdateProviderRegistry, params, timeout)
 	if err != nil {
 		if !zcodeIsMethodNotFound(err) {
+			if code, ok := zcodeErrorCode(err); ok && code == -32602 && a.legacyConfigurationError != nil {
+				return a.legacyConfigurationError
+			}
 			return err
 		}
-		return a.pushAccountProviderConfig(timeout)
+		return a.pushAccountProviderConfig(account, timeout)
+	}
+	if a.legacyConfigurationError != nil {
+		return a.legacyConfigurationError
 	}
 	var resp struct {
 		Status        string `json:"status"`
@@ -191,39 +212,5 @@ func (a *Agent) pushProviderRegistry(timeout time.Duration) error {
 		return fmt.Errorf("the app-server refused the provider registry")
 	}
 	slog.Debug("zcode provider registry applied", "agent_id", a.AgentID(), "status", resp.Status, "providers", resp.ProviderCount)
-	return nil
-}
-
-// pushAccountProviderConfig applies the host-owned account snapshot that replaced
-// workspace/updateProviderRegistry in ZCode 0.16.9.
-func (a *Agent) pushAccountProviderConfig(timeout time.Duration) error {
-	params, err := a.catalog.accountProviderPayload(a.builtinProviderConfigPath, a.registryRevision)
-	if err != nil {
-		return err
-	}
-	raw, err := a.sendZCodeRequest(MethodUpdateAccountConfig, params, timeout)
-	if err != nil {
-		return err
-	}
-	var response struct {
-		ReceivedRevision string `json:"receivedRevision"`
-		ProviderCount    int    `json:"providerCount"`
-		Status           string `json:"status"`
-	}
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return fmt.Errorf("decode ZCode account provider acknowledgement: %w", err)
-	}
-	if response.ReceivedRevision != params.Revision {
-		return fmt.Errorf("ZCode account provider acknowledgement returned revision %q, expected %q",
-			response.ReceivedRevision, params.Revision)
-	}
-	if response.Status != "received" && response.Status != "unchanged" {
-		return fmt.Errorf("ZCode account provider acknowledgement returned status %q", response.Status)
-	}
-	a.Mu.Lock()
-	a.accountProviderConfig = true
-	a.Mu.Unlock()
-	slog.Debug("zcode account provider configuration applied", "agent_id", a.AgentID(),
-		"status", response.Status, "providers", response.ProviderCount)
 	return nil
 }

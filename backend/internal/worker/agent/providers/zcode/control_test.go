@@ -886,16 +886,12 @@ func TestAnswerProviderRuntimeHeaders_AccountConfigReturnsRequestAuth(t *testing
         }
       }
 	    }`)
-	seedZCodeAccountBridgeForTests(&a.catalog)
-	a.Mu.Lock()
-	a.accountProviderConfig = true
-	a.Mu.Unlock()
+	seedZCodeAccountStateForTests(t, a)
 
 	a.HandleOutput(zcodeRequestLine(t, 13, MethodRequestProviderRuntimeHeaders,
 		`{"providerId":"account:zai-individual-coding-plan"}`))
 
-	requests := stdin.Requests(t)
-	require.Len(t, requests, 1)
+	requests := zcodeAwaitReplies(t, stdin, 1)
 	var result struct {
 		HeadersApplied bool `json:"headersApplied"`
 		RequestAuth    struct {
@@ -922,14 +918,13 @@ func TestAnswerProviderRuntimeHeaders_AccountConfigReportsAMissingCredential(t *
       }
     }`)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.Mu.Unlock()
 
 	a.HandleOutput(zcodeRequestLine(t, 14, MethodRequestProviderRuntimeHeaders,
 		`{"providerId":"account:bigmodel-individual-coding-plan"}`))
 
-	requests := stdin.Requests(t)
-	require.Len(t, requests, 1)
+	requests := zcodeAwaitReplies(t, stdin, 1)
 	var result map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(requests[0].Result, &result))
 	var applied bool
@@ -1003,7 +998,7 @@ func TestAnswerOfficialMcpAuthHeaders_AccountConfigUsesTheCurrentShape(t *testin
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.Mu.Unlock()
 
 	a.HandleOutput(zcodeRequestLine(t, 15, MethodRequestOfficialMcpAuthHeaders, `{}`))

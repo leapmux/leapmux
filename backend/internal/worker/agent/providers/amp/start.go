@@ -108,7 +108,8 @@ func startWithThreadExporter(ctx context.Context, opts agent.Options, sink agent
 // up, the shell that starts every `amp` process of the agent.
 func shellEnvOf(opts agent.Options) func(ctx context.Context, names []string) (map[string]string, launch.ProbeResult) {
 	return func(ctx context.Context, names []string) (map[string]string, launch.ProbeResult) {
-		return launch.ShellEnv(ctx, opts.Shell, opts.LoginShell, names)
+		snapshot, result := launch.ShellEnv(ctx, launch.ShellEnvOptions{Shell: opts.Shell, LoginShell: opts.LoginShell, Variables: names})
+		return snapshot.Values, result
 	}
 }
 

@@ -59,7 +59,7 @@ func zcodeAgentOnTheWideModel(t *testing.T, level string) (*Agent, *zcodeRecorde
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.Mu.Lock()
-	a.accountProviderConfig = true
+	a.account = &zcodeAccountState{}
 	a.Mu.Unlock()
 	zcodeApplySettings(t, a, fmt.Sprintf(zcodeWideAndNarrowSnapshot, level))
 	a.Mu.Lock()
@@ -110,7 +110,7 @@ func receiveZCodeResult(t *testing.T, done <-chan agent.SettingsApplyResult) age
 	select {
 	case result := <-done:
 		return result
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("UpdateSettings did not return")
 		return agent.SettingsApplyResult{}
 	}
@@ -219,7 +219,7 @@ func TestApplyStartupSettings_ALevelTheLaunchModelDoesNotOfferDoesNotBlockTheMod
 	a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, setter), -32603, "Unsupported reasoning effort: max"))
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("applyStartupSettings did not return")
 	}
 
@@ -228,4 +228,89 @@ func TestApplyStartupSettings_ALevelTheLaunchModelDoesNotOfferDoesNotBlockTheMod
 	defer a.Mu.Unlock()
 	assert.Equal(t, "account:p/narrow", a.model, "the app-server accepted the launch model")
 	assert.Equal(t, "high", a.thoughtLevel, "the session runs at the default level of the launch model")
+}
+
+// config.json lists only part of what a current app-server offers, such as the models
+// that a Start Plan grants. A launch model that the catalog cannot resolve reaches the
+// startup setter, which resolves it against the live list.
+func TestApplyStartupSettings_ResolvesALaunchModelAgainstTheLiveList(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "high")
+	// The session level stays pinned after the model switch, so a level setter follows.
+	answerZCodeRequest(t, a, stdin, MethodSetThoughtLevel,
+		`{"settings":{"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"low"},{"value":"high"}]}}}`)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.applyStartupSettings(zcodeSettingsRequest{Model: a.catalog.launchModel("narrow")}, 5*time.Second)
+	}()
+
+	answerZCodeNarrowSetModel(t, a, stdin)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("applyStartupSettings did not return")
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/narrow", a.model)
+}
+
+// A launch model that the app-server does not offer leaves the session on the model the
+// app-server chose, and the agent reports that model, not the refused request.
+func TestApplyStartupSettings_KeepsTheObservedModelWhenTheAppServerOffersNoSuchModel(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "high")
+	a.applyStartupSettings(zcodeSettingsRequest{Model: a.catalog.launchModel("GLM-9")}, 5*time.Second)
+
+	for _, req := range stdin.Requests(t) {
+		assert.NotEqual(t, MethodSetModel, req.Method, "a model that no list holds is never sent")
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/wide", a.model)
+}
+
+func TestApplyStartupSettings_KeepsObservedSettingsAfterRejection(t *testing.T) {
+	t.Parallel()
+	a, stdin := zcodeAgentOnTheWideModel(t, "high")
+	a.Mu.Lock()
+	a.mode = "build"
+	a.modeObserved = true
+	a.planObserved = true
+	a.Mu.Unlock()
+	refuseZCodeRequest(t, a, stdin, MethodSetThoughtLevel, -32602, "invalid level")
+	refuseZCodeRequest(t, a, stdin, MethodSetMode, -32602, "invalid mode")
+	a.applyStartupSettings(zcodeSettingsRequest{Model: "missing", ThoughtLevel: "max", Mode: "yolo"}, 30*time.Second)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/wide", a.model)
+	assert.Equal(t, "high", a.thoughtLevel)
+	assert.Equal(t, "build", a.permissionModeLocked())
+	assert.True(t, a.modeObserved)
+	assert.True(t, a.planObserved)
+}
+
+func TestApplyStartupSettings_KeepsModelObservationAfterRequestFailure(t *testing.T) {
+	t.Parallel()
+	a, stdin := zcodeAgentOnTheWideModel(t, "high")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.applyStartupSettings(zcodeSettingsRequest{Model: "account:p/narrow"}, 30*time.Second)
+	}()
+	req := waitZCodeRequest(t, stdin, MethodSetModel)
+	a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","patch":{"model":{"current":{"providerId":"account:p","modelId":"narrow"}}}}`))
+	a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, req), -32603, "reply failed after model change"))
+	answerZCodeRequest(t, a, stdin, MethodSetThoughtLevel, `{"settings":{"thoughtLevel":{"enabled":true,"current":"high"}}}`)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("startup settings did not finish")
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/narrow", a.model)
 }

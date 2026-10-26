@@ -3,18 +3,35 @@ package zcode
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/google/uuid"
+
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 // ZCode owns these files. LeapMux reads them and never writes them.
 var (
 	zcodeConfigRelPath          = []string{".zcode", "v2", "config.json"}
 	zcodeDesktopSettingsRelPath = []string{".zcode", "v2", "setting.json"}
+	zcodeTelemetryStateRelPath  = []string{".zcode", "v2", "telemetry-state.json"}
 )
+
+// errZCodeConfigMissing reports that config.json does not exist. The current
+// desktop no longer writes that file, so a caller that can take the account plans
+// from the credential store continues without it.
+var errZCodeConfigMissing = errors.New("config.json does not exist")
+
+// errZCodeConfigUnusable reports a config.json that lists no usable provider.
+// The account plans of the credential store can still serve.
+var errZCodeConfigUnusable = errors.New("config.json lists no usable provider")
 
 func zcodeConfigPath(homeDir string) string {
 	if homeDir == "" {
@@ -29,9 +46,28 @@ type zcodeConfigFile struct {
 }
 
 type zcodeDesktopSettingsFile struct {
+	// ProviderFamilyDomain is the provider family that the desktop currently uses,
+	// such as "zai". Only an account plan of this family can be current.
+	ProviderFamilyDomain               string `json:"providerFamilyDomain"`
 	ProviderFamilyConnectionSelections map[string]struct {
 		Kind string `json:"kind"`
+		// A team coding plan states the team project that it uses.
+		OrganizationID string `json:"organizationId"`
+		ProjectID      string `json:"projectId"`
+		ProductID      string `json:"productId"`
 	} `json:"providerFamilyConnectionSelections"`
+}
+
+// zcodeAccountSelection is the account connection that setting.json selects.
+type zcodeAccountSelection struct {
+	// domain is the current provider family, or "" when setting.json states none.
+	domain string
+	// planKinds maps a provider family to the coding-plan mode that the user
+	// selected for it, such as "team-coding-plan".
+	planKinds map[string]string
+	// teams maps a provider family whose selection is a team coding plan to the
+	// team project that the selection states.
+	teams map[string]zcodeTeamProject
 }
 
 type zcodeConfigProvider struct {
@@ -81,8 +117,23 @@ type zcodeBuiltinProviderFile struct {
 		ProviderConfigRules struct {
 			ProviderRules []zcodeBuiltinProviderRule `json:"providerRules"`
 		} `json:"providerConfigRules"`
+		ModelConfigRules struct {
+			// BuiltinProviderModelRules states the models that the release
+			// configures for each built-in provider.
+			BuiltinProviderModelRules []struct {
+				ProviderID string `json:"providerId"`
+				ModelID    string `json:"modelId"`
+			} `json:"builtinProviderModelRules"`
+		} `json:"modelConfigRules"`
 	} `json:"config"`
 }
+
+// The access values of an account rule that LeapMux reads.
+const (
+	zcodeAccountAccessType  = "zhipu-account"
+	zcodeStartPlanMode      = "start-plan"
+	zcodeTeamCodingPlanMode = "team-coding-plan"
+)
 
 type zcodeBuiltinProviderRule struct {
 	ProviderID string `json:"providerId"`
@@ -92,7 +143,60 @@ type zcodeBuiltinProviderRule struct {
 			AccountType string `json:"accountType"`
 			Mode        string `json:"mode"`
 		} `json:"access"`
+		// API states the endpoint that serves the plan's model requests.
+		API struct {
+			BaseURL string `json:"baseUrl"`
+		} `json:"api"`
+		BuiltinModelIDs []string `json:"builtinModelIds"`
 	} `json:"config"`
+}
+
+func (r zcodeBuiltinProviderRule) accountType() string {
+	return strings.TrimSpace(r.Config.Access.AccountType)
+}
+
+func (r zcodeBuiltinProviderRule) mode() string {
+	return strings.TrimSpace(r.Config.Access.Mode)
+}
+
+// isStartPlan reports whether the rule describes a Start Plan. It is the one test
+// of that fact: the rule binding, the entitlement check and the snapshot all use it.
+func (r zcodeBuiltinProviderRule) isStartPlan() bool {
+	return r.mode() == zcodeStartPlanMode
+}
+
+// canonicalAccountModelIDs maps the lowercase form of each model id that the
+// release configures for an account provider to the spelling that the release
+// uses. The billing API reports lowercase ids such as "glm-5.3-flash", and the
+// app-server and the model list expect the release's spelling.
+func (f zcodeBuiltinProviderFile) canonicalAccountModelIDs() map[string]string {
+	out := map[string]string{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		// The first spelling wins, so the result follows the file order.
+		if _, seen := out[strings.ToLower(id)]; !seen {
+			out[strings.ToLower(id)] = id
+		}
+	}
+	accountProviders := map[string]bool{}
+	for _, rule := range f.Config.ProviderConfigRules.ProviderRules {
+		if strings.TrimSpace(rule.Config.Access.Type) != zcodeAccountAccessType {
+			continue
+		}
+		accountProviders[strings.TrimSpace(rule.ProviderID)] = true
+		for _, id := range rule.Config.BuiltinModelIDs {
+			add(id)
+		}
+	}
+	for _, rule := range f.Config.ModelConfigRules.BuiltinProviderModelRules {
+		if accountProviders[strings.TrimSpace(rule.ProviderID)] {
+			add(rule.ModelID)
+		}
+	}
+	return out
 }
 
 // loadZCodeCatalog reads credentials before the provider process starts.
@@ -104,7 +208,7 @@ func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return zcodeCatalog{}, fmt.Errorf("ZCode is not configured: %s does not exist (sign in with the ZCode application once)", path)
+			return zcodeCatalog{accountSelection: loadZCodeAccountSelection(homeDir)}, fmt.Errorf("%w: %s", errZCodeConfigMissing, path)
 		}
 		return zcodeCatalog{}, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -113,43 +217,81 @@ func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
 		return zcodeCatalog{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	catalog, skipped := buildZCodeCatalog(cfg)
-	catalog.accountPlanKinds = loadZCodeAccountPlanKinds(homeDir)
+	catalog.accountSelection = loadZCodeAccountSelection(homeDir)
 	if len(catalog.Providers) == 0 {
-		return catalog, fmt.Errorf("no ZCode model provider in %s is usable%s", path, zcodeSkipDetail(skipped))
+		return catalog, fmt.Errorf("%w: no ZCode model provider in %s is usable%s", errZCodeConfigUnusable, path, zcodeSkipDetail(skipped))
 	}
 	return catalog, nil
 }
 
-func loadZCodeAccountPlanKinds(homeDir string) map[string]string {
+// loadZCodeAccountSelection reads the account connection that setting.json selects.
+// A missing or unreadable file selects nothing.
+func loadZCodeAccountSelection(homeDir string) zcodeAccountSelection {
 	if homeDir == "" {
-		return nil
+		return zcodeAccountSelection{}
 	}
 	path := filepath.Join(append([]string{homeDir}, zcodeDesktopSettingsRelPath...)...)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return zcodeAccountSelection{}
 	}
 	var settings zcodeDesktopSettingsFile
 	if json.Unmarshal(data, &settings) != nil {
-		return nil
+		return zcodeAccountSelection{}
 	}
-	out := make(map[string]string, len(settings.ProviderFamilyConnectionSelections))
-	for family, selection := range settings.ProviderFamilyConnectionSelections {
-		kind := strings.TrimSpace(selection.Kind)
-		if kind != "" {
-			out[strings.TrimSpace(family)] = kind
+	selection := zcodeAccountSelection{
+		domain:    strings.TrimSpace(settings.ProviderFamilyDomain),
+		planKinds: make(map[string]string, len(settings.ProviderFamilyConnectionSelections)),
+		teams:     map[string]zcodeTeamProject{},
+	}
+	for family, connection := range settings.ProviderFamilyConnectionSelections {
+		family = strings.TrimSpace(family)
+		kind := strings.TrimSpace(connection.Kind)
+		if kind == "" {
+			continue
+		}
+		selection.planKinds[family] = kind
+		team := zcodeTeamProject{
+			organizationID: zcodeTrimJSString(connection.OrganizationID),
+			projectID:      zcodeTrimJSString(connection.ProjectID),
+			productID:      zcodeTrimJSString(connection.ProductID),
+		}
+		if kind == zcodeTeamCodingPlanMode && team.organizationID != "" && team.projectID != "" {
+			selection.teams[family] = team
 		}
 	}
-	return out
+	return selection
 }
 
-func zcodeBuiltinProviderRevision(path string) (string, error) {
-	_, revision, err := loadZCodeBuiltinProviderFile(path)
-	return revision, err
+// zcodeUUIDPattern matches the device id that the desktop generates.
+var zcodeUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// zcodeProcessDeviceMid is the device id of a machine where the desktop has stated
+// none. It stays the same for the life of the Worker process.
+var zcodeProcessDeviceMid = sync.OnceValue(func() string { return uuid.NewString() })
+
+// loadZCodeDeviceMid returns the device id that the ZCode desktop reports for this
+// machine (telemetry-state.json, which the app-server reads too), so a request of
+// LeapMux adds no device to the account. Without a valid one, it returns an id
+// that this Worker process generated.
+func loadZCodeDeviceMid(homeDir string) string {
+	if homeDir != "" {
+		var state struct {
+			DeviceMid string `json:"deviceMid"`
+		}
+		path := filepath.Join(append([]string{homeDir}, zcodeTelemetryStateRelPath...)...)
+		err := sessionstore.ReadSidecarFile(path, sessionstore.MaxSidecarBytes, func(data []byte) error {
+			return json.Unmarshal(data, &state)
+		})
+		if mid := strings.TrimSpace(state.DeviceMid); err == nil && zcodeUUIDPattern.MatchString(mid) {
+			return mid
+		}
+	}
+	return zcodeProcessDeviceMid()
 }
 
 func loadZCodeBuiltinProviderFile(path string) (zcodeBuiltinProviderFile, string, error) {
-	path = strings.TrimSpace(path)
+	path = zcodeTrimJSString(path)
 	if path == "" {
 		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("ZCode did not expose its built-in provider configuration path")
 	}
@@ -157,13 +299,15 @@ func loadZCodeBuiltinProviderFile(path string) (zcodeBuiltinProviderFile, string
 	if err != nil {
 		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("resolve ZCode built-in provider configuration %s: %w", path, err)
 	}
-	data, err := os.ReadFile(abs)
+	// Native code normalizes for its revision hash, but reads the original path.
+	// Cleaning symlink/../file before the read can select a different release.
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("read ZCode built-in provider configuration %s: %w", abs, err)
+		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("read ZCode built-in provider configuration %s: %w", path, err)
 	}
 	var release zcodeBuiltinProviderFile
 	if err := json.Unmarshal(data, &release); err != nil {
-		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("parse ZCode built-in provider configuration %s: %w", abs, err)
+		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("parse ZCode built-in provider configuration %s: %w", path, err)
 	}
 	if release.Revision == nil {
 		return zcodeBuiltinProviderFile{}, "", fmt.Errorf("ZCode built-in provider configuration %s has no revision", abs)
