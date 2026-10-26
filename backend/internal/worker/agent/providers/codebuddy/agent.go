@@ -3,11 +3,13 @@ package codebuddy
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -64,6 +66,11 @@ type Agent struct {
 	archiveChildJobs map[string]*codebuddyArchiveJob
 	archiveStopped   bool
 	archiveRetries   sync.WaitGroup
+
+	// directory holds the startup settings file of the process, or is nil for a
+	// process that starts with no settings. Wait removes it once the process
+	// exited, so the file stays for the whole life of the process that reads it.
+	directory *agentdir.Dir
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -366,13 +373,25 @@ func (a *Agent) Stop() {
 	a.setTurnActive(false)
 }
 
-// Wait waits for the process to exit.
+// Wait waits for the process to exit, and then removes the agent's private
+// directory.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopWorkflowArchiveRetries()
 	a.withdrawControls()
 	a.setTurnActive(false)
+	removeAgentDir(a.AgentID(), a.directory)
 	return err
+}
+
+// removeAgentDir removes the private directory of an agent whose process
+// exited or never started. dir may be nil. A failure only leaves the directory
+// behind, and the sweep at the next worker start removes it, so it is logged
+// and not returned as a failure of the process.
+func removeAgentDir(agentID string, dir *agentdir.Dir) {
+	if err := dir.Close(); err != nil {
+		slog.Warn("codebuddy: remove the agent directory", "agent_id", agentID, "error", err)
+	}
 }
 
 // ClearContext starts a fresh session. CodeBuddy keeps no in-process clear, so

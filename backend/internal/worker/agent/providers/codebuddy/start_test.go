@@ -16,11 +16,35 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 const codebuddyStartupHelperEnv = "LEAPMUX_CODEBUDDY_STARTUP_HELPER"
+
+// codebuddyArgumentPassingEnv reports the PowerShell argument passing that the
+// profile of the legacy-style scenario selects.
+const codebuddyArgumentPassingEnv = "LEAPMUX_CODEBUDDY_ARGUMENT_PASSING"
+
+// useStartupHelper makes Start launch TestCodebuddyStartupHelper with
+// scenario in place of the CodeBuddy CLI. The launch locator is global, so a
+// test that calls it stays serial.
+func useStartupHelper(t *testing.T, scenario string) {
+	t.Helper()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	previous := codebuddyLocator
+	codebuddyLocator = launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+		return launch.Spec{
+			Program:    executable,
+			PrefixArgs: []string{"-test.run=^TestCodebuddyStartupHelper$", "--"},
+			Env:        []string{codebuddyStartupHelperEnv + "=" + scenario},
+		}, launch.Found
+	})
+	t.Cleanup(func() { codebuddyLocator = previous })
+}
 
 func TestCodebuddyStartupHelper(t *testing.T) {
 	scenario := os.Getenv(codebuddyStartupHelperEnv)
@@ -32,21 +56,38 @@ func TestCodebuddyStartupHelper(t *testing.T) {
 			os.Exit(25)
 		}
 	}
+	// The settings arrive as the path of a file, never as inline JSON, which a
+	// shell can rewrite on the way (see writeStartupSettings).
 	readSettingsArgument := func() map[string]json.RawMessage {
 		var settings map[string]json.RawMessage
 		for index, argument := range os.Args {
 			if argument == "--settings" {
 				if settings != nil || index+1 == len(os.Args) {
+					fmt.Fprintln(os.Stderr, "Expected one --settings argument with a value.")
 					os.Exit(24)
 				}
-				if err := json.Unmarshal([]byte(os.Args[index+1]), &settings); err != nil || settings == nil {
+				path := os.Args[index+1]
+				if !filepath.IsAbs(path) {
+					fmt.Fprintf(os.Stderr, "Expected the absolute path of a settings file in --settings, got %q.\n", path)
+					os.Exit(24)
+				}
+				data, err := os.ReadFile(path)
+				if err == nil {
+					err = json.Unmarshal(data, &settings)
+				}
+				if err != nil || settings == nil {
+					fmt.Fprintf(os.Stderr, "Expected a JSON object in the settings file %s: %v\n", path, err)
 					os.Exit(24)
 				}
 			}
 		}
 		return settings
 	}
-	if scenario == "explicit-style" || scenario == "resume-style" {
+	if scenario == "legacy-style" && os.Getenv(codebuddyArgumentPassingEnv) != "Legacy" {
+		fmt.Fprintln(os.Stderr, "Expected the PowerShell profile to select Legacy argument passing.")
+		os.Exit(24)
+	}
+	if scenario == "explicit-style" || scenario == "resume-style" || scenario == "legacy-style" {
 		settings := readSettingsArgument()
 		var style string
 		if json.Unmarshal(settings["outputStyle"], &style) != nil || len(settings) != 1 || style != "Concise" {
@@ -120,7 +161,7 @@ func TestCodebuddyStartupHelper(t *testing.T) {
 				answer = codebuddyControlAnswer(`"invalid payload"`)(request.RequestID)
 			case "native-style":
 				answer = codebuddyControlAnswer(`{"output_style":"Explanatory","available_output_styles":["Default","Concise","Explanatory"]}`)(request.RequestID)
-			case "explicit-style", "resume-style", "thinking-style", "thinking-auto-style":
+			case "explicit-style", "resume-style", "legacy-style", "thinking-style", "thinking-auto-style":
 				answer = codebuddyControlAnswer(`{"output_style":"Concise","available_output_styles":["Default","Concise","Explanatory"]}`)(request.RequestID)
 			default:
 				answer = codebuddyControlAnswer(`{"commands":[],"output_style":"default","available_output_styles":[],"models":[],"account":null,"currentModelId":"custom-local:test"}`)(request.RequestID)
@@ -143,6 +184,24 @@ func TestCodebuddyStartupHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+// newAgentDirs returns the agent directories of the spec that CodeBuddy's
+// registration states, as the worker builds them, and their base.
+func newAgentDirs(t *testing.T) (*agentdir.Dirs, string) {
+	t.Helper()
+	spec := Registration().AgentDir
+	require.NotNil(t, spec, "the registration states the agent directory, so the worker sweeps it")
+	base := agentdirtest.ShortBase(t)
+	return agentdirtest.NewDirs(t, []agentdir.Spec{*spec}, base), base
+}
+
+// agentDirsUnder returns each CodeBuddy agent directory under base.
+func agentDirsUnder(t *testing.T, base string) []string {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join(base, "*", agentDirSpec().Prefix+"-*"))
+	require.NoError(t, err)
+	return dirs
+}
+
 func TestCodebuddyStartupHandshake(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -152,36 +211,32 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 		style     string
 		wantStyle string
 		thinking  string
+		// settings is the JSON of the startup settings file, or "" for a start
+		// that needs none.
+		settings string
 	}{
 		{name: "fresh session", scenario: "success"},
 		{name: "resumed session", scenario: "resume", resume: "existing-session"},
 		{name: "configured native style", scenario: "native-style", wantStyle: "Explanatory"},
-		{name: "explicit style", scenario: "explicit-style", style: "Concise", wantStyle: "Concise"},
-		{name: "resumed style", scenario: "resume-style", resume: "existing-session", style: "Concise", wantStyle: "Concise"},
-		{name: "thinking on", scenario: "thinking-on", thinking: "true"},
-		{name: "thinking off", scenario: "thinking-off", thinking: "false"},
+		{name: "explicit style", scenario: "explicit-style", style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise"}`},
+		{name: "resumed style", scenario: "resume-style", resume: "existing-session", style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise"}`},
+		{name: "thinking on", scenario: "thinking-on", thinking: "true", settings: `{"alwaysThinkingEnabled":true}`},
+		{name: "thinking off", scenario: "thinking-off", thinking: "false", settings: `{"alwaysThinkingEnabled":false}`},
 		{name: "thinking auto", scenario: "thinking-auto", thinking: "auto"},
-		{name: "thinking and style", scenario: "thinking-style", thinking: "false", style: "Concise", wantStyle: "Concise"},
-		{name: "thinking auto keeps style", scenario: "thinking-auto-style", thinking: "auto", style: "Concise", wantStyle: "Concise"},
+		{name: "thinking and style", scenario: "thinking-style", thinking: "false", style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise","alwaysThinkingEnabled":false}`},
+		{name: "thinking auto keeps style", scenario: "thinking-auto-style", thinking: "auto", style: "Concise", wantStyle: "Concise", settings: `{"outputStyle":"Concise"}`},
 		{name: "resume refusal", scenario: "resume-failure", resume: "existing-session", failure: "Controlled resume refusal."},
+		{name: "resume refusal with settings", scenario: "resume-failure", resume: "existing-session", style: "Concise", failure: "Controlled resume refusal."},
 		{name: "initialization refusal", scenario: "initialize-refusal", failure: "Controlled initialization refusal."},
 		{name: "malformed initialization", scenario: "initialize-malformed", failure: "CodeBuddy sent an invalid control response."},
 		{name: "initialization exit", scenario: "initialize-exit", failure: "Controlled native startup failure: initialize"},
+		{name: "initialization exit with settings", scenario: "initialize-exit", style: "Concise", failure: "Controlled native startup failure: initialize"},
 		{name: "catalog exit", scenario: "get_available_models-exit", failure: "Controlled native startup failure: get_available_models"},
+		{name: "catalog exit with settings", scenario: "get_available_models-exit", thinking: "true", failure: "Controlled native startup failure: get_available_models"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The launch locator is global, so this controlled process test stays serial.
-			executable, err := os.Executable()
-			require.NoError(t, err)
-			previous := codebuddyLocator
-			codebuddyLocator = launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
-				return launch.Spec{
-					Program:    executable,
-					PrefixArgs: []string{"-test.run=^TestCodebuddyStartupHelper$", "--"},
-					Env:        []string{codebuddyStartupHelperEnv + "=" + tc.scenario},
-				}, launch.Found
-			})
-			t.Cleanup(func() { codebuddyLocator = previous })
+			useStartupHelper(t, tc.scenario)
+			dirs, base := newAgentDirs(t)
 			sink := &agenttest.Sink{}
 			home := t.TempDir()
 			options := map[string]string{}
@@ -195,6 +250,7 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 				Options:         options,
 				ResumeSessionID: tc.resume, AgentID: "native-startup-test", WorkingDir: t.TempDir(), HomeDir: home,
 				Shell: terminal.ResolveDefaultShell(), ExtraEnv: []string{"HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home},
+				AgentDirs: dirs,
 			}, agent.NewProviderServices(sink))
 			if started != nil {
 				t.Cleanup(started.Stop)
@@ -207,6 +263,7 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 					assert.Contains(t, err.Error(), "code 23")
 				}
 				assert.Empty(t, sink.SessionIDs(), "a failed startup must not publish its provisional native session")
+				assert.Empty(t, agentDirsUnder(t, base), "a failed startup removes its agent directory")
 				return
 			}
 			require.NoError(t, err)
@@ -235,8 +292,60 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 			} else {
 				assert.NotEmpty(t, sink.SessionIDs()[0])
 			}
+
+			directory := started.(*Agent).directory
+			if tc.settings == "" {
+				assert.Nil(t, directory, "a start without settings needs no agent directory")
+				assert.Empty(t, agentDirsUnder(t, base))
+				return
+			}
+			require.NotNil(t, directory)
+			assert.Equal(t, []string{directory.Path()}, agentDirsUnder(t, base))
+			data, err := os.ReadFile(filepath.Join(directory.Path(), startupSettingsFileName))
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.settings, string(data))
+			// The file stays until the process exits, and Wait then removes it.
+			started.Stop()
+			_ = started.Wait()
+			assert.NoDirExists(t, directory.Path())
+			assert.Empty(t, agentDirsUnder(t, base))
 		})
 	}
+}
+
+// The worker always prepares the agent directories. A start without them
+// still runs when it needs no settings file, and refuses before CodeBuddy
+// starts when it needs one.
+func TestCodebuddyStartNeedsAgentDirectoriesOnlyForStartupSettings(t *testing.T) {
+	t.Run("no settings", func(t *testing.T) {
+		useStartupHelper(t, "success")
+		home := t.TempDir()
+		started, err := Start(t.Context(), agent.Options{
+			AgentID: "codebuddy-no-dirs", WorkingDir: t.TempDir(), HomeDir: home,
+			Shell: terminal.ResolveDefaultShell(), ExtraEnv: []string{"HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home},
+		}, agent.NewProviderServices(&agenttest.Sink{}))
+		if started != nil {
+			t.Cleanup(started.Stop)
+		}
+		require.NoError(t, err)
+		assert.Nil(t, started.(*Agent).directory)
+	})
+	t.Run("settings", func(t *testing.T) {
+		// The helper would fail with its own message if CodeBuddy started.
+		useStartupHelper(t, "initialize-exit")
+		sink := &agenttest.Sink{}
+		started, err := Start(t.Context(), agent.Options{
+			Options: map[string]string{OptionOutputStyle: "Concise"},
+			AgentID: "codebuddy-no-dirs", WorkingDir: t.TempDir(), Shell: terminal.ResolveDefaultShell(),
+		}, agent.NewProviderServices(sink))
+		if started != nil {
+			t.Cleanup(started.Stop)
+		}
+		require.ErrorContains(t, err, "prepare the CodeBuddy agent directory")
+		assert.NotContains(t, err.Error(), "Controlled native startup failure")
+		assert.Nil(t, started)
+		assert.Empty(t, sink.SessionIDs())
+	})
 }
 
 func TestCodebuddyStartRejectsUnknownThinkingBeforeLaunch(t *testing.T) {

@@ -3,7 +3,9 @@ package codebuddy
 import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -25,6 +27,13 @@ var codebuddyThinkingModes = []agent.OptionDef{
 
 func codebuddyThinkingGroup(current string) *leapmuxv1.AvailableOptionGroup {
 	return agent.SelectGroup(OptionThinking, "Extended Thinking", agent.OptionOrderProviderFirst, codebuddyThinkingValue(current), codebuddyThinkingModes)
+}
+
+// agentDirSpec states the private directory of a CodeBuddy agent. Only a
+// process that starts with settings has one, and it holds the settings file
+// (see writeStartupSettings).
+func agentDirSpec() agentdir.Spec {
+	return agentdir.Spec{Prefix: "codebuddy"}
 }
 
 // codebuddyLocator finds the CodeBuddy Code CLI on the user's PATH.
@@ -92,5 +101,6 @@ func Registration() agent.Registration {
 		FixedPermissionModes: true,
 		EnvModelKey:          "LEAPMUX_CODEBUDDY_DEFAULT_MODEL",
 		EnvEffortKey:         "LEAPMUX_CODEBUDDY_DEFAULT_EFFORT",
+		AgentDir:             ptrconv.Ptr(agentDirSpec()),
 	}
 }
