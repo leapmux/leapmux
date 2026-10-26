@@ -367,3 +367,40 @@ func TestCodebuddyStartRejectsUnknownThinkingBeforeLaunch(t *testing.T) {
 	assert.False(t, called)
 	assert.Empty(t, sink.SessionIDs())
 }
+
+func TestCodebuddyStartRemovesSettingsAfterProcessStartFailure(t *testing.T) {
+	useStartupHelper(t, "success")
+	dirs, base := newAgentDirs(t)
+	started, err := Start(t.Context(), agent.Options{
+		Options: map[string]string{OptionOutputStyle: "Concise"},
+		AgentID: "failed-exec", WorkingDir: t.TempDir(),
+		Shell: filepath.Join(t.TempDir(), "missing-shell"), AgentDirs: dirs,
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.Error(t, err)
+	assert.Nil(t, started)
+	assert.Empty(t, agentDirsUnder(t, base), "failed process creation must roll back the settings directory")
+}
+
+func TestCodebuddyWaitRemovesSettingsAfterNaturalExit(t *testing.T) {
+	useStartupHelper(t, "explicit-style")
+	dirs, base := newAgentDirs(t)
+	home := t.TempDir()
+	started, err := Start(t.Context(), agent.Options{
+		Options: map[string]string{OptionOutputStyle: "Concise"},
+		AgentID: "natural-exit", WorkingDir: t.TempDir(), HomeDir: home,
+		Shell: terminal.ResolveDefaultShell(), AgentDirs: dirs,
+		ExtraEnv: []string{"HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home},
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		started.Stop()
+		_ = started.Wait()
+	})
+	a := started.(*Agent)
+	assert.DirExists(t, a.directory.Path())
+	require.NoError(t, a.StdinForTest().Close())
+	require.NoError(t, a.Wait())
+	assert.Empty(t, agentDirsUnder(t, base))
+	assert.NoDirExists(t, a.directory.Path())
+	require.NoError(t, a.Wait(), "a repeated wait must keep cleanup idempotent")
+}

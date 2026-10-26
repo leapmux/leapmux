@@ -117,6 +117,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
+	startupComplete := false
+	defer func() {
+		if !startupComplete {
+			providerkit.RemoveAgentDir("codebuddy", opts.AgentID, directory)
+		}
+	}()
 	baseArgs = append(baseArgs, settingsArgs...)
 	baseArgs = append(baseArgs, sessionArgs...)
 
@@ -136,7 +142,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		cancel()
-		removeAgentDir(opts.AgentID, directory)
 		return nil, err
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
@@ -160,15 +165,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	if err := a.StartCmd(); err != nil {
 		cancel()
-		removeAgentDir(opts.AgentID, directory)
 		return nil, err
 	}
 	// A failed startup returns no agent, so nothing waits for the process.
-	// fail stops it and removes the directory itself.
+	// fail stops it before the deferred rollback removes its directory.
 	fail := func(phase string, err error) (agent.Agent, error) {
 		startupErr := a.FormatStartupError(phase, err)
 		a.Stop()
-		removeAgentDir(opts.AgentID, directory)
 		return nil, startupErr
 	}
 	a.DrainStderr(stderrPipe)
@@ -207,6 +210,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 
 	a.sink.UpdateSessionID(sessionID)
+	startupComplete = true
 	return a, nil
 }
 
@@ -219,12 +223,9 @@ const startupSettingsFileName = "startup-settings.json"
 // directory and the arguments that point the process at the file. When
 // settings overrides nothing, it returns no directory and no arguments.
 //
-// The settings travel in a file, never as `--settings <json>`. The shell passes
-// each argument to CodeBuddy as a native argument, and Windows PowerShell 5.1,
-// and PowerShell 7 in its Legacy argument passing, pass each embedded double
-// quote unescaped. CodeBuddy's command-line parser then removes the quotes of
-// inline JSON. A Windows path cannot hold a double quote, and PowerShell
-// quotes a path with a space itself.
+// The settings travel in a file, keeping their contents out of the command
+// line. The shared shell wrapper preserves the path as one native argument,
+// including quotes in a Unix path under PowerShell Legacy argument passing.
 func writeStartupSettings(ctx context.Context, dirs *agentdir.Dirs, settings codebuddyNativeSettings) (*agentdir.Dir, []string, error) {
 	if settings.OutputStyle == "" && settings.AlwaysThinkingEnabled == nil {
 		return nil, nil, nil

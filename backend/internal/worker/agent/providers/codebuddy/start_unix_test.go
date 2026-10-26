@@ -4,12 +4,14 @@ package codebuddy
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,29 +35,29 @@ func TestStartPinsTheUpdaterOff(t *testing.T) {
 // profile from XDG_CONFIG_HOME, which the test controls. The profile also
 // reports the mode, so the helper fails when pwsh stops reading this profile.
 func TestCodebuddyStartupSettingsSurvivePowerShellLegacyArgumentPassing(t *testing.T) {
-	shell, err := exec.LookPath("pwsh")
-	if err != nil {
-		t.Skip("pwsh is not installed")
-	}
-	useStartupHelper(t, "legacy-style")
-	home := t.TempDir()
-	profile := filepath.Join(home, "powershell", "Microsoft.PowerShell_profile.ps1")
-	require.NoError(t, os.MkdirAll(filepath.Dir(profile), 0o700))
-	require.NoError(t, os.WriteFile(profile, []byte(
-		"$PSNativeCommandArgumentPassing = 'Legacy'\n"+
-			"$env:"+codebuddyArgumentPassingEnv+" = \"$PSNativeCommandArgumentPassing\"\n"), 0o600))
+	for _, baseName := range []string{"plain", `a path with a "quote"`, "a path with ‘ ’ ‚ ‛"} {
+		t.Run(baseName, func(t *testing.T) {
+			shell, home := testutil.RequirePowerShellArgumentPassing(t, "Legacy", codebuddyArgumentPassingEnv)
+			useStartupHelper(t, "legacy-style")
 
-	dirs, _ := newAgentDirs(t)
+			base := filepath.Join(t.TempDir(), baseName)
+			require.NoError(t, os.MkdirAll(base, 0o700))
+			dirs := agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}, base)
 
-	started, err := Start(t.Context(), agent.Options{
-		Options: map[string]string{OptionOutputStyle: "Concise"},
-		AgentID: "codebuddy-legacy-arguments", WorkingDir: t.TempDir(), HomeDir: home, Shell: shell,
-		ExtraEnv:  []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home},
-		AgentDirs: dirs,
-	}, agent.NewProviderServices(&agenttest.Sink{}))
-	if started != nil {
-		t.Cleanup(started.Stop)
+			started, err := Start(t.Context(), agent.Options{
+				Options: map[string]string{OptionOutputStyle: "Concise"},
+				AgentID: "codebuddy-legacy-arguments", WorkingDir: t.TempDir(), HomeDir: home, Shell: shell,
+				ExtraEnv:  []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home},
+				AgentDirs: dirs,
+			}, agent.NewProviderServices(&agenttest.Sink{}))
+			if started != nil {
+				t.Cleanup(func() {
+					started.Stop()
+					_ = started.Wait()
+				})
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "Concise", started.(*Agent).SettingsSnapshot().SurfacedOptions[OptionOutputStyle])
+		})
 	}
-	require.NoError(t, err)
-	assert.Equal(t, "Concise", started.(*Agent).SettingsSnapshot().SurfacedOptions[OptionOutputStyle])
 }

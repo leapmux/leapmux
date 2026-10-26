@@ -40,12 +40,9 @@ func agentDirSpec() agentdir.Spec {
 // `cbc` is the short alias and resolves to the same executable.
 var codebuddyLocator = launch.Binaries("codebuddy", "cbc")
 
-// codebuddyPermissionModes are the four modes `get_available_modes` advertises.
-//
-// The CLI's --permission-mode flag accepts six words (the same set as
-// contracts/claude-protocol.json), but the runtime advertises only these four
-// and its plan description is a copy-paste from Claude Code. LeapMux offers the
-// advertised set until a live probe proves dontAsk and auto are enterable.
+// codebuddyPermissionModes are the modes LeapMux offers: the four modes
+// get_available_modes advertises, plus Auto. The native permission controls
+// accept Auto even though get_available_modes omits it.
 var codebuddyPermissionModes = []agent.OptionDef{
 	{Id: contracts.CodebuddyModeDefault, Name: "Default", Default: true, Description: "Prompts for dangerous operations."},
 	{Id: contracts.CodebuddyModeAcceptEdits, Name: "Accept Edits", Description: "Auto-accept file edit operations."},

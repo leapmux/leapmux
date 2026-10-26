@@ -3,7 +3,6 @@ package codebuddy
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 
@@ -368,30 +367,23 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
-	a.stopWorkflowArchiveRetries()
-	a.withdrawControls()
-	a.setTurnActive(false)
+	a.cleanupAfterProcessExit()
 }
 
 // Wait waits for the process to exit, and then removes the agent's private
 // directory.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
-	a.stopWorkflowArchiveRetries()
-	a.withdrawControls()
-	a.setTurnActive(false)
-	removeAgentDir(a.AgentID(), a.directory)
+	a.cleanupAfterProcessExit()
+	providerkit.RemoveAgentDir("codebuddy", a.AgentID(), a.directory)
 	return err
 }
 
-// removeAgentDir removes the private directory of an agent whose process
-// exited or never started. dir may be nil. A failure only leaves the directory
-// behind, and the sweep at the next worker start removes it, so it is logged
-// and not returned as a failure of the process.
-func removeAgentDir(agentID string, dir *agentdir.Dir) {
-	if err := dir.Close(); err != nil {
-		slog.Warn("codebuddy: remove the agent directory", "agent_id", agentID, "error", err)
-	}
+// cleanupAfterProcessExit stops archive retries and clears controls and turn state.
+func (a *Agent) cleanupAfterProcessExit() {
+	a.stopWorkflowArchiveRetries()
+	a.withdrawControls()
+	a.setTurnActive(false)
 }
 
 // ClearContext starts a fresh session. CodeBuddy keeps no in-process clear, so

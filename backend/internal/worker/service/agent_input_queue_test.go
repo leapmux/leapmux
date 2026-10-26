@@ -27,6 +27,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -70,15 +71,21 @@ func decodeQueueResponse[T proto.Message](t *testing.T, writer *testResponseWrit
 	return target
 }
 
-func TestAgentInputQueueRPCsReturnAuthoritativeSnapshots(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
+// setupInputQueueRPCService creates the Codex agent used by queue RPC tests.
+func setupInputQueueRPCService(t *testing.T) (*Service, *channel.Dispatcher) {
+	t.Helper()
 	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
+	return svc, dispatcher
+}
+
+func TestAgentInputQueueRPCsReturnAuthoritativeSnapshots(t *testing.T) {
+	t.Parallel()
+
+	_, dispatcher := setupInputQueueRPCService(t)
 
 	pauseWriter := newTestWriter()
 	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
@@ -488,11 +495,7 @@ func TestAgentInputQueueEditReturnsDataAndReclassifiesHumanCommand(t *testing.T)
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
+	svc, dispatcher := setupInputQueueRPCService(t)
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 
@@ -527,11 +530,7 @@ func TestAgentInputQueueRejectsConflictingEnqueueRetry(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
+	svc, dispatcher := setupInputQueueRPCService(t)
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 
@@ -2301,12 +2300,7 @@ func TestOrderedUncertainSteerKeepsItsOriginalPublisher(t *testing.T) {
 func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
+	_, dispatcher := setupInputQueueRPCService(t)
 	pauseWriter := newTestWriter()
 	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
 
@@ -2389,11 +2383,7 @@ func TestEnqueueAgentInputRefusesAMalformedSchedule(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
+	svc, dispatcher := setupInputQueueRPCService(t)
 	before, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 
@@ -2416,11 +2406,7 @@ func TestUpdateQueuedAgentInputRefusesAMalformedSchedule(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
+	svc, dispatcher := setupInputQueueRPCService(t)
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 	at := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
@@ -2451,11 +2437,7 @@ func TestEnqueueAgentInputRefusesTheAutomaticRetryKinds(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
+	svc, dispatcher := setupInputQueueRPCService(t)
 	for _, kind := range []leapmuxv1.AgentInputKind{
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
@@ -2478,12 +2460,7 @@ func TestEnqueueAgentInputRefusesTheAutomaticRetryKinds(t *testing.T) {
 func TestMoveQueuedAgentInputMapsAGroupViolationToFailedPrecondition(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
+	_, dispatcher := setupInputQueueRPCService(t)
 	pauseWriter := newTestWriter()
 	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
 	enqueueWriter := newTestWriter()

@@ -72,7 +72,7 @@ func (r Request) Arguments() ([]string, error) {
 }
 
 // requestEncoding is the encoding of the request argument (see Arguments).
-// Strict decoding rejects an encoding that is not canonical.
+// Strict decoding requires zero trailing padding bits.
 var requestEncoding = base64.RawURLEncoding.Strict()
 
 // Run handles only the private probe command. Values travel through stdout,

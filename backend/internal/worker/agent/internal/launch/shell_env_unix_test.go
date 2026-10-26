@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -18,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
@@ -30,18 +30,7 @@ import (
 // TestShellEnvUsesNativeUnicodeValuesThroughAvailableShells covers 5.1 there.
 func TestShellEnvReadsTheValuesThroughPowerShellLegacyArgumentPassing(t *testing.T) {
 	t.Parallel()
-	shell, err := exec.LookPath("pwsh")
-	if err != nil {
-		t.Skip("pwsh is not installed")
-	}
-	home := t.TempDir()
-	profile := filepath.Join(home, "powershell", "Microsoft.PowerShell_profile.ps1")
-	require.NoError(t, os.MkdirAll(filepath.Dir(profile), 0o700))
-	// The profile reports the mode that it selects, so the test fails when pwsh
-	// stops reading this profile instead of passing without Legacy mode.
-	require.NoError(t, os.WriteFile(profile, []byte(
-		"$PSNativeCommandArgumentPassing = 'Legacy'\n"+
-			"$env:LEAPMUX_PROBE_MODE = \"$PSNativeCommandArgumentPassing\"\n"), 0o600))
+	shell, home := testutil.RequirePowerShellArgumentPassing(t, "Legacy", "LEAPMUX_PROBE_MODE")
 	workingDir, err := filepath.EvalSymlinks(home)
 	require.NoError(t, err)
 	env := append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home,

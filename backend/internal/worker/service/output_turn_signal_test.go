@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -152,21 +153,50 @@ func TestProviderCapabilityDoesNotOverrideReportedTurnState(t *testing.T) {
 
 func TestSuccessfulStartAbandonsATurnReportedDuringHandshake(t *testing.T) {
 	t.Parallel()
-
-	ctx := context.Background()
-	svc, agentID := newTurnSignalFixture(t)
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, services agent.ProviderServices) (map[string]string, error) {
-		services.SetTurnState(agent.TurnState{Active: true, Steerable: true}, 1)
-		return nil, nil
+	for _, background := range []bool{false, true} {
+		for _, fails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("background=%v/fails=%v", background, fails), func(t *testing.T) {
+				t.Parallel()
+				ctx := context.Background()
+				svc, agentID := newTurnSignalFixture(t)
+				previous := launchTurnPublisher(svc, agentID)
+				previous.publish(true)
+				before, err := svc.InputQueue.Snapshot(ctx, agentID)
+				require.NoError(t, err)
+				require.True(t, before.ActiveTurn, "the test must start with a turn owned by the previous process")
+				sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				start := func(_ context.Context, _ agent.Options, services agent.ProviderServices) (map[string]string, error) {
+					snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+					require.NoError(t, err)
+					assert.False(t, snapshot.ActiveTurn, "the previous process's turn must end before startup")
+					if fails {
+						return nil, assert.AnError
+					}
+					services.SetTurnState(agent.TurnState{Active: true, Steerable: true}, 2)
+					return nil, nil
+				}
+				wrongStart := func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+					t.Fatal("the selected startup path used the other starter")
+					return nil, nil
+				}
+				if background {
+					svc.startBackgroundAgentFn, svc.startAgentFn = start, wrongStart
+					_, err = svc.startBackgroundAgent(ctx, agent.Options{AgentID: agentID}, sink)
+				} else {
+					svc.startAgentFn, svc.startBackgroundAgentFn = start, wrongStart
+					_, err = svc.startAgent(ctx, agent.Options{AgentID: agentID}, sink)
+				}
+				if fails {
+					require.ErrorIs(t, err, assert.AnError)
+				} else {
+					require.NoError(t, err)
+				}
+				snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+				require.NoError(t, err)
+				assert.False(t, snapshot.ActiveTurn, "startup must leave no unowned turn")
+			})
+		}
 	}
-
-	_, err := svc.startAgent(ctx, agent.Options{AgentID: agentID}, sink)
-	require.NoError(t, err)
-	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
-	require.NoError(t, err)
-	assert.False(t, snapshot.ActiveTurn,
-		"a completed handshake must leave no unowned startup turn")
 }
 
 func TestProviderReportedTurnRepeatsWithoutChurningTheQueueRevision(t *testing.T) {
