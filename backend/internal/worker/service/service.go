@@ -889,7 +889,7 @@ func logAutoRetryError(action, agentID string, err error, attributes ...any) {
 // explicit Stop, interrupted on a crash). It fires for every exit including a
 // relaunch's old-process stop; stopAndWait serializes this hook before a new
 // process registers, so fresh spawns can never be clobbered.
-func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
+func (svc *Service) HandleAgentProcessExit(agentID string, _ error, stopped bool) {
 	subtreeIDs := svc.agentSubtreeIDs(agentID)
 	for _, id := range subtreeIDs {
 		if _, err := svc.InputQueue.ResolveUnechoedSteers(bgCtx(), id, -1); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {

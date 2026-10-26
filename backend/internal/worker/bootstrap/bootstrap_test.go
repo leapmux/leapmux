@@ -405,7 +405,7 @@ func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
 		RowKey: "sub", Kind: bgtask.KindSubagent, Title: "review the diff", Status: bgtask.StatusRunning,
 	}))
 
-	handler("agent-1", 1, errors.New("boom"), false)
+	handler("agent-1", errors.New("boom"), false)
 
 	rows, err := w.Service.Queries.ListAgentBackgroundTasksNewestFirst(bg, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: "agent-1", Limit: 10,

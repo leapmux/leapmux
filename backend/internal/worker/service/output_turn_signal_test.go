@@ -253,7 +253,7 @@ func TestProcessExitReleasesATurnTheProviderNeverEnded(t *testing.T) {
 
 	// The user stops the agent. stopped=true, so nothing pauses the queue -- and
 	// nothing ended the turn either, which is what stranded the message.
-	svc.HandleAgentProcessExit(agentID, 0, nil, true)
+	svc.HandleAgentProcessExit(agentID, nil, true)
 
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)

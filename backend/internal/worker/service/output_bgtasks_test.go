@@ -909,7 +909,7 @@ func TestBgTask_ProcessExitGivesEveryOpenRowAFinalStatus(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("done", bgtask.StatusSucceeded))
 
 	// A crash: the work did not stop, it was cut off.
-	svc.HandleAgentProcessExit("agent-1", 1, errors.New("boom"), false)
+	svc.HandleAgentProcessExit("agent-1", errors.New("boom"), false)
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("sub"), "a running subagent row ends when its process dies")
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("shell"), "a queued shell row ends too -- it will never run")
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("paused"), "a paused child cannot resume after its process dies")
@@ -919,7 +919,7 @@ func TestBgTask_ProcessExitGivesEveryOpenRowAFinalStatus(t *testing.T) {
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "later", Kind: bgtask.KindShell, Title: "sleep 60", Status: bgtask.StatusRunning,
 	}))
-	svc.HandleAgentProcessExit("agent-1", 0, nil, true)
+	svc.HandleAgentProcessExit("agent-1", nil, true)
 	assert.Equal(t, bgtask.StatusStopped, statusOf("later"))
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("sub"), "the earlier exit's verdict is not rewritten")
 }

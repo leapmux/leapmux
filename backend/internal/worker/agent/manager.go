@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"slices"
 	"sync"
 
@@ -412,14 +411,6 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		m.mu.Lock()
 		entry.exiting = true
 		m.mu.Unlock()
-		exitCode := 0
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = -1
-			}
-		}
 
 		// Read IsStopped once. It reflects mutable process state; reading it
 		// twice (once for the log, once for onExit) could diverge if it changed
@@ -452,7 +443,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		onExit := m.onExit
 		m.mu.RUnlock()
 		if onExit != nil {
-			onExit(opts.AgentID, exitCode, err, stopped)
+			onExit(opts.AgentID, err, stopped)
 		}
 
 		m.mu.Lock()
@@ -1671,11 +1662,15 @@ func (m *Manager) StopAll() {
 }
 
 // ExitHandler is called when an agent process exits.
-// agentID identifies the agent, exitCode is the process exit code, err is
-// non-nil if the process exited with an error, and stopped is true when the
-// exit was driven by an explicit Stop (a user interrupt, a relaunch, or a
-// shutdown) rather than a crash. The background-task registry uses stopped to
-// label rows 'stopped' vs 'interrupted'.
+// agentID identifies the agent, err is the error of the provider's Wait, and
+// stopped is true when the exit was driven by an explicit Stop (a user
+// interrupt, a relaunch, or a shutdown) rather than a crash. The
+// background-task registry uses stopped to label rows 'stopped' vs
+// 'interrupted'.
+//
+// err is nil after a clean exit. A non-zero exit status is an *exec.ExitError
+// inside err, which a provider's Wait can join with other errors, so read it
+// with errors.As, never with a type assertion.
 //
 // The Manager keeps the exiting provider registered until this handler returns.
 // This lets the handler pause durable input before the slot permits a restart.
@@ -1687,4 +1682,4 @@ func (m *Manager) StopAll() {
 // so an acquire here deadlocks the agent for the life of the process. Do the
 // work that needs the lock AFTER the lifecycle call returns, the way the
 // plan-execution path does.
-type ExitHandler func(agentID string, exitCode int, err error, stopped bool)
+type ExitHandler func(agentID string, err error, stopped bool)

@@ -571,7 +571,7 @@ func TestAgentProcessExitPausesRootAndChildQueues(t *testing.T) {
 	_, err := svc.DB.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = 1`)
 	require.NoError(t, err)
 
-	svc.HandleAgentProcessExit("root-1", 1, assert.AnError, false)
+	svc.HandleAgentProcessExit("root-1", assert.AnError, false)
 	for _, agentID := range []string{"root-1", "child-1"} {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		require.NoError(t, err)
@@ -2036,7 +2036,7 @@ func TestHandleAgentProcessExitResolvesUnechoedSteers(t *testing.T) {
 		svc, _ := newSteerEchoServiceFixture(t)
 		_, err := svc.InputQueue.SetPaused(t.Context(), "agent-1", false)
 		require.NoError(t, err)
-		svc.HandleAgentProcessExit("agent-1", 1, nil, stopped)
+		svc.HandleAgentProcessExit("agent-1", nil, stopped)
 		svc.Output.WaitActivityRefreshes()
 		snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
 		require.NoError(t, err)
