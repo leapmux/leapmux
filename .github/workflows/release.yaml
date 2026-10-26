@@ -24,6 +24,7 @@ jobs:
     # branch spelling because GitHub expression equality ignores case.
     # The apple-signing environment independently restricts its secrets.
     if: github.ref == 'refs/heads/main'
+    environment: release-admin
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,7 +42,7 @@ jobs:
         with:
           ref: refs/heads/main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Validate version format
         # MSI versions permit major and minor values through 255, and patch
@@ -89,7 +90,14 @@ jobs:
           git commit -m "chore: Bump version to ${{ steps.next.outputs.dev_version }}"
 
       - name: Push version commits and release tag
-        run: git push --atomic origin HEAD:refs/heads/main "refs/tags/v${{ inputs.version }}"
+        env:
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        # Supply the administrator credential only to this atomic push.
+        run: |
+          : "${RELEASE_ADMIN_TOKEN:?The release-admin environment requires RELEASE_ADMIN_TOKEN.}"
+          auth=$(printf 'x-access-token:%s' "$RELEASE_ADMIN_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push --atomic origin HEAD:refs/heads/main "refs/tags/v${{ inputs.version }}"
 
       - name: Create GitHub Release (draft)
         # Create the release as a draft, so that users do not see a release

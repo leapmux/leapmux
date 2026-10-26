@@ -1,0 +1,139 @@
+name: Renovate
+
+on:
+  schedule:
+    # 18:17 UTC is 03:17 Asia/Seoul on the following day.
+    - cron: '17 18 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Run without publishing, or publish after activation checks
+        type: choice
+        options: [dry-run, publish]
+        default: dry-run
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  renovate:
+    if: >-
+      github.repository == 'leapmux/leapmux' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.RENOVATE_ENABLED == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RENOVATE_TRUSTED_ROOT: ${{ github.workspace }}
+      LOG_LEVEL: debug
+      LOG_FORMAT: json
+    steps:
+      - name: Validate upstream main
+        env:
+          MODE: ${{ inputs.mode || 'publish' }}
+          PUBLISH_READY: ${{ vars.RENOVATE_PUBLISH_READY }}
+        run: |
+          if [ "$GITHUB_REPOSITORY" != 'leapmux/leapmux' ] || [ "$GITHUB_REF" != 'refs/heads/main' ]; then
+            echo '::error::Renovate requires leapmux/leapmux main.'
+            exit 1
+          fi
+          case "$MODE" in dry-run|publish) ;; *) exit 1 ;; esac
+          if [ "$MODE" = publish ] && [ "$PUBLISH_READY" != true ]; then
+            echo '::error::Publishing remains disabled until activation checks pass.'
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Setup build toolchain
+        uses: ./.github/actions/setup-build
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          setup-desktop: 'false'
+
+      - name: Install pinned Renovate without scripts
+        run: task install-renovate
+
+      - name: Validate configuration
+        run: task lint-renovate
+
+      - name: Compile trusted import helper
+        run: task build-dependency-imports
+
+      - name: Create read-only installation token
+        id: read
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+          owner: leapmux
+          repositories: leapmux
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-checks: read
+          permission-administration: read
+          permission-metadata: read
+          permission-vulnerability-alerts: read
+
+      - name: Prepare active security alerts
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+        run: task prepare-renovate
+
+      - name: Verify main protection before publishing
+        if: inputs.mode == 'publish' || github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+        run: task check-renovate-protection
+
+      - name: Create publishing installation token
+        if: inputs.mode == 'publish' || github.event_name == 'schedule'
+        id: write
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+          owner: leapmux
+          repositories: leapmux
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+          permission-workflows: write
+          permission-statuses: write
+          permission-checks: read
+          permission-administration: read
+          permission-metadata: read
+          permission-vulnerability-alerts: read
+
+      - name: Run read-only dry run
+        if: inputs.mode != 'publish' && github.event_name != 'schedule'
+        env:
+          RENOVATE_TOKEN: ${{ steps.read.outputs.token }}
+        run: task renovate-dry-run
+
+      - name: Publish dependency updates
+        if: inputs.mode == 'publish' || github.event_name == 'schedule'
+        env:
+          RENOVATE_TOKEN: ${{ steps.write.outputs.token }}
+        run: task renovate
+
+      - name: Upload timing and diagnostic records
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: renovate-diagnostics
+          path: |
+            .tmp/renovate-timings.jsonl
+            .tmp/renovate-execution.jsonl
+            .tmp/renovate-cli.log
+            .tmp/renovate-run/**/*.log
+          if-no-files-found: ignore

@@ -74,6 +74,14 @@ jobs:
       - name: Generate code (proto + sqlc)
         run: task generate
 
+      - name: Validate standalone dependency tools
+        if: matrix.arch == 'amd64'
+        run: task validate-standalone-tools
+
+      - name: Validate Renovate dependency extraction
+        if: matrix.arch == 'amd64'
+        run: task renovate-extract
+
       - name: Install frontend dependencies
         run: task prepare-frontend
 
@@ -90,6 +98,10 @@ jobs:
         # Run these diagnostics only after a native build failure. Cache-check failures have their own complete logs.
         if: failure() && steps.build.outcome == 'failure'
         run: bash scripts/diagnose-linuxdeploy.sh
+
+      - name: Lint (full)
+        if: matrix.arch == 'amd64'
+        run: task lint
 
       - name: Test (full)
         if: matrix.arch == 'amd64'
@@ -239,6 +251,10 @@ jobs:
         run: task check-build-cache
 
   docker:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [alpine, ubuntu]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -250,7 +266,7 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-docker-build
         with:
-          variant: alpine
+          variant: ${{ matrix.variant }}
           arch: amd64
 
       # Separate job steps make extraction and pruning failures stop the save.
@@ -275,7 +291,7 @@ jobs:
       - name: Docker build (dry run)
         uses: ./.github/actions/build-docker-image
         with:
-          variant: alpine
+          variant: ${{ matrix.variant }}
           arch: amd64
           builder: ${{ steps.setup.outputs.builder }}
           go-modcache: ${{ steps.setup.outputs.go-modcache }}
@@ -283,6 +299,20 @@ jobs:
           writes-shared: ${{ steps.setup.outputs.writes-shared }}
           go-cache-hit: ${{ steps.go-cache.outputs.cache-hit }}
           build-args: ${{ steps.setup.outputs.build-args }}
+
+  required-ci:
+    name: Required CI
+    if: always()
+    needs: [linux, macos, windows, docker]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Check required results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          node -e 'const jobs = JSON.parse(process.env.RESULTS); for (const [job, value] of Object.entries(jobs)) { if (value.result !== "success" && !(job === "docker" && process.env.EVENT_NAME === "push" && value.result === "skipped")) { console.error(`${job}: ${value.result}`); process.exitCode = 1; } }'
 
   desktop-artifacts:
     # Build, sign, and notarize the binaries that get attached to the

@@ -20,7 +20,7 @@
     "typecheck:e2e": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.14.0",
+    "@bufbuild/protobuf": "2.14.0",
     "@cfworker/json-schema": "^4.1.1",
     "@connectrpc/connect": "^2.1.2",
     "@connectrpc/connect-web": "^2.1.2",

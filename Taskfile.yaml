@@ -62,6 +62,85 @@ vars:
 # --- Code Generation ---
 
 tasks:
+  install-renovate:
+    desc: Install the complete pinned Renovate dependency tree without scripts
+    cmds:
+      - cd .github/renovate && bun install --frozen-lockfile --ignore-scripts
+
+  validate-standalone-tools:
+    desc: Install and validate proposed standalone JavaScript tools
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    cmds:
+      - bunx node-gyp@{{.NODE_GYP_VERSION}} --version
+      - bunx wrangler@{{.WRANGLER_VERSION}} --version
+
+  lint-renovate:
+    desc: Validate Renovate configuration with the pinned CLI
+    cmds:
+      - task: install-renovate
+      - node .github/renovate/node_modules/renovate/dist/config-validator.js --strict renovate.json
+      - bun scripts/renovate-prepare.mjs --local
+      - RENOVATE_TRUSTED_ROOT={{.ROOT_DIR | shellQuote}} node .github/renovate/node_modules/renovate/dist/config-validator.js --strict .github/renovate-config.cjs
+
+  build-dependency-imports:
+    desc: Build the trusted Go module-path rewriter without generated packages
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: off
+    cmds:
+      - mkdir -p .tmp
+      - cd backend && go build -o ../.tmp/leapmux-dependency-imports{{if eq OS "windows"}}.exe{{end}} ./cmd/leapmux-dependency-imports
+
+  prepare-renovate:
+    desc: Prepare trusted security companions and import-file filters
+    cmds:
+      - bun scripts/renovate-prepare.mjs {{.CLI_ARGS}}
+
+  check-renovate-protection:
+    desc: Verify effective main protection before publishing
+    cmds:
+      - node scripts/check-renovate-protection.mjs {{.CLI_ARGS}}
+
+  renovate:
+    desc: Run the pinned CLI with a hard 50-minute execution limit
+    env:
+      RENOVATE_CONFIG_FILE: .github/renovate-config.cjs
+      LOG_FORMAT: json
+    cmds:
+      - node scripts/run-renovate.mjs
+
+  renovate-extract:
+    desc: Verify the real dependency inventory without credentials or registry lookups
+    cmds:
+      - task: install-renovate
+      - task: prepare-renovate
+        vars:
+          CLI_ARGS: --local
+      - bun scripts/renovate-extract.mjs
+
+  renovate-dry-run:
+    desc: Run authenticated Renovate without publishing
+    env:
+      RENOVATE_DRY_RUN: full
+      # Exercise artifact generation even outside the routine publishing window.
+      RENOVATE_FORCE: '{"schedule":[]}'
+    cmds:
+      - task: renovate
+
+  renovate-post-upgrade:
+    desc: Prepare dependency artifacts from structured Renovate metadata
+    env:
+      GOTOOLCHAIN: local
+    cmds:
+      - bun scripts/renovate-post-upgrade.mjs
+
+  sync-protobuf-generators:
+    desc: Derive protobuf generator pins from runtime manifests
+    cmds:
+      - bun scripts/sync-protobuf-generators.mjs
+
   generate:
     desc: Generate all code
     # Proto, contracts, and spinners can run concurrently because they do not read each other's output.
@@ -977,7 +1056,9 @@ tasks:
     # They also read Tauri configuration. A partial source list could skip a required test.
     # Allow 30 seconds per test for subprocess startup and file operations on CI runners.
     cmds:
-      - bun test --timeout 30000 ./scripts/ ./desktop/rust/scripts/
+      - task: install-renovate
+      - task: build-dependency-imports
+      - bun test --timeout 30000 {{.CLI_ARGS | default "./scripts/ ./desktop/rust/scripts/"}}
 
   test-frontend:
     desc: Run frontend tests
@@ -1048,6 +1129,8 @@ tasks:
     desc: Run all linters
     cmds:
       - task: lint-versions
+      - bun scripts/sync-protobuf-generators.mjs --check
+      - task: lint-renovate
       - task: lint-scripts
       - task: validate-json
       - task: lint-proto
@@ -1113,6 +1196,7 @@ tasks:
       - scripts/*.mjs
       - desktop/rust/scripts/*.mjs
       - eslint.config.mjs
+      - .github/renovate-config.cjs
       - frontend/eslint.config.ts
     vars:
       JS_CONTEXT:
@@ -1122,7 +1206,7 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
-      - ./frontend/node_modules/.bin/eslint --cache --cache-strategy content --cache-location frontend/node_modules/.cache/eslint/scripts scripts/ desktop/rust/scripts/
+      - ./frontend/node_modules/.bin/eslint --cache --cache-strategy content --cache-location frontend/node_modules/.cache/eslint/scripts scripts/ desktop/rust/scripts/ .github/renovate-config.cjs {{.CLI_ARGS}}
       - *record_artifacts
 
   lint-versions:
@@ -1446,7 +1530,7 @@ tasks:
     # collectGoDeps runs go list -deps -test ./..., which loads every package.
     # It requires the generated SQL code and embedded frontend assets.
     # Without prepare-backend, a clean checkout fails on a missing generated package or the absent public directory for go:embed.
-    # This dependency also builds the frontend. The CI path filter limits that cost to relevant changes.
+    # This dependency also builds the frontend. The NOTICE job selects relevant changes before requesting generation.
     deps: [prepare-backend]
     sources:
       - frontend/bunfig.toml

@@ -22,12 +22,20 @@ describe('protobuf generator configuration', () => {
 
   it('generates each used runtime with its declared version and output options', () => {
     const esVersion = frontend.dependencies['@bufbuild/protobuf']
-    expect(esVersion).toMatch(/^\^?\d+\.\d+\.\d+$/)
+    expect(esVersion).toMatch(/^\d+\.\d+\.\d+$/)
     const expected = [
       { remote: `buf.build/protocolbuffers/go:${goRuntimeVersion('google.golang.org/protobuf')}`, out: 'backend/generated/proto', opt: 'paths=source_relative' },
       { remote: `buf.build/connectrpc/go:${goRuntimeVersion('connectrpc.com/connect')}`, out: 'backend/generated/proto', opt: 'paths=source_relative' },
       { remote: `buf.build/bufbuild/es:v${esVersion.replace(/^\^/, '')}`, out: 'frontend/src/generated/proto', opt: 'target=ts' },
     ]
     expect(config.plugins).toEqual(expected)
+  })
+
+  it('keeps the Bun workspace declaration and resolved runtime exact during maintenance', () => {
+    const lock = Bun.JSON5.parse(readFileSync(join(root, 'frontend/bun.lock'), 'utf8'))
+    const version = frontend.dependencies['@bufbuild/protobuf']
+    expect(lock.workspaces[''].dependencies['@bufbuild/protobuf']).toBe(version)
+    expect(lock.packages['@bufbuild/protobuf'][0]).toBe(`@bufbuild/protobuf@${version}`)
+    expect(Bun.semver.satisfies(`${version.split('.').slice(0, 2).join('.')}.${Number(version.split('.')[2]) + 1}`, version)).toBe(false)
   })
 })

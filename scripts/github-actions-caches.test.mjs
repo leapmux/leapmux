@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { delimiter, join, posix, resolve } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
+import { NOTICE_INPUTS } from './notice-inputs.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const fixtures = []
@@ -106,7 +107,7 @@ function dockerStage(name) {
   const lines = raw('docker/Dockerfile').split('\n')
   const starts = []
   for (const [index, line] of lines.entries()) {
-    const match = line.match(/^FROM\s+\S+(?:\s+AS\s+(\S+))?\s*$/i)
+    const match = line.match(/^FROM(?:\s+--platform=\S+)?\s+\S+(?:\s+AS\s+(\S+))?\s*$/i)
     if (match)
       starts.push({ name: match[1], index })
   }
@@ -144,6 +145,16 @@ describe('runShell', () => {
 })
 
 describe('cache and pin invariants of the GitHub Actions workflows', () => {
+  it('runs container build tools on the builder platform and cross-compiles the requested target', () => {
+    const dockerfile = raw('docker/Dockerfile')
+    for (const stage of ['node', 'tools']) {
+      const declaration = dockerfile.split('\n').find(line => new RegExp(`\\sAS ${stage}$`).test(line))
+      expect(declaration).toContain(`--platform=\${BUILDPLATFORM}`)
+    }
+    expect(dockerfile).toContain(`FROM \${BASE_IMAGE}`)
+    expect(dockerfile).toContain(`GOOS=\${TARGETOS} GOARCH=\${TARGETARCH}`)
+    expect(String(yaml('Taskfile.yaml').tasks['build-backend-docker'].cmds)).toContain('CGO_ENABLED=0')
+  })
   it('uses the prepared builder for every Docker cache and build operation', () => {
     const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
     const operations = steps.filter(step => String(step.uses).startsWith('docker/build-push-action@') || String(step.uses).startsWith('reproducible-containers/buildkit-cache-dance@'))
@@ -436,8 +447,8 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       if (conflict === 'tag')
         git(remote, 'update-ref', 'refs/tags/v1.2.3', initial)
       const steps = yaml('.github/workflows/release.yaml').jobs.release.steps
-      const push = steps.find(step => String(step.run).includes('git push') && String(step.run).includes('inputs.version'))
-      const result = runShell(push.run.replaceAll(expression('inputs.version'), '1.2.3'), local)
+      const push = steps.find(step => step.name === 'Push version commits and release tag')
+      const result = runShell(push.run.replaceAll(expression('inputs.version'), '1.2.3'), local, { RELEASE_ADMIN_TOKEN: 'fixture-token' })
       expect(result.status === 0).toBe(conflict === 'none')
       if (conflict === 'none') {
         expect(git(remote, 'rev-parse', 'refs/heads/main')).toBe(git(local, 'rev-parse', 'HEAD'))
@@ -707,7 +718,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
   })
 
   it('runs NOTICE again when an action that it uses changes', () => {
-    const paths = yaml('.github/workflows/notice.yaml').on.push.paths
+    const paths = NOTICE_INPUTS
     const needed = new Set(['.github/actions/setup-build/action.yaml'])
     const queue = [...needed]
     while (queue.length > 0) {
@@ -744,14 +755,109 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(violations).toEqual([])
   })
 
-  it('covers each workflow and composite action with Dependabot', () => {
-    const entry = yaml('.github/dependabot.yml').updates.find(candidate => candidate['package-ecosystem'] === 'github-actions')
-    expect(entry).toBeDefined()
-    const directories = Array.isArray(entry.directories) ? entry.directories : [entry.directory]
-    expect(directories).toContain('/')
-    for (const file of actionFiles) {
-      const target = `/${posix.dirname(file)}`
-      expect(directories.some(glob => new Bun.Glob(String(glob)).match(target))).toBe(true)
+  it('covers each workflow and composite action with Renovate', () => {
+    const config = JSON.parse(raw('renovate.json'))
+    const patterns = config['github-actions'].managerFilePatterns.map(pattern => new RegExp(pattern.slice(1, -1)))
+    expect(config.enabledManagers).toContain('github-actions')
+    for (const file of [...workflowFiles, ...actionFiles])
+      expect(patterns.some(pattern => pattern.test(file)), file).toBe(true)
+  })
+})
+
+describe('renovate workflow and protection', () => {
+  it('excludes installed JavaScript dependencies from every Docker context location', () => {
+    const patterns = raw('.dockerignore').split('\n').filter(line => line.includes('node_modules')).map(line => `${line.replace(/\/$/, '')}/**`)
+    for (const file of ['frontend/node_modules/bun/package.json', '.github/renovate/node_modules/renovate/package.json', 'tools/nested/node_modules/package/index.js'])
+      expect(patterns.some(pattern => new Bun.Glob(pattern).match(file)), file).toBe(true)
+  })
+  it('installs and validates before it creates installation tokens', () => {
+    const workflow = yaml('.github/workflows/renovate.yaml')
+    const steps = workflow.jobs.renovate.steps
+    const position = name => steps.findIndex(step => step.name === name)
+    expect(workflow.permissions).toEqual({ contents: 'read' })
+    expect(workflow.jobs.renovate.env.LOG_FORMAT).toBe('json')
+    expect(workflow.concurrency).toEqual({ 'group': 'renovate', 'cancel-in-progress': false, 'queue': 'max' })
+    expect(workflow.on.workflow_dispatch.inputs.mode.default).toBe('dry-run')
+    expect(workflow.jobs.renovate.if).toContain('github.repository == \'leapmux/leapmux\'')
+    for (const name of ['Install pinned Renovate without scripts', 'Validate configuration', 'Compile trusted import helper'])
+      expect(position(name)).toBeLessThan(position('Create read-only installation token'))
+    expect(position('Verify main protection before publishing')).toBeLessThan(position('Create publishing installation token'))
+    expect(steps.find(step => step.uses === './.github/actions/setup-build').with['setup-desktop']).toBe('false')
+    const read = steps.find(step => step.id === 'read')
+    const write = steps.find(step => step.id === 'write')
+    for (const [key, value] of Object.entries(read.with)) {
+      if (key.startsWith('permission-'))
+        expect(value).toBe('read')
     }
+    expect(write.with['permission-administration']).toBe('read')
+    expect(write.with['permission-workflows']).toBe('write')
+    for (const step of [read, write]) {
+      expect(step.with.owner).toBe('leapmux')
+      expect(step.with.repositories).toBe('leapmux')
+      expect(step.with['permission-organization-members']).toBeUndefined()
+      expect(step.with['permission-merge-queues']).toBeUndefined()
+    }
+    const dry = steps.find(step => step.name === 'Run read-only dry run')
+    expect(dry.env.RENOVATE_TOKEN).toBe(expression('steps.read.outputs.token'))
+    expect(dry.run).toBe('task renovate-dry-run')
+    const dryEnvironment = yaml('Taskfile.yaml').tasks['renovate-dry-run'].env
+    expect(dryEnvironment.RENOVATE_DRY_RUN).toBe('full')
+    expect(JSON.parse(dryEnvironment.RENOVATE_FORCE)).toEqual({ schedule: [] })
+    expect(read.with['permission-vulnerability-alerts']).toBe('read')
+  })
+  it('rejects publishing before activation and rejects every ref except upstream main', () => {
+    const step = yaml('.github/workflows/renovate.yaml').jobs.renovate.steps[0]
+    for (const [repository, ref, mode, ready, expected] of [
+      ['leapmux/leapmux', 'refs/heads/main', 'dry-run', 'false', true],
+      ['leapmux/leapmux', 'refs/heads/main', 'publish', 'false', false],
+      ['leapmux/leapmux', 'refs/heads/main', 'publish', 'true', true],
+      ['fork/leapmux', 'refs/heads/main', 'dry-run', 'true', false],
+      ['leapmux/leapmux', 'refs/heads/Main', 'dry-run', 'true', false],
+      ['leapmux/leapmux', 'refs/tags/main', 'publish', 'true', false],
+      ['leapmux/leapmux', 'refs/heads/main', 'invalid', 'true', false],
+    ]) {
+      const result = runShell(step.run, fixture(), { GITHUB_REPOSITORY: repository, GITHUB_REF: ref, MODE: mode, PUBLISH_READY: ready })
+      expect(result.status === 0).toBe(expected)
+    }
+  })
+  it('keeps the administrator credential in the release environment and atomic push only', () => {
+    const release = yaml('.github/workflows/release.yaml').jobs.release
+    expect(release.environment).toBe('release-admin')
+    const checkout = release.steps.find(step => String(step.uses).startsWith('actions/checkout@'))
+    expect(checkout.with['persist-credentials']).toBe(false)
+    const readers = release.steps.filter(step => JSON.stringify(step).includes('secrets.RELEASE_ADMIN_TOKEN'))
+    expect(readers.map(step => step.name)).toEqual(['Push version commits and release tag'])
+    for (const step of release.steps) {
+      expect(String(step.run ?? '')).not.toMatch(/(?:bun install|go tool|task |cargo )/)
+    }
+    for (const file of workflowFiles.filter(file => file !== '.github/workflows/release.yaml'))
+      expect(raw(file)).not.toContain('RELEASE_ADMIN_TOKEN')
+    expect(release.steps.find(step => step.name === 'Create GitHub Release (draft)').env.GH_TOKEN).toBe(expression('secrets.GITHUB_TOKEN'))
+  })
+  it('reports required checks for failures and cancellations and builds both container variants', () => {
+    const ci = yaml('.github/workflows/ci.yaml')
+    expect(ci.jobs.docker.strategy.matrix.variant).toEqual(['alpine', 'ubuntu'])
+    for (const step of ci.jobs.docker.steps.filter(step => String(step.uses).includes('docker-build') || String(step.uses).includes('build-docker-image')))
+      expect(step.with.variant).toBe(expression('matrix.variant'))
+    expect(ci.jobs.linux.steps.find(step => step.run === 'task lint').if).toBe('matrix.arch == \'amd64\'')
+    expect(ci.jobs.linux.steps.find(step => step.run === 'task validate-standalone-tools').if).toBe('matrix.arch == \'amd64\'')
+    expect(ci.jobs.linux.steps.find(step => step.run === 'task renovate-extract').if).toBe('matrix.arch == \'amd64\'')
+    expect(yaml('Taskfile.yaml').tasks['validate-standalone-tools'].cmds).toEqual([
+      'bunx node-gyp@{{.NODE_GYP_VERSION}} --version',
+      'bunx wrangler@{{.WRANGLER_VERSION}} --version',
+    ])
+    const required = ci.jobs['required-ci']
+    expect(required.name).toBe('Required CI')
+    expect(required.if).toBe('always()')
+    expect(required.needs).toEqual(['linux', 'macos', 'windows', 'docker'])
+    for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
+      const needs = Object.fromEntries(required.needs.map(job => [job, { result: job === 'linux' ? result : 'success' }]))
+      expect(runShell(required.steps[0].run, fixture(), { RESULTS: JSON.stringify(needs), EVENT_NAME: 'pull_request' }).status === 0).toBe(result === 'success')
+    }
+    const notice = yaml('.github/workflows/notice.yaml')
+    expect(notice.on.pull_request.paths).toBeUndefined()
+    expect(notice.on.push.paths).toBeUndefined()
+    expect(notice.jobs.check.name).toBe('NOTICE')
+    expect(notice.jobs.check.steps.find(step => step.name === 'Regenerate NOTICE').if).toBe('steps.inputs.outputs.needed == \'true\'')
   })
 })

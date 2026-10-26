@@ -537,6 +537,161 @@ Regular build targets do not run it.
 The task fails if a dependency lacks a license file.
 It fails also if a vendored override's license identifier differs from the upstream package.
 
+### Dependency updates with Renovate
+
+The dedicated Renovate workflow runs at **03:17 Asia/Seoul every day** (`17 18 * * *` in UTC).
+Routine branches start on Monday between 02:00 and 06:00 Seoul.
+Existing branches receive maintenance and retries during any daily run.
+Routine major updates require approval in the Dependency Dashboard.
+Security fixes, including major fixes, bypass the weekly window and dashboard approval.
+Every candidate requires a release timestamp and a release age of at least three days.
+Every merge requires a human review and the `Required CI` and `NOTICE` checks.
+Renovate never approves or merges a pull request (PR).
+
+Dependabot alerts supply vulnerability findings to Renovate.
+Keep the dependency graph and Dependabot alerts enabled.
+Keep Dependabot's automatic security-update PRs disabled.
+An alert remains useful when no fix exists or an artifact update fails.
+Personal alert-email preferences do not affect this detection.
+See [Renovate's security-update requirements](https://docs.renovatebot.com/configuration-options/#vulnerabilityalerts).
+
+The dedicated manifest and Bun lockfile under `.github/renovate/` pin Renovate and its complete dependency tree.
+Run Renovate targets with the Node.js and Bun versions in `versions.env`.
+Installation uses `--frozen-lockfile --ignore-scripts` before any publishing credential exists.
+The runner executes that pinned CLI directly, with a hard 50-minute execution limit.
+A timed-out run fails and retains diagnostic records.
+Activation requires a representative queue, including rebases, to finish within 40 minutes.
+NOTICE generation is only one part of that measurement.
+
+The groups cover these dependencies:
+
+- Backend and sidecar Go dependencies, tools, and both genproto replacements
+- Hugo and its configuration-imported Hextra theme
+- Frontend dependencies
+- Rust dependencies
+- Tauri crates, plugins, JavaScript packages, and CLI together
+- GitHub Actions in workflows and composite actions
+- Alpine, Ubuntu, and s6-overlay
+- Renovate itself
+- Coordinated Bun and Cargo lockfile maintenance
+- One separate branch per toolchain or standalone tool pin
+
+Routine indirect Go dependencies retain Renovate's defaults.
+Alerted indirect dependencies remain eligible for security fixes.
+The sidecar's local replacement of LeapMux never becomes an upstream update.
+Runner labels require a coordinated platform change and are excluded from automatic updates.
+Toolchain branches run only `task sync-versions`; CI installs and validates the proposed toolchain.
+Linux amd64 CI also installs and validates the proposed node-gyp and Wrangler versions.
+It runs the pinned Renovate CLI against the real inventory to validate its proposed Node.js runtime.
+Post-update commands set `GOTOOLCHAIN=local` and fail on an unsupported Go requirement.
+They do not download a different Go toolchain automatically.
+
+Go updates rewrite module paths in imports and tool directives before they reconcile dependency metadata.
+They download metadata and checksums before executing updated generators.
+They prepare generated packages and embedded assets before `tidy`.
+They tidy the site's Go metadata with `GOWORK=off` and retain the Hugo tool.
+They also retain modules imported through Hugo's configuration, including Hextra.
+The ignored `go.work.sum` is refreshed but never committed.
+Generator pins derive from runtime manifests through `task sync-protobuf-generators`.
+The exact frontend protobuf runtime pin prevents lockfile maintenance from changing it independently.
+Tauri companion updates must retain matching major/minor versions for each Rust and JavaScript pair.
+
+#### Credential setup and ownership
+
+A repository administrator owns the App installation and activation settings.
+Register a dedicated App under [the leapmux organization](https://github.com/organizations/leapmux/settings/apps/new).
+Use the repository URL as its homepage, disable webhooks, and permit installation only in this account.
+Install it **only** on `leapmux/leapmux`.
+Grant these repository permissions:
+
+| Permission | Access |
+| --- | --- |
+| Contents | Read and write |
+| Pull requests | Read and write |
+| Issues | Read and write |
+| Workflows | Read and write |
+| Commit statuses | Read and write |
+| Checks | Read-only |
+| Administration | Read-only |
+| Metadata | Read-only |
+| Dependabot alerts | Read-only |
+
+Grant no organization permissions or merge-queue permission.
+Administration remains read-only; the App cannot change rulesets.
+Generate the private key and store it directly in the repository's [Actions secrets](https://github.com/leapmux/leapmux/settings/secrets/actions)
+as `RENOVATE_APP_PRIVATE_KEY`.
+Store the numeric App ID in the repository variable `RENOVATE_APP_ID`.
+Never send private keys or tokens through chat or commit them.
+Dry runs request an explicitly read-only installation token.
+Publishing first verifies effective `main` rules with that token, then requests a separate write token.
+Neither token receives an administrator bypass.
+
+Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with these settings:
+
+- Resource owner: `leapmux`
+- Repository access: only `leapmux/leapmux`
+- Repository permission: Contents, read and write
+- Expiration: 90 days
+
+Store it directly as the `RELEASE_ADMIN_TOKEN` secret in the [release-admin environment](https://github.com/leapmux/leapmux/settings/environments).
+That environment permits only the `main` branch and requires approval by `trustin`.
+It permits `trustin` to approve a release they dispatched.
+The release job uses this credential only for its existing atomic push of two version commits and the release tag.
+Release API operations use `GITHUB_TOKEN`.
+Builds and dependency execution run in other jobs.
+Replace the administrator token before expiration.
+Approve the environment only for an intentional release; do not dispatch a release to test Renovate.
+
+#### Activation and recovery
+
+Keep `RENOVATE_ENABLED=false` and `RENOVATE_PUBLISH_READY=false` until implementation review, merge, and runtime acceptance finish.
+After the approved merge, add the separate active ruleset for `refs/heads/main`.
+It requires one review, dismisses stale approvals, requires approval of the latest push by another person,
+and requires `Required CI` and `NOTICE` from GitHub Actions application ID `15368`.
+Only the repository administrator role may bypass it.
+Preserve the existing deletion, force-push, and linear-history rules.
+Run `task check-renovate-protection` with a read-only App token and read back the effective rules and bypass actors.
+
+Validate and inspect dependencies locally:
+
+```bash
+task test-scripts
+task test-backend -- ./cmd/leapmux-dependency-imports
+task lint-renovate
+task renovate-extract
+```
+
+The extraction target checks a private copy of the proposed tree.
+It includes new files without staging changes in the contributor's checkout.
+It uses no credential and does no registry lookup.
+It records the real inventory under `.tmp/renovate-inventory.json`.
+Reuse the existing vinxi patch test in `frontend/src/test-support/singletonInstalls.test.ts` when a frontend update fails installation.
+
+Dispatch an authenticated full dry run after storing the App credentials:
+
+```bash
+gh workflow run renovate.yaml --ref main -f mode=dry-run
+```
+
+Dry runs override the weekly creation window to exercise artifact generation.
+They retain release age and dashboard approval requirements.
+
+Inspect its post-update fixture outputs, dependency inventory, PR titles, security grouping, artifact errors, and timing records.
+Measure the representative queue and rebases before setting `RENOVATE_PUBLISH_READY=true`.
+Then dispatch `mode=publish` once and verify the dashboard, PRs, CI, and visible failures.
+Set `RENOVATE_ENABLED=true` only after that publication passes acceptance.
+The two switches let the initial manual publication precede scheduled execution.
+
+When an update fails, read the artifact-error details in its PR and the workflow diagnostics.
+Correct the dependency or generator problem, then dispatch another dry run.
+The bot keeps failed updates visible; a failed artifact update never becomes an automatic merge.
+If a run exceeds the runtime limit, keep publication disabled and revise execution scheduling before activation.
+To suspend daily execution, set `RENOVATE_ENABLED=false`.
+Set `RENOVATE_PUBLISH_READY=false` also to prevent manual publication while repairing credentials or protection.
+
+Maintainers review and merge dependency PRs and approve routine major updates in the dashboard.
+The administrator maintains the App permissions, protection rules, and release credential.
+
 ### Cleaning
 
 Remove all build artifacts and generated code:

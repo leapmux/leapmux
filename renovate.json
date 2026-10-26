@@ -1,0 +1,207 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "enabledManagers": [
+    "gomod",
+    "bun",
+    "cargo",
+    "github-actions",
+    "custom.regex"
+  ],
+  "timezone": "Asia/Seoul",
+  "schedule": [
+    "* 2-5 * * 1"
+  ],
+  "updateNotScheduled": true,
+  "dependencyDashboard": true,
+  "automerge": false,
+  "autoApprove": false,
+  "platformAutomerge": false,
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "minimumReleaseAge": "3 days",
+  "minimumReleaseAgeBehaviour": "timestamp-required",
+  "internalChecksFilter": "strict",
+  "prCreation": "immediate",
+  "prNotPendingHours": 0,
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "commitMessageAction": "Update",
+  "commitMessageLowerCase": "never",
+  "commitMessageTopic": "{{depName}}",
+  "prBodyTemplate": "## Motivation\n\n- Keep dependencies current and address reported vulnerabilities.\n\n## Modifications\n\n{{{table}}}\n{{{notes}}}\n{{{changelogs}}}\n\n## Result\n\n- Dependency changes remain subject to human review and required CI.\n{{{ replace \"(^|\\n)# Warnings\" \"$1### Warnings\" warnings }}}",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "groupName": "security fixes",
+    "groupSlug": "security",
+    "branchTopic": "security",
+    "schedule": [],
+    "dependencyDashboardApproval": false,
+    "minimumReleaseAge": "3 days",
+    "minimumReleaseAgeBehaviour": "timestamp-required",
+    "internalChecksFilter": "strict",
+    "vulnerabilityFixStrategy": "lowest",
+    "commitMessageSuffix": "",
+    "labels": [
+      "dependencies",
+      "security"
+    ],
+    "automerge": false,
+    "autoApprove": false,
+    "prCreation": "immediate",
+    "separateMajorMinor": false,
+    "separateMinorPatch": false,
+    "rangeStrategy": "pin"
+  },
+  "major": {
+    "dependencyDashboardApproval": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "* 2-5 * * 1"
+    ],
+    "groupName": "lockfiles",
+    "groupSlug": "lockfile-maintenance",
+    "commitMessageAction": "Update",
+    "commitMessageTopic": "lockfiles",
+    "commitMessageExtra": ""
+  },
+  "gomod": {
+    "skipArtifactsUpdate": true
+  },
+  "github-actions": {
+    "managerFilePatterns": [
+      "/^\\.github/workflows/[^/]+\\.ya?ml$/",
+      "/^\\.github/actions/.+/action\\.ya?ml$/"
+    ],
+    "pinDigests": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^versions\\.env$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\n(?<depType>[A-Z_][A-Z0-9_]*)=(?:alpine:|ubuntu:)?(?<currentValue>[^\\s]+)"
+      ],
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchFileNames": [
+        "backend/go.mod",
+        "desktop/go/go.mod"
+      ],
+      "groupName": "Go workspace"
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchFileNames": [
+        "site/go.mod"
+      ],
+      "groupName": "site"
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchPackageNames": [
+        "github.com/imfing/hextra"
+      ],
+      "enabled": true
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang",
+        "toolchain"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "bun"
+      ],
+      "matchFileNames": [
+        "frontend/package.json"
+      ],
+      "groupName": "frontend"
+    },
+    {
+      "matchManagers": [
+        "bun"
+      ],
+      "matchFileNames": [
+        ".github/renovate/package.json"
+      ],
+      "groupName": "Renovate",
+      "rangeStrategy": "pin"
+    },
+    {
+      "matchManagers": [
+        "cargo"
+      ],
+      "groupName": "Rust"
+    },
+    {
+      "matchPackageNames": [
+        "/^@tauri-apps\\//",
+        "/^tauri(?:-|$)/"
+      ],
+      "groupName": "Tauri",
+      "separateMajorMinor": false
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchDepTypes": [
+        "github-runner"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "groupName": null,
+      "separateMajorMinor": false,
+      "allowedVersions": "/^v?\\d+(\\.\\d+){1,3}$/"
+    },
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepTypes": [
+        "ALPINE_IMAGE",
+        "UBUNTU_IMAGE",
+        "S6_OVERLAY_VERSION"
+      ],
+      "groupName": "container runtime"
+    }
+  ],
+  "groupSingleUpdates": true,
+  "minimumReleaseAgeBuffer": null,
+  "ignoreDeps": [
+    "github.com/leapmux/leapmux"
+  ],
+  "baseBranchPatterns": [
+    "main"
+  ]
+}

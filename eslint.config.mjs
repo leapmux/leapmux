@@ -27,9 +27,9 @@ export default antfu({
   // covers frontend/scripts/. The intermediate directories need a negation each,
   // because `**/*` ignores `desktop/` itself and ESLint cannot re-include a path
   // below an ignored directory.
-  ignores: ['**/*', '!scripts/**', '!desktop', '!desktop/rust', '!desktop/rust/scripts/**'],
+  ignores: ['**/*', '!scripts/**', '!.github', '!.github/renovate-config.cjs', '!desktop', '!desktop/rust', '!desktop/rust/scripts/**'],
 }, {
-  files: ['scripts/**/*.mjs', 'desktop/rust/scripts/**/*.mjs'],
+  files: ['.github/renovate-config.cjs', 'scripts/**/*.mjs', 'desktop/rust/scripts/**/*.mjs'],
   rules: {
     // These run under `bun scripts/...`, so stdout/stderr IS the interface.
     'no-console': 'off',
