@@ -4,6 +4,7 @@ package envprobe
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,6 +49,17 @@ func (r Request) Validate() error {
 	return nil
 }
 
+// Arguments returns the arguments that start the probe. The request travels as
+// JSON in unpadded base64url. A shell passes the request to the probe as a
+// native argument, and a shell can rewrite plain JSON on that path:
+//   - Windows PowerShell 5.1, and PowerShell 7 in its Legacy argument passing,
+//     pass each embedded double quote unescaped. The probe's command-line
+//     parser then removes the quote, and the JSON no longer decodes.
+//   - Git Bash converts an argument that it reads as a POSIX path.
+//
+// The base64url alphabet holds only letters, digits, "-" and "_". No shell
+// and no command-line parser rewrites these, and no slash makes the argument
+// look like a path.
 func (r Request) Arguments() ([]string, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -56,8 +68,12 @@ func (r Request) Arguments() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{Argument, string(data)}, nil
+	return []string{Argument, requestEncoding.EncodeToString(data)}, nil
 }
+
+// requestEncoding is the encoding of the request argument (see Arguments).
+// Strict decoding rejects an encoding that is not canonical.
+var requestEncoding = base64.RawURLEncoding.Strict()
 
 // Run handles only the private probe command. Values travel through stdout,
 // never command arguments or a temporary file. Ordinary CLI arguments pass through.
@@ -69,8 +85,13 @@ func Run(args []string, stdout, stderr io.Writer) (exitCode int, handled bool) {
 		_, _ = fmt.Fprintln(stderr, "invalid internal environment probe arguments")
 		return 2, true
 	}
+	data, err := requestEncoding.DecodeString(args[1])
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "invalid internal environment probe request")
+		return 2, true
+	}
 	var request Request
-	decoder := json.NewDecoder(strings.NewReader(args[1]))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		_, _ = fmt.Fprintln(stderr, "invalid internal environment probe request")
