@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -257,6 +258,22 @@ func TestEnqueueAgentInput_AutoStartFailureRevertsToInactive(t *testing.T) {
 		"an auto-start delivery failure must not mark the agent permanently failed")
 }
 
+type heldAutoStartEventWriter struct {
+	*testResponseWriter
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *heldAutoStartEventWriter) SendStream(message *leapmuxv1.InnerStreamMessage) error {
+	err := w.testResponseWriter.SendStream(message)
+	w.once.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
+	return err
+}
+
 // TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone pins that the
 // cold-start path leaves the STARTING it entered.
 //
@@ -270,41 +287,80 @@ func TestEnqueueAgentInput_AutoStartFailureRevertsToInactive(t *testing.T) {
 // ACTIVE broadcast.
 func TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone(t *testing.T) {
 	t.Parallel()
+	for _, concurrentDrain := range []bool{false, true} {
+		label := "idle publication queue"
+		if concurrentDrain {
+			label = "another publication is draining"
+		}
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			ctx := testutil.DeadlineContext(t)
+			svc, _, w := setupTestService(t)
+			// A start that succeeds and whose sink emits no status at all -- the shape
+			// the failing row read produces in production.
+			svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+				return map[string]string{}, nil
+			}
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID:            "agent-1",
+				WorkingDir:    t.TempDir(),
+				HomeDir:       t.TempDir(),
+				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			}))
+			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+			var releasePublication func()
+			if concurrentDrain {
+				writer := &heldAutoStartEventWriter{testResponseWriter: w, entered: make(chan struct{}), release: make(chan struct{})}
+				registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+				drained := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(writer.release) })
+				releasePublication = unblock
+				defer func() {
+					unblock()
+					select {
+					case <-drained:
+					case <-ctx.Done():
+						t.Error("the held publication did not finish")
+					}
+				}()
+				go func() {
+					defer close(drained)
+					// Keep a drainer in SendStream while the cold start queues its own events.
+					svc.Watchers.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{AgentId: "agent-1"})
+				}()
+				select {
+				case <-writer.entered:
+				case <-ctx.Done():
+					t.Fatal("the publication never reached the watcher")
+				}
+			}
 
-	ctx := context.Background()
-	svc, _, w := setupTestService(t)
-	// A start that succeeds and whose sink emits no status at all -- the shape
-	// the failing row read produces in production.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
-		return map[string]string{}, nil
+			require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
+			// A concurrent drainer can deliver these events after the cold start returns.
+			if releasePublication != nil {
+				releasePublication()
+			}
+
+			starting, active := -1, -1
+			require.Eventually(t, func() bool {
+				starting, active = -1, -1
+				for i, stream := range w.streamsSnapshot() {
+					sc := decodeWatchAgentEvent(t, stream).GetStatusChange()
+					if sc == nil {
+						continue
+					}
+					if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTING && starting == -1 {
+						starting = i
+					}
+					if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE && active == -1 {
+						active = i
+					}
+				}
+				return starting >= 0 && active >= 0
+			}, inputQueueWait, time.Millisecond, "the cold start must deliver both STARTING and ACTIVE")
+			assert.Less(t, starting, active, "ACTIVE must follow STARTING, not precede it")
+		})
 	}
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-1",
-		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
-
-	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
-
-	starting, active := -1, -1
-	for i, stream := range w.streams {
-		sc := decodeWatchAgentEvent(t, stream).GetStatusChange()
-		if sc == nil {
-			continue
-		}
-		if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTING && starting == -1 {
-			starting = i
-		}
-		if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE && active == -1 {
-			active = i
-		}
-	}
-	require.NotEqual(t, -1, starting, "the cold start must report STARTING")
-	require.NotEqual(t, -1, active,
-		"the cold start reported STARTING and never left it; the banner spins for an agent that is running")
-	assert.Less(t, starting, active, "ACTIVE must follow STARTING, not precede it")
 }
 
 // TestEnsureAgentRunning_ACloseCancelsAMessageDrivenColdStart is the payoff for
