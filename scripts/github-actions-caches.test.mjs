@@ -814,6 +814,8 @@ describe('renovate workflow and protection', () => {
     expect(write.with['permission-administration']).toBe('read')
     expect(write.with['permission-workflows']).toBe('write')
     for (const step of [read, write]) {
+      expect(step.with['client-id']).toBe(expression('vars.RENOVATE_APP_CLIENT_ID'))
+      expect(step.with['app-id']).toBeUndefined()
       expect(step.with.owner).toBe('leapmux')
       expect(step.with.repositories).toBe('leapmux')
       expect(step.with['permission-organization-members']).toBeUndefined()

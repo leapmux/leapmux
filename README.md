@@ -622,7 +622,7 @@ Grant no organization permissions or merge-queue permission.
 Administration remains read-only; the App cannot change rulesets.
 Generate the private key and store it directly in the repository's [Actions secrets](https://github.com/leapmux/leapmux/settings/secrets/actions)
 as `RENOVATE_APP_PRIVATE_KEY`.
-Store the numeric App ID in the repository variable `RENOVATE_APP_ID`.
+Store the App's non-secret Client ID in the repository variable `RENOVATE_APP_CLIENT_ID`.
 Never send private keys or tokens through chat or commit them.
 Dry runs request an explicitly read-only installation token.
 Publishing first verifies effective `main` rules with that token, then requests a separate write token.
