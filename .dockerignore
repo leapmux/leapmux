@@ -30,7 +30,9 @@ generated/
 # Frontend build artifacts (rebuilt in Docker)
 frontend/.output/
 frontend/.vinxi/
-frontend/node_modules/
+
+# Local JavaScript dependency installations
+**/node_modules/
 
 # IDE and editor files
 .idea/

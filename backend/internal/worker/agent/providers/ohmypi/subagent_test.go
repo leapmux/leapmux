@@ -135,7 +135,10 @@ func TestChildInterruptUsesNativeCancellation(t *testing.T) {
 	interrupter, ok := any(r.agent).(agent.ChildInterrupter)
 	require.True(t, ok)
 	r.emit(`{"type":"agent_start"}`, frameTaskStart, frameStarted)
-	r.respond(func(recordedCommand) *rigReply {
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type != CommandCancelSubagent {
+			return nil
+		}
 		unlocked := r.agent.sessionMu.TryLock()
 		if unlocked {
 			r.agent.sessionMu.Unlock()
@@ -143,6 +146,10 @@ func TestChildInterruptUsesNativeCancellation(t *testing.T) {
 		assert.False(t, unlocked, "context replacement waits for the child command")
 		return &rigReply{Data: json.RawMessage(`{"cancelled":true}`)}
 	})
+	// Stats requests can follow agent_start after the responder changes. Deliver one
+	// outside cancellation so this interleaving does not depend on scheduling.
+	_, err := r.agent.sendCommand(CommandGetSessionStats, nil, r.agent.APITimeout())
+	require.NoError(t, err)
 	require.NoError(t, interrupter.InterruptChild(subagentRowKey(r.agent.sessionID, "Probe"), agent.StopContext{}))
 	commands := r.commandsOfType("cancel_subagent")
 	require.Len(t, commands, 1)

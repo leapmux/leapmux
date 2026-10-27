@@ -1,39 +1,14 @@
 name: NOTICE
 
-# NOTICE.md and NOTICE.html are committed artifacts. No normal build regenerates them. The README
-# requires manual regeneration after dependency changes.
-# If a dependency changes without regeneration, the distributed legal notice can become stale.
-# The path filter covers dependency manifests and the notice generator.
-# It includes the generated notices so direct artifact edits still require validation.
-# go.work controls the workspace module list that the generator reads.
-# Metadata downloads can take minutes on a cold cache, so unrelated commits skip this workflow.
+# Always report NOTICE. Select expensive generation inside the job.
 on:
   push:
     branches: [main]
-    paths: &notice-inputs
-      - 'go.work'
-      - 'go.work.sum'
-      - '**/go.mod'
-      - '**/go.sum'
-      - 'desktop/rust/Cargo.toml'
-      - 'desktop/rust/Cargo.lock'
-      - 'frontend/package.json'
-      - 'frontend/bun.lock'
-      - 'scripts/generate-notice.mjs'
-      - 'scripts/license-overrides/**'
-      - 'Taskfile.yaml'
-      - 'NOTICE.md'
-      - 'NOTICE.html'
-      - '.github/workflows/notice.yaml'
-      - '.github/actions/setup-build/action.yaml'
-      - '.github/actions/build-output-cache/action.yaml'
-      - '.github/actions/dependency-caches/action.yaml'
-      - '.github/actions/load-versions/action.yaml'
-  # An administrator can push directly to main or merge without checks. A pull-request-only
-  # workflow would miss those changes.
   pull_request:
     branches: [main]
-    paths: *notice-inputs
+
+permissions:
+  contents: read
 
 concurrency:
   group: notice-${{ github.ref }}
@@ -41,11 +16,29 @@ concurrency:
 
 jobs:
   check:
+    name: NOTICE
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Load tool versions
+        uses: ./.github/actions/load-versions
+
+      - name: Setup Bun for selection
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Select NOTICE inputs
+        id: inputs
+        run: bun scripts/notice-inputs.mjs
 
       - name: Setup build toolchain
+        if: steps.inputs.outputs.needed == 'true'
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -59,9 +52,11 @@ jobs:
           setup-desktop: 'false'
 
       - name: Regenerate NOTICE
+        if: steps.inputs.outputs.needed == 'true'
         run: task generate-notice
 
       - name: Fail if NOTICE is stale
+        if: steps.inputs.outputs.needed == 'true'
         run: |
           if ! git diff --exit-code --stat NOTICE.md NOTICE.html; then
             echo

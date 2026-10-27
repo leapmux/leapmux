@@ -8,12 +8,12 @@ ARG NODE_VERSION
 # ------------------------------------------------------------------
 # Stage: Node.js (source for the pinned node runtime)
 # ------------------------------------------------------------------
-FROM node:${NODE_VERSION}-alpine AS node
+FROM --platform=${BUILDPLATFORM} node:${NODE_VERSION}-alpine AS node
 
 # ------------------------------------------------------------------
 # Stage: tools (the pinned build toolchain)
 # ------------------------------------------------------------------
-FROM golang:${GOLANG_VERSION}-alpine AS tools
+FROM --platform=${BUILDPLATFORM} golang:${GOLANG_VERSION}-alpine AS tools
 
 # BusyBox ash runs each RUN below. `pipefail` makes a failed download fail
 # the step. Without it, `wget ... | bash` ran an empty script and hid the
@@ -59,6 +59,8 @@ ARG TARGETOS
 ARG TARGETARCH
 
 # Build the backend binary via task (single source of truth).
+# Build tools run natively because Bun's allocator fails under x64 QEMU on ARM.
+# Only the final Go compilation uses the requested target platform.
 # NITRO_PRESET=node-server avoids bun preset auto-detection which hangs in buildkit.
 #
 # Local builds retain these cache mounts. CI supplies the Go module mount through

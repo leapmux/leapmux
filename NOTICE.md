@@ -711,7 +711,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@solidjs/start 1.3.2 (MIT)](#solidjsstart-132-mit)
 - [@tauri-apps/api 2.11.1 (Apache-2.0 OR MIT)](#tauri-appsapi-2111-apache-20-or-mit)
 - [@tauri-apps/plugin-clipboard-manager 2.3.2 (MIT OR Apache-2.0)](#tauri-appsplugin-clipboard-manager-232-mit-or-apache-20)
-- [@tauri-apps/plugin-notification 2.3.3 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-233-mit-or-apache-20)
+- [@tauri-apps/plugin-notification 2.4.0 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-240-mit-or-apache-20)
 - [@tauri-apps/plugin-opener 2.5.4 (MIT OR Apache-2.0)](#tauri-appsplugin-opener-254-mit-or-apache-20)
 - [@thisbeyond/solid-dnd 0.7.5 (MIT)](#thisbeyondsolid-dnd-075-mit)
 - [@types/diff 8.0.0 (MIT)](#typesdiff-800-mit)
@@ -106386,7 +106386,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### @tauri-apps/plugin-notification 2.3.3 (MIT OR Apache-2.0)
+### @tauri-apps/plugin-notification 2.4.0 (MIT OR Apache-2.0)
 
 ```
 SPDXVersion: SPDX-2.1
