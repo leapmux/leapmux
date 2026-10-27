@@ -1,13 +1,16 @@
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
+import process from 'node:process'
 import { describe, expect, it } from 'bun:test'
+import { renovateModule as engine } from './renovate-engine.mjs'
 import { postUpgrade } from './renovate-post-upgrade.mjs'
-import { securityCompanions } from './renovate-prepare.mjs'
+import { prepareTauriSecurity, securityCompanions } from './renovate-prepare.mjs'
 
 const requireRenovate = createRequire(new URL('../.github/renovate/package.json', import.meta.url))
-// Renovate exposes no public policy-test API. Resolve its installed internals from the pinned manifest.
-const engine = relative => import(requireRenovate.resolve(`renovate/dist/${relative}`))
+const { init: initializeRenovateLogger } = await engine('logger/index.js')
+await initializeRenovateLogger()
 const { DateTime } = requireRenovate('luxon')
 const { getConfig } = await engine('config/defaults.js')
 const { getManagerConfig } = await engine('config/index.js')
@@ -23,6 +26,7 @@ const { PackageFiles } = await engine('workers/repository/package-files.js')
 const { getWarnings } = await engine('workers/repository/errors-warnings.js')
 const { cronMatches, hasValidSchedule } = await engine('workers/repository/update/branch/schedule.js')
 const { generateBranchConfig } = await engine('workers/repository/updates/generate.js')
+const { branchifyUpgrades } = await engine('workers/repository/updates/branchify.js')
 
 const root = resolve(import.meta.dirname, '..')
 const policy = JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8'))
@@ -30,6 +34,43 @@ const config = () => mergeChildConfig(getConfig(), policy)
 const rule = dep => applyPackageRules({ ...config(), packageName: dep.depName, ...dep })
 
 describe('renovate policy with the pinned engine', () => {
+  it('creates one maintenance branch for both Bun lockfiles and Cargo', async () => {
+    const files = {
+      bun: ['frontend', '.github/renovate'].map(directory => ({ packageFile: `${directory}/package.json`, lockFiles: [`${directory}/bun.lock`], deps: [] })),
+      cargo: [{ packageFile: 'desktop/rust/Cargo.toml', lockFiles: ['desktop/rust/Cargo.lock'], deps: [] }],
+    }
+    const { branches } = await branchifyUpgrades({ ...config(), errors: [], warnings: [], repoIsOnboarded: true }, files)
+    expect(branches).toHaveLength(1)
+    const [branch] = branches
+    expect(branch.upgrades.map(upgrade => upgrade.packageFile).sort()).toEqual(['.github/renovate/package.json', 'desktop/rust/Cargo.toml', 'frontend/package.json'])
+    expect(branch.upgrades.every(upgrade => upgrade.updateType === 'lockFileMaintenance' && upgrade.isLockFileMaintenance)).toBe(true)
+    expect(branch.skipArtifactsUpdate).toBe(false)
+    expect(branch.prTitle).toBe('chore(deps): Update lockfiles')
+  })
+  it('keeps Go security artifacts skipped while Bun and Cargo security companions remain together', async () => {
+    const security = { isVulnerabilityAlert: true, force: policy.vulnerabilityAlerts }
+    const dependency = (depName, datasource, currentValue, newVersion) => ({ ...security, depName, packageName: depName, datasource, currentValue, updates: [{ updateType: 'minor', newValue: newVersion, newVersion }] })
+    const packageFiles = {
+      gomod: [{ packageFile: 'backend/go.mod', deps: [dependency('example.com/module', 'go', 'v1.0.0', 'v1.1.0')] }],
+      bun: [{ packageFile: 'frontend/package.json', deps: [dependency('@tauri-apps/api', 'npm', '2.11.0', '2.12.0')] }],
+      cargo: [{ packageFile: 'desktop/rust/Cargo.toml', deps: [dependency('tauri', 'crate', '2.11.0', '2.12.0')] }],
+    }
+    const result = await branchifyUpgrades({ ...config(), errors: [], warnings: [], semanticCommits: 'enabled', repoIsOnboarded: true }, packageFiles)
+    const branches = result.branches.filter(branch => branch.isVulnerabilityAlert)
+    expect(branches).toHaveLength(2)
+    const go = branches.find(branch => branch.upgrades.every(upgrade => upgrade.manager === 'gomod'))
+    const tauri = branches.find(branch => branch.upgrades.some(upgrade => upgrade.manager === 'bun'))
+    expect(go.skipArtifactsUpdate).toBe(true)
+    expect(go.branchName).toBe('renovate/go-security')
+    expect(tauri.upgrades.map(upgrade => upgrade.manager).sort()).toEqual(['bun', 'cargo'])
+    expect(tauri.skipArtifactsUpdate).toBe(false)
+    for (const branch of branches) {
+      expect(branch.schedule).toEqual([])
+      expect(branch.dependencyDashboardApproval).toBe(false)
+      expect(branch.minimumReleaseAge).toBe('3 days')
+      expect(branch.labels).toContain('security')
+    }
+  })
   it('extracts every tool and image pin, including digits in s6-overlay, with unchanged values', () => {
     const text = readFileSync(resolve(root, 'versions.env'), 'utf8')
     const expected = new Map([...text.matchAll(/^([A-Z_][A-Z0-9_]*)=(.+)$/gm)].map(match => [match[1], match[2]]))
@@ -106,8 +147,41 @@ describe('renovate policy with the pinned engine', () => {
     const nativeAlertRule = { matchPackageNames: ['tauri-plugin-opener'], isVulnerabilityAlert: true, force: base.vulnerabilityAlerts }
     const affected = await applyPackageRules({ ...base, packageRules: [...packageRules, nativeAlertRule], manager: 'cargo', packageFile: 'desktop/rust/Cargo.toml', depName: 'tauri-plugin-opener', packageName: 'tauri-plugin-opener' })
     expect(mergeChildConfig(affected, affected.major).dependencyDashboardApproval).toBe(false)
-    expect(affected.allowedVersions).toBe('2.6.1')
+    expect(affected.allowedVersions).toBe('=2.6.1')
     expect(affected.rangeStrategy).toBe('pin')
+  })
+  it('preserves the safe exact constraint through the real native vulnerability rule in an isolated process', async () => {
+    const packageInfo = { name: 'tauri', ecosystem: 'rust' }
+    const primary = { package: packageInfo, severity: 'high', vulnerable_version_range: '>= 2.11.0, < 2.12.0', first_patched_version: { identifier: '2.12.0' } }
+    const alerts = [{ state: 'open', dependency: { manifest_path: 'desktop/rust/Cargo.lock' }, security_vulnerability: primary, security_advisory: { summary: 'Fixture advisory', description: 'Fixture description', severity: 'high', identifiers: [{ value: 'GHSA-fixture-code-test' }], vulnerabilities: [primary, { ...primary, vulnerable_version_range: '>= 2.13.0, < 2.13.2', first_patched_version: { identifier: '2.13.2' } }] } }]
+    const targets = await prepareTauriSecurity(alerts, policy, { npm: { '@tauri-apps/api': '2.11.1' }, cargo: { tauri: '2.11.3' } }, {
+      now: Date.parse('2026-10-26T00:00:00Z'),
+      request: async url => Response.json(url.includes('/dependencies') ? { dependencies: [] } : url.includes('registry.npmjs.org') ? { time: { '2.13.0': '2026-10-20T00:00:00Z' } } : { versions: ['2.12.0', '2.13.0', '2.13.2'].map(num => ({ num, created_at: '2026-10-20T00:00:00Z' })) }),
+    })
+    const source = String.raw`
+      const root=process.argv[1];
+      const {pathToFileURL}=await import('node:url');
+      const {resolve}=await import('node:path');
+      const engine=p=>import(pathToFileURL(resolve(root,'.github/renovate/node_modules/renovate/dist',p)).href);
+      const {init}=await engine('logger/index.js'); await init();
+      const {policy,rules,alerts}=JSON.parse(process.argv[2]);
+      const {default:api}=await engine('modules/platform/api.js');
+      const {setPlatformApi}=await engine('modules/platform/index.js');
+      api.set('github',{...api.get('github'),getVulnerabilityAlerts:async()=>alerts}); setPlatformApi('github');
+      const {getConfig}=await engine('config/defaults.js');
+      const {mergeChildConfig}=await engine('config/utils.js');
+      const {detectVulnerabilityAlerts}=await engine('workers/repository/init/vulnerability.js');
+      const {applyPackageRules}=await engine('util/package-rules/index.js');
+      const {api:cargo}=await engine('modules/versioning/cargo/index.js');
+      const config=mergeChildConfig(getConfig(),policy); config.packageRules.push(...rules);
+      const native=await detectVulnerabilityAlerts(config);
+      const dep=await applyPackageRules({...native,manager:'cargo',datasource:'crate',packageFile:'desktop/rust/Cargo.toml',packageName:'tauri',depName:'tauri',currentVersion:'2.11.3',currentValue:'2'});
+      const major=mergeChildConfig(dep,dep.major);
+      console.log(JSON.stringify({constraint:dep.allowedVersions,firstFixed:dep.vulnerabilityFixVersion,safe:cargo.matches('2.13.2',dep.allowedVersions),unsafe:cargo.matches('2.13.0',dep.allowedVersions),later:cargo.matches('2.13.3',dep.allowedVersions),approval:major.dependencyDashboardApproval,age:major.minimumReleaseAge,schedule:major.schedule}));
+    `
+    const result = spawnSync('node', ['--input-type=module', '-e', source, root, JSON.stringify({ policy, alerts, rules: securityCompanions(targets, policy.vulnerabilityAlerts) })], { encoding: 'utf8', env: { ...process.env, LOG_LEVEL: 'fatal', LOG_FORMAT: 'json' } })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ constraint: '=2.13.2', firstFixed: '2.12.0', safe: true, unsafe: false, later: false, approval: false, age: '3 days', schedule: [] })
   })
   it('filters pending releases even when no older candidate exists', async () => {
     const settings = { ...config(), currentVersion: '1.0.0', depName: 'fixture', packageName: 'fixture', datasource: 'npm' }

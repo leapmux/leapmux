@@ -765,6 +765,18 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
 })
 
 describe('renovate workflow and protection', () => {
+  it('builds the proposed Hugo and Hextra site before Required CI can succeed', () => {
+    const linux = yaml('.github/workflows/ci.yaml').jobs.linux
+    const site = linux.steps.find(step => step.run === 'task site')
+    expect(site).toBeDefined()
+    expect(site.if).toBe('matrix.arch == \'amd64\'')
+    expect(site['continue-on-error']).toBeUndefined()
+    const checkout = linux.steps.find(step => String(step.uses).startsWith('actions/checkout@'))
+    expect(checkout.with['fetch-depth']).toBe(expression('matrix.arch == \'amd64\' && \'0\' || \'1\''))
+    const noticeCheckout = yaml('.github/workflows/notice.yaml').jobs.check.steps.find(step => String(step.uses).startsWith('actions/checkout@'))
+    expect(noticeCheckout.with['fetch-depth']).toBe(1)
+    expect(noticeCheckout.with['fetch-tags']).toBe(false)
+  })
   it('excludes installed JavaScript dependencies from every Docker context location', () => {
     const patterns = raw('.dockerignore').split('\n').filter(line => line.includes('node_modules')).map(line => `${line.replace(/\/$/, '')}/**`)
     for (const file of ['frontend/node_modules/bun/package.json', '.github/renovate/node_modules/renovate/package.json', 'tools/nested/node_modules/package/index.js'])
@@ -798,6 +810,8 @@ describe('renovate workflow and protection', () => {
       expect(step.with['permission-merge-queues']).toBeUndefined()
     }
     const dry = steps.find(step => step.name === 'Run read-only dry run')
+    expect(dry['timeout-minutes']).toBe(50)
+    expect(steps.find(step => step.name === 'Publish dependency updates')['timeout-minutes']).toBe(50)
     expect(dry.env.RENOVATE_TOKEN).toBe(expression('steps.read.outputs.token'))
     expect(dry.run).toBe('task renovate-dry-run')
     const dryEnvironment = yaml('Taskfile.yaml').tasks['renovate-dry-run'].env

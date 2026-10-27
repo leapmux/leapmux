@@ -1,14 +1,20 @@
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import process from 'node:process'
 import { describe, expect, it } from 'bun:test'
 
 const root = resolve(import.meta.dirname, '..')
 const config = Bun.YAML.parse(readFileSync(join(root, 'buf.gen.yaml'), 'utf8'))
-const goModule = readFileSync(join(root, 'backend/go.mod'), 'utf8')
+const result = spawnSync('go', ['mod', 'edit', '-json'], { cwd: join(root, 'backend'), encoding: 'utf8', env: { ...process.env, GOWORK: 'off', GOTOOLCHAIN: 'local' } })
+expect(result.status, result.stderr).toBe(0)
+const requirements = JSON.parse(result.stdout).Require
 const frontend = JSON.parse(readFileSync(join(root, 'frontend/package.json'), 'utf8'))
 
 function goRuntimeVersion(modulePath) {
-  const version = goModule.split('\n').map(line => line.trim().split(/\s+/)).find(fields => fields[0] === modulePath)?.[1]
+  const matches = requirements.filter(entry => entry.Indirect !== true && entry.Path.replace(/\/v\d+$/, '') === modulePath)
+  expect(matches, `The Go runtime family ${modulePath} has one direct requirement.`).toHaveLength(1)
+  const version = matches[0].Version
   expect(version, `The Go runtime ${modulePath} declares its version.`).toMatch(/^v\d+\.\d+\.\d+$/)
   return version
 }

@@ -41,6 +41,9 @@ jobs:
       queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Hugo reads Git history in the canonical site check.
+          fetch-depth: ${{ matrix.arch == 'amd64' && '0' || '1' }}
 
       - name: Setup build toolchain
         id: setup
@@ -103,9 +106,13 @@ jobs:
         if: matrix.arch == 'amd64'
         run: task lint
 
+      - name: Build and validate the documentation site
+        if: matrix.arch == 'amd64'
+        run: task site
+
       - name: Test (full)
         if: matrix.arch == 'amd64'
-        # `task test` lints and tests every module. amd64 is the canonical
+        # `task test` tests every module. amd64 is the canonical
         # runner, so it runs the full suite, which includes the Docker-backed
         # storage backends (postgres/mysql/cockroachdb/tidb/yugabytedb).
         run: task test

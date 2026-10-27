@@ -38,42 +38,45 @@ func main() {
  }
 }`
 
+function proxyFixture(modules) {
+  mkdirSync(resolve(root, '.tmp'), { recursive: true })
+  const fixture = mkdtempSync(resolve(root, '.tmp/renovate-go-integration-'))
+  fixtures.push(fixture)
+  const env = { ...process.env, GOTOOLCHAIN: 'local', GOWORK: 'off', GOPROXY: pathToFileURL(resolve(fixture, 'proxy')).href, GOSUMDB: 'off', GOMODCACHE: resolve(fixture, 'module-cache') }
+  const execute = (command, args, options = {}) => {
+    const result = spawnSync(command, args, { cwd: resolve(fixture, options.cwd ?? '.'), encoding: 'utf8', input: options.input, env: { ...env, ...(options.env ?? {}), GOFLAGS: `-modcacherw ${options.env?.GOFLAGS ?? ''}` } })
+    expect(result.status, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`).toBe(0)
+    return result.stdout
+  }
+  write(fixture, 'zipper.go', zipper)
+  execute('go', ['run', 'zipper.go', resolve(fixture, 'proxy'), JSON.stringify(modules)])
+  return { fixture, execute }
+}
+
 describe('postUpgrade with real Go metadata and a local module proxy', () => {
   it('downloads moved transitive checksums before the updated tool prepares absent generated packages', async () => {
-    mkdirSync(resolve(root, '.tmp'), { recursive: true })
-    const fixture = mkdtempSync(resolve(root, '.tmp/renovate-go-integration-'))
-    fixtures.push(fixture)
-    const env = { ...process.env, GOTOOLCHAIN: 'local', GOWORK: 'off', GOPROXY: pathToFileURL(resolve(fixture, 'proxy')).href, GOSUMDB: 'off', GOMODCACHE: resolve(fixture, 'module-cache') }
-    const execute = (command, args, options = {}) => {
-      const result = spawnSync(command, args, { cwd: resolve(fixture, options.cwd ?? '.'), encoding: 'utf8', input: options.input, env: { ...env, ...(options.env ?? {}), GOFLAGS: `-modcacherw ${options.env?.GOFLAGS ?? ''}` } })
-      expect(result.status, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`).toBe(0)
-      return result.stdout
-    }
-    write(fixture, 'zipper.go', zipper)
     const modules = {
       'example.com/tools/sqlc@v1.1.0': {
         'go.mod': 'module example.com/tools/sqlc\ngo 1.27.1\nrequire example.com/moved/v2 v2.0.0\n',
         'cmd/sqlc/main.go': 'package main\nimport ("os"; moved "example.com/moved/v2")\nfunc main() { if moved.Value != 2 { panic("wrong transitive module") }; if err:=os.MkdirAll("generated",0755);err!=nil {panic(err)}; if err:=os.WriteFile("generated/generated.go",[]byte("package generated\\nconst Value = 2\\n"),0644);err!=nil {panic(err)} }\n',
       },
       'example.com/moved/v2@v2.0.0': { 'go.mod': 'module example.com/moved/v2\ngo 1.27.1\n', 'moved.go': 'package moved\nconst Value=2\n' },
-      'github.com/imfing/hextra@v0.12.3': { 'go.mod': 'module github.com/imfing/hextra\ngo 1.27.1\n', 'theme.go': 'package hextra\n' },
-      'example.com/tools/hugo@v1.1.0': { 'go.mod': 'module example.com/tools/hugo\ngo 1.27.1\n', 'cmd/hugo/main.go': 'package main\nimport "fmt"\nfunc main() { fmt.Println("fixture Hugo") }\n' },
     }
-    execute('go', ['run', 'zipper.go', resolve(fixture, 'proxy'), JSON.stringify(modules)])
+    const { fixture, execute } = proxyFixture(modules)
     const replace = '\nreplace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20260420184626-e10c466a9529\n'
     write(fixture, 'backend/go.mod', `module github.com/leapmux/leapmux\ngo 1.27.1\ntool example.com/tools/sqlc/cmd/sqlc\nrequire example.com/tools/sqlc v1.1.0\n${replace}`)
     write(fixture, 'backend/main.go', 'package backend\nimport ("github.com/leapmux/leapmux/generated"; "github.com/leapmux/leapmux/internal/hub/generated/frontend")\nvar Value = generated.Value\nvar Assets = frontend.Assets\n')
     write(fixture, 'backend/main_test.go', 'package backend\nimport ("testing"; "strings")\nfunc TestEmbeddedAssets(t *testing.T) { data,err:=Assets.ReadFile("public/index.html"); if err!=nil || !strings.Contains(string(data),"fixture application") { t.Fatalf("embedded assets are missing: %v %s",err,data) } }\n')
     write(fixture, 'desktop/go/go.mod', `module example.com/desktop\ngo 1.27.1\nrequire github.com/leapmux/leapmux v0.0.0\nreplace github.com/leapmux/leapmux => ../../backend\n${replace}`)
     write(fixture, 'desktop/go/main.go', 'package desktop\nimport backend "github.com/leapmux/leapmux"\nvar Value = backend.Value\n')
-    write(fixture, 'site/go.mod', 'module example.com/site\ngo 1.27.1\ntool example.com/tools/hugo/cmd/hugo\nrequire example.com/tools/hugo v1.1.0\nrequire github.com/imfing/hextra v0.12.3 // indirect\n')
-    write(fixture, 'site/hugo.yaml', 'module:\n  imports:\n    - path: github.com/imfing/hextra\n')
     write(fixture, 'go.work', 'go 1.27.1\nuse (\n ./backend\n ./desktop/go\n)\n')
     execute('git', ['init', '--initial-branch=main'])
     for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false' })) execute('git', ['config', key, value])
-    execute('git', ['add', 'backend', 'desktop', 'site', 'go.work'])
+    execute('git', ['add', 'backend', 'desktop', 'go.work'])
     let generated = false
     const run = (command, args, options = {}) => {
+      if (options.cwd === 'site')
+        throw new Error('A workspace update invoked the independent site graph.')
       if (command === 'task') {
         if (args[0] === 'prepare-backend') {
           expect(existsSync(resolve(fixture, 'backend/generated'))).toBe(false)
@@ -99,9 +102,30 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
     await postUpgrade([{ manager: 'gomod', packageFile: 'backend/go.mod', depName: 'example.com/tools/sqlc', depType: 'require', newValue: 'v1.1.0' }], { root: fixture, trusted: root, run, reconcile: async () => {} })
     expect(readFileSync(resolve(fixture, 'backend/generated/generated.go'), 'utf8')).toContain('const Value = 2')
     expect(readFileSync(resolve(fixture, 'desktop/go/go.mod'), 'utf8')).toContain('replace github.com/leapmux/leapmux => ../../backend')
-    expect(readFileSync(resolve(fixture, 'site/go.mod'), 'utf8')).toContain('github.com/imfing/hextra')
-    expect(execute('go', ['tool', 'hugo', '--version'], { cwd: 'site' })).toContain('fixture Hugo')
     execute('go', ['test', './...'], { cwd: 'backend' })
+  })
+
+  it('migrates a configuration-only site module through real metadata and tidy without a workspace', async () => {
+    const { fixture, execute } = proxyFixture({
+      'example.com/theme/v2@v2.0.0': { 'go.mod': 'module example.com/theme/v2\ngo 1.27.1\n', 'theme.go': 'package theme\n' },
+      'example.com/tools/hugo@v1.1.0': { 'go.mod': 'module example.com/tools/hugo\ngo 1.27.1\n', 'cmd/hugo/main.go': 'package main\nimport "fmt"\nfunc main() { fmt.Println("fixture Hugo") }\n' },
+    })
+    write(fixture, 'site/go.mod', 'module example.com/site\ngo 1.27.1\ntool example.com/tools/hugo/cmd/hugo\nrequire example.com/tools/hugo v1.1.0\nrequire example.com/theme/v2 v2.0.0 // retain configuration import\n')
+    write(fixture, 'site/hugo.yaml', '# retain configuration comments\nmodule:\n  imports:\n    - path: example.com/theme # retain\n')
+    execute('git', ['init', '--initial-branch=main'])
+    for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false' }))
+      execute('git', ['config', key, value])
+    execute('git', ['add', 'site'])
+    await postUpgrade([{ manager: 'gomod', packageFile: 'site/go.mod', depName: 'example.com/theme', depType: 'require', newValue: 'v2.0.0' }], { root: fixture, trusted: root, run: (command, args, options = {}) => {
+      if (command === 'task' || args[0] === 'work' || (command === 'go' && options.cwd !== 'site'))
+        throw new Error('A site update invoked workspace processing.')
+      return command === 'git' ? 'site/go.mod\0site/go.sum\0site/hugo.yaml\0' : execute(command, args, options)
+    } })
+    const module = readFileSync(resolve(fixture, 'site/go.mod'), 'utf8')
+    expect(module).toContain('example.com/theme/v2 v2.0.0 // retain configuration import')
+    expect(module).toContain('example.com/tools/hugo v1.1.0')
+    expect(readFileSync(resolve(fixture, 'site/hugo.yaml'), 'utf8')).toBe('# retain configuration comments\nmodule:\n  imports:\n    - path: example.com/theme/v2 # retain\n')
+    expect(execute('go', ['tool', 'hugo', '--version'], { cwd: 'site' })).toContain('fixture Hugo')
   })
 
   it('reports an incompatible Go requirement without downloading another toolchain', async () => {

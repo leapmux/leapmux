@@ -1,26 +1,35 @@
 import { describe, expect, it } from 'bun:test'
 import { prepareTauriSecurity, readAlerts, securityCompanions } from './renovate-prepare.mjs'
+import { matchesCargoRequirement } from './renovate-tauri-releases.mjs'
 
 const policy = { groupName: 'security fixes', minimumReleaseAge: '3 days', dependencyDashboardApproval: false, rangeStrategy: 'pin' }
 const config = { minimumReleaseAge: '3 days', minimumReleaseAgeBuffer: null, vulnerabilityAlerts: policy }
 const now = Date.parse('2026-10-26T00:00:00Z')
 const old = '2026-10-20T00:00:00Z'
 const baseline = { npm: { '@tauri-apps/api': '2.5.0', '@tauri-apps/plugin-opener': '2.3.0', '@tauri-apps/cli': '2.9.0' }, cargo: { 'tauri': '2.5.0', 'tauri-plugin-opener': '2.3.0' } }
-const alert = (name, fixed = '2.6.0') => ({ state: 'open', security_vulnerability: { package: { name }, first_patched_version: fixed === null ? null : { identifier: fixed } } })
+const alert = (name, fixed = '2.6.0') => ({ state: 'open', dependency: { manifest_path: name.startsWith('@') ? 'frontend/package.json' : 'desktop/rust/Cargo.lock' }, security_vulnerability: { package: { name, ecosystem: name.startsWith('@') ? 'npm' : 'rust' }, vulnerable_version_range: `< ${fixed ?? '999.0.0'}`, first_patched_version: fixed === null ? null : { identifier: fixed } } })
 function registry(npm, cargo) {
-  return async url => Response.json(url.includes('registry.npmjs.org')
-    ? { time: Object.fromEntries(npm.map(release => [release.version, release.publishedAt])) }
-    : { versions: cargo.map(release => ({ num: release.version, created_at: release.publishedAt, yanked: release.yanked })) })
+  return async url => Response.json(url.includes('/dependencies')
+    ? { dependencies: [] }
+    : url.includes('registry.npmjs.org')
+      ? { time: Object.fromEntries(npm.map(release => [release.version, release.publishedAt])) }
+      : { versions: cargo.map(release => ({ num: release.version, created_at: release.publishedAt, yanked: release.yanked })) })
 }
 
 describe('securityCompanions', () => {
+  it('constrains Cargo candidates to the exact prepared version rather than a caret range', () => {
+    const [rule] = securityCompanions({ tauri: '2.11.5' }, policy)
+    expect(matchesCargoRequirement('2.11.5', rule.allowedVersions)).toBe(true)
+    expect(matchesCargoRequirement('2.11.6', rule.allowedVersions)).toBe(false)
+    expect(matchesCargoRequirement('2.12.0', rule.allowedVersions)).toBe(false)
+  })
   it('promotes only the affected pair and constrains each native update to its prepared version', () => {
     const targets = { '@tauri-apps/plugin-opener': '2.6.1', 'tauri-plugin-opener': '2.6.4' }
     const rules = securityCompanions(targets, policy)
     expect(rules).toHaveLength(2)
     for (const rule of rules) {
       expect(rule.matchPackageNames).toHaveLength(1)
-      expect(rule.allowedVersions).toBe(targets[rule.matchPackageNames[0]])
+      expect(rule.allowedVersions).toBe(`=${targets[rule.matchPackageNames[0]]}`)
       expect(rule.isVulnerabilityAlert).toBe(true)
       expect(rule.force).toEqual(policy)
     }
@@ -32,6 +41,30 @@ describe('securityCompanions', () => {
 })
 
 describe('prepareTauriSecurity', () => {
+  it('excludes every affected range in an advisory when choosing the lowest compatible fix', async () => {
+    const packageInfo = { name: 'tauri', ecosystem: 'rust' }
+    const vulnerability = (range, fixed) => ({ package: packageInfo, vulnerable_version_range: range, first_patched_version: { identifier: fixed } })
+    const current = { npm: { '@tauri-apps/api': '2.11.1' }, cargo: { tauri: '2.11.3' } }
+    const primary = vulnerability('>= 2.11.0, < 2.12.0', '2.12.0')
+    const advisory = {
+      state: 'open',
+      dependency: { manifest_path: 'desktop/rust/Cargo.lock' },
+      security_vulnerability: primary,
+      security_advisory: { vulnerabilities: [primary, vulnerability('>= 2.13.0, < 2.13.2', '2.13.2')] },
+    }
+    const npm = [{ version: '2.13.0', publishedAt: old }]
+    const cargo = ['2.12.0', '2.13.0', '2.13.2'].map(version => ({ version, publishedAt: old }))
+    expect(await prepareTauriSecurity([advisory], config, current, { now, request: registry(npm, cargo) })).toEqual({ '@tauri-apps/api': '2.13.0', 'tauri': '2.13.2' })
+    expect(await prepareTauriSecurity([advisory], config, current, { now, request: registry(npm, cargo.slice(0, 2)) })).toEqual({})
+  })
+  it('does not promote an unaffected direct occurrence or an alert from another dependency graph', async () => {
+    const current = { npm: { '@tauri-apps/api': '2.11.1' }, cargo: { tauri: '2.11.3' } }
+    const primary = { package: { name: 'tauri', ecosystem: 'rust' }, vulnerable_version_range: '>= 3.0.0, < 3.0.1', first_patched_version: { identifier: '3.0.1' } }
+    const advisory = { state: 'open', dependency: { manifest_path: 'desktop/rust/Cargo.lock' }, security_vulnerability: primary }
+    const releases = [{ version: '3.0.1', publishedAt: old }]
+    for (const candidate of [advisory, { ...advisory, dependency: { manifest_path: 'other/Cargo.lock' } }, { ...advisory, security_vulnerability: { ...primary, package: { name: 'tauri', ecosystem: 'go' } } }])
+      expect(await prepareTauriSecurity([candidate], config, current, { now, request: registry(releases, releases) })).toEqual({})
+  })
   it('keeps young, timestamp-free, yanked, and incompatible fixes pending', async () => {
     const npm = [{ version: '2.6.0', publishedAt: old }]
     for (const cargo of [
@@ -80,7 +113,7 @@ describe('readAlerts', () => {
   it('reads all pages without mutations', async () => {
     const calls = []
     const alerts = await readAlerts('fixture', async (url, options) => {
-      expect(options.method).toBeUndefined()
+      expect(options.method).toBe('GET')
       calls.push(url)
       return Response.json(calls.length === 1 ? Array.from({ length: 100 }, () => alert('tauri')) : [alert('typescript')])
     })

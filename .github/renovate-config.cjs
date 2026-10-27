@@ -24,6 +24,8 @@ module.exports = {
   exposeAllEnv: false,
   baseDir: path.join(trusted, '.tmp/renovate-run'),
   ...config,
+  // Filter additive manager defaults before security overrides can enable an update.
+  ...(prepared.ignorePaths ? { ignorePaths: prepared.ignorePaths } : {}),
   packageRules: [...config.packageRules, ...prepared.packageRules],
   postUpgradeTasks: {
     commands: [command],
@@ -40,6 +42,7 @@ module.exports = {
       'desktop/go/go.sum',
       'site/go.mod',
       'site/go.sum',
+      'site/hugo.yaml',
       ...prepared.importFiles,
       'buf.gen.yaml',
       'frontend/package.json',

@@ -1,6 +1,21 @@
 #!/usr/bin/env node
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { readGithubJson } from './github-json.mjs'
+
+const administratorBypass = Object.freeze({ actor_type: 'RepositoryRole', actor_id: 5, bypass_mode: 'always' })
+const reviewRequirements = Object.freeze({
+  required_approving_review_count: 1,
+  dismiss_stale_reviews_on_push: true,
+  require_code_owner_review: false,
+  require_last_push_approval: true,
+  required_review_thread_resolution: false,
+})
+const checkRequirements = Object.freeze({
+  strict_required_status_checks_policy: true,
+  do_not_enforce_on_create: false,
+})
+const requiredChecks = Object.freeze(['Required CI', 'NOTICE'].map(context => Object.freeze({ context, integration_id: 15368 })))
 
 /** Apply only after the reviewed implementation and both required checks reach main. */
 export const RENOVATE_MAIN_RULESET = {
@@ -8,19 +23,12 @@ export const RENOVATE_MAIN_RULESET = {
   target: 'branch',
   enforcement: 'active',
   conditions: { ref_name: { include: ['refs/heads/main'], exclude: [] } },
-  bypass_actors: [{ actor_type: 'RepositoryRole', actor_id: 5, bypass_mode: 'always' }],
+  bypass_actors: [{ ...administratorBypass }],
   rules: [
-    { type: 'pull_request', parameters: {
-      required_approving_review_count: 1,
-      dismiss_stale_reviews_on_push: true,
-      require_code_owner_review: false,
-      require_last_push_approval: true,
-      required_review_thread_resolution: false,
-    } },
+    { type: 'pull_request', parameters: { ...reviewRequirements } },
     { type: 'required_status_checks', parameters: {
-      required_status_checks: ['Required CI', 'NOTICE'].map(context => ({ context, integration_id: 15368 })),
-      strict_required_status_checks_policy: true,
-      do_not_enforce_on_create: false,
+      ...checkRequirements,
+      required_status_checks: requiredChecks.map(check => ({ ...check })),
     } },
   ],
 }
@@ -41,20 +49,22 @@ export function checkProtection(effective, rulesets) {
     if (!Array.isArray(source.bypass_actors))
       throw new Error(`Ruleset ${source.id} omits bypass actors.`)
     for (const actor of source.bypass_actors) {
-      if (actor.actor_type !== 'RepositoryRole' || actor.actor_id !== 5 || actor.bypass_mode !== 'always')
+      if (Object.entries(administratorBypass).some(([key, value]) => actor[key] !== value))
         throw new Error(`Ruleset ${source.id} permits a bypass other than repository administrators.`)
     }
+    if ((rule.type === 'pull_request' || rule.type === 'required_status_checks') && source.bypass_actors.length === 0)
+      throw new Error(`Ruleset ${source.id} prevents the administrator from pushing an approved release.`)
   }
   const reviews = effective.filter(rule => rule.type === 'pull_request')
-  if (!reviews.some(({ parameters: p, ruleset_id: id }) => p?.required_approving_review_count >= 1
-    && p.dismiss_stale_reviews_on_push === true && p.require_last_push_approval === true
-    && rulesets.find(set => set.id === id)?.bypass_actors.some(actor => actor.actor_type === 'RepositoryRole' && actor.actor_id === 5))) {
+  if (!reviews.some(({ parameters }) => parameters && Object.entries(reviewRequirements).every(([key, value]) =>
+    typeof value === 'number' ? parameters[key] >= value : !value || parameters[key] === value))) {
     throw new Error('main requires one review, stale-review dismissal, latest-push approval, and administrator bypass.')
   }
-  for (const context of ['Required CI', 'NOTICE']) {
+  for (const { context, integration_id } of requiredChecks) {
     if (!effective.some(rule => rule.type === 'required_status_checks'
-      && rule.parameters?.required_status_checks?.some(check => check.context === context && check.integration_id === 15368))) {
-      throw new Error(`main lacks the ${context} check from GitHub Actions (15368).`)
+      && rule.parameters?.strict_required_status_checks_policy === checkRequirements.strict_required_status_checks_policy
+      && rule.parameters?.required_status_checks?.some(check => check.context === context && check.integration_id === integration_id))) {
+      throw new Error(`main lacks the strict ${context} check from GitHub Actions (${integration_id}).`)
     }
   }
 }
@@ -62,16 +72,7 @@ export function checkProtection(effective, rulesets) {
 export async function verifyRepository({ token = process.env.GH_TOKEN, repository = 'leapmux/leapmux', request = fetch } = {}) {
   if (repository !== 'leapmux/leapmux' || !token)
     throw new Error('Protection verification requires leapmux/leapmux and a read-only token.')
-  const get = async (path) => {
-    const response = await request(`https://api.github.com${path}`, { signal: AbortSignal.timeout(30000), headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    } })
-    if (!response.ok)
-      throw new Error(`GitHub protection read failed: ${response.status} ${path}`)
-    return response.json()
-  }
+  const get = path => readGithubJson(path, { token, request, description: 'GitHub protection read' })
   const effective = []
   for (let page = 1; ; page++) {
     const batch = await get(`/repos/${repository}/rules/branches/main?per_page=100&page=${page}`)

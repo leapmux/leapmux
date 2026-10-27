@@ -1,9 +1,15 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
-import { findTauriPair, fixedTauriVersion, readTauriReleases, tauriPairs, tauriReleaseAgeMs, tauriVersions } from './renovate-tauri.mjs'
+import { readGithubJson } from './github-json.mjs'
+import { renovateModule } from './renovate-engine.mjs'
+import { dependencyIgnorePaths } from './renovate-inputs.mjs'
+import { planTauriTargets } from './renovate-tauri-graph.mjs'
+import { assertTauriCompatibility, readTauriVersions, tauriPairs } from './renovate-tauri.mjs'
+
+const { init: initializeRenovateLogger } = await renovateModule('logger/index.js')
 
 export function securityCompanions(targets, vulnerabilityAlerts) {
   const force = { ...vulnerabilityAlerts }
@@ -14,36 +20,17 @@ export function securityCompanions(targets, vulnerabilityAlerts) {
   return Object.entries(targets).map(([name, version]) => ({
     matchPackageNames: [name],
     matchFileNames: [name.startsWith('@tauri-apps/') ? 'frontend/package.json' : 'desktop/rust/Cargo.toml'],
-    allowedVersions: version,
+    allowedVersions: `=${version}`,
     isVulnerabilityAlert: true,
     force,
   }))
 }
 
 export async function prepareTauriSecurity(alerts, config, baseline, { request = fetch, now = Date.now() } = {}) {
-  if (!Array.isArray(alerts))
-    throw new Error('Dependabot alerts must be an array.')
-  const grouped = new Map()
-  for (const alert of alerts) {
-    const name = alert.security_vulnerability?.package?.name
-    if (alert.state !== 'open' || !/^(?:@tauri-apps\/|tauri(?:-|$))/.test(name ?? ''))
-      continue
-    const fixed = fixedTauriVersion(alert)
-    if (fixed && (!grouped.has(name) || Bun.semver.order(fixed, grouped.get(name)) > 0))
-      grouped.set(name, fixed)
-  }
-  const minimumAgeMs = tauriReleaseAgeMs(config, true)
-  const minimum = (name, current) => grouped.has(name) && Bun.semver.order(grouped.get(name), current) > 0 ? grouped.get(name) : current
-  const pairs = await Promise.all(tauriPairs(baseline).map(async (pair) => {
-    const npmMinimum = minimum(pair.npm, pair.npmVersion)
-    const cargoMinimum = minimum(pair.cargo, pair.cargoVersion)
-    if (npmMinimum === pair.npmVersion && cargoMinimum === pair.cargoVersion)
-      return []
-    const [npmReleases, cargoReleases] = await Promise.all([readTauriReleases(pair.npm, request), readTauriReleases(pair.cargo, request)])
-    const target = findTauriPair(npmReleases, cargoReleases, { npmMinimum, cargoMinimum, minimumAgeMs, security: true, now })
-    return target ? [[pair.npm, target.npm], [pair.cargo, target.cargo]] : []
-  }))
-  return Object.fromEntries(pairs.flat())
+  const targets = await planTauriTargets(tauriPairs(baseline), { policy: config, alerts, baseline, security: true, request, now })
+  if (!targets)
+    return {}
+  return Object.fromEntries(targets.flatMap(({ pair, target }) => target.npm === pair.npmVersion && target.cargo === pair.cargoVersion ? [] : [[pair.npm, target.npm], [pair.cargo, target.cargo]]))
 }
 
 export async function readAlerts(token, request = fetch) {
@@ -51,14 +38,7 @@ export async function readAlerts(token, request = fetch) {
     throw new Error('A read-only App token is required to read active Dependabot alerts.')
   const alerts = []
   for (let page = 1; ; page++) {
-    const response = await request(`https://api.github.com/repos/leapmux/leapmux/dependabot/alerts?state=open&per_page=100&page=${page}`, { signal: AbortSignal.timeout(30000), headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    } })
-    if (!response.ok)
-      throw new Error(`Dependabot alert read failed: ${response.status}`)
-    const batch = await response.json()
+    const batch = await readGithubJson(`/repos/leapmux/leapmux/dependabot/alerts?state=open&per_page=100&page=${page}`, { token, request, description: 'Dependabot alert read' })
     if (!Array.isArray(batch))
       throw new Error('Dependabot returned an invalid alert list.')
     alerts.push(...batch)
@@ -69,20 +49,24 @@ export async function readAlerts(token, request = fetch) {
 
 if (import.meta.main) {
   try {
+    await initializeRenovateLogger()
     const root = resolve(import.meta.dirname, '..')
     const config = await Bun.file(resolve(root, 'renovate.json')).json()
     const alerts = process.argv.includes('--local') ? [] : await readAlerts(process.env.GH_TOKEN)
-    const baseline = tauriVersions(readFileSync(resolve(root, 'frontend/bun.lock'), 'utf8'), readFileSync(resolve(root, 'desktop/rust/Cargo.lock'), 'utf8'), readFileSync(resolve(root, 'desktop/rust/Cargo.toml'), 'utf8'))
+    const baseline = readTauriVersions(root)
+    assertTauriCompatibility(baseline)
     const securityTargets = await prepareTauriSecurity(alerts, config, baseline)
-    const listed = spawnSync('git', ['ls-files', '-z', '--', 'backend', 'desktop/go', 'site'], { cwd: root, encoding: 'utf8' })
+    const listed = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
     if (listed.status !== 0)
       throw new Error('Cannot enumerate tracked Go files.')
-    const importFiles = listed.stdout.split('\0').filter(file => file.endsWith('.go') && !file.split('/').includes('generated'))
+    const files = listed.stdout.split('\0').filter(Boolean)
+    const importFiles = files.filter(file => /^(?:backend|desktop\/go|site)\//.test(file) && file.endsWith('.go') && !file.split('/').includes('generated'))
     mkdirSync(resolve(root, '.tmp'), { recursive: true })
     writeFileSync(resolve(root, '.tmp/renovate-prepared.json'), JSON.stringify({
       packageRules: securityCompanions(securityTargets, config.vulnerabilityAlerts),
       securityTargets,
       importFiles,
+      ignorePaths: await dependencyIgnorePaths(files, config),
       alerts,
     }))
   }

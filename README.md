@@ -544,6 +544,8 @@ Routine branches start on Monday between 02:00 and 06:00 Seoul.
 Existing branches receive maintenance and retries during any daily run.
 Routine major updates require approval in the Dependency Dashboard.
 Security fixes, including major fixes, bypass the weekly window and dashboard approval.
+Go security fixes use a separate branch so native artifact updates remain disabled for Go.
+Other security fixes share a branch, including the required Tauri companions.
 Every candidate requires a release timestamp and a release age of at least three days.
 Every merge requires a human review and the `Required CI` and `NOTICE` checks.
 Renovate never approves or merges a pull request (PR).

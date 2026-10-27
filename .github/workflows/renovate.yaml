@@ -116,12 +116,14 @@ jobs:
 
       - name: Run read-only dry run
         if: inputs.mode != 'publish' && github.event_name != 'schedule'
+        timeout-minutes: 50
         env:
           RENOVATE_TOKEN: ${{ steps.read.outputs.token }}
         run: task renovate-dry-run
 
       - name: Publish dependency updates
         if: inputs.mode == 'publish' || github.event_name == 'schedule'
+        timeout-minutes: 50
         env:
           RENOVATE_TOKEN: ${{ steps.write.outputs.token }}
         run: task renovate

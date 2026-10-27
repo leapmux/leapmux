@@ -96,6 +96,7 @@ tasks:
   prepare-renovate:
     desc: Prepare trusted security companions and import-file filters
     cmds:
+      - task: install-renovate
       - bun scripts/renovate-prepare.mjs {{.CLI_ARGS}}
 
   check-renovate-protection:
@@ -1041,7 +1042,7 @@ tasks:
   test:
     desc: Run all tests
     cmds:
-      # Run schema validation first. CI has no separate lint job.
+      # Run schema validation first in every complete test pipeline.
       # Every test runner must validate the schemas.
       - task: validate-json
       - task: test-scripts
@@ -1533,29 +1534,15 @@ tasks:
     # This dependency also builds the frontend. The NOTICE job selects relevant changes before requesting generation.
     deps: [prepare-backend]
     sources:
-      - frontend/bunfig.toml
-      - frontend/.npmrc
-      - frontend/patches/**/*
-      - versions.env
-      - scripts/task-state.mjs
-      - scripts/generate-notice.mjs
-      - scripts/license-overrides/**/*
-      # The generator reads go.work's use list and runs go list -m -json all across those modules.
-      # Adding or removing a module changes the licenses in NOTICE.
-      - go.work
-      - go.work.sum
-      - backend/go.mod
-      - backend/go.sum
-      - desktop/go/go.mod
-      - desktop/go/go.sum
-      - desktop/rust/Cargo.toml
-      - desktop/rust/Cargo.lock
-      - frontend/package.json
-      - frontend/bun.lock
+      - scripts/notice-inputs.mjs
     vars:
       OUTPUTS: &outputs_generate_notice
         - NOTICE.md
         - NOTICE.html
+      # Task does not expand a shared array into source globs. The cache context hashes those files.
+      NOTICE_INPUT_DIGEST:
+        sh: bun scripts/notice-inputs.mjs --digest {{.OUTPUTS | toJson | shellQuote}}
+      CACHE_CONTEXT: '{{.NOTICE_INPUT_DIGEST}}'
     generates: *outputs_generate_notice
     status: *artifact_status
     cmds:

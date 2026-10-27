@@ -4,12 +4,10 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { needsNotice } from './notice-inputs.mjs'
+import { DEPENDENCY_INPUT_FILES, isDependencyInput } from './renovate-inputs.mjs'
 import { refreshSite } from './renovate-site.mjs'
 import { reconcileTauri } from './renovate-tauri.mjs'
 
-const GO_FILES = ['backend/go.mod', 'desktop/go/go.mod', 'site/go.mod']
-// Renovate uses "regex" in post-update metadata for the configured custom.regex manager.
-const INPUT_FILES = { gomod: GO_FILES, bun: ['frontend/package.json', '.github/renovate/package.json'], cargo: ['desktop/rust/Cargo.toml'], regex: ['versions.env'] }
 const GENPROTO = 'google.golang.org/genproto'
 
 export function validateUpgrades(upgrades) {
@@ -22,7 +20,7 @@ export function validateUpgrades(upgrades) {
       throw new Error(`Unsupported dependency manager: ${upgrade.manager}`)
     if (upgrade.updateType === 'lockFileMaintenance' && !['bun', 'cargo'].includes(upgrade.manager))
       throw new Error('Only Bun and Cargo support coordinated lockfile maintenance.')
-    if (!(INPUT_FILES[upgrade.manager] ?? []).includes(upgrade.packageFile) && !(upgrade.manager === 'github-actions' && /^\.github\/(?:workflows\/[^/]+\.ya?ml|actions\/[^/]+\/action\.ya?ml)$/.test(upgrade.packageFile)))
+    if (!isDependencyInput(upgrade.manager, upgrade.packageFile))
       throw new Error(`Unexpected dependency path: ${upgrade.packageFile}`)
     if (upgrade.updateType === 'lockFileMaintenance')
       continue
@@ -98,21 +96,25 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
   if (!trusted)
     throw new Error('Post-update processing requires the trusted main checkout.')
   const hasGo = upgrades.some(upgrade => upgrade.manager === 'gomod')
+  const hasWorkspaceGo = upgrades.some(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile !== 'site/go.mod')
+  const hasSiteGo = upgrades.some(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile === 'site/go.mod')
   const hasFrontend = upgrades.some(upgrade => upgrade.manager === 'bun' && upgrade.packageFile === 'frontend/package.json')
   const hasCargo = upgrades.some(upgrade => upgrade.manager === 'cargo')
   if (hasGo) {
-    let texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
-    const targets = [...new Set(upgrades.filter(upgrade => upgrade.manager === 'gomod' && upgrade.depName === GENPROTO && upgrade.depType === 'replace').map(upgrade => upgrade.newValue))]
-    if (targets.length > 1)
-      throw new Error('The genproto update specifies conflicting versions.')
-    // Renovate can report only one replacement occurrence. Apply its single target to both
-    // module files without entering workspace mode, then validate before any workspace command.
-    if (targets.length === 1) {
-      for (const cwd of ['backend', 'desktop/go'])
-        run('go', ['mod', 'edit', `-replace=${GENPROTO}=${GENPROTO}@${targets[0]}`], { cwd, env: { GOWORK: 'off' } })
-      texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
+    if (hasWorkspaceGo) {
+      let texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
+      const targets = [...new Set(upgrades.filter(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile !== 'site/go.mod' && upgrade.depName === GENPROTO && upgrade.depType === 'replace').map(upgrade => upgrade.newValue))]
+      if (targets.length > 1)
+        throw new Error('The genproto update specifies conflicting versions.')
+      // Renovate can report only one replacement occurrence. Apply its single target to both
+      // module files without entering workspace mode, then validate before any workspace command.
+      if (targets.length === 1) {
+        for (const cwd of ['backend', 'desktop/go'])
+          run('go', ['mod', 'edit', `-replace=${GENPROTO}=${GENPROTO}@${targets[0]}`], { cwd, env: { GOWORK: 'off' } })
+        texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
+      }
+      verifyReplacements(texts)
     }
-    verifyReplacements(texts)
     const goUpgrades = upgrades.filter(upgrade => upgrade.manager === 'gomod' && upgrade.newValue && !['golang', 'toolchain'].includes(upgrade.depType))
     const changes = new Map()
     for (const upgrade of goUpgrades) {
@@ -133,29 +135,33 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
     }
     // Updated tools may import newly moved transitive modules. Resolve all metadata and
     // checksums before go tool sqlc or any other updated tool runs.
-    for (const cwd of ['backend', 'desktop/go', 'site'])
-      run('go', ['mod', 'download', 'all'], { cwd, env: { GOWORK: 'off', GOFLAGS: '-mod=mod' } })
-    run('go', ['work', 'sync'])
-    verifyReplacements(['backend/go.mod', 'desktop/go/go.mod'].map(read))
+    for (const file of DEPENDENCY_INPUT_FILES.gomod.filter(file => file === 'site/go.mod' ? hasSiteGo : hasWorkspaceGo))
+      run('go', ['mod', 'download', 'all'], { cwd: file.replace('/go.mod', ''), env: { GOWORK: 'off', GOFLAGS: '-mod=mod' } })
+    if (hasWorkspaceGo) {
+      run('go', ['work', 'sync'])
+      verifyReplacements(['backend/go.mod', 'desktop/go/go.mod'].map(read))
+    }
   }
-  if (hasGo || hasFrontend)
+  if (hasWorkspaceGo || hasFrontend)
     run('task', ['sync-protobuf-generators'])
   if (hasFrontend || hasCargo)
     await reconcile({ root, trusted, run, upgrades, security: upgrades.some(upgrade => upgrade.isVulnerabilityAlert) })
-  if (hasGo) {
+  if (hasWorkspaceGo) {
     run('task', ['prepare-backend'])
     for (const cwd of ['backend', 'desktop/go'])
       run('go', ['mod', 'tidy'], { cwd })
     run('go', ['work', 'sync'])
-    refreshSite({ root, run, read, write })
   }
-  const changed = run('git', ['diff', '--name-only', '-z', 'HEAD', '--'], { capture: true }).split('\0').filter(Boolean)
+  if (hasSiteGo)
+    refreshSite({ root, run, read, write })
+  const changed = run('git', ['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--'], { capture: true }).split('\0').filter(Boolean)
   if (needsNotice(changed))
     run('task', ['generate-notice'])
 }
 
 if (import.meta.main) {
   const started = Date.now()
+  const stopwatch = performance.now()
   let status = 'failed'
   let upgrades = []
   try {
@@ -173,7 +179,7 @@ if (import.meta.main) {
   finally {
     if (process.env.RENOVATE_TRUSTED_ROOT) {
       const entries = Array.isArray(upgrades) ? upgrades : []
-      appendFileSync(resolve(process.env.RENOVATE_TRUSTED_ROOT, '.tmp/renovate-timings.jsonl'), `${JSON.stringify({ started, durationMs: Date.now() - started, status, branches: [...new Set(entries.map(upgrade => upgrade?.branchName))], dependencies: entries.map(upgrade => upgrade?.depName), updateTypes: [...new Set(entries.map(upgrade => upgrade?.updateType))] })}\n`)
+      appendFileSync(resolve(process.env.RENOVATE_TRUSTED_ROOT, '.tmp/renovate-timings.jsonl'), `${JSON.stringify({ started, durationMs: Math.round(performance.now() - stopwatch), status, branches: [...new Set(entries.map(upgrade => upgrade?.branchName))], dependencies: entries.map(upgrade => upgrade?.depName), updateTypes: [...new Set(entries.map(upgrade => upgrade?.updateType))] })}\n`)
     }
   }
 }

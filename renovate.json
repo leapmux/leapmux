@@ -38,6 +38,7 @@
     "groupName": "security fixes",
     "groupSlug": "security",
     "branchTopic": "security",
+    "additionalBranchPrefix": "{{#if (equals manager \"gomod\")}}go-{{/if}}",
     "schedule": [],
     "dependencyDashboardApproval": false,
     "minimumReleaseAge": "3 days",
@@ -64,8 +65,6 @@
     "schedule": [
       "* 2-5 * * 1"
     ],
-    "groupName": "lockfiles",
-    "groupSlug": "lockfile-maintenance",
     "commitMessageAction": "Update",
     "commitMessageTopic": "lockfiles",
     "commitMessageExtra": ""
@@ -194,6 +193,17 @@
         "S6_OVERLAY_VERSION"
       ],
       "groupName": "container runtime"
+    },
+    {
+      "matchManagers": [
+        "bun",
+        "cargo"
+      ],
+      "matchUpdateTypes": [
+        "lockFileMaintenance"
+      ],
+      "groupName": "lockfiles",
+      "groupSlug": "lockfiles"
     }
   ],
   "groupSingleUpdates": true,

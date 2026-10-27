@@ -118,12 +118,15 @@ func rewriteMod(source []byte, changes []moduleChange, roots ...string) ([]byte,
 				path = unquoted
 			}
 			updated := path
+			var matched *moduleChange
 			if directive == "tool" {
 				updated = rewritePath(path, changes, roots)
 			} else {
-				for _, change := range changes {
+				for index := range changes {
+					change := &changes[index]
 					if path == change.Old {
 						updated = change.New
+						matched = change
 						break
 					}
 				}
@@ -131,14 +134,9 @@ func rewriteMod(source []byte, changes []moduleChange, roots ...string) ([]byte,
 			if updated == path {
 				continue
 			}
-			for _, change := range changes {
-				if path == change.Old || strings.HasPrefix(path, change.Old+"/") {
-					if directive != "tool" && index+1 < len(line.Token) && strings.HasPrefix(line.Token[index+1], "v") {
-						versionIndex = index + 1
-						targetVersion = change.Version
-					}
-					break
-				}
+			if matched != nil && index+1 < len(line.Token) && strings.HasPrefix(line.Token[index+1], "v") {
+				versionIndex = index + 1
+				targetVersion = matched.Version
 			}
 			if path != value {
 				updated = strconv.Quote(updated)
@@ -163,60 +161,66 @@ func rewriteMod(source []byte, changes []moduleChange, roots ...string) ([]byte,
 	return applyEdits(source, edits), nil
 }
 
-func run(input io.Reader) error {
+type pendingWrite struct {
+	path    string
+	content []byte
+	mode    os.FileMode
+}
+
+func readModuleChanges(input io.Reader, directories []string) ([]moduleChange, error) {
 	const maxModuleChangeBytes = 1 << 20
 	data, err := io.ReadAll(io.LimitReader(input, maxModuleChangeBytes+1))
 	if err != nil {
-		return fmt.Errorf("read module changes: %w", err)
+		return nil, fmt.Errorf("read module changes: %w", err)
 	}
 	if len(data) > maxModuleChangeBytes {
-		return errors.New("module changes exceed the one-megabyte input limit")
+		return nil, errors.New("module changes exceed the one-megabyte input limit")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var changes []moduleChange
 	if err := decoder.Decode(&changes); err != nil {
-		return fmt.Errorf("decode module changes: %w", err)
+		return nil, fmt.Errorf("decode module changes: %w", err)
 	}
 	if changes == nil {
-		return errors.New("module changes must be an array")
+		return nil, errors.New("module changes must be an array")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return errors.New("module changes must contain one JSON value")
+		return nil, errors.New("module changes must contain one JSON value")
 	}
 	seen := map[string]bool{}
-	directories := []string{"backend", "desktop/go", "site"}
 	for _, change := range changes {
 		if err := module.CheckPath(change.Old); err != nil {
-			return fmt.Errorf("invalid old module path: %w", err)
+			return nil, fmt.Errorf("invalid old module path: %w", err)
 		}
 		if err := module.CheckPath(change.New); err != nil {
-			return fmt.Errorf("invalid new module path: %w", err)
+			return nil, fmt.Errorf("invalid new module path: %w", err)
 		}
 		if err := module.Check(change.New, change.Version); err != nil {
-			return fmt.Errorf("invalid target module version: %w", err)
+			return nil, fmt.Errorf("invalid target module version: %w", err)
 		}
 		if change.Old == "github.com/leapmux/leapmux" || change.Old == change.New {
-			return errors.New("module changes contain a protected or unchanged module")
+			return nil, errors.New("module changes contain a protected or unchanged module")
 		}
 		if len(change.Directories) == 0 {
-			return errors.New("module changes require affected directories")
+			return nil, errors.New("module changes require affected directories")
 		}
 		for _, directory := range change.Directories {
 			if !slices.Contains(directories, directory) {
-				return fmt.Errorf("unsupported module directory: %s", directory)
+				return nil, fmt.Errorf("unsupported module directory: %s", directory)
 			}
 			key := directory + "\x00" + change.Old
 			if seen[key] {
-				return fmt.Errorf("duplicate module change for %s in %s", change.Old, directory)
+				return nil, fmt.Errorf("duplicate module change for %s in %s", change.Old, directory)
 			}
 			seen[key] = true
 		}
 	}
-	if len(changes) == 0 {
-		return nil
-	}
+	return changes, nil
+}
+
+func discoverModuleRoots(directories []string) (map[string][]string, error) {
 	roots := map[string][]string{}
 	for _, directory := range directories {
 		source, err := os.ReadFile(filepath.Join(directory, "go.mod"))
@@ -224,11 +228,11 @@ func run(input io.Reader) error {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("read module roots in %s: %w", directory, err)
+			return nil, fmt.Errorf("read module roots in %s: %w", directory, err)
 		}
 		file, err := modfile.Parse(directory+"/go.mod", source, nil)
 		if err != nil {
-			return fmt.Errorf("parse module roots in %s: %w", directory, err)
+			return nil, fmt.Errorf("parse module roots in %s: %w", directory, err)
 		}
 		if file.Module != nil {
 			roots[directory] = append(roots[directory], file.Module.Mod.Path)
@@ -245,18 +249,18 @@ func run(input io.Reader) error {
 	}
 	workspaceRoots := append(append([]string{}, roots["backend"]...), roots["desktop/go"]...)
 	roots["backend"], roots["desktop/go"] = workspaceRoots, workspaceRoots
-	output, err := exec.Command("git", "ls-files", "-z", "--", "backend", "desktop/go", "site").Output()
+	return roots, nil
+}
+
+func planModuleRewrites(changes []moduleChange, directories []string, roots map[string][]string) ([]pendingWrite, error) {
+	arguments := append([]string{"ls-files", "-z", "--"}, directories...)
+	output, err := exec.Command("git", arguments...).Output()
 	if err != nil {
-		return fmt.Errorf("list tracked Go files: %w", err)
-	}
-	type pendingWrite struct {
-		path    string
-		content []byte
-		mode    os.FileMode
+		return nil, fmt.Errorf("list tracked Go files: %w", err)
 	}
 	var pending []pendingWrite
 	for _, path := range strings.Split(string(output), "\x00") {
-		if path == "" || (filepath.Ext(path) != ".go" && filepath.Base(path) != "go.mod") {
+		if path == "" || (filepath.Ext(path) != ".go" && filepath.Base(path) != "go.mod" && path != "site/hugo.yaml") {
 			continue
 		}
 		directory := ""
@@ -277,27 +281,58 @@ func run(input io.Reader) error {
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
-			return fmt.Errorf("inspect %s: %w", path, err)
+			return nil, fmt.Errorf("inspect %s: %w", path, err)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%s is not a regular file", path)
+			return nil, fmt.Errorf("%s is not a regular file", path)
 		}
 		source, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
+			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		var updated []byte
-		if filepath.Ext(path) == ".go" {
+		if path == "site/hugo.yaml" {
+			updated, err = rewriteHugoImports(source, applicable, roots[directory])
+		} else if filepath.Ext(path) == ".go" {
 			updated, err = rewriteGo(source, applicable, roots[directory]...)
 		} else {
 			updated, err = rewriteMod(source, applicable, roots[directory]...)
 		}
 		if err != nil {
-			return fmt.Errorf("rewrite %s: %w", path, err)
+			return nil, fmt.Errorf("rewrite %s: %w", path, err)
 		}
 		if !bytes.Equal(source, updated) {
 			pending = append(pending, pendingWrite{path, updated, info.Mode()})
 		}
+	}
+	return pending, nil
+}
+
+func run(input io.Reader) error {
+	directories := []string{"backend", "desktop/go", "site"}
+	changes, err := readModuleChanges(input, directories)
+	if err != nil {
+		return err
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	var affected []string
+	workspace := slices.ContainsFunc(changes, func(change moduleChange) bool {
+		return slices.Contains(change.Directories, "backend") || slices.Contains(change.Directories, "desktop/go")
+	})
+	for _, directory := range directories {
+		if (directory != "site" && workspace) || slices.ContainsFunc(changes, func(change moduleChange) bool { return slices.Contains(change.Directories, directory) }) {
+			affected = append(affected, directory)
+		}
+	}
+	roots, err := discoverModuleRoots(affected)
+	if err != nil {
+		return err
+	}
+	pending, err := planModuleRewrites(changes, affected, roots)
+	if err != nil {
+		return err
 	}
 	for _, write := range pending {
 		if err := os.WriteFile(write.path, write.content, write.mode); err != nil {
