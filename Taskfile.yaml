@@ -140,6 +140,14 @@ tasks:
     cmds:
       - bun scripts/renovate-post-upgrade.mjs
 
+  renovate-rebase-benchmark:
+    desc: Measure private rebase fixtures after a full read-only Actions run
+    env:
+      RENOVATE_DRY_RUN: full
+      GOTOOLCHAIN: local
+    cmds:
+      - bun scripts/renovate-rebase-benchmark.mjs
+
   sync-protobuf-generators:
     desc: Derive protobuf generator pins from runtime manifests
     cmds:

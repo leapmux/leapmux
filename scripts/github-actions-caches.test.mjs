@@ -829,6 +829,12 @@ describe('renovate workflow and protection', () => {
     const dryEnvironment = yaml('Taskfile.yaml').tasks['renovate-dry-run'].env
     expect(dryEnvironment.RENOVATE_DRY_RUN).toBe('full')
     expect(JSON.parse(dryEnvironment.RENOVATE_FORCE)).toEqual({ schedule: [] })
+    const rebase = steps.find(step => step.name === 'Measure representative rebases')
+    expect(rebase.if).toBe(dry.if)
+    expect(rebase.run).toBe('task renovate-rebase-benchmark')
+    expect(rebase['timeout-minutes']).toBe(10)
+    expect(rebase.env?.RENOVATE_TOKEN).toBeUndefined()
+    expect(rebase.env?.GH_TOKEN).toBeUndefined()
     expect(read.with['permission-vulnerability-alerts']).toBe('read')
   })
   it('rejects publishing before activation and rejects every ref except upstream main', () => {

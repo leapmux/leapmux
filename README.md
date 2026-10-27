@@ -563,6 +563,9 @@ Installation uses `--frozen-lockfile --ignore-scripts` before any publishing cre
 The runner executes that pinned CLI directly, with a hard 50-minute execution limit.
 A timed-out run fails and retains diagnostic records.
 Activation requires a representative queue, including rebases, to finish within 40 minutes.
+Full manual dry runs measure private Go rebase fixtures when a successful Go proposal is available.
+The fixtures cover an unrelated base change and a Go import change that refreshes NOTICE.
+Their branches stay on the runner, and their combined duration counts toward the queue limit.
 NOTICE generation is only one part of that measurement.
 
 The groups cover these dependencies:
