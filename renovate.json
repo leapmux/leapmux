@@ -204,6 +204,15 @@
       ],
       "groupName": "lockfiles",
       "groupSlug": "lockfiles"
+    },
+    {
+      "description": [
+        "Keep every dependency subject consistent after preset rules"
+      ],
+      "matchPackageNames": [
+        "*"
+      ],
+      "semanticCommitType": "chore"
     }
   ],
   "groupSingleUpdates": true,

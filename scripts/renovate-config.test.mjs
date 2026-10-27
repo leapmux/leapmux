@@ -45,13 +45,18 @@ describe('trusted Renovate configuration', () => {
       const {branchifyUpgrades}=await engine('workers/repository/updates/branchify.js');
       const parsedGlobal=await parseConfigs({RENOVATE_CONFIG_FILE:resolve(root,'.github/renovate-config.cjs'),RENOVATE_DRY_RUN:'full',RENOVATE_FORCE:'{"schedule":[]}'},['node','renovate']);
       const config=await mergeRenovateConfig({...GlobalConfig.set(parsedGlobal),repository:'leapmux/leapmux',errors:[],warnings:[]});
-      const dep=(depName,sourceUrl)=>({depName,packageName:depName,sourceUrl,currentValue:'1.0.0',updates:[{updateType:'minor',newValue:'1.1.0',newVersion:'1.1.0'}]});
+      const dep=(depName,sourceUrl)=>({depName,packageName:depName,sourceUrl,depType:'dependencies',currentValue:'1.0.0',updates:[{updateType:'minor',newValue:'1.1.0',newVersion:'1.1.0'}]});
       const {branches}=await branchifyUpgrades({...config,repoIsOnboarded:true},{bun:[{packageFile:'frontend/package.json',deps:[dep('@tauri-apps/api','https://github.com/tauri-apps/tauri'),dep('@xterm/xterm','https://github.com/xtermjs/xterm.js')]}],cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[dep('tauri','https://github.com/tauri-apps/tauri')]}]});
-      console.log(JSON.stringify({dryRun:GlobalConfig.get('dryRun'),schedule:config.schedule,groups:branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({group:branch.groupName,deps:branch.upgrades.map(upgrade=>upgrade.depName).sort()})).sort((a,b)=>a.group.localeCompare(b.group))}));
+      console.log(JSON.stringify({dryRun:GlobalConfig.get('dryRun'),schedule:config.schedule,groups:branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({group:branch.groupName,deps:branch.upgrades.map(upgrade=>upgrade.depName).sort()})).sort((a,b)=>a.group.localeCompare(b.group)),titles:branches.map(branch=>branch.prTitle)}));
     `
     const result = spawnSync('node', ['--input-type=module', '-e', source, root], { encoding: 'utf8', env: { ...process.env, RENOVATE_TRUSTED_ROOT: directory, LOG_LEVEL: 'fatal', LOG_FORMAT: 'json' } })
     expect(result.status, result.stderr).toBe(0)
-    expect(JSON.parse(result.stdout)).toEqual({ dryRun: 'full', schedule: [], groups: [{ group: 'frontend', deps: ['@xterm/xterm'] }, { group: 'Tauri', deps: ['@tauri-apps/api', 'tauri'] }] })
+    const { titles, ...configuration } = JSON.parse(result.stdout)
+    expect(configuration).toEqual({ dryRun: 'full', schedule: [], groups: [{ group: 'frontend', deps: ['@xterm/xterm'] }, { group: 'Tauri', deps: ['@tauri-apps/api', 'tauri'] }] })
+    for (const title of titles) {
+      expect(title).toMatch(/^chore\(deps\): Update /)
+      expect(title.length).toBeLessThan(72)
+    }
   })
   it('passes dry-run flags and schedule overrides to the actual Task command', () => {
     const directory = mkdtempSync(resolve(root, '.tmp/renovate-task-env-'))
