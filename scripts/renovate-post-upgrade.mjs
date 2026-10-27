@@ -4,11 +4,9 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { needsNotice } from './notice-inputs.mjs'
-import { DEPENDENCY_INPUT_FILES, isDependencyInput } from './renovate-inputs.mjs'
-import { refreshSite } from './renovate-site.mjs'
+import { finishGoUpgrades, prepareGoUpgrades } from './renovate-go.mjs'
+import { isDependencyInput } from './renovate-inputs.mjs'
 import { reconcileTauri } from './renovate-tauri.mjs'
-
-const GENPROTO = 'google.golang.org/genproto'
 
 export function validateUpgrades(upgrades) {
   if (!Array.isArray(upgrades) || upgrades.length === 0 || upgrades.length > 10000)
@@ -41,32 +39,6 @@ export function validateUpgrades(upgrades) {
   return { toolchain: toolchains.length === 1 }
 }
 
-export function replacementVersion(moduleText) {
-  const values = [...moduleText.matchAll(/^\s*(?:replace\s+)?google\.golang\.org\/genproto\s*=>\s*google\.golang\.org\/genproto\s+(\S+)/gm)].map(match => match[1])
-  if (values.length !== 1)
-    throw new Error('Each workspace module must contain exactly one genproto replacement.')
-  return values[0]
-}
-
-export function verifyReplacements(texts) {
-  const versions = texts.map(replacementVersion)
-  if (new Set(versions).size !== 1)
-    throw new Error('Conflicting genproto replacements; both modules must change together before workspace commands.')
-}
-
-export function newModulePath(upgrade) {
-  const old = upgrade.depName
-  const major = Number(/^v(\d+)\./.exec(upgrade.newValue)?.[1])
-  if (!Number.isSafeInteger(major))
-    throw new Error(`Invalid Go module version: ${upgrade.newValue}`)
-  if (upgrade.newValue.endsWith('+incompatible'))
-    return old
-  if (old.startsWith('gopkg.in/'))
-    return old.replace(/\.v\d+(?:-unstable)?$/, `.v${major}`)
-  const base = old.replace(/\/v\d+$/, '')
-  return major >= 2 ? `${base}/v${major}` : base
-}
-
 /** Execute each stage through an injected runner so fixtures observe ordering and failures. */
 export async function postUpgrade(upgrades, { root = process.cwd(), trusted = process.env.RENOVATE_TRUSTED_ROOT, run: injectedRun, read = path => readFileSync(resolve(root, path), 'utf8'), write, reconcile = reconcileTauri } = {}) {
   const { toolchain } = validateUpgrades(upgrades)
@@ -95,65 +67,14 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
   }
   if (!trusted)
     throw new Error('Post-update processing requires the trusted main checkout.')
-  const hasGo = upgrades.some(upgrade => upgrade.manager === 'gomod')
-  const hasWorkspaceGo = upgrades.some(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile !== 'site/go.mod')
-  const hasSiteGo = upgrades.some(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile === 'site/go.mod')
+  const goState = prepareGoUpgrades(upgrades, { trusted, run, read })
   const hasFrontend = upgrades.some(upgrade => upgrade.manager === 'bun' && upgrade.packageFile === 'frontend/package.json')
   const hasCargo = upgrades.some(upgrade => upgrade.manager === 'cargo')
-  if (hasGo) {
-    if (hasWorkspaceGo) {
-      let texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
-      const targets = [...new Set(upgrades.filter(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile !== 'site/go.mod' && upgrade.depName === GENPROTO && upgrade.depType === 'replace').map(upgrade => upgrade.newValue))]
-      if (targets.length > 1)
-        throw new Error('The genproto update specifies conflicting versions.')
-      // Renovate can report only one replacement occurrence. Apply its single target to both
-      // module files without entering workspace mode, then validate before any workspace command.
-      if (targets.length === 1) {
-        for (const cwd of ['backend', 'desktop/go'])
-          run('go', ['mod', 'edit', `-replace=${GENPROTO}=${GENPROTO}@${targets[0]}`], { cwd, env: { GOWORK: 'off' } })
-        texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
-      }
-      verifyReplacements(texts)
-    }
-    const goUpgrades = upgrades.filter(upgrade => upgrade.manager === 'gomod' && upgrade.newValue && !['golang', 'toolchain'].includes(upgrade.depType))
-    const changes = new Map()
-    for (const upgrade of goUpgrades) {
-      const target = newModulePath(upgrade)
-      if (target === upgrade.depName)
-        continue
-      const key = JSON.stringify([upgrade.depName, target, upgrade.newValue])
-      const change = changes.get(key) ?? { old: upgrade.depName, new: target, version: upgrade.newValue, directories: [] }
-      change.directories = [...new Set([...change.directories, ...(upgrade.packageFile === 'site/go.mod' ? ['site'] : ['backend', 'desktop/go'])])]
-      changes.set(key, change)
-    }
-    const unique = [...changes.values()]
-    run(resolve(trusted, `.tmp/leapmux-dependency-imports${process.platform === 'win32' ? '.exe' : ''}`), [], { input: JSON.stringify(unique) })
-    for (const upgrade of goUpgrades) {
-      if (upgrade.depType === 'replace')
-        continue
-      run('go', ['mod', 'edit', `-require=${newModulePath(upgrade)}@${upgrade.newValue}`], { cwd: upgrade.packageFile.replace('/go.mod', ''), env: { GOWORK: 'off' } })
-    }
-    // Updated tools may import newly moved transitive modules. Resolve all metadata and
-    // checksums before go tool sqlc or any other updated tool runs.
-    for (const file of DEPENDENCY_INPUT_FILES.gomod.filter(file => file === 'site/go.mod' ? hasSiteGo : hasWorkspaceGo))
-      run('go', ['mod', 'download', 'all'], { cwd: file.replace('/go.mod', ''), env: { GOWORK: 'off', GOFLAGS: '-mod=mod' } })
-    if (hasWorkspaceGo) {
-      run('go', ['work', 'sync'])
-      verifyReplacements(['backend/go.mod', 'desktop/go/go.mod'].map(read))
-    }
-  }
-  if (hasWorkspaceGo || hasFrontend)
+  if (goState.hasWorkspaceGo || hasFrontend)
     run('task', ['sync-protobuf-generators'])
   if (hasFrontend || hasCargo)
     await reconcile({ root, trusted, run, upgrades, security: upgrades.some(upgrade => upgrade.isVulnerabilityAlert) })
-  if (hasWorkspaceGo) {
-    run('task', ['prepare-backend'])
-    for (const cwd of ['backend', 'desktop/go'])
-      run('go', ['mod', 'tidy'], { cwd })
-    run('go', ['work', 'sync'])
-  }
-  if (hasSiteGo)
-    refreshSite({ root, run, read, write })
+  finishGoUpgrades(goState, { root, run, read, write })
   const changed = run('git', ['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--'], { capture: true }).split('\0').filter(Boolean)
   if (needsNotice(changed))
     run('task', ['generate-notice'])

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { newModulePath, postUpgrade, validateUpgrades, verifyReplacements } from './renovate-post-upgrade.mjs'
+import { postUpgrade, validateUpgrades } from './renovate-post-upgrade.mjs'
 
 const replacement = version => `replace google.golang.org/genproto => google.golang.org/genproto ${version}\n`
 const baseline = replacement('v0.0.0-20260420184626-e10c466a9529')
@@ -50,6 +50,40 @@ function preparation({ conflict = false, failDownload = false, siteParticipates 
 }
 
 describe('postUpgrade', () => {
+  it('keeps generator and Tauri processing between Go preparation and completion', async () => {
+    const fixture = preparation()
+    let reconciled = false
+    await postUpgrade([upgrade(), upgrade({ manager: 'bun', packageFile: 'frontend/package.json', depName: 'fixture', newValue: '2.0.0' })], {
+      ...fixture.options,
+      run: (command, args, options = {}) => {
+        if (command === 'task' && args[0] === 'prepare-backend')
+          expect(reconciled).toBe(true)
+        return fixture.options.run(command, args, options)
+      },
+      reconcile: async () => {
+        fixture.calls.push({ command: 'reconcile', args: [], options: {} })
+        await Promise.resolve()
+        reconciled = true
+      },
+    })
+    const phases = fixture.calls.flatMap(({ command, args, options }) => {
+      if (command === 'go' && ['download', 'tidy'].includes(args[1]))
+        return [`${args[1]}:${options.cwd}`]
+      return command === 'task' ? [args[0]] : command === 'reconcile' ? ['reconcile'] : []
+    })
+    expect(phases).toEqual(['download:backend', 'download:desktop/go', 'sync-protobuf-generators', 'reconcile', 'prepare-backend', 'tidy:backend', 'tidy:desktop/go', 'generate-notice'])
+  })
+  it('does not complete Go processing or generate NOTICE when Tauri reconciliation fails', async () => {
+    const fixture = preparation()
+    await expect(postUpgrade([upgrade(), upgrade({ manager: 'cargo', packageFile: 'desktop/rust/Cargo.toml', depName: 'fixture', newValue: '2.0.0' })], {
+      ...fixture.options,
+      reconcile: async () => {
+        throw new Error('Tauri reconciliation failed.')
+      },
+    })).rejects.toThrow('Tauri reconciliation failed.')
+    expect(fixture.calls.filter(call => call.command === 'task').map(call => call.args[0])).toEqual(['sync-protobuf-generators'])
+    expect(fixture.calls.some(call => call.command === 'go' && call.args[1] === 'tidy')).toBe(false)
+  })
   it('keeps workspace updates independent of the site metadata and commands', async () => {
     for (const packageFile of ['backend/go.mod', 'desktop/go/go.mod']) {
       const fixture = preparation()
@@ -163,24 +197,5 @@ describe('validateUpgrades', () => {
       expect(() => validateUpgrades(input)).toThrow()
     expect(() => validateUpgrades([upgrade({ manager: 'regex', packageFile: 'versions.env', depType: 'GOLANG_VERSION', newValue: '1.28.0' }), upgrade()])).toThrow('own branch')
     expect(() => validateUpgrades([{ manager: 'bun', packageFile: 'frontend/package.json', updateType: 'lockFileMaintenance' }])).not.toThrow()
-  })
-})
-
-describe('newModulePath', () => {
-  it('handles version suffixes, first-major paths, and incompatible modules', () => {
-    expect(newModulePath(upgrade())).toBe('example.com/library/v8')
-    expect(newModulePath(upgrade({ depName: 'gopkg.in/yaml.v2', newValue: 'v3.0.1' }))).toBe('gopkg.in/yaml.v3')
-    expect(newModulePath(upgrade({ depName: 'gopkg.in/tomb.v2-unstable', newValue: 'v3.0.0' }))).toBe('gopkg.in/tomb.v3')
-    expect(newModulePath(upgrade({ depName: 'example.com/library', newValue: 'v2.0.0' }))).toBe('example.com/library/v2')
-    expect(newModulePath(upgrade({ depName: 'example.com/library', newValue: 'v2.0.0+incompatible' }))).toBe('example.com/library')
-    expect(newModulePath(upgrade({ depName: 'google.golang.org/genproto', newValue: 'v0.0.0-20261020000000-abcdefabcdef' }))).toBe('google.golang.org/genproto')
-  })
-})
-
-describe('verifyReplacements', () => {
-  it('requires one equal replacement in each workspace module', () => {
-    expect(() => verifyReplacements([baseline, baseline])).not.toThrow()
-    for (const texts of [[baseline, ''], [baseline, baseline + baseline], [baseline, replacement('v0.0.0-other')]])
-      expect(() => verifyReplacements(texts)).toThrow()
   })
 })
