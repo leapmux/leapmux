@@ -5,7 +5,8 @@ const process = require('node:process')
 const trusted = process.env.RENOVATE_TRUSTED_ROOT
 if (!trusted || !path.isAbsolute(trusted))
   throw new Error('RENOVATE_TRUSTED_ROOT must identify the trusted main checkout.')
-const config = JSON.parse(fs.readFileSync(path.join(trusted, 'renovate.json'), 'utf8'))
+// Self-hosted `extends` resolves after global package rules and can replace their groups.
+const { extends: globalExtends, ...config } = JSON.parse(fs.readFileSync(path.join(trusted, 'renovate.json'), 'utf8'))
 const prepared = JSON.parse(fs.readFileSync(path.join(trusted, '.tmp/renovate-prepared.json'), 'utf8'))
 const command = `bun ${JSON.stringify(path.join(trusted, 'scripts/renovate-post-upgrade.mjs'))}`
 module.exports = {
@@ -23,6 +24,7 @@ module.exports = {
   customEnvVariables: { RENOVATE_TRUSTED_ROOT: trusted, GOTOOLCHAIN: 'local' },
   exposeAllEnv: false,
   baseDir: path.join(trusted, '.tmp/renovate-run'),
+  globalExtends,
   ...config,
   // Filter additive manager defaults before security overrides can enable an update.
   ...(prepared.ignorePaths ? { ignorePaths: prepared.ignorePaths } : {}),

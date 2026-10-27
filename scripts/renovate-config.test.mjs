@@ -15,19 +15,64 @@ const fixtures = []
 afterEach(() => {
   for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
 })
-function fixtureConfig(packageRules = []) {
+function fixtureDirectory(packageRules = []) {
   mkdirSync(resolve(root, '.tmp'), { recursive: true })
   const dir = mkdtempSync(resolve(root, '.tmp/renovate-config-'))
   fixtures.push(dir)
   mkdirSync(resolve(dir, '.tmp'))
   writeFileSync(resolve(dir, 'renovate.json'), readFileSync(resolve(root, 'renovate.json')))
   writeFileSync(resolve(dir, '.tmp/renovate-prepared.json'), JSON.stringify({ packageRules, importFiles: ['backend/cmd/example/main.go', 'desktop/go/example.go'] }))
+  return dir
+}
+function fixtureConfig(packageRules = []) {
+  const dir = fixtureDirectory(packageRules)
   const result = spawnSync('node', ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1])))', resolve(root, '.github/renovate-config.cjs')], { encoding: 'utf8', env: { ...process.env, RENOVATE_TRUSTED_ROOT: dir } })
   expect(result.status, result.stderr).toBe(0)
   return JSON.parse(result.stdout)
 }
 
 describe('trusted Renovate configuration', () => {
+  it('keeps repository groups authoritative after native global and repository preset resolution', () => {
+    const directory = fixtureDirectory()
+    const source = `
+      const root=process.argv[1];
+      const {pathToFileURL}=await import('node:url'); const {resolve}=await import('node:path');
+      const engine=p=>import(pathToFileURL(resolve(root,'.github/renovate/node_modules/renovate/dist',p)).href);
+      await (await engine('logger/index.js')).init();
+      const {parseConfigs}=await engine('workers/global/config/parse/index.js');
+      const {GlobalConfig}=await engine('config/global.js');
+      const {mergeRenovateConfig}=await engine('workers/repository/init/merge.js');
+      const {branchifyUpgrades}=await engine('workers/repository/updates/branchify.js');
+      const parsedGlobal=await parseConfigs({RENOVATE_CONFIG_FILE:resolve(root,'.github/renovate-config.cjs'),RENOVATE_DRY_RUN:'full',RENOVATE_FORCE:'{"schedule":[]}'},['node','renovate']);
+      const config=await mergeRenovateConfig({...GlobalConfig.set(parsedGlobal),repository:'leapmux/leapmux',errors:[],warnings:[]});
+      const dep=(depName,sourceUrl)=>({depName,packageName:depName,sourceUrl,currentValue:'1.0.0',updates:[{updateType:'minor',newValue:'1.1.0',newVersion:'1.1.0'}]});
+      const {branches}=await branchifyUpgrades({...config,repoIsOnboarded:true},{bun:[{packageFile:'frontend/package.json',deps:[dep('@tauri-apps/api','https://github.com/tauri-apps/tauri'),dep('@xterm/xterm','https://github.com/xtermjs/xterm.js')]}],cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[dep('tauri','https://github.com/tauri-apps/tauri')]}]});
+      console.log(JSON.stringify({dryRun:GlobalConfig.get('dryRun'),schedule:config.schedule,groups:branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({group:branch.groupName,deps:branch.upgrades.map(upgrade=>upgrade.depName).sort()})).sort((a,b)=>a.group.localeCompare(b.group))}));
+    `
+    const result = spawnSync('node', ['--input-type=module', '-e', source, root], { encoding: 'utf8', env: { ...process.env, RENOVATE_TRUSTED_ROOT: directory, LOG_LEVEL: 'fatal', LOG_FORMAT: 'json' } })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ dryRun: 'full', schedule: [], groups: [{ group: 'frontend', deps: ['@xterm/xterm'] }, { group: 'Tauri', deps: ['@tauri-apps/api', 'tauri'] }] })
+  })
+  it('passes dry-run flags and schedule overrides to the actual Task command', () => {
+    const directory = mkdtempSync(resolve(root, '.tmp/renovate-task-env-'))
+    fixtures.push(directory)
+    mkdirSync(resolve(directory, 'scripts'))
+    const tasks = Bun.YAML.parse(readFileSync(resolve(root, 'Taskfile.yaml'), 'utf8')).tasks
+    writeFileSync(resolve(directory, 'Taskfile.yaml'), Bun.YAML.stringify({ version: '3', tasks: { 'renovate': tasks.renovate, 'renovate-dry-run': tasks['renovate-dry-run'] } }))
+    writeFileSync(resolve(directory, 'scripts/run-renovate.mjs'), `import {writeFileSync} from 'node:fs'; writeFileSync('environment.json',JSON.stringify({dryRun:process.env.RENOVATE_DRY_RUN??null,force:process.env.RENOVATE_FORCE??null,config:process.env.RENOVATE_CONFIG_FILE,format:process.env.LOG_FORMAT}));`)
+    const env = { ...process.env }
+    delete env.RENOVATE_DRY_RUN
+    delete env.RENOVATE_FORCE
+    for (const target of ['renovate-dry-run', 'renovate']) {
+      const result = spawnSync('task', [target], { cwd: directory, env, encoding: 'utf8' })
+      expect(result.status, result.stderr).toBe(0)
+      const captured = JSON.parse(readFileSync(resolve(directory, 'environment.json'), 'utf8'))
+      expect(captured.config).toBe('.github/renovate-config.cjs')
+      expect(captured.format).toBe('json')
+      expect(captured.dryRun).toBe(target === 'renovate-dry-run' ? 'full' : null)
+      expect(captured.force && JSON.parse(captured.force)).toEqual(target === 'renovate-dry-run' ? { schedule: [] } : null)
+    }
+  })
   it('loads the pinned engine through the shared resolver under Node', () => {
     const source = `const {renovateModule}=await import(${JSON.stringify(new URL('./renovate-engine.mjs', import.meta.url).href)}); const {api}=await renovateModule('modules/versioning/cargo/index.js'); console.log(JSON.stringify(api.matches('2.11.3','2.11.0')))`
     const result = spawnSync('node', ['--input-type=module', '-e', source], { encoding: 'utf8' })

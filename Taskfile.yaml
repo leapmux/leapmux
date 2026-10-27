@@ -109,7 +109,7 @@ tasks:
     env:
       RENOVATE_CONFIG_FILE: .github/renovate-config.cjs
       LOG_FORMAT: json
-    cmds:
+    cmds: &renovate_commands
       - node scripts/run-renovate.mjs
 
   renovate-extract:
@@ -123,12 +123,15 @@ tasks:
 
   renovate-dry-run:
     desc: Run authenticated Renovate without publishing
+    # Task's environment decoder does not expand YAML map merges.
     env:
+      RENOVATE_CONFIG_FILE: .github/renovate-config.cjs
+      LOG_FORMAT: json
       RENOVATE_DRY_RUN: full
       # Exercise artifact generation even outside the routine publishing window.
       RENOVATE_FORCE: '{"schedule":[]}'
-    cmds:
-      - task: renovate
+    # Task does not pass a caller task's environment to a nested task invocation.
+    cmds: *renovate_commands
 
   renovate-post-upgrade:
     desc: Prepare dependency artifacts from structured Renovate metadata
@@ -1359,7 +1362,7 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
-      - cd desktop/go && go tool golangci-lint run ./...
+      - cd desktop/go && go tool golangci-lint run --allow-serial-runners ./...
       # Check the desktop's platform-specific files, including tests, as lint-backend does.
       - cd desktop/go && GOOS=windows go vet -tags integration ./...
       - cd desktop/go && GOOS=linux go vet -tags integration ./...
