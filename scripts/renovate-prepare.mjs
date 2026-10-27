@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
-import { readGithubJson } from './github-json.mjs'
+import { readGithubJsonResponse } from './github-json.mjs'
 import { renovateModule } from './renovate-engine.mjs'
 import { dependencyIgnorePaths } from './renovate-inputs.mjs'
 import { planTauriTargets } from './renovate-tauri-graph.mjs'
@@ -33,18 +33,60 @@ export async function prepareTauriSecurity(alerts, config, baseline, { request =
   return Object.fromEntries(targets.flatMap(({ pair, target }) => target.npm === pair.npmVersion && target.cargo === pair.cargoVersion ? [] : [[pair.npm, target.npm], [pair.cargo, target.cargo]]))
 }
 
+const REPOSITORY_API_PATH = '/repos/leapmux/leapmux'
+const ALERTS_API_PATH = `${REPOSITORY_API_PATH}/dependabot/alerts`
+
+function nextAlertPage(header, canonicalPath) {
+  if (!header)
+    return null
+  let next = null
+  for (const part of header.split(/,\s*(?=<)/)) {
+    const entry = /^\s*<([^>]+)>(.*)$/.exec(part)
+    const relation = entry && /;\s*rel\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(entry[2])
+    if (!relation)
+      throw new Error('Invalid Dependabot pagination header.')
+    if (!(relation[1] ?? relation[2]).split(/\s+/).includes('next'))
+      continue
+    let url
+    try {
+      url = new URL(entry[1], 'https://api.github.com')
+    }
+    catch {
+      throw new Error('Invalid Dependabot pagination URL.')
+    }
+    if (next || url.origin !== 'https://api.github.com' || url.username || url.password || url.hash
+      || ![ALERTS_API_PATH, canonicalPath].includes(url.pathname) || url.searchParams.has('page')
+      || url.searchParams.get('state') !== 'open' || url.searchParams.get('per_page') !== '100'
+      || ![url.searchParams.get('after'), url.searchParams.get('before')].some(Boolean)) {
+      throw new Error('Unsafe or ambiguous Dependabot pagination link.')
+    }
+    url.searchParams.sort()
+    next = `${url.pathname}${url.search}`
+  }
+  return next
+}
+
 export async function readAlerts(token, request = fetch) {
   if (!token)
     throw new Error('A read-only App token is required to read active Dependabot alerts.')
+  const { data: repository } = await readGithubJsonResponse(REPOSITORY_API_PATH, { token, request, description: 'Dependabot repository read' })
+  if (!Number.isSafeInteger(repository?.id) || repository.id <= 0)
+    throw new Error('Dependabot returned an invalid repository identity.')
+  const canonicalPath = `/repositories/${repository.id}/dependabot/alerts`
   const alerts = []
-  for (let page = 1; ; page++) {
-    const batch = await readGithubJson(`/repos/leapmux/leapmux/dependabot/alerts?state=open&per_page=100&page=${page}`, { token, request, description: 'Dependabot alert read' })
+  const seen = new Set()
+  let path = `${ALERTS_API_PATH}?state=open&per_page=100`
+  while (path) {
+    if (seen.has(path))
+      throw new Error('Dependabot pagination cycle detected.')
+    seen.add(path)
+    const { data: batch, headers } = await readGithubJsonResponse(path, { token, request, description: 'Dependabot alert read' })
     if (!Array.isArray(batch))
       throw new Error('Dependabot returned an invalid alert list.')
     alerts.push(...batch)
-    if (batch.length < 100)
-      return alerts
+    path = nextAlertPage(headers.get('link'), canonicalPath)
   }
+  return alerts
 }
 
 if (import.meta.main) {

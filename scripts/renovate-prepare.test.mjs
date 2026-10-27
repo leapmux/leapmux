@@ -110,19 +110,99 @@ describe('prepareTauriSecurity', () => {
 })
 
 describe('readAlerts', () => {
-  it('reads all pages without mutations', async () => {
+  it('follows GitHub canonical repository links using the authenticated repository identity', async () => {
     const calls = []
-    const alerts = await readAlerts('fixture', async (url, options) => {
-      expect(options.method).toBe('GET')
+    const alerts = await readAlerts('fixture', async (url) => {
       calls.push(url)
-      return Response.json(calls.length === 1 ? Array.from({ length: 100 }, () => alert('tauri')) : [alert('typescript')])
+      const parsed = new URL(url)
+      if (parsed.pathname === '/repos/leapmux/leapmux')
+        return Response.json({ id: 1151167922 })
+      if (parsed.pathname === '/repositories/1151167922/dependabot/alerts')
+        return Response.json([alert('typescript')])
+      return Response.json([alert('tauri')], { headers: { link: '<https://api.github.com/repositories/1151167922/dependabot/alerts?state=open&per_page=100&after=cursor>; rel="next"' } })
+    })
+    expect(alerts).toHaveLength(2)
+    expect(calls).toHaveLength(3)
+    expect(calls[0]).toBe('https://api.github.com/repos/leapmux/leapmux')
+  })
+  const readTestAlerts = (token, request) => readAlerts(token, async (url, options) => {
+    if (new URL(url).pathname === '/repos/leapmux/leapmux')
+      return Response.json({ id: 1151167922 })
+    return request(url, options)
+  })
+
+  it('follows opaque cursor links even after a short page and stops without a next link', async () => {
+    const calls = []
+    const cursor = 'opaque+/cursor=='
+    const alerts = await readTestAlerts('fixture', async (url, options) => {
+      expect(options.method).toBe('GET')
+      const parsed = new URL(url)
+      if (parsed.searchParams.has('page'))
+        return Response.json({ message: 'Pagination using the page parameter is not supported.' }, { status: 400 })
+      calls.push(url)
+      if (calls.length === 1)
+        return Response.json([alert('tauri')], { headers: { link: `<https://api.github.com/repos/leapmux/leapmux/dependabot/alerts?state=open&per_page=100&after=${encodeURIComponent(cursor)}>; rel="next"` } })
+      expect(parsed.searchParams.get('after')).toBe(cursor)
+      return Response.json(Array.from({ length: 100 }, () => alert('typescript')))
     })
     expect(alerts).toHaveLength(101)
-    expect(calls[1]).toContain('page=2')
+    expect(calls).toHaveLength(2)
+  })
+  it('handles an empty response without another request', async () => {
+    let requests = 0
+    expect(await readTestAlerts('fixture', async () => {
+      requests++
+      return Response.json([])
+    })).toEqual([])
+    expect(requests).toBe(1)
+  })
+  it('rejects unsafe or malformed next links before forwarding credentials', async () => {
+    const path = '/repos/leapmux/leapmux/dependabot/alerts?state=open&per_page=100&after=cursor'
+    for (const link of [
+      `<https://other.invalid${path}>; rel="next"`,
+      `<http://api.github.com${path}>; rel="next"`,
+      `<https://user@api.github.com${path}>; rel="next"`,
+      `<https://api.github.com/repos/other/repo/dependabot/alerts?state=open&per_page=100&after=cursor>; rel="next"`,
+      '<https://api.github.com/repositories/1/dependabot/alerts?state=open&per_page=100&after=cursor>; rel="next"',
+      `<https://api.github.com${path}&page=2>; rel="next"`,
+      `<https://api.github.com${path.replace('state=open', 'state=closed')}>; rel="next"`,
+      `<https://api.github.com${path}#fragment>; rel="next"`,
+      `<https://api.github.com${path.replace('&after=cursor', '')}>; rel="next"`,
+      'invalid link header',
+      `<https://api.github.com${path}>; rel="next", <https://api.github.com${path}&extra=1>; rel="next"`,
+    ]) {
+      let requests = 0
+      await expect(readTestAlerts('fixture', async () => {
+        requests++
+        return Response.json([alert('tauri')], { headers: { link } })
+      })).rejects.toThrow('pagination')
+      expect(requests).toBe(1)
+    }
+  })
+  it('rejects cursor cycles without retrying the repeated page', async () => {
+    let requests = 0
+    await expect(readTestAlerts('fixture', async () => {
+      requests++
+      if (requests > 2)
+        throw new Error('The pagination cycle was not detected.')
+      return Response.json([alert('tauri')], { headers: { link: '<https://api.github.com/repos/leapmux/leapmux/dependabot/alerts?state=open&per_page=100&after=cursor>; rel="next"' } })
+    })).rejects.toThrow('pagination cycle')
+    expect(requests).toBe(2)
   })
   it('fails on missing credentials, denied access, and malformed data', async () => {
-    await expect(readAlerts('')).rejects.toThrow()
-    await expect(readAlerts('fixture', async () => new Response('', { status: 403 }))).rejects.toThrow('403')
-    await expect(readAlerts('fixture', async () => Response.json({}))).rejects.toThrow()
+    await expect(readTestAlerts('')).rejects.toThrow()
+    await expect(readTestAlerts('fixture', async () => new Response('', { status: 403 }))).rejects.toThrow('403')
+    await expect(readTestAlerts('fixture', async () => Response.json({}))).rejects.toThrow()
+  })
+  it('rejects an invalid repository identity before requesting alerts', async () => {
+    for (const id of [null, 0, -1, '1151167922', Number.MAX_SAFE_INTEGER + 1]) {
+      let requests = 0
+      await expect(readAlerts('fixture', async (url) => {
+        requests++
+        expect(new URL(url).pathname).toBe('/repos/leapmux/leapmux')
+        return Response.json({ id })
+      })).rejects.toThrow('repository identity')
+      expect(requests).toBe(1)
+    }
   })
 })

@@ -1,5 +1,5 @@
 /** Read GitHub JSON with one authentication, API-version, and timeout policy. */
-export async function readGithubJson(path, { token, request = fetch, description = 'GitHub read' }) {
+export async function readGithubJsonResponse(path, { token, request = fetch, description = 'GitHub read' }) {
   if (typeof token !== 'string' || token === '')
     throw new Error('A GitHub token is required.')
   if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//'))
@@ -11,5 +11,5 @@ export async function readGithubJson(path, { token, request = fetch, description
   } })
   if (!response.ok)
     throw new Error(`${description} failed: ${response.status} ${path}`)
-  return response.json()
+  return { data: await response.json(), headers: response.headers }
 }

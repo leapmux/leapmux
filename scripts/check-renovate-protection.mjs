@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
-import { readGithubJson } from './github-json.mjs'
+import { readGithubJsonResponse } from './github-json.mjs'
 
 const administratorBypass = Object.freeze({ actor_type: 'RepositoryRole', actor_id: 5, bypass_mode: 'always' })
 const reviewRequirements = Object.freeze({
@@ -72,7 +72,7 @@ export function checkProtection(effective, rulesets) {
 export async function verifyRepository({ token = process.env.GH_TOKEN, repository = 'leapmux/leapmux', request = fetch } = {}) {
   if (repository !== 'leapmux/leapmux' || !token)
     throw new Error('Protection verification requires leapmux/leapmux and a read-only token.')
-  const get = path => readGithubJson(path, { token, request, description: 'GitHub protection read' })
+  const get = async path => (await readGithubJsonResponse(path, { token, request, description: 'GitHub protection read' })).data
   const effective = []
   for (let page = 1; ; page++) {
     const batch = await get(`/repos/${repository}/rules/branches/main?per_page=100&page=${page}`)

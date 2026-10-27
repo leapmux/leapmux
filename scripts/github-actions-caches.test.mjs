@@ -648,6 +648,16 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     }
   })
 
+  it('allows cache export failures while retaining fatal Docker build failures', () => {
+    const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
+    const builds = steps.filter(step => String(step.uses).startsWith('docker/build-push-action@'))
+    expect(builds).toHaveLength(2)
+    for (const step of builds) {
+      expect(String(step.with['cache-to'])).toContain('ignore-error=true')
+      expect(step['continue-on-error']).not.toBe(true)
+    }
+  })
+
   it('keeps cross-OS archives inside the workspace', () => {
     for (const file of [...workflowFiles, ...actionFiles]) {
       for (const { step } of allSteps(yaml(file))) {

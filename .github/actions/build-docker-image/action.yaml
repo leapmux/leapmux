@@ -8,6 +8,7 @@ description: Build one prepared native Docker image and extract its Go cache.
 # - Save the new archive.
 # A failure at either earlier stage prevents the later stages.
 # The tools stage uses mode=max. Final images use mode=min to exclude changing builder layers.
+# Cache export failures must not block image publication.
 inputs:
   variant:
     description: The alpine or ubuntu image variant.
@@ -88,7 +89,7 @@ runs:
         push: false
         build-args: ${{ inputs.build-args }}
         cache-from: type=gha,scope=tools-${{ inputs.arch }}
-        cache-to: type=gha,mode=max,scope=tools-${{ inputs.arch }}
+        cache-to: type=gha,mode=max,ignore-error=true,scope=tools-${{ inputs.arch }}
       env:
         DOCKER_BUILD_SUMMARY: 'false'
         DOCKER_BUILD_RECORD_UPLOAD: 'false'
@@ -110,4 +111,4 @@ runs:
         cache-from: |
           type=gha,scope=tools-${{ inputs.arch }}
           type=gha,scope=${{ inputs.variant }}-${{ inputs.arch }}
-        cache-to: ${{ inputs.save-caches == 'true' && format('type=gha,mode=min,scope={0}-{1}', inputs.variant, inputs.arch) || '' }}
+        cache-to: ${{ inputs.save-caches == 'true' && format('type=gha,mode=min,ignore-error=true,scope={0}-{1}', inputs.variant, inputs.arch) || '' }}
