@@ -555,7 +555,9 @@ Warnings, security advisories, and release notes go into managed PR comments.
 The trusted renderer captures those fragments before GitHub truncates the description.
 Long details use numbered comment parts so the full text remains available.
 Later runs update the same bot-owned parts and leave human comments unchanged.
-Dry runs validate the captured comment content without publishing it.
+The native renderer contract is tested before installation tokens are minted.
+`task publish-renovate-details -- --dry-run` previews captured records without publishing them.
+Renovate's full dry-run mode stops before PR rendering and therefore produces no detail captures.
 The capture adapter uses the pinned CLI's Handlebars renderer; its native-engine tests must pass when Renovate is upgraded.
 Dependency commits keep the App's primary author identity and add no co-author trailer or attribution footer.
 

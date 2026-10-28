@@ -67,6 +67,9 @@ jobs:
       - name: Compile trusted import helper
         run: task build-dependency-imports
 
+      - name: Validate PR detail renderer
+        run: task test-scripts -- ./scripts/renovate-pr-details.test.mjs
+
       - name: Create read-only installation token
         id: read
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -133,10 +136,6 @@ jobs:
         if: inputs.mode != 'publish' && github.event_name != 'schedule'
         timeout-minutes: 10
         run: task renovate-rebase-benchmark
-
-      - name: Validate PR detail comments
-        if: inputs.mode != 'publish' && github.event_name != 'schedule'
-        run: task publish-renovate-details -- --dry-run
 
       - name: Publish PR detail comments
         if: >-

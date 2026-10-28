@@ -801,7 +801,7 @@ describe('renovate workflow and protection', () => {
     expect(workflow.concurrency).toEqual({ 'group': 'renovate', 'cancel-in-progress': false, 'queue': 'max' })
     expect(workflow.on.workflow_dispatch.inputs.mode.default).toBe('dry-run')
     expect(workflow.jobs.renovate.if).toContain('github.repository == \'leapmux/leapmux\'')
-    for (const name of ['Install pinned Renovate without scripts', 'Validate configuration', 'Compile trusted import helper'])
+    for (const name of ['Install pinned Renovate without scripts', 'Validate configuration', 'Compile trusted import helper', 'Validate PR detail renderer'])
       expect(position(name)).toBeLessThan(position('Create read-only installation token'))
     expect(position('Verify main protection before publishing')).toBeLessThan(position('Create publishing installation token'))
     const protection = steps.find(step => step.name === 'Verify main protection before publishing')
@@ -845,10 +845,10 @@ describe('renovate workflow and protection', () => {
     expect(comments.if).toContain('!cancelled()')
     expect(comments.env.GH_TOKEN).toBe(expression('steps.write.outputs.token'))
     expect(comments.run).toBe('task publish-renovate-details')
-    const preview = steps.find(step => step.name === 'Validate PR detail comments')
-    expect(preview.if).toBe(dry.if)
-    expect(preview.run).toBe('task publish-renovate-details -- --dry-run')
-    expect(preview.env?.GH_TOKEN).toBeUndefined()
+    const renderer = steps.find(step => step.name === 'Validate PR detail renderer')
+    expect(renderer.run).toBe('task test-scripts -- ./scripts/renovate-pr-details.test.mjs')
+    expect(renderer.env?.GH_TOKEN).toBeUndefined()
+    expect(steps.some(step => step.name === 'Validate PR detail comments')).toBe(false)
   })
   it('rejects publishing before activation and rejects every ref except upstream main', () => {
     const step = yaml('.github/workflows/renovate.yaml').jobs.renovate.steps[0]
