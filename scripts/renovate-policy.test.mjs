@@ -24,6 +24,7 @@ const { filterInternalChecks } = await engine('workers/repository/process/lookup
 const { fetchUpdates } = await engine('workers/repository/process/fetch.js')
 const { PackageFiles } = await engine('workers/repository/package-files.js')
 const { getWarnings } = await engine('workers/repository/errors-warnings.js')
+const { smartTruncate } = await engine('modules/platform/utils/pr-body.js')
 const { cronMatches, hasValidSchedule } = await engine('workers/repository/update/branch/schedule.js')
 const { generateBranchConfig } = await engine('workers/repository/updates/generate.js')
 const { branchifyUpgrades } = await engine('workers/repository/updates/branchify.js')
@@ -238,5 +239,16 @@ describe('renovate policy with the pinned engine', () => {
     const body = compile(policy.prBodyTemplate, { warnings }, false)
     expect([...body.matchAll(/^#{1,2} (.+)$/gm)].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
     expect(body).toContain('Artifact generation failed.')
+  })
+  it('preserves required sections and artifact failures when upstream notes exceed the platform limit', () => {
+    const warnings = getWarnings({ warnings: [{ topic: 'fixture', message: 'Artifact generation failed.' }] })
+    for (const largeField of ['notes', 'changelogs']) {
+      const body = compile(policy.prBodyTemplate, { table: '- Runtime: 1 → 2', warnings, [largeField]: 'Upstream security and release details.\n'.repeat(1600) }, false)
+      const rendered = smartTruncate(body, 58000)
+      expect(rendered.length).toBeLessThanOrEqual(58000)
+      expect([...rendered.matchAll(/^#{1,2} (.+)$/gm)].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
+      expect(rendered).toContain('Artifact generation failed.')
+      expect(rendered).toContain('human review and required CI')
+    }
   })
 })
