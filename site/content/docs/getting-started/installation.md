@@ -127,7 +127,7 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data ghcr.io/leapmu
 docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
 ```
 
-For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the `:dev` tag), the s6-overlay supervision and startup mechanics, and the `/data` volume layout, see [Running LeapMux](/docs/admin/running-leapmux/), which is canonical for Docker operations. Anything beyond `LEAPMUX_MODE` and `LEAPMUX_DATA_DIR` is configured through the per-mode YAML file or through `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables — see [Configuration](/docs/admin/configuration/).
+For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the `:dev` tag), container configuration, restart policies, and the `/data` volume layout, see [Running LeapMux](/docs/admin/running-leapmux/), which is canonical for Docker operations. Anything beyond `LEAPMUX_MODE` and `LEAPMUX_DATA_DIR` is configured through the per-mode YAML file or through `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables — see [Configuration](/docs/admin/configuration/).
 
 {{< callout type="info" >}}
 Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is not reachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` mode binds all interfaces (`:4327`) and is the container-friendly all-in-one variant.

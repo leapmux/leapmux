@@ -114,8 +114,10 @@ func TestWellKnownMetadataIsMounted(t *testing.T) {
 	// A LISTEN address, because the documents are built from the hub's own
 	// address and a hub that has none refuses to publish them at all. See
 	// TestWellKnownMetadataRefusesWithoutAnAddress.
-	srv := startTestServer(t, &config.Config{Listen: []string{"127.0.0.1:4327"}})
+	srv := startTestServer(t, &config.Config{Listen: []string{"127.0.0.1:0"}})
 	handler := srv.server.Handler
+	address := srv.PrimaryListenAddr()
+	require.Regexp(t, `^127\.0\.0\.1:[1-9][0-9]*$`, address)
 
 	for _, path := range []string{
 		"/.well-known/oauth-authorization-server",
@@ -142,14 +144,14 @@ func TestWellKnownMetadataIsMounted(t *testing.T) {
 				parsed, err := url.Parse(doc.Issuer)
 				require.NoErrorf(t, err, "%s carries an unparseable issuer %q", path, doc.Issuer)
 				assert.Equalf(t, "http", parsed.Scheme, "%s issuer must be absolute: %q", path, doc.Issuer)
-				assert.Equal(t, "127.0.0.1:4327", parsed.Host)
+				assert.Equal(t, address, parsed.Host)
 			} else {
 				// RFC 9728 has no issuer; its address-bearing field is the
 				// resource itself, and it must parse just as absolutely.
 				parsed, err := url.Parse(doc.Resource)
 				require.NoErrorf(t, err, "%s carries an unparseable resource %q", path, doc.Resource)
 				assert.Equalf(t, "http", parsed.Scheme, "%s resource must be absolute: %q", path, doc.Resource)
-				assert.Equal(t, "127.0.0.1:4327", parsed.Host)
+				assert.Equal(t, address, parsed.Host)
 			}
 			assert.Contains(t, rec.Body.String(), "\"scopes_supported\"")
 		})

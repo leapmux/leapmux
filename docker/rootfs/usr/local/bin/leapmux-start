@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/command/with-contenv sh
+set -eu
+
 mode="${LEAPMUX_MODE:-}"
 case "$mode" in
 hub|worker|dev|solo) ;;
@@ -12,5 +14,12 @@ data_dir="${LEAPMUX_DATA_DIR:-/data}"
 bin="${LEAPMUX_BIN:-/usr/local/bin/leapmux}"
 config="${data_dir}/${mode}/${mode}.yaml"
 mkdir -p "$(dirname "$config")"
-[ -f "$config" ] || install -m 0600 /dev/null "$config"
+if [ ! -e "$config" ]; then
+	# Exclusive creation prevents another startup from overwriting this file.
+	(umask 077; set -C; : > "$config")
+fi
+if [ ! -f "$config" ]; then
+	printf 'error: configuration path is not a regular file: %s\n' "$config" >&2
+	exit 1
+fi
 exec "$bin" "$mode" -config "$config"

@@ -1,8 +1,7 @@
-//go:build linux
+//go:build linux || darwin
 
-// The docker s6-overlay run script is only used inside the Linux container
-// image, so its tests run only on Linux. They invoke /bin/sh directly, which
-// isn't available on Windows runners.
+// Test the startup script's portable shell logic with /bin/sh on Linux and
+// macOS. The image lifecycle tests exercise s6 and environment restoration.
 
 package main
 
@@ -17,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDockerRunScriptSoloMode(t *testing.T) {
+func TestDockerStartupScriptSoloMode(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "data")
 	capturePath := filepath.Join(tmp, "args.txt")
@@ -26,7 +25,7 @@ func TestDockerRunScriptSoloMode(t *testing.T) {
 printf '%s\n' "$@" > "$LEAPMUX_CAPTURE"
 `)
 
-	cmd := exec.Command("/bin/sh", dockerRunScriptPath(t))
+	cmd := exec.Command("/bin/sh", dockerStartupScriptPath(t))
 	cmd.Env = append(os.Environ(),
 		"LEAPMUX_MODE=solo",
 		"LEAPMUX_BIN="+fakeLeapMux,
@@ -42,11 +41,11 @@ printf '%s\n' "$@" > "$LEAPMUX_CAPTURE"
 	assert.FileExists(t, filepath.Join(dataDir, "solo", "solo.yaml"))
 }
 
-func TestDockerRunScriptRejectsInvalidModeBeforeCreatingConfig(t *testing.T) {
+func TestDockerStartupScriptRejectsInvalidModeBeforeCreatingConfig(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "data")
 
-	cmd := exec.Command("/bin/sh", dockerRunScriptPath(t))
+	cmd := exec.Command("/bin/sh", dockerStartupScriptPath(t))
 	cmd.Env = append(os.Environ(),
 		"LEAPMUX_MODE=bogus",
 		"LEAPMUX_DATA_DIR="+dataDir,
@@ -57,11 +56,11 @@ func TestDockerRunScriptRejectsInvalidModeBeforeCreatingConfig(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(dataDir, "bogus"))
 }
 
-func dockerRunScriptPath(t *testing.T) string {
+func dockerStartupScriptPath(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "docker", "rootfs", "etc", "s6-overlay", "s6-rc.d", "leapmux", "run")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", "docker", "rootfs", "usr", "local", "bin", "leapmux-start")
 }
 
 func writeExecutable(t *testing.T, path, content string) {
