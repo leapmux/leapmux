@@ -104,6 +104,11 @@ tasks:
     cmds:
       - node scripts/check-renovate-protection.mjs {{.CLI_ARGS}}
 
+  snapshot-renovate-protection:
+    desc: Capture main protection through the administrator GitHub CLI
+    cmds:
+      - node scripts/snapshot-renovate-protection.mjs
+
   renovate:
     desc: Run the pinned CLI with a hard 50-minute execution limit
     env:

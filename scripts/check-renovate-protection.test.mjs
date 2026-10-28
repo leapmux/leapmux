@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { checkProtection, RENOVATE_MAIN_RULESET, verifyRepository } from './check-renovate-protection.mjs'
+import { checkProtection, createProtectionSnapshot, RENOVATE_MAIN_RULESET, verifyRepository } from './check-renovate-protection.mjs'
 
 function fixture() {
   const rulesets = [{ id: 1, enforcement: 'active', bypass_actors: [] }, {
@@ -17,6 +17,32 @@ function fixture() {
     required_status_checks: ['Required CI', 'NOTICE'].map(context => ({ context, integration_id: 15368 })),
   } })
   return { effective, rulesets }
+}
+
+function snapshotFixture() {
+  const data = fixture()
+  for (const rule of data.rulesets) {
+    rule.name = `Protection ${rule.id}`
+    rule.updated_at = '2026-10-28T00:01:00.456Z'
+    rule.created_at = '2026-10-28T00:00:00.123Z'
+    rule.conditions = { ref_name: { include: ['refs/heads/main'], exclude: [] } }
+    rule.rules = structuredClone(data.effective.filter(item => item.ruleset_id === rule.id))
+  }
+  return data
+}
+
+function protectionRequest({ effective, rulesets }, hideActors = true) {
+  return async (url, options) => {
+    expect(options.method).toBe('GET')
+    expect(options.cache).toBe('no-store')
+    expect(options.headers['Cache-Control']).toBe('no-cache')
+    if (new URL(url).pathname.endsWith('/main'))
+      return Response.json(effective)
+    const data = structuredClone(rulesets.find(set => url.endsWith(`/${set.id}`)))
+    if (hideActors)
+      delete data.bypass_actors
+    return Response.json(data)
+  }
 }
 
 describe('checkProtection', () => {
@@ -89,5 +115,127 @@ describe('checkProtection', () => {
     } })
     expect(paths).toEqual(['/repos/leapmux/leapmux/rules/branches/main', '/repos/leapmux/leapmux/rulesets/1', '/repos/leapmux/leapmux/rulesets/2'])
     await expect(verifyRepository({ token: 'fixture', request: async () => new Response('', { status: 403 }) })).rejects.toThrow('403')
+  })
+  it('verifies hidden bypass actors from the administrator snapshot against fresh metadata', async () => {
+    const { effective, rulesets } = fixture()
+    for (const ruleset of rulesets) {
+      ruleset.created_at = '2026-10-28T09:00:00.123+09:00'
+      ruleset.updated_at = '2026-10-28T09:01:00.456+09:00'
+    }
+    const snapshot = { version: 1, repository: 'leapmux/leapmux', ref: 'refs/heads/main', rulesets }
+    const request = async (url, options) => {
+      expect(options.method).toBe('GET')
+      if (new URL(url).pathname.endsWith('/main'))
+        return Response.json(effective)
+      const live = structuredClone(rulesets.find(set => url.endsWith(`/${set.id}`)))
+      delete live.bypass_actors
+      live.created_at = '2026-10-28T00:00:00.123Z'
+      live.updated_at = '2026-10-28T00:01:00.456Z'
+      return Response.json(live)
+    }
+    await expect(verifyRepository({ token: 'fixture', snapshot: JSON.stringify(snapshot), request })).resolves.toBeDefined()
+  })
+})
+
+describe('administrator protection snapshot', () => {
+  it('captures validated actors without recording viewer-specific access', () => {
+    const data = snapshotFixture()
+    data.rulesets[0].current_user_can_bypass = 'always'
+    const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+    expect(snapshot.version).toBe(1)
+    expect(snapshot.repository).toBe('leapmux/leapmux')
+    expect(snapshot.ref).toBe('refs/heads/main')
+    expect(snapshot.rulesets[0]).not.toHaveProperty('current_user_can_bypass')
+    expect(snapshot.rulesets[1].bypass_actors).toEqual([{ actor_type: 'RepositoryRole', actor_id: 5, bypass_mode: 'always' }])
+    data.rulesets[1].bypass_actors[0].actor_id = 4
+    expect(snapshot.rulesets[1].bypass_actors[0].actor_id).toBe(5)
+    expect(() => createProtectionSnapshot(data.effective, data.rulesets)).toThrow('bypass')
+  })
+  it('refuses capture without administrator visibility, valid revisions, and exact sources', () => {
+    for (const change of [
+      data => delete data.rulesets[0].bypass_actors,
+      data => delete data.rulesets[0].updated_at,
+      data => data.rulesets.push(structuredClone(data.rulesets[0])),
+      data => data.rulesets.pop(),
+      data => data.rulesets.push({ ...data.rulesets[0], id: 3 }),
+    ]) {
+      const data = snapshotFixture()
+      change(data)
+      expect(() => createProtectionSnapshot(data.effective, data.rulesets)).toThrow()
+    }
+  })
+  it('rejects missing, malformed, foreign, and unsupported snapshots', async () => {
+    const data = snapshotFixture()
+    const saved = createProtectionSnapshot(data.effective, data.rulesets)
+    for (const snapshot of [undefined, '', 'invalid', 'null', '[]', '{}', { ...saved, version: 2 }, { ...saved, repository: 'other/repo' }, { ...saved, ref: 'refs/heads/other' }, { ...saved, rulesets: [] }, { ...saved, rulesets: null }])
+      await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data) })).rejects.toThrow()
+  })
+  it('rejects revision and public metadata changes even when the visible rules remain sufficient', async () => {
+    for (const change of [
+      rule => rule.updated_at = '2026-10-28T00:01:00.457Z',
+      rule => rule.name = 'Renamed protection',
+      rule => rule.enforcement = 'disabled',
+      rule => rule.conditions.ref_name.include.push('refs/heads/other'),
+      rule => rule.rules.push({ type: 'creation' }),
+      rule => rule.new_api_field = true,
+    ]) {
+      const data = snapshotFixture()
+      const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+      change(data.rulesets[0])
+      await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data) })).rejects.toThrow('changed')
+    }
+  })
+  it('rejects unavailable or invalid revision timestamps and invalid identifiers', async () => {
+    for (const value of [undefined, null, '', 0, 'not a timestamp', '2026-10-28']) {
+      const data = snapshotFixture()
+      const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+      data.rulesets[0].updated_at = value
+      await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data) })).rejects.toThrow('timestamp')
+    }
+    for (const id of [undefined, null, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1']) {
+      const data = snapshotFixture()
+      data.effective[0].ruleset_id = id
+      await expect(verifyRepository({ token: 'fixture', request: protectionRequest(data) })).rejects.toThrow('source ID')
+    }
+  })
+  it('rejects new, removed, duplicate, and mismatched ruleset sources', async () => {
+    for (const change of [
+      (data) => {
+        data.rulesets.push({ ...structuredClone(data.rulesets[0]), id: 3 })
+        data.effective.push({ type: 'creation', ruleset_id: 3 })
+      },
+      (data) => {
+        data.rulesets.pop()
+        data.effective = data.effective.filter(rule => rule.ruleset_id !== 2)
+      },
+    ]) {
+      const data = snapshotFixture()
+      const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+      change(data)
+      await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data) })).rejects.toThrow('exactly')
+    }
+    const data = snapshotFixture()
+    const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+    snapshot.rulesets.push(structuredClone(snapshot.rulesets[0]))
+    await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data) })).rejects.toThrow('exactly')
+  })
+  it('does not trust unsafe snapshot actors or replace visible contradictory actors', async () => {
+    for (const bypass_actors of [undefined, null, [], [{ actor_type: 'Integration', actor_id: 12, bypass_mode: 'always' }], [{ actor_type: 'RepositoryRole', actor_id: 4, bypass_mode: 'always' }]]) {
+      const data = snapshotFixture()
+      const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+      snapshot.rulesets[1].bypass_actors = bypass_actors
+      await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data) })).rejects.toThrow()
+    }
+    const data = snapshotFixture()
+    const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+    data.rulesets[1].bypass_actors = [{ actor_type: 'Integration', actor_id: 12, bypass_mode: 'always' }]
+    await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data, false) })).rejects.toThrow('differ')
+  })
+  it('still rejects weakened effective rules and failed API reads with a valid snapshot', async () => {
+    const data = snapshotFixture()
+    const snapshot = createProtectionSnapshot(data.effective, data.rulesets)
+    data.effective[4].parameters.required_status_checks[0].integration_id = 99
+    await expect(verifyRepository({ token: 'fixture', snapshot, request: protectionRequest(data) })).rejects.toThrow('strict')
+    await expect(verifyRepository({ token: 'fixture', snapshot, request: async () => new Response('', { status: 403 }) })).rejects.toThrow('403')
   })
 })

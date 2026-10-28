@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { readGithubJsonResponse } from './github-json.mjs'
 
 const administratorBypass = Object.freeze({ actor_type: 'RepositoryRole', actor_id: 5, bypass_mode: 'always' })
@@ -69,13 +70,73 @@ export function checkProtection(effective, rulesets) {
   }
 }
 
-export async function verifyRepository({ token = process.env.GH_TOKEN, repository = 'leapmux/leapmux', request = fetch } = {}) {
-  if (repository !== 'leapmux/leapmux' || !token)
-    throw new Error('Protection verification requires leapmux/leapmux and a read-only token.')
-  const get = async path => (await readGithubJsonResponse(path, { token, request, description: 'GitHub protection read' })).data
+function rulesetMetadata(ruleset) {
+  if (!ruleset || !Number.isSafeInteger(ruleset.id) || ruleset.id <= 0)
+    throw new Error('Protection requires positive integer ruleset IDs.')
+  const metadata = structuredClone(ruleset)
+  delete metadata.bypass_actors
+  delete metadata.current_user_can_bypass
+  // Administrator and App responses can express the same revision in different timezones.
+  for (const key of ['created_at', 'updated_at']) {
+    if (key === 'created_at' && metadata[key] === undefined)
+      continue
+    if (typeof metadata[key] !== 'string' || !/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(metadata[key]) || !Number.isFinite(Date.parse(metadata[key])))
+      throw new Error(`Ruleset ${ruleset.id} lacks a valid ${key} revision timestamp.`)
+    metadata[key] = new Date(metadata[key]).toISOString()
+  }
+  return metadata
+}
+
+function requireMatchingSources(effective, rulesets) {
+  if (!Array.isArray(effective) || !Array.isArray(rulesets) || rulesets.length === 0)
+    throw new Error('Protection requires nonempty ruleset sources.')
+  const ids = new Set(effective.map(rule => rule.ruleset_id))
+  const sources = new Set(rulesets.map(rule => rule?.id))
+  if ([...ids, ...sources].some(id => !Number.isSafeInteger(id) || id <= 0)
+    || sources.size !== rulesets.length || sources.size !== ids.size || [...ids].some(id => !sources.has(id))) {
+    throw new Error('The protection snapshot must cover exactly the effective ruleset sources.')
+  }
+}
+
+/** Capture only protection that an administrator has read and validated. */
+export function createProtectionSnapshot(effective, rulesets) {
+  requireMatchingSources(effective, rulesets)
+  checkProtection(effective, rulesets)
+  return {
+    version: 1,
+    repository: 'leapmux/leapmux',
+    ref: 'refs/heads/main',
+    rulesets: rulesets.map(rule => ({ ...rulesetMetadata(rule), bypass_actors: structuredClone(rule.bypass_actors) })),
+  }
+}
+
+function restoreSnapshotActors(snapshot, effective, rulesets) {
+  if (typeof snapshot === 'string') {
+    try {
+      snapshot = JSON.parse(snapshot)
+    }
+    catch {
+      throw new Error('RENOVATE_PROTECTION_SNAPSHOT must contain valid JSON.')
+    }
+  }
+  if (!snapshot || snapshot.version !== 1 || snapshot.repository !== 'leapmux/leapmux' || snapshot.ref !== 'refs/heads/main')
+    throw new Error('The protection snapshot requires version 1 and leapmux/leapmux main.')
+  requireMatchingSources(effective, snapshot.rulesets)
+  return rulesets.map((live) => {
+    const saved = snapshot.rulesets.find(rule => rule.id === live.id)
+    if (!saved || !isDeepStrictEqual(rulesetMetadata(live), rulesetMetadata(saved)))
+      throw new Error(`Ruleset ${live.id} changed; an administrator must refresh RENOVATE_PROTECTION_SNAPSHOT.`)
+    if (Object.hasOwn(live, 'bypass_actors') && !isDeepStrictEqual(live.bypass_actors, saved.bypass_actors))
+      throw new Error(`Ruleset ${live.id} bypass actors differ from the administrator snapshot.`)
+    return { ...live, bypass_actors: saved.bypass_actors }
+  })
+}
+
+/** Both the administrator CLI and the read-only App read the same effective sources. */
+export async function readRepositoryProtection(get) {
   const effective = []
   for (let page = 1; ; page++) {
-    const batch = await get(`/repos/${repository}/rules/branches/main?per_page=100&page=${page}`)
+    const batch = await get(`/repos/leapmux/leapmux/rules/branches/main?per_page=100&page=${page}`)
     if (!Array.isArray(batch))
       throw new Error('GitHub returned an invalid effective rule list.')
     effective.push(...batch)
@@ -85,9 +146,22 @@ export async function verifyRepository({ token = process.env.GH_TOKEN, repositor
       throw new Error('Effective protection exceeds the supported rule count.')
   }
   const ids = [...new Set(effective.map(rule => rule.ruleset_id))]
-  const rulesets = await Promise.all(ids.map(id => get(`/repos/${repository}/rulesets/${id}`)))
-  checkProtection(effective, rulesets)
+  if (ids.some(id => !Number.isSafeInteger(id) || id <= 0))
+    throw new Error('GitHub returned an invalid ruleset source ID.')
+  const rulesets = await Promise.all(ids.map(id => get(`/repos/leapmux/leapmux/rulesets/${id}`)))
+  requireMatchingSources(effective, rulesets)
   return { effective, rulesets }
+}
+
+export async function verifyRepository({ token = process.env.GH_TOKEN, repository = 'leapmux/leapmux', request = fetch, snapshot = process.env.RENOVATE_PROTECTION_SNAPSHOT } = {}) {
+  if (repository !== 'leapmux/leapmux' || !token)
+    throw new Error('Protection verification requires leapmux/leapmux and a read-only token.')
+  const freshRequest = (url, options) => request(url, { ...options, cache: 'no-store', headers: { ...options.headers, 'Cache-Control': 'no-cache' } })
+  const get = async path => (await readGithubJsonResponse(path, { token, request: freshRequest, description: 'GitHub protection read' })).data
+  const { effective, rulesets } = await readRepositoryProtection(get)
+  const verified = snapshot ? restoreSnapshotActors(snapshot, effective, rulesets) : rulesets
+  checkProtection(effective, verified)
+  return { effective, rulesets: verified }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -93,6 +93,7 @@ jobs:
         if: inputs.mode == 'publish' || github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ steps.read.outputs.token }}
+          RENOVATE_PROTECTION_SNAPSHOT: ${{ vars.RENOVATE_PROTECTION_SNAPSHOT }}
         run: task check-renovate-protection
 
       - name: Create publishing installation token

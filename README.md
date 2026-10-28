@@ -655,7 +655,26 @@ It requires one review, dismisses stale approvals, requires approval of the late
 and requires `Required CI` and `NOTICE` from GitHub Actions application ID `15368`.
 Only the repository administrator role may bypass it.
 Preserve the existing deletion, force-push, and linear-history rules.
-Run `task check-renovate-protection` with a read-only App token and read back the effective rules and bypass actors.
+GitHub hides bypass actors from read-only App tokens.
+An administrator captures the verified rulesets in the repository variable `RENOVATE_PROTECTION_SNAPSHOT`:
+
+```bash
+mkdir -p .tmp
+task snapshot-renovate-protection > .tmp/renovate-protection-snapshot.json
+gh variable set RENOVATE_PROTECTION_SNAPSHOT --repo leapmux/leapmux < .tmp/renovate-protection-snapshot.json
+```
+
+The capture command uses the administrator's existing `gh` authentication and makes only API reads.
+It rejects protection that permits a bypass other than repository administrators.
+The snapshot contains configuration metadata, with no credential.
+The App receives no ruleset-write permission.
+
+Before minting a publishing token, `task check-renovate-protection` reads fresh effective rules and every contributing ruleset.
+It compares each ruleset's complete public metadata and revision timestamp with the administrator snapshot before accepting its recorded bypass actors.
+It rejects changed, missing, or additional rulesets and still validates the live review and CI requirements.
+The repository variable is the administrator's attestation; the App cannot update it.
+After any protection change, suspend publication, inspect the effective rules, and refresh the snapshot with the commands above.
+A stale or missing snapshot stops publication before a write token is minted.
 
 Validate and inspect dependencies locally:
 
