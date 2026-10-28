@@ -550,6 +550,15 @@ Every candidate requires a release timestamp and a release age of at least three
 Every merge requires a human review and the `Required CI` and `NOTICE` checks.
 Renovate never approves or merges a pull request (PR).
 
+PR descriptions contain only `Motivation`, `Modifications`, and `Result`, including the dependency version table.
+Warnings, security advisories, and release notes go into managed PR comments.
+The trusted renderer captures those fragments before GitHub truncates the description.
+Long details use numbered comment parts so the full text remains available.
+Later runs update the same bot-owned parts and leave human comments unchanged.
+Dry runs validate the captured comment content without publishing it.
+The capture adapter uses the pinned CLI's Handlebars renderer; its native-engine tests must pass when Renovate is upgraded.
+Dependency commits keep the App's primary author identity and add no co-author trailer or attribution footer.
+
 Dependabot alerts supply vulnerability findings to Renovate.
 Keep the dependency graph and Dependabot alerts enabled.
 Keep Dependabot's automatic security-update PRs disabled.

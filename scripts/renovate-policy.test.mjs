@@ -232,22 +232,29 @@ describe('renovate policy with the pinned engine', () => {
     const branch = generateBranchConfig([{ ...maintenance, branchName: 'renovate/lock-file-maintenance', manager: 'bun', packageFile: 'frontend/package.json', updateType: 'lockFileMaintenance', isLockFileMaintenance: true }])
     expect(branch.prTitle).toBe('chore(deps): Update lockfiles')
     expect([...body.matchAll(/^## (.+)$/gm)].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
-    expect(body).toContain('Artifact generation failed.')
+    expect(body).not.toContain('Artifact generation failed.')
+    expect(policy.commitBody).toBe('')
+    expect(policy.commitTrailers).toEqual([])
+    expect(policy.commitBodyTable).toBe(false)
+    expect(policy.prFooter).toBe('')
   })
-  it('keeps native warning details inside the three required PR sections', () => {
+  it('keeps upstream details and warnings out of the three core PR sections', () => {
     const warnings = getWarnings({ warnings: [{ topic: 'fixture', message: 'Artifact generation failed.' }] })
-    const body = compile(policy.prBodyTemplate, { warnings }, false)
+    const body = compile(policy.prBodyTemplate, { table: '- Runtime: 1 → 2', warnings, notes: 'Security advisory details.', changelogs: 'Release note details.' }, false)
     expect([...body.matchAll(/^#{1,2} (.+)$/gm)].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
-    expect(body).toContain('Artifact generation failed.')
+    expect(body).not.toContain('Artifact generation failed.')
+    expect(body).not.toContain('Security advisory details.')
+    expect(body).not.toContain('Release note details.')
   })
-  it('preserves required sections and artifact failures when upstream notes exceed the platform limit', () => {
+  it('keeps the core body short when upstream notes exceed the platform limit', () => {
     const warnings = getWarnings({ warnings: [{ topic: 'fixture', message: 'Artifact generation failed.' }] })
     for (const largeField of ['notes', 'changelogs']) {
       const body = compile(policy.prBodyTemplate, { table: '- Runtime: 1 → 2', warnings, [largeField]: 'Upstream security and release details.\n'.repeat(1600) }, false)
       const rendered = smartTruncate(body, 58000)
       expect(rendered.length).toBeLessThanOrEqual(58000)
       expect([...rendered.matchAll(/^#{1,2} (.+)$/gm)].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
-      expect(rendered).toContain('Artifact generation failed.')
+      expect(rendered).not.toContain('Artifact generation failed.')
+      expect(rendered.length).toBeLessThan(1000)
       expect(rendered).toContain('human review and required CI')
     }
   })

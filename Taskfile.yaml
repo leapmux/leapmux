@@ -109,6 +109,11 @@ tasks:
     cmds:
       - node scripts/snapshot-renovate-protection.mjs
 
+  publish-renovate-details:
+    desc: Publish complete Renovate details as managed PR comments
+    cmds:
+      - node scripts/publish-renovate-details.mjs {{.CLI_ARGS}}
+
   renovate:
     desc: Run the pinned CLI with a hard 50-minute execution limit
     env:

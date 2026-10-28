@@ -839,6 +839,16 @@ describe('renovate workflow and protection', () => {
     expect(rebase.env?.RENOVATE_TOKEN).toBeUndefined()
     expect(rebase.env?.GH_TOKEN).toBeUndefined()
     expect(read.with['permission-vulnerability-alerts']).toBe('read')
+    const comments = steps.find(step => step.name === 'Publish PR detail comments')
+    expect(position(comments.name)).toBeGreaterThan(position('Publish dependency updates'))
+    expect(comments.if).toContain('steps.write.outcome == \'success\'')
+    expect(comments.if).toContain('!cancelled()')
+    expect(comments.env.GH_TOKEN).toBe(expression('steps.write.outputs.token'))
+    expect(comments.run).toBe('task publish-renovate-details')
+    const preview = steps.find(step => step.name === 'Validate PR detail comments')
+    expect(preview.if).toBe(dry.if)
+    expect(preview.run).toBe('task publish-renovate-details -- --dry-run')
+    expect(preview.env?.GH_TOKEN).toBeUndefined()
   })
   it('rejects publishing before activation and rejects every ref except upstream main', () => {
     const step = yaml('.github/workflows/renovate.yaml').jobs.renovate.steps[0]

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { appendFileSync, writeSync } from 'node:fs'
+import { appendFileSync, writeFileSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
@@ -180,6 +180,7 @@ export function runWithTimeout(command, args, { timeoutMs = 50 * 60 * 1000, env 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const root = resolve(import.meta.dirname, '..')
+    writeFileSync(resolve(root, '.tmp/renovate-pr-details.jsonl'), '')
     const output = { write: data => appendFileSync(resolve(root, '.tmp/renovate-cli.log'), data) }
     const result = await runWithTimeout(process.execPath, [resolve(root, '.github/renovate/node_modules/renovate/dist/renovate.js')], { stdio: ['ignore', 'pipe', 'pipe'], output })
     appendFileSync(resolve(root, '.tmp/renovate-execution.jsonl'), `${JSON.stringify(result)}\n`)

@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const process = require('node:process')
+const { configureDetailsCapture } = require('../scripts/renovate-pr-details.mjs')
 
 const trusted = process.env.RENOVATE_TRUSTED_ROOT
 if (!trusted || !path.isAbsolute(trusted))
@@ -9,6 +10,7 @@ if (!trusted || !path.isAbsolute(trusted))
 const { extends: globalExtends, ...config } = JSON.parse(fs.readFileSync(path.join(trusted, 'renovate.json'), 'utf8'))
 const prepared = JSON.parse(fs.readFileSync(path.join(trusted, '.tmp/renovate-prepared.json'), 'utf8'))
 const command = `bun ${JSON.stringify(path.join(trusted, 'scripts/renovate-post-upgrade.mjs'))}`
+const { prHeader, prBodyTemplate } = configureDetailsCapture(trusted, config.prBodyTemplate)
 module.exports = {
   platform: 'github',
   repositories: process.env.RENOVATE_PLATFORM === 'local' ? [] : ['leapmux/leapmux'],
@@ -26,6 +28,8 @@ module.exports = {
   baseDir: path.join(trusted, '.tmp/renovate-run'),
   globalExtends,
   ...config,
+  prHeader,
+  prBodyTemplate,
   // Filter additive manager defaults before security overrides can enable an update.
   ...(prepared.ignorePaths ? { ignorePaths: prepared.ignorePaths } : {}),
   packageRules: [...config.packageRules, ...prepared.packageRules],
