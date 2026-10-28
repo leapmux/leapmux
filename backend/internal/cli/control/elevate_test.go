@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/leapmux/leapmux/internal/cli/control"

@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 

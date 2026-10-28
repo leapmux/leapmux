@@ -3,7 +3,7 @@ package service
 import (
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 // rejectSolo refuses a surface that solo mode does not serve.

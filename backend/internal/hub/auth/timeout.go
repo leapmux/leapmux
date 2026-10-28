@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 // timeoutInterceptor enforces a default deadline on unary RPCs when

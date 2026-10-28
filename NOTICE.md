@@ -8,7 +8,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 
 ### Go Dependencies
 
-- [connectrpc.com/connect v1.20.0](#connectrpccomconnect-v1200)
+- [connectrpc.com/connect/v2 v2.0.2](#connectrpccomconnectv2-v202)
 - [dario.cat/mergo v1.0.2](#dariocatmergo-v102)
 - [filippo.io/edwards25519 v1.2.0](#filippoioedwards25519-v120)
 - [github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d](#githubcomaltcha-orgaltcha-lib-gov2-v200-20260725115309-2c4fc27a7b2d)
@@ -59,7 +59,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/knadh/koanf/maps v0.1.3](#githubcomknadhkoanfmaps-v013)
 - [github.com/knadh/koanf/parsers/yaml v1.1.1](#githubcomknadhkoanfparsersyaml-v111)
 - [github.com/knadh/koanf/providers/confmap v1.0.1](#githubcomknadhkoanfprovidersconfmap-v101)
-- [github.com/knadh/koanf/providers/env v1.1.0](#githubcomknadhkoanfprovidersenv-v110)
+- [github.com/knadh/koanf/providers/env/v2 v2.0.2](#githubcomknadhkoanfprovidersenvv2-v202)
 - [github.com/knadh/koanf/providers/file v1.2.1](#githubcomknadhkoanfprovidersfile-v121)
 - [github.com/knadh/koanf/v2 v2.3.6](#githubcomknadhkoanfv2-v236)
 - [github.com/kylelemons/godebug v1.1.0](#githubcomkylelemonsgodebug-v110)
@@ -767,7 +767,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 
 ## Go Dependencies
 
-### connectrpc.com/connect v1.20.0
+### connectrpc.com/connect/v2 v2.0.2
 
 ```
                                  Apache License
@@ -5255,7 +5255,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### github.com/knadh/koanf/providers/env v1.1.0
+### github.com/knadh/koanf/providers/env/v2 v2.0.2
 
 ```
 The MIT License

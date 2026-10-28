@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/coder/websocket"
 
 	"github.com/leapmux/leapmux/channelwire"

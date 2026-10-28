@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 // interceptor implements connect.Interceptor and records metrics for

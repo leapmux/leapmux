@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 // shutdownInterceptor rejects all RPCs once the shutdown channel is closed.

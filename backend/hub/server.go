@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"

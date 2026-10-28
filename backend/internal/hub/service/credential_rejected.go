@@ -1,7 +1,7 @@
 package service
 
 import (
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 )
