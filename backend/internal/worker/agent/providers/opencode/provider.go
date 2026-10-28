@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -45,10 +44,7 @@ func (FamilyProvider) Classify(content json.RawMessage) agent.NotificationClassi
 // through its model path.
 func (FamilyProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == contracts.AttachmentMediaKindAudio {
-		if len(attachment.Data) == 0 || !slices.Contains(contracts.OpenCodeAudioMIMEMembers, attachment.MIMEType) {
-			return fmt.Errorf("cannot send the audio attachment %q with media type %s", attachment.Filename, attachment.MIMEType)
-		}
-		return nil
+		return providerkit.ValidateAudioAttachment(attachment, "the audio attachment", contracts.OpenCodeAudioMIMEMembers)
 	}
 	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
 		return err

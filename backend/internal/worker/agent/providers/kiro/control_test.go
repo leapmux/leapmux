@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 func TestBypassApprovesPendingAndLaterToolsWithoutRestartOrQuestionAnswers(t *testing.T) {
@@ -160,7 +161,7 @@ func TestKiroRefusesADialogOfASessionThatItDoesNotServe(t *testing.T) {
 func TestKiroPublishesADialogOfARoutedStepSession(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
-	a.AttachChildSession("session-step", "session-step")
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "session-step", RowKey: "session-step"})
 
 	a.HandleOutput(userInputRequestOf(t, "session-step", 43, "t_q"))
 

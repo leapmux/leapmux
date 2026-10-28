@@ -468,7 +468,7 @@ func statusTexts(sink *agenttest.ControlSink) []string {
 func TestQwenBackgroundNoticeOfARowIsConsumed(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
-	a.ApplySubagentObservation(&acp.SubagentObservation{RowKey: "call_1", Title: "Helper", Status: bgtask.StatusRunning})
+	a.ApplySubagentObservation(&acp.SubagentObservation{RowKey: qwenAgentRowKey(qwenTestSession, "call_1"), Title: "Helper", Status: bgtask.StatusRunning})
 	a.ApplySubagentObservation(&acp.SubagentObservation{RowKey: "shell:bg_1a2b", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusRunning})
 	a.SetPromptActiveForTest(true)
 	for _, task := range []map[string]any{
@@ -482,7 +482,7 @@ func TestQwenBackgroundNoticeOfARowIsConsumed(t *testing.T) {
 	a.FinishPromptRequestForTest(qwenTestSession, []byte(`{"stopReason":"end_turn"}`), nil)
 	assert.Empty(t, assembledTexts(&sink.Sink))
 	assert.Empty(t, statusTexts(sink))
-	for _, rowKey := range []string{"call_1", "shell:bg_1a2b"} {
+	for _, rowKey := range []string{qwenAgentRowKey(qwenTestSession, "call_1"), "shell:bg_1a2b"} {
 		row, ok := sink.BackgroundTask(rowKey)
 		require.True(t, ok)
 		assert.Equal(t, bgtask.StatusSucceeded, row.Status, rowKey)
@@ -554,7 +554,7 @@ func TestQwenBackgroundNoticeText(t *testing.T) {
 func TestQwenBackgroundNoticeWithAnUnreadableRegistryIsShown(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
-	a.ApplySubagentObservation(&acp.SubagentObservation{RowKey: "call_1", Title: "Helper", Status: bgtask.StatusRunning})
+	a.ApplySubagentObservation(&acp.SubagentObservation{RowKey: qwenAgentRowKey(qwenTestSession, "call_1"), Title: "Helper", Status: bgtask.StatusRunning})
 	sink.LookupErr = errors.New("the registry is down")
 
 	a.HandleOutput(backgroundNotice(t, "background_task_completed", map[string]any{
@@ -562,8 +562,8 @@ func TestQwenBackgroundNoticeWithAnUnreadableRegistryIsShown(t *testing.T) {
 	}))
 
 	assert.Equal(t, []string{`Background agent "Helper" completed`}, statusTexts(sink))
-	assert.Positive(t, sink.LookupBackgroundTaskCalls("call_1"), "the notice asked the registry for its row")
-	row, ok := sink.BackgroundTask("call_1")
+	assert.Positive(t, sink.LookupBackgroundTaskCalls(qwenAgentRowKey(qwenTestSession, "call_1")), "the notice asked the registry for its row")
+	row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_1"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, row.Status, "a row that could not be read is not closed on a guess")
 }

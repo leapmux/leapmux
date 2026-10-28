@@ -410,7 +410,7 @@ type followUpBase struct {
 	stoppedAt   []bool
 }
 
-func (f *followUpBase) take(stopped bool) (string, []*leapmuxv1.Attachment, bool) {
+func (f *followUpBase) take(_ string, stopped bool) (string, []*leapmuxv1.Attachment, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stoppedAt = append(f.stoppedAt, stopped)
@@ -473,7 +473,7 @@ func TestFollowUpPrompt_AStoppedAgentStartsAndReportsNothing(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	b.hooks.FollowUpPrompt = func(bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
+	b.hooks.FollowUpPrompt = func(string, bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
 	require.True(t, b.BeginAgentTurn())
 	b.SetStoppedForTest(true)
 
@@ -495,7 +495,7 @@ func (brokenStdin) Close() error              { return nil }
 func TestFollowUpPrompt_AFailedSendEndsTheTurnAndStatesTheFailure(t *testing.T) {
 	t.Parallel()
 	b, sink := newACPTurnBase(t, brokenStdin{})
-	b.hooks.FollowUpPrompt = func(bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
+	b.hooks.FollowUpPrompt = func(string, bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
 	require.True(t, b.BeginAgentTurn())
 
 	b.EndAgentTurn(json.RawMessage(agentTurnEndFrame))
@@ -561,7 +561,7 @@ func TestAgentTurn_EndDoesNotWaitForTheFollowUpWrite(t *testing.T) {
 	pipeReader, pipeWriter := io.Pipe() // An agent that reads no stdin now.
 	t.Cleanup(func() { _ = pipeReader.Close() })
 	b, _ := newACPTurnBase(t, pipeWriter)
-	b.hooks.FollowUpPrompt = func(bool) (string, []*leapmuxv1.Attachment, bool) {
+	b.hooks.FollowUpPrompt = func(string, bool) (string, []*leapmuxv1.Attachment, bool) {
 		return "typed during the turn", nil, true
 	}
 	require.True(t, b.BeginAgentTurn())
@@ -981,7 +981,7 @@ func TestACPTurnOutput_ASecondBoundaryChangesNothing(t *testing.T) {
 	var output acpTurnOutput
 	output.appendAssistant("prompt text", "")
 	output.rememberIncompleteTool("prompt-tool", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"prompt-tool"`)},
-		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","status":"pending"}`))
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","status":"pending"}`), nil)
 	output.completeTool("done-tool")
 
 	output.turnMu.Lock()
@@ -992,7 +992,7 @@ func TestACPTurnOutput_ASecondBoundaryChangesNothing(t *testing.T) {
 
 	output.appendAssistant("agent text", "")
 	output.rememberIncompleteTool("agent-tool", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"agent-tool"`)},
-		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"agent-tool","status":"pending"}`))
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"agent-tool","status":"pending"}`), nil)
 	output.turnMu.Lock()
 	prefix = output.markPromptBoundaryLocked()
 	output.turnMu.Unlock()

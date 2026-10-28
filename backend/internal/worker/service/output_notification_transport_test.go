@@ -188,7 +188,7 @@ func TestNotificationJournalTransportDeliversConsolidatedLiveAndReplay(t *testin
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: ownerID,
 		WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider}))
-	sink := agent.NewModelProgressResetSink(svc.Output.NewSink(ownerID, provider))
+	sink := agent.NewModelProgressResetSink(newTestRootOutputSink(t, svc.Output, ownerID, provider))
 	sink.UpdateSessionID("native")
 	live := newEncryptedNotificationTransport(t)
 	registerAgentWatch(svc, live.writer.ChannelID(), ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, live.writer)

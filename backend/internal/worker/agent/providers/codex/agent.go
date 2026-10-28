@@ -569,7 +569,10 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	if err != nil {
 		return err
 	}
-	input := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	if err != nil {
+		return err
+	}
 	pending, err := a.dispatchInputForSession(expected, input)
 	if pending != nil {
 		a.PublishTurnActive()
@@ -681,8 +684,11 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	// Retry acceptance must wait until every earlier steer resolves.
 	a.mainTurn.steers++
 	a.Mu.Unlock()
-	input := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
-	ticket, err := a.sendTurnSteer(threadID, turnID, input, trackEcho)
+	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	var ticket providerkit.SteerTicket
+	if err == nil {
+		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho)
+	}
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
 	a.retryOfferMu.Lock()
@@ -738,7 +744,12 @@ func (a *Agent) turnInputRetainedLocked(turnID string) bool {
 
 // buildCodexInputBlocks converts text + classified attachments into Codex's
 // input format. Images and audio use data URIs; text attachments are inlined.
-func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachment) []map[string]interface{} {
+func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachment) ([]map[string]interface{}, error) {
+	for _, attachment := range classified {
+		if err := (codexProvider{}).ValidateAttachment(attachment); err != nil {
+			return nil, err
+		}
+	}
 	var input []map[string]interface{}
 	if content != "" {
 		input = append(input, map[string]interface{}{"type": "text", "text": content})
@@ -756,17 +767,15 @@ func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachme
 				"url":  providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),
 			})
 		case contracts.AttachmentMediaKindAudio:
-			if codexAudioMIME(attachment.MIMEType) {
-				input = append(input, map[string]interface{}{
-					"type": "audio",
-					"url":  providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),
-				})
-			}
+			input = append(input, map[string]interface{}{
+				"type": "audio",
+				"url":  providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),
+			})
 		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary:
-			// Codex has no PDF or general binary input item. Validation refuses these before dispatch.
+			// Validation above refuses kinds with no native input representation.
 		}
 	}
-	return input
+	return input, nil
 }
 
 // turnSettings is the snapshot of agent state that every later turn uses. turn/start

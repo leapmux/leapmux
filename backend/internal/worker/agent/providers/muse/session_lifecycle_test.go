@@ -3,6 +3,7 @@ package muse
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,6 +14,112 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMuseSessionOwnershipRequiresTheCompleteCurrentAncestry(t *testing.T) {
+	for _, change := range []string{"current", "replaced root", "retired root", "retired parent", "missing parent", "empty parent", "self cycle", "parent cycle", "missing child identity", "replaced state"} {
+		t.Run(change, func(t *testing.T) {
+			a, _ := testAgent(t)
+			parent := &sessionState{childID: "parent-agent", parentSessionID: "session"}
+			child := &sessionState{childID: "child-agent", parentSessionID: "parent"}
+			a.sessions["parent"], a.sessions["child"] = parent, child
+			switch change {
+			case "replaced root":
+				a.sessionID = "replacement"
+				a.sessions["replacement"] = &sessionState{}
+			case "retired root":
+				a.sessions["session"].retired = true
+			case "retired parent":
+				parent.retired = true
+			case "missing parent":
+				delete(a.sessions, "parent")
+			case "empty parent":
+				parent.parentSessionID = ""
+			case "self cycle":
+				child.parentSessionID = "child"
+			case "parent cycle":
+				parent.parentSessionID = "child"
+			case "missing child identity":
+				parent.childID = ""
+			case "replaced state":
+				a.sessions["child"] = &sessionState{childID: "new-child", parentSessionID: "session"}
+			}
+			a.stateMu.Lock()
+			current := a.currentSessionState("child", child)
+			a.stateMu.Unlock()
+			assert.Equal(t, change == "current", current)
+		})
+	}
+}
+
+func TestMuseContextClearRetiresEveryDescendantAndKeepsReceivedEvidence(t *testing.T) {
+	a, sink := testAgent(t)
+	a.viewWork.CloseAndWait()
+	parent := "session"
+	childControls := make(map[string]*museControlPublicationSink)
+	for depth := 1; depth <= 3; depth++ {
+		id, key := fmt.Sprintf("child-%d", depth), fmt.Sprintf("key-%d", depth)
+		childSink := sink.Child(id)
+		controls := &museControlPublicationSink{Sink: childSink}
+		childControls[id] = controls
+		state := &sessionState{sink: agent.NewProviderServices(controls), childID: id, childKey: key, parentSessionID: parent,
+			subagentID: "native-" + id, turnID: "turn-" + id, items: make(map[string]*itemState), completed: make(map[string]turnCompletionState), log: newNativeLog(id),
+			controls: map[string]controlState{"control": {key: "control-" + id, published: true}}, compactionLive: map[string]bool{"compaction": true}}
+		state.log.subscriptionID = int64(depth)
+		a.sessions[id] = state
+		require.NoError(t, a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: key, Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+		parent = id
+	}
+	var unsubscribed []string
+	childWrites := 0
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+		if method == methodSessionStart {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"session":{"sessionId":"replacement","activeTurnId":null},"viewCursor":"replacement-head"}`)}
+		}
+		var params struct {
+			SessionID string `json:"sessionId"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &params))
+		if method == methodViewUnsubscribe {
+			unsubscribed = append(unsubscribed, params.SessionID)
+		}
+		if method == methodChildSend || method == methodChildFollowup || method == methodChildInterrupt {
+			childWrites++
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	}})
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	for depth := 1; depth <= 3; depth++ {
+		id, key := fmt.Sprintf("child-%d", depth), fmt.Sprintf("key-%d", depth)
+		state, childSink := a.sessions[id], sink.Child(id)
+		assert.True(t, state.retired, id)
+		assert.Empty(t, state.turnID, id)
+		assert.Empty(t, state.controls, id)
+		assert.Empty(t, state.compactionLive, id)
+		assert.Contains(t, unsubscribed, id)
+		assert.Contains(t, childControls[id].canceled, "control-"+id)
+		assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(key))
+		require.ErrorIs(t, a.SendChildInput(key, "late input", nil), agent.ErrChildRouteNotReady)
+		require.ErrorIs(t, a.SteerChildInput(key, "late input", nil), agent.ErrChildRouteNotReady)
+		require.ErrorIs(t, a.InterruptChild(key, agent.StopContext{}), agent.ErrChildRouteNotReady)
+		beforeTurns, beforeProgress, beforeInfo := len(childSink.TurnActiveCalls), len(childSink.ProgressUpdates()), childSink.SessionInfoCount()
+		feed(t, a, methodTurnStarted, map[string]any{"sessionId": id, "turnId": "late-turn"})
+		feed(t, a, contracts.MuseMethodContextUsage, map[string]any{"sessionId": id, "usedTokens": 12})
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{SessionID: id, Item: nativeItem{ID: "late-text", Kind: contracts.MuseItemKindAgentMessage, Revision: 1, Status: contracts.MuseItemStatusInProgress}})
+		feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": id, "itemId": "late-text", "delta": "Retained native text.", "viewCursor": "late-delta"})
+		retained := feed(t, a, contracts.MuseMethodItemCompleted, itemParams{SessionID: id, Item: nativeItem{ID: "late-text", Kind: contracts.MuseItemKindAgentMessage, Revision: 2, Status: contracts.MuseItemStatusCompleted, Text: "Retained native text."}})
+		assert.Len(t, childSink.TurnActiveCalls, beforeTurns)
+		assert.Len(t, childSink.ProgressUpdates(), beforeProgress)
+		assert.Equal(t, beforeInfo, childSink.SessionInfoCount())
+		assert.Empty(t, state.turnID)
+		require.NotEmpty(t, sink.Messages())
+		assert.Equal(t, retained, sink.Messages()[len(sink.Messages())-1].Content)
+		assert.Equal(t, id, sink.Messages()[len(sink.Messages())-1].AgentSessionID)
+	}
+	assert.Zero(t, childWrites)
+	assert.Contains(t, unsubscribed, "session")
+	assert.False(t, a.sessions["replacement"].retired)
+}
 
 func TestMuseClearContextRefusesABusyNativeSessionBeforeWriting(t *testing.T) {
 	a, sink := testAgent(t)
@@ -182,7 +289,7 @@ func TestMuseClearContextEndsTheOldLiveCompaction(t *testing.T) {
 }
 
 func TestMuseResumeRestoresChildRoutesWithoutReplayingParentConversation(t *testing.T) {
-	const items = `[{"itemId":"workflow","kind":"workflow","revision":3,"status":"completed","workflowRunId":"run","entryId":"Native code","children":[{"childId":"sub","status":"terminal","terminal":"completed"}]},{"itemId":"spawn","kind":"subagent","revision":4,"status":"inProgress","controlStatus":"resultReady","subagentId":"sub","childSessionId":"native-child","workflowRunId":"run","objective":"Original child assignment","result":{"summary":"Done","evidenceRefs":[],"artifactRefs":[]}},{"itemId":"old-parent-answer","kind":"agentMessage","revision":1,"status":"completed","text":"Never replay this parent answer"}]`
+	const items = `[{"itemId":"workflow","kind":"workflow","revision":3,"status":"completed","workflowRunId":"run","entryId":"Native code","children":[{"childId":"sub","attempt":1,"status":"terminal","terminal":"completed"}]},{"itemId":"spawn","kind":"subagent","revision":4,"status":"inProgress","controlStatus":"resultReady","subagentId":"sub","childSessionId":"native-child","workflowRunId":"run","objective":"Original child assignment","result":{"summary":"Done","evidenceRefs":[],"artifactRefs":[]}},{"itemId":"old-parent-answer","kind":"agentMessage","revision":1,"status":"completed","text":"Never replay this parent answer"}]`
 	for _, mode := range []string{"inline", "snapshot", "anchoredSnapshot", "none"} {
 		t.Run(mode, func(t *testing.T) {
 			a, sink := testAgent(t)
@@ -232,6 +339,8 @@ func TestMuseResumeRestoresChildRoutesWithoutReplayingParentConversation(t *test
 			assert.Equal(t, "session", child.parentSessionID)
 			assert.Equal(t, "sub", child.subagentID)
 			assert.Equal(t, "native-model", a.settings[agent.OptionIDModel])
+			child.childViewPrefix = childViewPrefixReady // View bootstrap is covered independently.
+			child.viewRecovery = nil
 			require.NoError(t, a.SendChildInput(museChildRowKey("session", "sub"), "A note after restart", nil))
 			assert.Equal(t, 1, sends)
 			for _, message := range sink.Messages() {
@@ -331,9 +440,12 @@ type childPromptOutcomeSink struct {
 	calls   int
 }
 
-func (s *childPromptOutcomeSink) PersistChildPrompt(string, string) error {
+func (s *childPromptOutcomeSink) PersistChildPrompt(id, text string) error {
 	s.calls++
-	return s.failure
+	if s.failure != nil {
+		return s.failure
+	}
+	return s.Sink.PersistChildPrompt(id, text)
 }
 
 func TestMuseResumeKeepsAQueuedPromptAndReportsAHardPromptFailure(t *testing.T) {
@@ -363,4 +475,64 @@ func TestMuseResumeKeepsAQueuedPromptAndReportsAHardPromptFailure(t *testing.T) 
 			assert.Equal(t, "sub", a.sessions["native-child"].subagentID)
 		})
 	}
+}
+
+func TestHardChildOpeningPromptFailureBlocksViewUntilOneExplicitRetry(t *testing.T) {
+	a, base := testAgent(t)
+	failure := errors.New("the opening prompt writer rejected the row")
+	outcome := &childPromptOutcomeSink{Sink: base, failure: failure}
+	a.sink = agent.NewProviderServices(outcome)
+	a.sessions["session"].sink = a.sink
+	a.viewWork.CloseAndWait()
+	feed(t, a, contracts.MuseMethodItemUpdated, itemParams{SessionID: "session", Item: nativeItem{ID: "spawn", Kind: museItemSubagent, Revision: 1, Status: contracts.MuseItemStatusInProgress, SubagentID: "sub", ChildSessionID: "child", Objective: "Original assignment"}})
+	state := a.sessions["child"]
+	require.NotNil(t, state)
+	assert.Equal(t, childViewPrefixFailed, state.childViewPrefix)
+	assert.False(t, state.childViewRequested, "unretained opening input cannot admit a child history read")
+	assert.Empty(t, base.Child(state.childID).Messages())
+	assert.Len(t, base.LeapMuxNotifications(), 1)
+	feed(t, a, contracts.MuseMethodItemUpdated, itemParams{SessionID: "session", Item: nativeItem{ID: "spawn", Kind: museItemSubagent, Revision: 2, Status: contracts.MuseItemStatusInProgress, SubagentID: "sub", ChildSessionID: "child", Objective: "Changed assignment"}})
+	assert.Equal(t, 1, outcome.calls, "later metadata cannot replace or retry the opening assignment")
+	methods := []string{}
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+		methods = append(methods, method)
+		switch method {
+		case methodChildInterrupt:
+			var params map[string]any
+			require.NoError(t, json.Unmarshal(raw, &params))
+			reply, err := json.Marshal(map[string]any{"commandId": params["commandId"], "status": "accepted"})
+			require.NoError(t, err)
+			return agenttest.RPCReply{Result: reply}
+		case methodSessionRead:
+			assert.Equal(t, 1, len(base.Child(state.childID).Messages()), "the original assignment must be retained before the native view is read")
+			return agenttest.RPCReply{Result: json.RawMessage(`{"session":{"sessionId":"child","status":"idle","activeTurnId":null},"viewCursor":"","history":{"mode":"inline","items":[]}}`)}
+		case methodViewPage:
+			var params map[string]any
+			require.NoError(t, json.Unmarshal(raw, &params))
+			assert.Equal(t, "child", params["sessionId"])
+			assert.NotContains(t, params, "cursor", "the child bootstrap reads the origin")
+			rows := base.Child(state.childID).Messages()
+			require.Len(t, rows, 1, "the opening assignment precedes the native origin read")
+			assert.JSONEq(t, `{"content":"Original assignment"}`, string(rows[0].Content))
+			return agenttest.RPCReply{Result: json.RawMessage(`{"events":[],"nextCursor":null}`)}
+		case methodViewSubscribe:
+			return agenttest.RPCReply{Result: json.RawMessage(`{"viewCursor":""}`)}
+		default:
+			t.Errorf("unexpected opening-prompt method %s", method)
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		}
+	}})
+	require.NoError(t, a.InterruptChild(state.childKey, agent.StopContext{}))
+	require.ErrorIs(t, a.SendChildInput(state.childKey, "later", nil), agent.ErrChildRouteNotReady)
+	assert.Equal(t, []string{methodChildInterrupt}, methods)
+	assert.Equal(t, 1, outcome.calls)
+	outcome.failure = nil
+	a.requestChildView("child")
+	a.syncView("child")
+	assert.Equal(t, 2, outcome.calls)
+	assert.Equal(t, childViewPrefixReady, state.childViewPrefix)
+	assert.Equal(t, []string{methodChildInterrupt, methodSessionRead, methodViewPage, methodViewSubscribe}, methods)
+	rows := base.Child(state.childID).Messages()
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, `{"content":"Original assignment"}`, string(rows[0].Content))
 }

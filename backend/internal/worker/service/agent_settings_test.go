@@ -59,7 +59,7 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 		// timeout, whose 10s default was the entire runtime of this test.
 		// Nothing can answer, so a longer wait buys only a longer wait.
 		APITimeout: 50 * time.Millisecond,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
@@ -1128,7 +1128,7 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
 	}))
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:       agentID,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -1181,7 +1181,7 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
 	}))
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:       agentID,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -1855,7 +1855,7 @@ func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
 
 	registerAgentWatch(svc, w.channelID, "agent-goose", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	sink := svc.Output.NewSink("agent-goose", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-goose", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE)
 	sink.NotifyPermissionModeChanged("auto", "approve")
 
 	require.Empty(t, w.errors)
@@ -1892,7 +1892,7 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
@@ -1936,7 +1936,7 @@ func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *tes
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 

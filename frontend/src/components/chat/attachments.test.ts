@@ -1,6 +1,6 @@
 import type { FileAttachment } from './attachments'
 import type { AttachmentCapabilities } from './providers/registry'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MAX_AGENT_INPUT_ITEM_BYTES } from '~/generated/contracts/agent-input'
 import {
   buildAcceptAttribute,
@@ -37,6 +37,19 @@ const textAndImageCapabilities: AttachmentCapabilities = {
 }
 
 describe('inferAttachmentDetails', () => {
+  it('does not decode known media or binary data as text', () => {
+    const decode = vi.spyOn(TextDecoder.prototype, 'decode')
+    try {
+      const bytes = new TextEncoder().encode('Media bytes without a NUL byte.')
+      for (const [filename, mime] of [['voice.wav', 'audio/wav'], ['image.png', 'image/png'], ['document.pdf', 'application/pdf'], ['archive.zip', 'application/zip']] as const) {
+        inferAttachmentDetails(filename, mime, bytes)
+      }
+      expect(decode).not.toHaveBeenCalled()
+    }
+    finally {
+      decode.mockRestore()
+    }
+  })
   it.each([
     ['native.doc', 'application/msword'],
     ['native.DOCX', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
@@ -307,6 +320,51 @@ describe('collectDroppedAttachmentFiles', () => {
 
     expect(result.sizeLimitHit).toBe(true)
     expect(result.files.map(file => file.filename)).toEqual(['big/first.txt'])
+  })
+
+  it('keeps readable files before and after an unreadable directory entry', async () => {
+    const first = createFileEntry('project/a.txt', new File(['first'], 'a.txt'))
+    const broken = {
+      ...createFileEntry('project/b.txt', new File([], 'b.txt')),
+      file: (_resolve: (file: File) => void, reject: (error: DOMException) => void) => reject(new DOMException('Unavailable', 'NotReadableError')),
+    }
+    const last = createFileEntry('project/c.txt', new File(['last'], 'c.txt'))
+    const transfer = mockDataTransfer([{ webkitGetAsEntry: () => createDirectoryEntry('project', [first, broken, last]) }])
+    const result = await collectDroppedAttachmentFiles(transfer)
+    expect(result.files.map(file => file.filename)).toEqual(['project/a.txt', 'project/c.txt'])
+    expect(result).toMatchObject({ sizeLimitHit: false, failures: [{ path: 'project/b.txt' }] })
+  })
+
+  it('keeps entries from earlier batches when directory enumeration fails', async () => {
+    const first = createFileEntry('project/a.txt', new File(['first'], 'a.txt'))
+    let batches = 0
+    const directory = {
+      ...createDirectoryEntry('project', []),
+      createReader: () => ({
+        readEntries: (resolve: (entries: unknown[]) => void, reject: (error: DOMException) => void) => {
+          if (batches++ === 0)
+            resolve([first])
+          else
+            reject(new DOMException('Unavailable', 'NotReadableError'))
+        },
+      }),
+    }
+    const result = await collectDroppedAttachmentFiles(mockDataTransfer([{ webkitGetAsEntry: () => directory }]))
+    expect(result.files.map(file => file.filename)).toEqual(['project/a.txt'])
+    expect(result).toMatchObject({ sizeLimitHit: false, failures: [{ path: 'project' }] })
+  })
+
+  it('keeps other dropped entries when one entry lookup fails', async () => {
+    const first = createFileEntry('first.txt', new File(['first'], 'first.txt'))
+    const last = createFileEntry('last.txt', new File(['last'], 'last.txt'))
+    const transfer = mockDataTransfer([
+      { webkitGetAsEntry: () => first },
+      { webkitGetAsEntry: () => { throw new DOMException('Unavailable', 'NotReadableError') } },
+      { webkitGetAsEntry: () => last },
+    ])
+    const result = await collectDroppedAttachmentFiles(transfer)
+    expect(result.files.map(file => file.filename)).toEqual(['first.txt', 'last.txt'])
+    expect(result).toMatchObject({ failures: [{}] })
   })
 })
 

@@ -41,7 +41,7 @@ func TestEnrichmentFailureLogReleasesTheMutationBeforeCallbacks(t *testing.T) {
 	provider := mutationLogTodoProvider{Provider: testRegistry.Plugin(providerID)}
 	svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
-	services := svc.Output.NewSink(agentID, providerID)
+	services := newTestRootOutputSink(t, svc.Output, agentID, providerID)
 	services.UpdateSessionID("original-native-session")
 	sink := requireRootOutputSink(t, svc.Output, agentID)
 	original := []byte(`{"native_result":true}`)
@@ -86,7 +86,7 @@ WHEN NEW.agent_id = 'enrichment-log-owner' BEGIN SELECT RAISE(ABORT, 'to-do inse
 			return
 		}
 		mutation.Unlock()
-		svc.Output.NewSink(agentID, providerID)
+		newTestRootOutputSink(t, svc.Output, agentID, providerID)
 		replacement = requireRootOutputSink(t, svc.Output, agentID)
 	}}))
 	defer slog.SetDefault(previousLogger)

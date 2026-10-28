@@ -732,6 +732,7 @@ func TestACPConfigOption_LiveUpdateAppliesKnownButUnsurfacedOption(t *testing.T)
 // have carried a concrete (non-empty) sessionId -- never one observed mid-swap.
 func TestACPSessionRPCs_ConcurrentWithClearContext(t *testing.T) {
 	var sessionSeq atomic.Int64
+	sessionSeq.Store(1) // The test agent already serves session-1.
 	a, requests := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
 		switch method {
 		case MethodSessionNew:

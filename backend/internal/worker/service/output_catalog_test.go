@@ -227,7 +227,7 @@ func TestSettingsStartupReaderCanReplaceTheRoot(t *testing.T) {
 	svc.Output.SetAgentStartingFunc(func(agentID string) bool {
 		mutexesFree = catalogCallbackLocksFree(sink)
 		if mutexesFree {
-			svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			replacement = requireRootOutputSink(t, svc.Output, agentID)
 		}
 		return original(agentID)
@@ -238,6 +238,7 @@ func TestSettingsStartupReaderCanReplaceTheRoot(t *testing.T) {
 		assert.NotSame(t, sink, replacement)
 		assert.Same(t, replacement, svc.Output.sinkForAgent("agent-1"))
 	}
+	before.OutputGeneration++
 	assert.Equal(t, before, mustGetAgent(t, svc), "the retired preparation must change no replacement row")
 	assert.Len(t, agentStatusChanges(t, writer, "agent-1"), beforeEvents)
 }
@@ -467,7 +468,7 @@ WHEN NEW.id = 'agent-1' BEGIN SELECT RAISE(ABORT, 'settings write refused'); END
 				loggedError = failure
 				mutexesFree = catalogCallbackLocksFree(sink)
 				if mutexesFree {
-					svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+					newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 					replacement = requireRootOutputSink(t, svc.Output, "agent-1")
 				}
 			}}))
@@ -485,6 +486,7 @@ WHEN NEW.id = 'agent-1' BEGIN SELECT RAISE(ABORT, 'settings write refused'); END
 				assert.NotSame(t, sink, replacement)
 				assert.Equal(t, "original-native-session", replacement.currentMessageSessionID())
 			}
+			before.OutputGeneration++
 			assert.Equal(t, before, mustGetAgent(t, svc), "the refused settings write must retain every original row field")
 			assert.Len(t, agentStatusChanges(t, writer, "agent-1"), beforeEvents)
 		})
@@ -541,7 +543,7 @@ func TestSettingsCASExhaustionLogsAfterAdmission(t *testing.T) {
 		}, parseOptions(mustGetAgent(t, svc).Options), "the real final merge must commit before its warning")
 		mutexesFree = catalogCallbackLocksFree(sink)
 		if mutexesFree {
-			svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			replacement = requireRootOutputSink(t, svc.Output, "agent-1")
 		}
 	}}))
@@ -577,7 +579,7 @@ func TestCatalogSourceReplacementDuringProviderSample(t *testing.T) {
 		if !mutexesFree {
 			return
 		}
-		svc.Output.NewSink("agent-1", before.AgentProvider)
+		newTestRootOutputSink(t, svc.Output, "agent-1", before.AgentProvider)
 		replacement = requireRootOutputSink(t, svc.Output, "agent-1")
 	})
 	services.BroadcastStatusActive("original-native-session")
@@ -585,6 +587,7 @@ func TestCatalogSourceReplacementDuringProviderSample(t *testing.T) {
 	if assert.NotNil(t, replacement, "the callback must replace the actual registered root") {
 		assert.NotSame(t, sink, replacement)
 	}
+	before.OutputGeneration++
 	assert.Equal(t, before, mustGetAgent(t, svc), "an obsolete source must change no stored row field")
 	assert.Len(t, agentStatusChanges(t, writer, "agent-1"), beforeEvents,
 		"an obsolete sample must publish no status after its actual root replacement")

@@ -495,3 +495,13 @@ WHERE id = sqlc.arg(id)
 UPDATE agents SET provider_child_key = sqlc.arg(provider_child_key)
 WHERE id = sqlc.arg(id) AND parent_agent_id = sqlc.arg(parent_agent_id)
   AND provider_child_key = '';
+
+-- AllocateAgentOutputGeneration reserves one physical root writer and its native session.
+-- The limit prevents SQLite from converting an overflowing sum to REAL.
+-- name: AllocateAgentOutputGeneration :one
+UPDATE agents
+SET output_generation = output_generation + 1
+WHERE id = sqlc.arg(id)
+  AND parent_agent_id IS NULL
+  AND output_generation < 9223372036854775807
+RETURNING output_generation, agent_session_id;

@@ -41,6 +41,7 @@ type Agent struct {
 	clock quartz.Clock
 	// workflowStopping closes process-owned workflow admission before Stop joins readers.
 	workflowStopping bool
+	workflowReader   *workflowSessionReader
 }
 
 // qwenCompactionRequest identifies one admitted manual compaction.
@@ -115,8 +116,12 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // followUpPrompt gives the base the input that the ended turn never read. A
 // turn that the reader stopped takes it with it: the input was for that turn,
 // and the transcript states that it never reached Qwen.
-func (a *Agent) followUpPrompt(stopped bool) (string, []*leapmuxv1.Attachment, bool) {
+func (a *Agent) followUpPrompt(sessionID string, stopped bool) (string, []*leapmuxv1.Attachment, bool) {
 	a.stateMu.Lock()
+	if a.CurrentSessionID() != sessionID {
+		a.stateMu.Unlock()
+		return "", nil, false
+	}
 	items := a.steer.take(0)
 	a.stateMu.Unlock()
 	if len(items) == 0 {

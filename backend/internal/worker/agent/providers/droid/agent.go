@@ -58,9 +58,10 @@ type Agent struct {
 	startupReply chan error
 
 	// settingsApplyMu serializes native updates so one readback cannot confirm
-	// another caller's choice. rpcMu guards the request inboxes and context read.
+	// another caller's choice. rpcMu guards request identities, inboxes, and context reads.
 	settingsApplyMu       sync.Mutex
 	rpcMu                 sync.Mutex
+	requestSequence       uint64
 	pendingReplies        map[string]chan droidEnvelope
 	pendingSettings       map[string]chan droidSettingsUpdated
 	contextRefreshPending bool
@@ -357,13 +358,10 @@ func (a *Agent) endTurn() {
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	state := agent.TurnState{Active: a.turnActive || a.compaction != nil, Steerable: a.turnActive && a.compaction == nil}
+	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	a.orderedSink().SetTurnState(state, a.nextTurnSeq())
+	a.orderedSink().SetTurnState(state, seq)
 	return state
-}
-
-func (a *Agent) nextTurnSeq() uint64 {
-	return a.NextTurnSeq()
 }
 
 // Interrupt aborts the agent's current turn with droid.interrupt_session.

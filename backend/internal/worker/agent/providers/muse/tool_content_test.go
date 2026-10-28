@@ -14,6 +14,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newSubscribedNativeResultAgent(t *testing.T) (*Agent, *agenttest.Sink) {
+	t.Helper()
+	a, sink := testAgent(t)
+	sink.UpdateSessionID("session")
+	a.sessions["session"].log.subscriptionID = 1
+	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
+	result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
+	for _, record := range []json.RawMessage{origin, result} {
+		feed(t, a, contracts.MuseMethodLogRecord, map[string]any{"subscriptionId": 1, "record": record})
+	}
+	return a, sink
+}
+
 func TestMalformedLogSubscriptionReportsUnavailable(t *testing.T) {
 	for _, source := range []string{`{}`, `{"subscriptionId":0}`, `{"subscriptionId":-1}`, `{"subscriptionId":1,"tail":false}`} {
 		t.Run(source, func(t *testing.T) {
@@ -50,14 +63,7 @@ func TestLogSubscriptionFailureMarksTheRetainedNativeResult(t *testing.T) {
 }
 
 func TestConflictingNativeOriginWithdrawsAnEarlierSupplement(t *testing.T) {
-	a, sink := testAgent(t)
-	sink.UpdateSessionID("session")
-	a.sessions["session"].log.subscriptionID = 1
-	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
-	result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
-	for _, record := range []json.RawMessage{origin, result} {
-		feed(t, a, "log/record", map[string]any{"subscriptionId": 1, "record": record})
-	}
+	a, sink := newSubscribedNativeResultAgent(t)
 	item := resultItem("item", "call", "origin")
 	item.Item.Revision = 1
 	item.Item.Status = "completed"
@@ -178,7 +184,7 @@ func TestNativeLogPagesCountOmittedPositions(t *testing.T) {
 func TestCompletedChildLogReadsTheStoredStreamWhenLiveSubscriptionRefuses(t *testing.T) {
 	a, _ := testAgent(t)
 	a.handshake.GrantedCapabilities = []string{"rawLog"}
-	state := &sessionState{sink: a.sink, childID: "child-agent", parentSessionID: "session", items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("child")}
+	state := &sessionState{sink: a.sink, childID: "child-agent", parentSessionID: "session", items: make(map[string]*itemState), completed: make(map[string]turnCompletionState), log: newNativeLog("child")}
 	a.sessions["child"] = state
 	origin := strings.ReplaceAll(string(logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{}"}]`)), `"id":"session"`, `"id":"child"`)
 	result := strings.ReplaceAll(string(logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"native result"}]`)), `"id":"session"`, `"id":"child"`)
@@ -249,14 +255,7 @@ func TestNativeLogPagesRejectInvalidPagesAndKeepTheReadPrefix(t *testing.T) {
 }
 
 func TestASecondNativeBatchWithdrawsAnEarlierSupplement(t *testing.T) {
-	a, sink := testAgent(t)
-	sink.UpdateSessionID("session")
-	a.sessions["session"].log.subscriptionID = 1
-	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
-	result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
-	for _, record := range []json.RawMessage{origin, result} {
-		feed(t, a, contracts.MuseMethodLogRecord, map[string]any{"subscriptionId": 1, "record": record})
-	}
+	a, sink := newSubscribedNativeResultAgent(t)
 	item := resultItem("item", "call", "origin")
 	item.Item.Revision, item.Item.Status = 1, contracts.MuseItemStatusCompleted
 	original := feed(t, a, contracts.MuseMethodItemCompleted, item)
@@ -269,14 +268,7 @@ func TestASecondNativeBatchWithdrawsAnEarlierSupplement(t *testing.T) {
 }
 
 func TestMalformedNativeOriginWithdrawsAnEarlierSupplement(t *testing.T) {
-	a, sink := testAgent(t)
-	sink.UpdateSessionID("session")
-	a.sessions["session"].log.subscriptionID = 1
-	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
-	result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
-	for _, record := range []json.RawMessage{origin, result} {
-		feed(t, a, contracts.MuseMethodLogRecord, map[string]any{"subscriptionId": 1, "record": record})
-	}
+	a, sink := newSubscribedNativeResultAgent(t)
 	item := resultItem("item", "call", "origin")
 	item.Item.Revision, item.Item.Status = 1, contracts.MuseItemStatusCompleted
 	original := feed(t, a, contracts.MuseMethodItemCompleted, item)
@@ -289,14 +281,7 @@ func TestMalformedNativeOriginWithdrawsAnEarlierSupplement(t *testing.T) {
 }
 
 func TestNativeLogMarksEveryAmbiguousItemUnavailable(t *testing.T) {
-	a, sink := testAgent(t)
-	sink.UpdateSessionID("session")
-	a.sessions["session"].log.subscriptionID = 1
-	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
-	result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
-	for _, record := range []json.RawMessage{origin, result} {
-		feed(t, a, contracts.MuseMethodLogRecord, map[string]any{"subscriptionId": 1, "record": record})
-	}
+	a, sink := newSubscribedNativeResultAgent(t)
 	for _, id := range []string{"first", "second"} {
 		item := resultItem(id, "call", "origin")
 		item.Item.Revision, item.Item.Status = 1, contracts.MuseItemStatusCompleted
@@ -331,14 +316,7 @@ func TestMissingNativeLogCapabilityKeepsThePreviewAndReportsUnavailable(t *testi
 }
 
 func TestNativeLogAmbiguousActiveItemWithdrawsAnEarlierSupplement(t *testing.T) {
-	a, sink := testAgent(t)
-	sink.UpdateSessionID("session")
-	a.sessions["session"].log.subscriptionID = 1
-	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
-	result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
-	for _, record := range []json.RawMessage{origin, result} {
-		feed(t, a, contracts.MuseMethodLogRecord, map[string]any{"subscriptionId": 1, "record": record})
-	}
+	a, sink := newSubscribedNativeResultAgent(t)
 	first := resultItem("first", "call", "origin")
 	first.Item.Revision, first.Item.Status = 1, contracts.MuseItemStatusCompleted
 	first.Item.VisibleOutput = "Native preview"
@@ -365,14 +343,7 @@ func TestWrongTypedOwnedNativeRecordWithdrawsAnEarlierSupplement(t *testing.T) {
 		{"result text", "tool_result_batch_committed", "result", "results", `[{"tool_call_index":0,"tool_call_id":"call","text":42}]`, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a, sink := testAgent(t)
-			sink.UpdateSessionID("session")
-			a.sessions["session"].log.subscriptionID = 1
-			origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
-			result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
-			for _, record := range []json.RawMessage{origin, result} {
-				feed(t, a, contracts.MuseMethodLogRecord, map[string]any{"subscriptionId": 1, "record": record})
-			}
+			a, sink := newSubscribedNativeResultAgent(t)
 			item := resultItem("item", "call", "origin")
 			item.Item.Revision, item.Item.Status = 1, contracts.MuseItemStatusCompleted
 			original := feed(t, a, contracts.MuseMethodItemCompleted, item)
@@ -489,13 +460,13 @@ func TestStoredChildLogRefusesForeignAmbiguousAndInvalidTails(t *testing.T) {
 	} {
 		t.Run(source, func(t *testing.T) {
 			a, _ := testAgent(t)
-			state := &sessionState{sink: a.sink, childID: "child-agent", log: newNativeLog("child")}
+			state := &sessionState{sink: a.sink, childID: "child-agent", parentSessionID: "session", log: newNativeLog("child")}
 			a.sessions["child"] = state
 			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
 				require.Equal(t, methodLogStreams, method, "invalid stream metadata must never authorize a page read")
 				return agenttest.RPCReply{Result: json.RawMessage(source)}
 			}})
-			require.Error(t, a.readStoredLog("child", state, time.Second))
+			require.Error(t, a.readStoredLogBefore("child", state, a.Clock().Now().Add(time.Second)))
 			assert.Empty(t, state.log.records)
 		})
 	}

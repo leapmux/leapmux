@@ -9,23 +9,25 @@ import (
 // OutputQueue keeps the transcript's pending writes across provider replacements.
 // Each captured write still uses its original sink and native session.
 func (sink *agentOutputSink) OutputQueue() *agent.OutputQueue {
-	handler := sink.h
+	return sink.h.outputQueue(sink.agentID)
+}
+
+func (handler *OutputHandler) outputQueue(agentID string) *agent.OutputQueue {
 	handler.outputQueueMu.Lock()
 	defer handler.outputQueueMu.Unlock()
 	if handler.outputQueues == nil {
 		handler.outputQueues = make(map[string]*agent.OutputQueue)
 	}
-	queue := handler.outputQueues[sink.agentID]
+	queue := handler.outputQueues[agentID]
 	if queue == nil {
 		queue = &agent.OutputQueue{}
-		agentID := sink.agentID
 		queue.ConfigureRetry(handler.shutdownCtx, handler.outputClock, func(err error) {
 			slog.Error("retry pending transcript output", "agent_id", agentID, "error", err)
 		})
 		if handler.outputRetriesStopped {
 			queue.StopRetries()
 		}
-		handler.outputQueues[sink.agentID] = queue
+		handler.outputQueues[agentID] = queue
 	}
 	return queue
 }

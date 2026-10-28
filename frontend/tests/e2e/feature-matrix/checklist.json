@@ -256,7 +256,7 @@
         "detailNote": "LeapMux uses installed Gemini CLI 0.62.0 ACP with exact native JSONL recovery. Native child UUIDs belong to the proven root session. Gemini supplies no direct nesting link or child input/cancel route."
       },
       {
-        "userNote": "LeapMux drives Muse Code 1.4.4 over its Muse Session Protocol (MSP). Children run inside workflow scripts (host.agent with submit_result) and carry no session of their own; the four approval modes include the bypass preset (allowAll) and no assisted preset.",
+        "userNote": "LeapMux drives Muse Code 1.4.13 over the Muse Session Protocol (MSP). Workflow folds create grouped rows. A matching native subagent supplies its own session, transcript, and controls. The four approval modes include the bypass preset (allowAll); no assisted preset exists.",
         "detailNote": "LeapMux uses the native MSP stdio host (muse serve). The private settings declare a config model catalog (context limits included) so the native model switch and the /compact summarizer both resolve under a local endpoint; a live MCP server in the shared settings would block the asynchronous compaction path, so the MCP spec registers its server per agent.",
         "url": "https://muse.meta.ai/",
         "label": "Muse Code",
@@ -6424,8 +6424,8 @@
       },
       "codebuddy-code": {
         "support": "supported",
-        "userNote": "CodeBuddy Code has six permission modes. LeapMux offers the four that the agent advertises at startup: Default, Accept Edits, Plan, and Bypass Permissions. It does not offer Auto and Don't Ask.",
-        "detailNote": "CodeBuddy Code offers six modes. Startup advertises these four:\n- **Default**\n- **Accept Edits**\n- **Plan**\n- **Bypass Permissions**\n\nThe CodeBuddy 2.160.0 set_permission_mode handler accepts default, acceptEdits, plan, bypassPermissions, dontAsk, and auto, while get_available_modes lists four.",
+        "userNote": "CodeBuddy Code has six native permission modes. LeapMux offers five, including Auto. CodeBuddy advertises four at startup. LeapMux does not offer Don't Ask.",
+        "detailNote": "CodeBuddy Code offers six native modes. Startup advertises four:\n- **Default** (`default`)\n- **Accept Edits** (`acceptEdits`)\n- **Plan** (`plan`)\n- **Bypass Permissions** (`bypassPermissions`)\n\nThe CodeBuddy 2.160.0 set_permission_mode handler accepts these modes plus auto and dontAsk. LeapMux also offers Auto. LeapMux does not offer Don't Ask.",
         "spec": "frontend/tests/e2e/codebuddy-code/mode.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -8418,8 +8418,8 @@
       },
       "muse-code": {
         "support": "supported",
-        "userNote": "Completed-child input requires a trusted workspace.",
-        "detailNote": "Muse 1.4.13-R6996.1 exports subagent/sendMessage for active children and subagent/followupTask for completed children. Native mocks run-ys21bG and run-lpwkCg prove the exact human note in the next child model request, not only admission. run-5ts9WZ repeats completed followup with real shell work and text (five requests, zero unexpected). The matching untrusted run-2OcL5M refuses followup with subagent_state_ineligible; completed-child input requires workspace trust. LeapMux preserves the selected trust policy and native command UUID on uncertain retries. Browser e2e-LTZCK8 proves active input under native trust, completed input with explicit agent trust, child responses, one human row after reload and no parent user-row contamination. Native acceptance: Native CLI mock probes recorded under .tmp/muse-current-probe/. Final Muse race package: 1002 passed in .tmp/final-focused-repairs-2.log. Complete Muse directory: 84 passed, zero retries/skips/flaky/unexpected, all 54 files match discovery in e2e-LTZCK8 (.tmp/broad-validation-audio-04.log); the combined three-provider report has 255 first-attempt passes. Native actor/session identities, original bytes and worker-owned user rows remain verified.",
+        "userNote": "Completed-child input requires a trusted workspace. Muse can reject a human follow-up after the parent gives a completed child another task.",
+        "detailNote": "Muse 1.4.13-R6996.1 exports subagent/sendMessage for active children and subagent/followupTask for completed children. Native mocks run-ys21bG and run-lpwkCg prove the exact human note in the next child model request, not only admission. run-5ts9WZ repeats completed followup with real shell work and text (five requests, zero unexpected). The matching untrusted run-2OcL5M refuses followup with subagent_state_ineligible; completed-child input requires workspace trust. LeapMux preserves the selected trust policy and native command UUID on uncertain retries. Browser e2e-LTZCK8 proves active input under native trust, completed input with explicit agent trust, child responses, one human row after reload and no parent user-row contamination. Native acceptance: Native CLI mock probes recorded under .tmp/muse-current-probe/. Final Muse race package: 1002 passed in .tmp/final-focused-repairs-2.log. Complete Muse directory: 84 passed, zero retries/skips/flaky/unexpected, all 54 files match discovery in e2e-LTZCK8 (.tmp/broad-validation-audio-04.log); the combined three-provider report has 255 first-attempt passes. Native actor/session identities, original bytes and worker-owned user rows remain verified. Muse can still reject the public subagent/followupTask command with subagent_state_ineligible after a model-driven parent follow-up. An isolated native check with result.drained:true returns the same refusal before and after an accepted subagent/readResult. LeapMux retains that exact failed input and its native reason in the paused input queue.",
         "spec": "frontend/tests/e2e/muse-code/send-to-a-subagent.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -9234,8 +9234,8 @@
       },
       "muse-code": {
         "support": "supported",
-        "userNote": "Children run inside the workflow item fold, keyed by childId with no session of their own; the Worker draws one grouped row per fold child.",
-        "detailNote": "Children run inside the workflow item fold, keyed by childId with no session of their own; the Worker draws one grouped row per fold child.",
+        "userNote": "Workflow folds create one grouped row per child. A matching native subagent supplies its own session, transcript, and controls on that row.",
+        "detailNote": "LeapMux reads the workflow children fold by (childId, attempt). A native subagent whose subagentId matches childId supplies childSessionId, its transcript, and its controls on the same grouped row.",
         "spec": "frontend/tests/e2e/muse-code/workflow-grouping.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -12391,7 +12391,7 @@
       "codebuddy-code": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "Classified as an agent limit: the control requests that CodeBuddy 2.160.0 sends to a stream-JSON client are can_use_tool, elicitation_create, hook_callback, and mcp_message, and none asks for an editor text. LeapMux supports no native question route for CodeBuddy (see agent-questions), so the integration has tool approvals and no questions.",
+        "detailNote": "CodeBuddy 2.160.0 sends can_use_tool, elicitation_create, hook_callback, and mcp_message control requests. AskUserQuestion uses can_use_tool, and LeapMux returns selected or typed answers through updatedInput. These questions do not provide an independent multiline editor request, so editor requests remain an agent limit.",
         "spec": "frontend/tests/e2e/codebuddy-code/editor-requests.spec.ts",
         "audit": "unsupported",
         "verified": true,

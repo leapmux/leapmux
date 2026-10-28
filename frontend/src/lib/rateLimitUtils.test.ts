@@ -9,11 +9,28 @@ import {
   pickUrgentRateLimit,
   rateLimitPopoverLabel,
   rateLimitStatusLabel,
+  rateLimitSummaryParts,
   rateLimitTypeLabel,
 } from './rateLimitUtils'
 
 /** Unix seconds `secs` in the future, for a deterministically-positive countdown. */
 const future = (secs: number): number => Math.floor(Date.now() / 1000) + secs
+
+describe('rateLimitSummaryParts', () => {
+  it.each<[RateLimitInfo, string[]]>([
+    [{}, []],
+    [{ status: 'allowed', utilization: 0 }, ['Allowed', '0% used']],
+    [{ status: 'allowed_warning', utilization: 0.805 }, ['Warning', '81% used']],
+    [{ status: 'rejected', utilization: 1 }, ['Exceeded']],
+    [{ status: 'allowed', isUsingOverage: true, resetsOn: '2026-11-25' }, ['Allowed', 'overage']],
+    [{ status: '', resetsOn: '2026-11-25' }, ['resets on 2026-11-25']],
+    [{ status: '', resetsOn: '2026-02-29' }, []],
+    [{ resetsAt: 0, resetsOn: '2026-11-25' }, []],
+    [{ resetsAt: 4_000_000_000 }, []],
+  ])('builds static parts for %j', (info, expected) => {
+    expect(rateLimitSummaryParts(info)).toEqual(expected)
+  })
+})
 
 describe('calendar quota resets', () => {
   it('shows the native label and calendar date without a countdown', () => {

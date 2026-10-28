@@ -2,6 +2,7 @@ package muse
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -9,7 +10,70 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+type nativeLogRegistration struct {
+	existing bool
+	healthy  bool
+	tail     nativePosition
+}
+
+// registerNativeLog serializes native resource admission with retirement.
+// Paging, enrichment and sink callbacks run after this method releases the fence.
+func (a *Agent) registerNativeLogContext(ctx context.Context, id string, state *sessionState) (nativeLogRegistration, error) {
+	var registration nativeLogRegistration
+	release, err := a.acquireSessionSubscriptionContext(ctx, state)
+	if err != nil {
+		return registration, err
+	}
+	a.stateMu.Lock()
+	if !a.currentSessionState(id, state) || state.log == nil {
+		a.stateMu.Unlock()
+		release()
+		return registration, agent.ErrChildRouteNotReady
+	}
+	registration.existing = state.log.subscriptionID > 0
+	registration.healthy = registration.existing && state.log.unavailable == ""
+	a.stateMu.Unlock()
+	if registration.existing {
+		release()
+		return registration, nil
+	}
+	raw, err := a.awaitOwnedSubscription(ctx, release, methodLogSubscribe, map[string]any{"sessionId": id, "stream": nativeStream{Kind: contracts.MuseStreamKindSession, ID: id}}, func(raw json.RawMessage) error {
+		var result struct {
+			ID   int64           `json:"subscriptionId"`
+			Tail *nativePosition `json:"tail"`
+		}
+		if json.Unmarshal(raw, &result) != nil || result.ID <= 0 || result.Tail == nil || result.Tail.ID == "" || result.Tail.Sequence <= 0 {
+			return fmt.Errorf("the Muse log subscription acknowledgement is invalid")
+		}
+		a.stateMu.Lock()
+		defer a.stateMu.Unlock()
+		for otherID, other := range a.sessions {
+			if otherID != id && other.log != nil && other.log.subscriptionID == result.ID {
+				return fmt.Errorf("the Muse log subscription belongs to another session")
+			}
+		}
+		// Retirement owns a late acknowledgement of its admitted resource.
+		state.log.subscriptionID = result.ID
+		if !a.currentSessionState(id, state) {
+			return agent.ErrChildRouteNotReady
+		}
+		return nil
+	})
+	if err != nil {
+		return nativeLogRegistration{}, err
+	}
+	var result struct {
+		Tail nativePosition `json:"tail"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nativeLogRegistration{}, err
+	}
+	registration.tail = result.Tail
+	return registration, nil
+}
 
 type nativeRecord struct {
 	ID             string          `json:"id"`
@@ -52,17 +116,20 @@ type storedRecord struct {
 	raw    json.RawMessage
 }
 type nativeLog struct {
-	sessionID      string
-	subscriptionID int64
-	records        map[string]storedRecord
-	sequences      map[int64]string
-	invalid        map[string]bool
-	unavailable    string
-	batchIndex     *nativeBatchIndex
+	sessionID         string
+	subscriptionID    int64
+	records           map[string]storedRecord
+	sequences         map[int64]string
+	invalid           map[string]bool
+	unavailable       string
+	batchIndex        *nativeBatchIndex
+	contiguousThrough nativePosition
+	invalidPrefixFrom int64
+	changed           chan struct{}
 }
 
 func newNativeLog(id string) *nativeLog {
-	return &nativeLog{sessionID: id, records: make(map[string]storedRecord), sequences: make(map[int64]string), invalid: make(map[string]bool)}
+	return &nativeLog{sessionID: id, records: make(map[string]storedRecord), sequences: make(map[int64]string), invalid: make(map[string]bool), changed: make(chan struct{})}
 }
 
 func decodeNativeRecord(raw json.RawMessage, sessionID string) (nativeRecord, error) {
@@ -123,30 +190,41 @@ func (l *nativeLog) add(raw json.RawMessage) error {
 }
 
 func (l *nativeLog) addRecord(raw json.RawMessage) (nativeRecord, error) {
+	changed := false
+	defer func() {
+		if changed {
+			l.advanceNativePrefix()
+			l.signalNativeChange()
+		}
+	}()
 	record, err := decodeNativeRecord(raw, l.sessionID)
 	if err != nil {
 		if record.Stream.Kind == contracts.MuseStreamKindSession && record.Stream.ID == l.sessionID {
 			if _, exists := l.records[record.ID]; exists {
-				l.invalid[record.ID] = true
+				l.invalidateNativeRecord(record.ID)
+				changed = true
 			}
 		}
 		return record, err
 	}
 	if previous, ok := l.records[record.ID]; ok {
 		if !bytes.Equal(previous.raw, raw) {
-			l.invalid[record.ID] = true
+			l.invalidateNativeRecord(record.ID)
+			changed = true
 			return record, fmt.Errorf("the Muse host repeated a record ID with different content")
 		}
 		return record, nil
 	}
 	if id, ok := l.sequences[record.Sequence]; ok && id != record.ID {
-		l.invalid[id] = true
+		l.invalidateNativeRecord(id)
 		l.invalid[record.ID] = true
+		changed = true
 		return record, fmt.Errorf("the Muse host repeated a record sequence with another ID")
 	}
 	l.sequences[record.Sequence] = record.ID
 	l.records[record.ID] = storedRecord{record: record, raw: slices.Clone(raw)}
 	l.ensureNativeBatchIndex().add(record)
+	changed = true
 	return record, nil
 }
 
@@ -233,6 +311,10 @@ func (l *nativeLog) match(item itemParams, items []itemParams) nativeResultAssoc
 
 // readLogPages reads a contiguous native prefix through the exact captured tail.
 func (a *Agent) readLogPages(id string, from *nativePosition, tail nativePosition, timeout time.Duration) ([]json.RawMessage, error) {
+	return a.readLogPagesBefore(id, from, tail, a.Clock().Now().Add(timeout))
+}
+
+func (a *Agent) readLogPagesBefore(id string, from *nativePosition, tail nativePosition, deadline time.Time) ([]json.RawMessage, error) {
 	stream := nativeStream{Kind: contracts.MuseStreamKindSession, ID: id}
 	var records []json.RawMessage
 	for {
@@ -242,6 +324,10 @@ func (a *Agent) readLogPages(id string, from *nativePosition, tail nativePositio
 		params := map[string]any{"sessionId": id, "stream": stream, "limit": 1000}
 		if from != nil {
 			params["from"] = *from
+		}
+		timeout, err := a.childViewTimeout(deadline)
+		if err != nil {
+			return records, err
 		}
 		raw, err := a.request(methodLogPage, params, timeout, nil)
 		if err != nil {

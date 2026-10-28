@@ -15,6 +15,7 @@
     "modes",
     "permissionOptions",
     "configIds",
+    "registryKeys",
     "audioMimeTypes"
   ],
   "$defs": {
@@ -97,6 +98,9 @@
       "$ref": "#/$defs/table"
     },
     "configIds": {
+      "$ref": "#/$defs/table"
+    },
+    "registryKeys": {
       "$ref": "#/$defs/table"
     },
     "audioMimeTypes": {

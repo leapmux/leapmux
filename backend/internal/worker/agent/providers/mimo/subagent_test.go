@@ -1054,7 +1054,7 @@ func TestLateCapturedActorSetupCannotPublishAReplacementRow(t *testing.T) {
 	assert.Equal(t, "replacement-child", replacement.childAgentID)
 }
 
-func TestLateChildInputKeepsTheCapturedNativeSession(t *testing.T) {
+func TestLateChildInputRefusesTheRetiredNativeSession(t *testing.T) {
 	t.Parallel()
 	a, _, server := newSinkTestAgent(t)
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
@@ -1079,12 +1079,41 @@ func TestLateChildInputKeepsTheCapturedNativeSession(t *testing.T) {
 	close(release)
 	select {
 	case err := <-done:
-		require.NoError(t, err)
+		require.ErrorIs(t, err, agent.ErrChildRouteNotReady)
 	case <-time.After(testTimeout):
 		t.Fatal("the captured child delivery did not finish")
 	}
-	assert.Len(t, server.requestsTo("POST /session/"+testSessionID+"/prompt_async"), 1)
+	assert.Empty(t, server.requestsTo("POST /session/"+testSessionID+"/prompt_async"))
 	assert.Empty(t, server.requestsTo("POST /session/"+sessionID+"/prompt_async"))
+}
+
+func TestChildInputRechecksTheActorAfterPromptConstruction(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"idle actor", "replaced actor", "session creation", "stopped"} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			a, _, server := newSinkTestAgent(t)
+			spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+			err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
+				a.Mu.Lock()
+				switch change {
+				case "idle actor":
+					a.actors[actorID].running = false
+				case "replaced actor":
+					a.actors[actorID] = &mimoActor{id: actorID, rowKey: spawnSpanID, running: true}
+				case "session creation":
+					a.sessionSwitching = true
+				}
+				a.Mu.Unlock()
+				if change == "stopped" {
+					a.SetStoppedForTest(true)
+				}
+				return buildPromptParts("A captured child message.", nil)
+			})
+			require.Error(t, err)
+			assert.Empty(t, server.requestsTo("POST /session/"+testSessionID+"/prompt_async"))
+		})
+	}
 }
 
 func TestLateParentLinkPrioritizesAnAlreadyPendingAnswer(t *testing.T) {

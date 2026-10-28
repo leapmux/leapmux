@@ -156,12 +156,10 @@ export function formatResetTimestamp(unixSec: number): string {
   return `Resets at ${formatLocalDateTime(new Date(unixSec * 1000))}`
 }
 
-/** Build a concise single-line summary for the popover card. */
-export function formatRateLimitSummary(info: RateLimitInfo): string {
+/** Build the status, utilization, overage, and calendar reset parts. */
+export function rateLimitSummaryParts(info: RateLimitInfo): string[] {
   const status = info.status
   const exceeded = !!status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning
-  const resetsAt = getResetsAt(info)
-
   const parts: string[] = []
 
   // Status label
@@ -169,7 +167,7 @@ export function formatRateLimitSummary(info: RateLimitInfo): string {
   if (label)
     parts.push(label)
 
-  // Utilization — skip when exceeded (redundant)
+  // Utilization is redundant when the limit is exceeded.
   if (typeof info.utilization === 'number' && !exceeded)
     parts.push(`${Math.round(info.utilization * 100)}% used`)
 
@@ -177,15 +175,21 @@ export function formatRateLimitSummary(info: RateLimitInfo): string {
   if (info.isUsingOverage)
     parts.push('overage')
 
+  const resetsOn = getResetsOn(info)
+  if (resetsOn !== undefined)
+    parts.push(`resets on ${resetsOn}`)
+  return parts
+}
+
+/** Build a concise single-line summary for the popover card. */
+export function formatRateLimitSummary(info: RateLimitInfo): string {
+  const parts = rateLimitSummaryParts(info)
+  const resetsAt = getResetsAt(info)
   // Reset countdown
   if (typeof resetsAt === 'number') {
     const countdown = formatCountdown(resetsAt)
     if (countdown)
       parts.push(`resets in ${countdown}`)
   }
-  const resetsOn = getResetsOn(info)
-  if (resetsOn !== undefined)
-    parts.push(`resets on ${resetsOn}`)
-
   return parts.length > 0 ? parts.join(', ') : 'Unknown'
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -150,7 +149,7 @@ func (admission *goalAdmission) currentLocked() bool {
 		admission.sink.currentMessageSessionFact() == admission.session
 }
 
-func (admission *goalAdmission) mutationMutex() *sync.RWMutex {
+func (admission *goalAdmission) mutationMutex() *transcriptMutationLock {
 	if admission.sink != nil {
 		return admission.h.transcriptMutationMutex(admission.sink.rootAgentID)
 	}

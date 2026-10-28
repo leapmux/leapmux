@@ -2,6 +2,7 @@ package goose
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,55 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGooseSubagentToolRequestsReachTheChildWithEveryProductionHook(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newGooseOutputAgent(agent.NewProviderServices(sink))
+	hooks := a.HooksForTest()
+	hooks.SubagentFromToolCall = gooseSubagentFromToolCall
+	hooks.SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+	hooks.ToolNotification = a.observeGooseToolNotification
+	feedUpdate := func(raw string) {
+		t.Helper()
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":` + raw + `}}`))
+	}
+	feedUpdate(`{"sessionUpdate":"tool_call","toolCallId":"spawn","title":"delegate","status":"pending","rawInput":{"instructions":"Read both files."},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`)
+	for index, name := range []string{"ReadBeforeAck", "ReadAfterAck"} {
+		if index == 1 {
+			feedUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"spawn","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent native-child"}}]}`)
+		}
+		request := `{"sessionUpdate":"tool_call_update","toolCallId":"spawn","status":"in_progress","_meta":{"toolNotification":{"type":"message","params":{"data":{"type":"subagent_tool_request","subagent_id":"native-child","tool_call":{"name":"` + name + `"}}}}}}`
+		var update acp.ToolCallUpdateEnvelope
+		require.NoError(t, json.Unmarshal([]byte(request), &update))
+		assert.False(t, a.observeGooseToolNotification(update), "the generic handler must leave this request for the child handler")
+		feedUpdate(request)
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, "tool: "+name, rows[0].ActiveForm)
+		if index == 1 {
+			assert.Equal(t, "native-child", rows[0].RowKey)
+		}
+		ids := sink.ChildAgentIDs()
+		require.Len(t, ids, 1)
+		var requests []agenttest.Message
+		for _, message := range sink.Child(ids[0]).Messages() {
+			if strings.Contains(string(message.Content), "subagent_tool_request") {
+				requests = append(requests, message)
+			}
+		}
+		require.Len(t, requests, index+1)
+		var expected map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(request), &expected))
+		// The base retains the spawn title until the delegate acknowledgment.
+		if index == 0 {
+			expected["kind"] = json.RawMessage(`"delegate"`)
+		}
+		encoded, err := json.Marshal(expected)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(encoded), string(requests[index].Content))
+	}
+}
 
 func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
 	meta := json.RawMessage(`{

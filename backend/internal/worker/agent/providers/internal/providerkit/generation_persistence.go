@@ -110,11 +110,13 @@ func generationCallback(persist func([]byte) error) func([]byte) func(*agent.Out
 }
 
 func (b *GenerationBuffer) prepareAndFlush(pending []*generationPreparation, prepare func([]byte) func(*agent.OutputTicket) error) error {
+	tickets := make([]*agent.OutputTicket, 0, len(pending))
 	for _, row := range pending {
 		row.run = prepare(slices.Clone(row.raw))
 		row.ready.Store(true)
+		tickets = append(tickets, row.ticket)
 	}
-	err := b.OutputQueue().Flush()
+	err := b.OutputQueue().FlushAfterReady(tickets...)
 	// The other drainer owns every submitted row. It will reach this batch in order.
 	if err == agent.ErrOutputInFlight {
 		return nil

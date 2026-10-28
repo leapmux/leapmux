@@ -43,8 +43,8 @@ func (p *turnPublisher) publish(active bool) {
 
 // launchTurnPublisher registers a sink and runs the two things startAgent runs
 // for a new process: adopt the publisher, and release a turn the old one left.
-func launchTurnPublisher(svc *Service, agentID string) *turnPublisher {
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+func launchTurnPublisher(t testing.TB, svc *Service, agentID string) *turnPublisher {
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted(agentID)
 	svc.abandonUnownedTurn(agentID)
 	return &turnPublisher{sink: sink}
@@ -68,7 +68,7 @@ func TestProviderReportedTurnHoldsQueuedInputUntilItEnds(t *testing.T) {
 
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := launchTurnPublisher(svc, agentID)
+	sink := launchTurnPublisher(t, svc, agentID)
 
 	// The agent process reports a turn the queue did not dispatch.
 	sink.publish(true)
@@ -105,7 +105,7 @@ func TestClassifiedProviderTurnMarksAQueuedInputSteerable(t *testing.T) {
 	// turn signal classifies that turn, so the queue head must not lose Steer.
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := launchTurnPublisher(svc, agentID)
+	sink := launchTurnPublisher(t, svc, agentID)
 	sink.steerable = true
 	sink.publish(true)
 	require.Eventually(t, func() bool {
@@ -131,7 +131,7 @@ func TestProviderCapabilityDoesNotOverrideReportedTurnState(t *testing.T) {
 	// steer. The provider must state that property for each active turn.
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := launchTurnPublisher(svc, agentID)
+	sink := launchTurnPublisher(t, svc, agentID)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -159,12 +159,12 @@ func TestSuccessfulStartAbandonsATurnReportedDuringHandshake(t *testing.T) {
 				t.Parallel()
 				ctx := context.Background()
 				svc, agentID := newTurnSignalFixture(t)
-				previous := launchTurnPublisher(svc, agentID)
+				previous := launchTurnPublisher(t, svc, agentID)
 				previous.publish(true)
 				before, err := svc.InputQueue.Snapshot(ctx, agentID)
 				require.NoError(t, err)
 				require.True(t, before.ActiveTurn, "the test must start with a turn owned by the previous process")
-				sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 				start := func(_ context.Context, _ agent.Options, services agent.ProviderServices) (map[string]string, error) {
 					snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 					require.NoError(t, err)
@@ -212,7 +212,7 @@ func TestProviderReportedTurnRepeatsWithoutChurningTheQueueRevision(t *testing.T
 	// from there proves nothing about the guard.
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := launchTurnPublisher(svc, agentID)
+	sink := launchTurnPublisher(t, svc, agentID)
 
 	sink.publish(true)
 	var active inputqueue.Snapshot
@@ -262,7 +262,7 @@ func TestProcessExitReleasesATurnTheProviderNeverEnded(t *testing.T) {
 	// every later message with no pause, no error, and no Retry.
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := launchTurnPublisher(svc, agentID)
+	sink := launchTurnPublisher(t, svc, agentID)
 
 	sink.publish(true)
 	require.Eventually(t, func() bool {
@@ -283,7 +283,7 @@ func TestProcessExitReleasesATurnTheProviderNeverEnded(t *testing.T) {
 
 	// The user stops the agent. stopped=true, so nothing pauses the queue -- and
 	// nothing ended the turn either, which is what stranded the message.
-	svc.HandleAgentProcessExit(agentID, nil, true)
+	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: agentID, Err: nil, Stopped: true, Output: requireRootOutputSink(t, svc.Output, agentID)})
 
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
@@ -303,7 +303,7 @@ func TestClearContextRefusesToStopAnAgentInsideATurn(t *testing.T) {
 	// copy is stale the clear went through and killed the user's in-flight
 	// reply, which ended with no result at all.
 	svc, agentID := newTurnSignalFixture(t)
-	sink := launchTurnPublisher(svc, agentID)
+	sink := launchTurnPublisher(t, svc, agentID)
 	sink.publish(true)
 
 	adapter := &agentInputQueueAdapter{svc: svc}
@@ -346,7 +346,7 @@ func TestAStalePublishFromTheSameProcessLosesToTheOneItOvertook(t *testing.T) {
 	// the queue would hold every message the user sends after it.
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := launchTurnPublisher(svc, agentID)
+	sink := launchTurnPublisher(t, svc, agentID)
 
 	sink.sink.SetTurnState(agent.TurnState{Active: true}, 1)
 	sink.sink.SetTurnState(agent.TurnState{}, 2)
@@ -373,13 +373,13 @@ func TestAPublishFromAReplacedProcessCannotReopenATurn(t *testing.T) {
 	// zero. Identity, not the token, is what separates them: one sink per launch.
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	old := launchTurnPublisher(svc, agentID)
+	old := launchTurnPublisher(t, svc, agentID)
 	old.publish(true)
 	old.publish(false)
 	old.publish(true)
 
 	// The Worker replaces the process. The new launch registers its own sink.
-	fresh := launchTurnPublisher(svc, agentID)
+	fresh := launchTurnPublisher(t, svc, agentID)
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && !snapshot.ActiveTurn

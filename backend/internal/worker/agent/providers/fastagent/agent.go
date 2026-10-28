@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Agent manages one Fast Agent ACP process and its native launch policy.
@@ -22,10 +23,9 @@ type Agent struct {
 	workingDir      string
 	rootMu          sync.Mutex
 	rootSession     string
-	rootSeen        map[string]fastagentRootTool
-	rootLive        map[string]struct{}
-	rootPromptSeen  bool
-	rootBaselineErr error
+	rootFresh       bool
+	rootEpoch       uint64
+	rootFailureWork providerkit.CoalescingWork
 	rootClosing     bool
 	rootArchiveWG   sync.WaitGroup
 	home            string

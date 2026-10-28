@@ -1,10 +1,12 @@
 package claude
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -86,15 +88,19 @@ func (w *claudeWorkflowRuns) started(taskID, groupKey, groupLabel string) {
 	}
 }
 
-// progress applies one snapshot of a run's agents and returns the rows that
-// changed. A run no task_started recorded has no group its rows could join, so
-// its agents draw nothing. Phase entries carry no agent and draw nothing.
-func (w *claudeWorkflowRuns) progress(taskID string, entries []claudeWorkflowProgressEntry) []bgtask.Upsert {
+// progress reserves every changed row before a registry callback can run.
+// A run without task_started has no group. Phase entries carry no agent.
+func (w *claudeWorkflowRuns) progress(taskID string, entries []claudeWorkflowProgressEntry, sink agent.ProviderServices) error {
+	queue := agent.OutputQueueFor(sink)
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	run := w.runs[taskID]
 	if run == nil {
-		return nil
+		w.mu.Unlock()
+		return agent.FlushPendingOutput(sink)
+	}
+	if queue == nil {
+		w.mu.Unlock()
+		return errors.New("cannot publish Claude workflow rows without an output queue")
 	}
 	var upserts []bgtask.Upsert
 	for _, entry := range entries {
@@ -113,20 +119,26 @@ func (w *claudeWorkflowRuns) progress(taskID string, entries []claudeWorkflowPro
 		}
 		upserts = append(upserts, row)
 	}
-	return upserts
+	appendClaudeWorkflowRows(queue, sink, upserts)
+	w.mu.Unlock()
+	return agent.FlushPendingOutput(sink)
 }
 
 // finished ends a run: each agent row that a snapshot did not settle takes the
-// run's own final status, and the run is forgotten. A settled row keeps the
-// outcome its snapshot stated.
-func (w *claudeWorkflowRuns) finished(taskID string, status bgtask.Status) []bgtask.Upsert {
+// run's own final status. A settled row keeps its native outcome. The run is
+// forgotten only after the shared queue accepts every final write.
+func (w *claudeWorkflowRuns) finished(taskID string, status bgtask.Status, sink agent.ProviderServices) error {
+	queue := agent.OutputQueueFor(sink)
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	run := w.runs[taskID]
 	if run == nil {
-		return nil
+		w.mu.Unlock()
+		return agent.FlushPendingOutput(sink)
 	}
-	delete(w.runs, taskID)
+	if queue == nil {
+		w.mu.Unlock()
+		return errors.New("cannot publish Claude workflow rows without an output queue")
+	}
 	var upserts []bgtask.Upsert
 	for _, index := range run.order {
 		agent := run.agents[index]
@@ -136,7 +148,22 @@ func (w *claudeWorkflowRuns) finished(taskID string, status bgtask.Status) []bgt
 		agent.Status = status
 		upserts = append(upserts, agent)
 	}
-	return upserts
+	appendClaudeWorkflowRows(queue, sink, upserts)
+	delete(w.runs, taskID)
+	w.mu.Unlock()
+	return agent.FlushPendingOutput(sink)
+}
+
+// appendClaudeWorkflowRows admits the complete immutable batch under the tracker
+// mutex. Append invokes no callback; the caller flushes after releasing the mutex.
+func appendClaudeWorkflowRows(queue *agent.OutputQueue, sink agent.ProviderServices, rows []bgtask.Upsert) {
+	writes := make([]agent.OutputWrite, 0, len(rows))
+	for _, row := range rows {
+		writes = append(writes, agent.OutputWrite{ScopeID: row.RowKey, Label: "publish a Claude workflow agent row", Run: func() error {
+			return sink.UpsertBackgroundTask(row)
+		}})
+	}
+	queue.Append(writes...)
 }
 
 // claudeWorkflowAgentUpsert builds the row of one agent: its label over its

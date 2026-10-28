@@ -41,7 +41,7 @@ func TestChildCapabilitiesUseTheStoredOptions(t *testing.T) {
 			svc, _, _ := setupTestService(t, withRegistry(registry))
 			ctx := context.Background()
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: "root", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider}))
-			sink := svc.Output.NewSink("root", provider)
+			sink := newTestRootOutputSink(t, svc.Output, "root", provider)
 			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Child"})
 			require.NoError(t, err)
 			_, err = svc.DB.ExecContext(ctx, "UPDATE agents SET options = ? WHERE id = ?", testCase.options, childID)

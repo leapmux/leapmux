@@ -986,7 +986,7 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 
 	// Seed two background-task rows on the root via the OutputHandler's upsert
 	// path -- the same path providers use at runtime.
-	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
 	}))
@@ -1058,7 +1058,7 @@ func TestReplayIncludesActivitySnapshot(t *testing.T) {
 	// A running process is a precondition of every busy answer; the real check
 	// reads the agent manager, which holds no subprocess in a test.
 	svc.Output.processRunning = func(string) bool { return true }
-	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
 	}))
@@ -1112,7 +1112,7 @@ func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	svc.Output.processRunning = func(string) bool { return true }
-	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
 	}))
@@ -1173,7 +1173,7 @@ func TestReplayActivityIsTheWATCHEDAgentsOwnAnswer(t *testing.T) {
 	}))
 	svc.Output.processRunning = func(string) bool { return true }
 	settles := holdSettles(t, svc.Output)
-	sink := svc.Output.NewSink("root-own", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "root-own", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-own", ProviderChildKey: "row-own", Title: "finished child"})
 	require.NoError(t, err)
 	// This child is DONE while a sibling keeps running, so the two ids disagree:
@@ -1230,7 +1230,7 @@ func TestWatchChildAgentReplaysWithoutProcess(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	rootSink := svc.Output.NewSink("root-2", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	rootSink := newTestRootOutputSink(t, svc.Output, "root-2", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-watch", ProviderChildKey: "row-key-watch", Title: "child task"})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)

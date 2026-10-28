@@ -1,6 +1,7 @@
 package muse
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,31 +14,50 @@ import (
 )
 
 type nativeToolObservation struct {
-	params      itemParams
-	raw         []byte
-	sink        agent.ProviderServices
-	association nativeResultAssociation
-	unavailable string
+	params           itemParams
+	raw              []byte
+	sink             agent.ProviderServices
+	association      nativeResultAssociation
+	unavailable      string
+	publication      agent.TranscriptPublication
+	publicationKnown bool
+	rowReceipt       *agent.TranscriptWriteReceipt
 }
 
 // freezeToolObservations retains source facts before a delegate can change live state.
 // The caller holds stateMu. The returned observations own their mutable bytes.
 func (state *sessionState) freezeToolObservations(items map[string]*itemState) []nativeToolObservation {
+	observations := make([]nativeToolObservation, 0, len(items))
+	for _, item := range items {
+		if item.params.Item.Status == contracts.MuseItemStatusInProgress || item.retainedRevision < item.params.Item.Revision || len(item.raw) == 0 {
+			continue
+		}
+		observation := state.freezeToolObservation(item.params, item.raw, item.retainedWriteReceipt, item.retainedPublication)
+		if observation != nil {
+			observations = append(observations, *observation)
+			item.retainedWriteReceipt = nil
+		}
+	}
+	return observations
+}
+
+// freezeToolObservation retains the exact accepted revision, including a
+// finalization descriptor whose canonical item may already have advanced.
+// The caller holds stateMu.
+func (state *sessionState) freezeToolObservation(params itemParams, raw []byte, receipt *agent.TranscriptWriteReceipt, publication *nativeToolPublication) *nativeToolObservation {
 	if state.log == nil {
 		return nil
 	}
-	index := state.ensureNativeItemIndex()
-	observations := make([]nativeToolObservation, 0, len(items))
-	for _, item := range items {
-		if item.params.Item.Status == contracts.MuseItemStatusInProgress {
-			continue
-		}
-		observations = append(observations, nativeToolObservation{
-			params: cloneItemParams(item.params), raw: slices.Clone(item.raw), sink: state.sink,
-			association: state.log.match(item.params, index.candidates(item.params)), unavailable: state.log.unavailable,
-		})
+	candidates := state.ensureNativeItemIndex().candidates(params)
+	if !slices.ContainsFunc(candidates, func(candidate itemParams) bool { return candidate.Item.ID == params.Item.ID }) {
+		candidates = append(candidates, params)
 	}
-	return observations
+	observation := &nativeToolObservation{params: cloneItemParams(params), raw: slices.Clone(raw), sink: state.sink, association: state.log.match(params, candidates), unavailable: state.log.unavailable, rowReceipt: receipt}
+	if publication != nil && publication.sessionID == params.SessionID {
+		observation.publication = publication.publication
+		observation.publicationKnown = true
+	}
+	return observation
 }
 
 func (state *sessionState) allSettledTools() map[string]*itemState {
@@ -71,73 +91,47 @@ func (state *sessionState) logItemTargets(record nativeRecord) map[string]*itemS
 }
 
 func (a *Agent) subscribeLog(id string, timeout time.Duration) error {
+	deadline := a.Clock().Now().Add(timeout)
+	ctx, finish := a.newChildProofContext(deadline)
+	defer finish()
+	return a.subscribeLogContext(ctx, id, deadline)
+}
+
+func (a *Agent) subscribeLogContext(ctx context.Context, id string, deadline time.Time) error {
 	a.stateMu.Lock()
 	state := a.sessions[id]
-	existing := int64(0)
-	healthy := false
-	if state != nil && state.log != nil {
-		existing = state.log.subscriptionID
-		healthy = existing > 0 && state.log.unavailable == ""
-	}
+	current := a.currentSessionState(id, state) && state.log != nil
+	healthy := current && state.log.subscriptionID > 0 && state.log.unavailable == ""
 	a.stateMu.Unlock()
+	if !current {
+		return agent.ErrChildRouteNotReady
+	}
 	if healthy {
 		return nil
-	}
-	if state == nil {
-		return fmt.Errorf("the Muse log has no owned session")
 	}
 	if !a.hasCapability("rawLog") {
 		a.markLogUnavailable(state, "The Muse host did not grant rawLog.")
 		return nil
 	}
-	var err error
-	if existing > 0 {
-		err = a.readStoredLog(id, state, timeout)
-	} else {
-		var observedErr error
-		var tail nativePosition
-		_, err = a.request(methodLogSubscribe, map[string]any{"sessionId": id, "stream": nativeStream{Kind: contracts.MuseStreamKindSession, ID: id}}, timeout, func(raw json.RawMessage, err error) {
-			if err != nil {
-				observedErr = err
-				return
-			}
-			var result struct {
-				ID   int64           `json:"subscriptionId"`
-				Tail *nativePosition `json:"tail"`
-			}
-			if json.Unmarshal(raw, &result) != nil || result.ID <= 0 || result.Tail == nil || result.Tail.ID == "" || result.Tail.Sequence <= 0 {
-				observedErr = fmt.Errorf("the Muse log subscription acknowledgement is invalid")
-				return
-			}
-			a.stateMu.Lock()
-			defer a.stateMu.Unlock()
-			if a.sessions[id] != state || state.retired {
-				observedErr = fmt.Errorf("the Muse log session changed before subscription")
-				return
-			}
-			for otherID, other := range a.sessions {
-				if otherID != id && other.log != nil && other.log.subscriptionID == result.ID {
-					observedErr = fmt.Errorf("the Muse log subscription belongs to another session")
-					return
-				}
-			}
-			if state.log != nil {
-				state.log.subscriptionID = result.ID
-				tail = *result.Tail
-			}
-		})
-		if err == nil {
-			err = observedErr
+	registration, err := a.registerNativeLogContext(ctx, id, state)
+	if errors.Is(err, agent.ErrChildRouteNotReady) {
+		return err
+	}
+	if registration.healthy {
+		return nil
+	}
+	if err == nil {
+		if registration.existing {
+			err = a.readStoredLogBefore(id, state, deadline)
+		} else {
+			err = a.readLogTailBefore(id, state, registration.tail, deadline)
 		}
-		if err == nil {
-			err = a.readLogTail(id, state, tail, timeout)
-		} else if state.childID != "" {
-			// A completed child has durable logs without a live subscription.
-			if storedErr := a.readStoredLog(id, state, timeout); storedErr == nil {
-				err = nil
-			} else {
-				err = errors.Join(err, storedErr)
-			}
+	} else if state.childID != "" && ctx.Err() == nil {
+		// A completed child has durable logs without a live subscription.
+		if storedErr := a.readStoredLogBefore(id, state, deadline); storedErr == nil {
+			err = nil
+		} else {
+			err = errors.Join(err, storedErr)
 		}
 	}
 	if err != nil {
@@ -147,10 +141,17 @@ func (a *Agent) subscribeLog(id string, timeout time.Duration) error {
 		a.enrichLogItems(state)
 	}
 	// A log failure leaves the stable transcript available.
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
 	return nil
 }
 
-func (a *Agent) readStoredLog(id string, state *sessionState, timeout time.Duration) error {
+func (a *Agent) readStoredLogBefore(id string, state *sessionState, deadline time.Time) error {
+	timeout, err := a.childViewTimeout(deadline)
+	if err != nil {
+		return err
+	}
 	raw, err := a.request(methodLogStreams, map[string]string{"sessionId": id}, timeout, nil)
 	if err != nil {
 		return err
@@ -179,14 +180,14 @@ func (a *Agent) readStoredLog(id string, state *sessionState, timeout time.Durat
 	if matches != 1 {
 		return fmt.Errorf("the Muse stored log has no unique owned session stream")
 	}
-	return a.readLogTail(id, state, tail, timeout)
+	return a.readLogTailBefore(id, state, tail, deadline)
 }
 
-func (a *Agent) readLogTail(id string, state *sessionState, tail nativePosition, timeout time.Duration) error {
-	records, err := a.readLogPages(id, nil, tail, timeout)
+func (a *Agent) readLogTailBefore(id string, state *sessionState, tail nativePosition, deadline time.Time) error {
+	records, err := a.readLogPagesBefore(id, nil, tail, deadline)
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
-	if a.sessions[id] != state || state.retired {
+	if !a.currentSessionState(id, state) {
 		return fmt.Errorf("the Muse log owner changed during the read")
 	}
 	for _, record := range records {
@@ -239,6 +240,12 @@ func (a *Agent) handleLogRecord(raw []byte) {
 }
 
 func (a *Agent) markLogUnavailable(state *sessionState, reason string) {
+	a.dispatcher.mu.Lock()
+	a.markLogUnavailableLocked(state, reason)
+	a.dispatcher.mu.Unlock()
+	a.drainDeferredOutputActions()
+}
+func (a *Agent) markLogUnavailableLocked(state *sessionState, reason string) {
 	a.stateMu.Lock()
 	if state.log == nil {
 		a.stateMu.Unlock()
@@ -246,10 +253,16 @@ func (a *Agent) markLogUnavailable(state *sessionState, reason string) {
 	}
 	state.log.unavailable = reason
 	a.stateMu.Unlock()
-	a.enrichLogItems(state)
+	a.enrichLogItemsLocked(state)
 }
 
 func (a *Agent) enrichLogItems(state *sessionState) {
+	a.dispatcher.mu.Lock()
+	a.enrichLogItemsLocked(state)
+	a.dispatcher.mu.Unlock()
+	a.drainDeferredOutputActions()
+}
+func (a *Agent) enrichLogItemsLocked(state *sessionState) {
 	a.stateMu.Lock()
 	observations := state.freezeToolObservations(state.allSettledTools())
 	a.stateMu.Unlock()
@@ -274,71 +287,6 @@ func (a *Agent) enrichToolGroup(state *sessionState, item *itemState, previous i
 	a.stateMu.Unlock()
 	for _, observation := range observations {
 		a.enrichTool(observation)
-	}
-}
-
-func (a *Agent) enrichTool(observation nativeToolObservation) {
-	association := observation.association
-	records, reason := association.records, association.reason
-	params := observation.params
-	id := params.Item.ID
-	raw := observation.raw
-	unavailable := observation.unavailable
-	stored, err := observation.sink.ReadToolResult(id)
-	if err != nil {
-		slog.Warn("read a Muse tool result for enrichment", "error", err)
-		return
-	}
-	if stored == nil {
-		return
-	}
-	data := make(map[string]any)
-	if len(stored.Content.Supplemental) > 0 {
-		if err := json.Unmarshal(stored.Content.Supplemental, &data); err != nil || data == nil {
-			slog.Warn("read Muse supplemental records", "error", err)
-			return
-		}
-	}
-	if len(records) == 0 && unavailable == "" && association.pending {
-		previous, ok := data[contracts.MuseSupplementFieldNativeRecords].([]any)
-		if !ok || len(previous) == 0 {
-			return
-		}
-	}
-	delete(data, contracts.MuseSupplementFieldUnavailable)
-	data[contracts.MuseSupplementFieldNativeRecords] = records
-	if len(records) == 0 {
-		data[contracts.MuseSupplementFieldNativeRecords] = []json.RawMessage{}
-		turn := ""
-		if params.Item.TurnID != nil {
-			turn = *params.Item.TurnID
-		}
-		failure := reason
-		if unavailable != "" && unavailable != reason {
-			failure = unavailable
-			if reason != "" {
-				failure += ": " + reason
-			}
-		}
-		data[contracts.MuseSupplementFieldUnavailable] = map[string]any{
-			"sessionId": params.SessionID, "turnId": turn, "callId": params.Item.CallID,
-			"itemIds": []string{id}, "reason": failure,
-		}
-	}
-	supplement, err := json.Marshal(data)
-	if err != nil {
-		slog.Warn("encode Muse supplemental records", "error", err)
-		return
-	}
-	if slices.Equal(stored.Content.Supplemental, supplement) {
-		return
-	}
-	if !slices.Equal(stored.Content.Original, raw) {
-		return
-	}
-	_, err = observation.sink.EnrichMessage(agent.MessageEnrichment{Seq: stored.Seq, SpanID: id, OriginalContent: raw, PreviousRevision: stored.Revision, SupplementalContent: supplement})
-	if err != nil {
-		slog.Warn("persist Muse supplemental records", "error", err)
 	}
 }
 
@@ -368,14 +316,27 @@ func (a *Agent) handleLogGap(raw []byte) {
 	var after, next nativePosition
 	if json.Unmarshal(gap.After, &after) != nil || json.Unmarshal(gap.Next, &next) != nil ||
 		after.ID == "" || after.Sequence <= 0 || next.ID == "" || next.Sequence <= after.Sequence {
-		a.markLogUnavailable(state, "the Muse log reported a gap")
+		a.markLogUnavailableLocked(state, "the Muse log reported a gap")
 		return
 	}
-	// The reader must remain free to receive the page reply.
-	go func() {
+	// The reader must remain free to receive the page reply. Process shutdown
+	// joins every admitted gap, including deferred enrichment after that read.
+	keyBytes, err := json.Marshal(struct {
+		SessionID      string
+		SubscriptionID int64
+		After          nativePosition
+		Next           nativePosition
+	}{id, gap.SubscriptionID, after, next})
+	if err != nil {
+		a.markLogUnavailableLocked(state, "the Muse log gap identity is invalid")
+		return
+	}
+	// The captured state distinguishes different owners of a reused native ID.
+	key := fmt.Sprintf("%p:%s", state, keyBytes)
+	a.logRecoveryWork.Run(key, func() {
 		records, err := a.readLogPages(id, &after, next, a.APITimeout())
-		a.dispatchMu.Lock()
-		defer a.dispatchMu.Unlock()
+		a.dispatcher.mu.Lock()
+		defer func() { a.dispatcher.mu.Unlock(); a.drainDeferredOutputActions() }()
 		a.stateMu.Lock()
 		if !a.currentSessionState(id, state) || state.log.subscriptionID != gap.SubscriptionID {
 			a.stateMu.Unlock()
@@ -389,9 +350,9 @@ func (a *Agent) handleLogGap(raw []byte) {
 		}
 		a.stateMu.Unlock()
 		if err != nil {
-			a.markLogUnavailable(state, "the Muse log reported a gap: "+err.Error())
+			a.markLogUnavailableLocked(state, "the Muse log reported a gap: "+err.Error())
 			return
 		}
-		a.enrichLogItems(state)
-	}()
+		a.enrichLogItemsLocked(state)
+	})
 }

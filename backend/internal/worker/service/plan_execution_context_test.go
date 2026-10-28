@@ -18,7 +18,7 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID: "agent-1", WorkingDir: row.WorkingDir, ResumeSessionID: "original",
-	}, svc.Output.NewSink("agent-1", row.AgentProvider), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", row.AgentProvider), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	err = dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{

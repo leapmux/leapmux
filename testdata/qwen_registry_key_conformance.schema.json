@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qwen_registry_key_conformance.schema.json",
+  "title": "Qwen registry key conformance vectors",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "cases"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "source", "sessionId", "toolCallId", "dispatchId", "expectedKey"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "source": { "enum": ["agent", "workflow"] },
+          "sessionId": { "type": "string" },
+          "toolCallId": { "type": "string" },
+          "dispatchId": { "type": "string" },
+          "expectedKey": { "type": "string", "pattern": "^(?:qwen-registry-v1:[0-9a-f]{64})?$" }
+        }
+      }
+    }
+  }
+}

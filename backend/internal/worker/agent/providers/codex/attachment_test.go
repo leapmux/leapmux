@@ -23,7 +23,8 @@ func TestBuildCodexInputBlocks_imageAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "photo.jpg", MimeType: "image/jpeg", Data: data},
 	}
-	blocks := buildCodexInputBlocks("describe this", agent.ClassifyAttachments(attachments))
+	blocks, err := buildCodexInputBlocks("describe this", agent.ClassifyAttachments(attachments))
+	require.NoError(t, err)
 	require.Len(t, blocks, 2)
 
 	textBlock := blocks[0]
@@ -41,20 +42,22 @@ func TestBuildCodexInputBlocks_textAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "report.csv", MimeType: "", Data: []byte("name,value\nfoo,1\n")},
 	}
-	blocks := buildCodexInputBlocks("", agent.ClassifyAttachments(attachments))
+	blocks, err := buildCodexInputBlocks("", agent.ClassifyAttachments(attachments))
+	require.NoError(t, err)
 	require.Len(t, blocks, 1)
 	assert.Equal(t, "text", blocks[0]["type"])
 	assert.Contains(t, blocks[0]["text"], `<attached-file name="report.csv" mime-type="text/csv">`)
 	assert.Contains(t, blocks[0]["text"], "name,value")
 }
 
-func TestBuildCodexInputBlocks_pdfSkipped(t *testing.T) {
+func TestBuildCodexInputBlocks_refusesPDF(t *testing.T) {
 	t.Parallel()
 
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
 	}
-	blocks := buildCodexInputBlocks("", agent.ClassifyAttachments(attachments))
+	blocks, err := buildCodexInputBlocks("", agent.ClassifyAttachments(attachments))
+	require.ErrorContains(t, err, "does not support PDF")
 	require.Empty(t, blocks)
 }
 
@@ -93,12 +96,13 @@ func TestBuildCodexInputBlocksAudio(t *testing.T) {
 	t.Parallel()
 	data := []byte{0, 1, 2, 3}
 	attachments := []*leapmuxv1.Attachment{{Filename: "sample.wav", MimeType: "audio/wav", Data: data}}
-	blocks := buildCodexInputBlocks("Listen.", agent.ClassifyAttachments(attachments))
+	blocks, err := buildCodexInputBlocks("Listen.", agent.ClassifyAttachments(attachments))
+	require.NoError(t, err)
 	require.Len(t, blocks, 2)
 	assert.Equal(t, "text", blocks[0]["type"])
 	assert.Equal(t, "audio", blocks[1]["type"])
 	assert.Equal(t, "data:audio/wav;base64,"+base64.StdEncoding.EncodeToString(data), blocks[1]["url"])
-	_, err := agenttest.MustNewRegistry(Registration()).NormalizeAttachments(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, attachments)
+	_, err = agenttest.MustNewRegistry(Registration()).NormalizeAttachments(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, attachments)
 	require.NoError(t, err)
 }
 
@@ -174,5 +178,55 @@ func TestCodexRefusesAudioBeforeNativeDispatch(t *testing.T) {
 		assert.Zero(t, a.mainTurn.steers)
 		assert.Empty(t, a.pendingSteerCalls)
 		assert.Empty(t, requests())
+	}
+}
+
+func TestCodexInputEntryPointsRefuseInvalidAttachmentsBeforeNativeDispatch(t *testing.T) {
+	t.Parallel()
+	for _, entry := range []string{"send", "session send", "steer", "session steer"} {
+		for _, attachment := range []*leapmuxv1.Attachment{
+			{Filename: "unsupported.flac", MimeType: "audio/flac", Data: []byte{0, 1}},
+			{Filename: "empty.wav", MimeType: "audio/wav"},
+			{Filename: "document.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
+			{Filename: "binary.bin", MimeType: "application/octet-stream", Data: []byte{0, 255}},
+		} {
+			t.Run(entry+"/"+attachment.Filename, func(t *testing.T) {
+				t.Parallel()
+				var subject *Agent
+				a, _, requests := newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
+					if method == "turn/start" {
+						subject.handleMainTurnStarted("unexpected-turn")
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				})
+				subject = a
+				a.threadID, a.model = "audio-thread", "audio-model"
+				a.availableModels = []*agent.ModelInfo{{Id: "audio-model", SupportsAudioInput: true}}
+				originalInput := []map[string]interface{}{{"type": "text", "text": "original"}}
+				if entry == "steer" || entry == "session steer" {
+					a.mainTurn = codexMainTurn{id: "audio-turn", model: "audio-model", input: originalInput}
+				}
+				var err error
+				attachments := []*leapmuxv1.Attachment{attachment}
+				switch entry {
+				case "send":
+					err = a.SendInput("Keep the attachment.", attachments)
+				case "session send":
+					err = a.SendInputForSession("audio-thread", "Keep the attachment.", attachments)
+				case "steer":
+					err = a.SteerInput("Keep the attachment.", attachments)
+				case "session steer":
+					err = a.SteerInputForSession("audio-thread", "Keep the attachment.", attachments)
+				}
+				assert.Error(t, err)
+				assert.Empty(t, requests())
+				assert.Nil(t, a.pendingStart)
+				assert.Zero(t, a.mainTurn.steers)
+				assert.Empty(t, a.pendingSteerCalls)
+				if entry == "steer" || entry == "session steer" {
+					assert.Equal(t, originalInput, a.mainTurn.input)
+				}
+			})
+		}
 	}
 }

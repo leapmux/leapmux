@@ -14,8 +14,8 @@ import (
 type acpSessionUpdates struct {
 	mu        sync.Mutex
 	buffering bool
-	// pending holds the params of each buffered notification, copied from the reader's line.
-	pending []json.RawMessage
+	// pending keeps standard and provider notifications in received order.
+	pending []bufferedSessionUpdate
 	// replayCutoff is the length of pending at the moment the reader routed the
 	// session/load reply, or -1 when the buffered stream covers no load reply.
 	// The Agent Client Protocol sends a loaded session's history before that
@@ -23,6 +23,82 @@ type acpSessionUpdates struct {
 	// so the buffered conversation below the cutoff is replay, not live output.
 	// session/resume sends no replay, so it sets no cutoff.
 	replayCutoff int
+}
+
+type bufferedSessionUpdate struct {
+	sessionID     string
+	rootSessionID string
+	raw           json.RawMessage
+	// dispatch is nil for standard session/update params. A provider supplies
+	// its concrete handler for an extension notification's unchanged frame.
+	dispatch       func(string, json.RawMessage)
+	resolveSession func(json.RawMessage) (string, bool)
+}
+
+// SessionNotification supplies a provider's concrete source resolver and
+// handler. Shared code never interprets the provider's notification shape.
+type SessionNotification struct {
+	Raw            json.RawMessage
+	ResolveSession func(json.RawMessage) (string, bool)
+	Dispatch       func(string, json.RawMessage)
+}
+
+// RouteSessionNotification serializes a provider notification with session
+// replacement. Once its source resolves, that identity remains fixed. An
+// unresolved source can wait for an earlier buffered metadata notification.
+// The handler runs on the reader or during ordered replay. It must not wait
+// for another native request, acquire sessionMu or enter childDispatch.
+func (b *Base) RouteSessionNotification(notification SessionNotification) bool {
+	if notification.ResolveSession == nil || notification.Dispatch == nil {
+		return false
+	}
+	b.sessionUpdates.mu.Lock()
+	defer func() {
+		b.sessionUpdates.mu.Unlock()
+		b.FlushRegistryObservations()
+	}()
+	update := bufferedSessionUpdate{raw: notification.Raw, dispatch: notification.Dispatch, resolveSession: notification.ResolveSession}
+	b.resolveBufferedSessionUpdate(&update)
+	if b.sessionUpdates.buffering {
+		update.raw = append(json.RawMessage(nil), notification.Raw...)
+		b.sessionUpdates.pending = append(b.sessionUpdates.pending, update)
+		return true
+	}
+	b.dispatchBufferedSessionUpdate(update)
+	return true
+}
+
+func (b *Base) resolveBufferedSessionUpdate(update *bufferedSessionUpdate) bool {
+	if update.dispatch == nil || update.sessionID != "" {
+		return true
+	}
+	sessionID, known := update.resolveSession(update.raw)
+	if !known || sessionID == "" {
+		return false
+	}
+	update.sessionID = sessionID
+	update.rootSessionID, _ = b.SessionRoot(sessionID)
+	return true
+}
+
+func (b *Base) dispatchBufferedSessionUpdate(update bufferedSessionUpdate) {
+	if !b.resolveBufferedSessionUpdate(&update) {
+		return
+	}
+	if !b.ServesSession(update.sessionID) {
+		return
+	}
+	if update.rootSessionID != "" {
+		rootSessionID, served := b.SessionRoot(update.sessionID)
+		if !served || rootSessionID != update.rootSessionID {
+			return
+		}
+	}
+	if update.dispatch != nil {
+		update.dispatch(update.sessionID, update.raw)
+		return
+	}
+	b.dispatchACPSessionUpdate(update.raw)
 }
 
 func (b *Base) beginSessionUpdates() {
@@ -48,7 +124,10 @@ func (b *Base) markSessionReplayCutoff() {
 // Call it without b.Mu or turnMu because dispatch can acquire both locks.
 func (b *Base) finishSessionUpdates() {
 	b.sessionUpdates.mu.Lock()
-	defer b.sessionUpdates.mu.Unlock()
+	defer func() {
+		b.sessionUpdates.mu.Unlock()
+		b.FlushRegistryObservations()
+	}()
 	if !b.sessionUpdates.buffering {
 		return
 	}
@@ -57,12 +136,12 @@ func (b *Base) finishSessionUpdates() {
 	b.sessionUpdates.pending = nil
 	b.sessionUpdates.buffering = false
 	b.sessionUpdates.replayCutoff = -1
-	for index, params := range pending {
-		if index < cutoff && isConversationReplay(params) {
+	for index, update := range pending {
+		if index < cutoff && update.dispatch == nil && isConversationReplay(update.raw) {
 			slog.Debug("Drop ACP session replay covered by the load reply", "provider", b.ProviderName(), "agent_id", b.AgentID())
 			continue
 		}
-		b.dispatchACPSessionUpdate(params)
+		b.dispatchBufferedSessionUpdate(update)
 	}
 }
 
@@ -100,14 +179,16 @@ func isConversationReplay(params json.RawMessage) bool {
 func (b *Base) flushPreviousSessionUpdates() {
 	current := b.CurrentSessionID()
 	remaining := b.sessionUpdates.pending[:0]
-	for _, params := range b.sessionUpdates.pending {
-		var header struct {
-			SessionID string `json:"sessionId"`
+	for _, update := range b.sessionUpdates.pending {
+		if !b.resolveBufferedSessionUpdate(&update) {
+			remaining = append(remaining, update)
+			continue
 		}
-		if json.Unmarshal(params, &header) == nil && header.SessionID == current {
-			b.dispatchACPSessionUpdate(params)
+		root, served := b.SessionRoot(update.sessionID)
+		if update.sessionID == current || served && root == current {
+			b.dispatchBufferedSessionUpdate(update)
 		} else {
-			remaining = append(remaining, params)
+			remaining = append(remaining, update)
 		}
 	}
 	b.sessionUpdates.pending = remaining
@@ -117,9 +198,21 @@ func (b *Base) flushPreviousSessionUpdates() {
 // During a transition, it copies the notification into the pending queue.
 func (b *Base) handleACPSessionUpdate(params json.RawMessage) {
 	b.sessionUpdates.mu.Lock()
-	defer b.sessionUpdates.mu.Unlock()
+	defer func() {
+		b.sessionUpdates.mu.Unlock()
+		b.FlushRegistryObservations()
+	}()
 	if b.sessionUpdates.buffering {
-		b.sessionUpdates.pending = append(b.sessionUpdates.pending, append(json.RawMessage(nil), params...))
+		var header struct {
+			SessionID string `json:"sessionId"`
+		}
+		_ = json.Unmarshal(params, &header)
+		rootSessionID, _ := b.SessionRoot(header.SessionID)
+		b.sessionUpdates.pending = append(b.sessionUpdates.pending, bufferedSessionUpdate{
+			sessionID:     header.SessionID,
+			rootSessionID: rootSessionID,
+			raw:           append(json.RawMessage(nil), params...),
+		})
 		return
 	}
 	b.dispatchACPSessionUpdate(params)

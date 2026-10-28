@@ -27,7 +27,7 @@ func launchArgs(opts agent.Options) ([]string, error) {
 
 // Start returns only after the native host acknowledges the selected session.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
-	a := &Agent{sink: agent.NewModelProgressResetSink(sink), opts: opts, settings: make(optionmap.Map), sessions: make(map[string]*sessionState)}
+	a := &Agent{dispatcher: &outputDispatcher{}, sink: agent.NewModelProgressResetSink(sink), opts: opts, settings: make(optionmap.Map), sessions: make(map[string]*sessionState)}
 	c, err := prepareConnection(ctx, opts, Registration(), nil)
 	if err != nil {
 		return nil, err

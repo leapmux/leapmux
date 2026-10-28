@@ -57,7 +57,7 @@ func listAgentsDuringGit(t *testing.T, d *channel.Dispatcher, agentID string, ch
 func startRunningTestProcess(ctx context.Context, t *testing.T, svc *Service, agentID string, provider leapmuxv1.AgentProvider) {
 	t.Helper()
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: agentID, AgentProvider: provider, WorkingDir: t.TempDir()},
-		svc.Output.NewSink(agentID, provider),
+		newTestRootOutputSink(t, svc.Output, agentID, provider),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 			return newRunningTestAgent(), nil
 		})

@@ -229,10 +229,11 @@ function isUtf8Text(data: Uint8Array): boolean {
 export function inferAttachmentDetails(filename: string, mimeType: string, data: Uint8Array): AttachmentDetails {
   const normalizedMime = normalizeMimeType(mimeType)
   const inferredMime = inferredMimeTypeFromFilename(filename)
-  const utf8 = isUtf8Text(data)
+  let utf8: boolean | undefined
+  const isTextData = () => utf8 ??= isUtf8Text(data)
   const effectiveMime = !GENERIC_BINARY_MIME_TYPES.has(normalizedMime)
     ? normalizedMime
-    : (inferredMime || (utf8 ? 'text/plain' : 'application/octet-stream'))
+    : (inferredMime || (isTextData() ? 'text/plain' : 'application/octet-stream'))
 
   if (SUPPORTED_IMAGE_MIME_TYPES.has(effectiveMime))
     return { kind: ATTACHMENT_MEDIA_KIND.Image, mimeType: effectiveMime }
@@ -243,10 +244,10 @@ export function inferAttachmentDetails(filename: string, mimeType: string, data:
   if (effectiveMime.startsWith('audio/'))
     return { kind: ATTACHMENT_MEDIA_KIND.Audio, mimeType: effectiveMime }
 
-  if (isTextualMimeType(effectiveMime) && utf8)
+  if (isTextualMimeType(effectiveMime) && isTextData())
     return { kind: ATTACHMENT_MEDIA_KIND.Text, mimeType: effectiveMime }
 
-  if (GENERIC_BINARY_MIME_TYPES.has(normalizedMime) && utf8 && (!inferredMime || isTextualMimeType(inferredMime)))
+  if (GENERIC_BINARY_MIME_TYPES.has(normalizedMime) && (!inferredMime || isTextualMimeType(inferredMime)) && isTextData())
     return { kind: ATTACHMENT_MEDIA_KIND.Text, mimeType: inferredMime || 'text/plain' }
 
   return { kind: ATTACHMENT_MEDIA_KIND.Binary, mimeType: effectiveMime || 'application/octet-stream' }
@@ -301,15 +302,21 @@ async function fileFromEntry(entry: FileSystemFileEntry): Promise<File> {
   })
 }
 
-async function readAllDirectoryEntries(entry: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+async function readAllDirectoryEntries(entry: FileSystemDirectoryEntry): Promise<{ entries: FileSystemEntry[], failed: boolean }> {
   const reader = entry.createReader()
   const entries: FileSystemEntry[] = []
   while (true) {
-    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
-      reader.readEntries(resolve, reject)
-    })
+    let batch: FileSystemEntry[]
+    try {
+      batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+        reader.readEntries(resolve, reject)
+      })
+    }
+    catch {
+      return { entries, failed: true }
+    }
     if (batch.length === 0)
-      return entries
+      return { entries, failed: false }
     entries.push(...batch)
   }
 }
@@ -318,65 +325,85 @@ function sortedEntries(entries: FileSystemEntry[]): FileSystemEntry[] {
   return entries.toSorted((a, b) => a.name.localeCompare(b.name))
 }
 
-async function collectFilesFromEntry(
-  entry: FileSystemEntry,
-  currentSizeRef: { value: number },
-  results: PendingAttachmentFile[],
-): Promise<boolean> {
-  if (entry.isFile) {
-    const file = await fileFromEntry(entry as FileSystemFileEntry)
-    if (currentSizeRef.value + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
-      return true
-    currentSizeRef.value += file.size
-    results.push({
-      file,
-      filename: entry.fullPath.replace(LEADING_SLASHES, ''),
-    })
-    return false
+interface AttachmentReadFailure {
+  path?: string
+}
+
+interface DroppedFileCollection {
+  files: PendingAttachmentFile[]
+  size: number
+  failures: AttachmentReadFailure[]
+}
+
+async function collectFilesFromEntry(entry: FileSystemEntry, collection: DroppedFileCollection): Promise<boolean> {
+  const path = entry.fullPath.replace(LEADING_SLASHES, '') || entry.name
+  try {
+    if (entry.isFile) {
+      const file = await fileFromEntry(entry as FileSystemFileEntry)
+      if (collection.size + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
+        return true
+      collection.size += file.size
+      collection.files.push({ file, filename: path })
+      return false
+    }
+    if (!entry.isDirectory)
+      return false
+
+    const { entries, failed } = await readAllDirectoryEntries(entry as FileSystemDirectoryEntry)
+    if (failed)
+      collection.failures.push({ path })
+    for (const childEntry of sortedEntries(entries)) {
+      if (await collectFilesFromEntry(childEntry, collection))
+        return true
+    }
   }
-
-  if (!entry.isDirectory)
-    return false
-
-  const childEntries = sortedEntries(await readAllDirectoryEntries(entry as FileSystemDirectoryEntry))
-  for (const childEntry of childEntries) {
-    if (await collectFilesFromEntry(childEntry, currentSizeRef, results))
-      return true
+  catch {
+    collection.failures.push({ path })
   }
   return false
 }
 
 /**
- * Collect dropped files, recursively expanding directories when supported by
- * the browser/webview. Traversal stops immediately once the next file would
- * exceed the global attachment size limit.
+ * Collect dropped files and retain readable entries when another entry fails.
+ * Traversal stops when the next file exceeds the global attachment size limit.
  */
 export async function collectDroppedAttachmentFiles(
   dataTransfer: DataTransfer,
   currentSize = 0,
-): Promise<{ files: PendingAttachmentFile[], sizeLimitHit: boolean }> {
-  const results: PendingAttachmentFile[] = []
-  const currentSizeRef = { value: currentSize }
+): Promise<{ files: PendingAttachmentFile[], sizeLimitHit: boolean, failures: AttachmentReadFailure[] }> {
+  const collection: DroppedFileCollection = { files: [], size: currentSize, failures: [] }
   const items = [...(dataTransfer.items ?? [])] as WebkitDataTransferItem[]
-  const entries = items
-    .map(item => item.webkitGetAsEntry?.() ?? null)
-    .filter((entry): entry is NonNullable<typeof entry> => entry !== null) as FileSystemEntry[]
-
-  if (entries.length > 0) {
-    for (const entry of sortedEntries(entries)) {
-      if (await collectFilesFromEntry(entry, currentSizeRef, results))
-        return { files: results, sizeLimitHit: true }
+  const entries: FileSystemEntry[] = []
+  for (const item of items) {
+    try {
+      const entry = item.webkitGetAsEntry?.()
+      if (entry)
+        entries.push(entry)
     }
-    return { files: results, sizeLimitHit: false }
+    catch {
+      collection.failures.push({})
+    }
   }
-
-  for (const file of [...dataTransfer.files]) {
-    if (currentSizeRef.value + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
-      return { files: results, sizeLimitHit: true }
-    currentSizeRef.value += file.size
-    results.push({ file })
+  let sizeLimitHit = false
+  if (entries.length > 0 || collection.failures.length > 0) {
+    for (const entry of sortedEntries(entries)) {
+      if (await collectFilesFromEntry(entry, collection)) {
+        sizeLimitHit = true
+        break
+      }
+    }
   }
-  return { files: results, sizeLimitHit: false }
+  else {
+    for (const file of [...dataTransfer.files]) {
+      if (collection.size + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {
+        sizeLimitHit = true
+        break
+      }
+      collection.size += file.size
+      collection.files.push({ file })
+    }
+  }
+  return { files: collection.files, sizeLimitHit, failures: collection.failures }
 }
 
 // ---------------------------------------------------------------------------

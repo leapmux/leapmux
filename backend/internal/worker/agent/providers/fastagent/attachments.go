@@ -72,12 +72,12 @@ func (a *Agent) prepareAudioPrompt(sessionID string, attachments []agent.Classif
 // observePromptUpdate consumes the local command's complete model report.
 // Native local commands emit one Markdown chunk. Other text, including late
 // output from a prior turn, keeps its normal transcript route.
-func (a *Agent) observePromptUpdate(sessionID string, owner agent.ProviderServices, raw json.RawMessage) bool {
+func (a *Agent) observePromptUpdate(sessionID string, _ agent.ProviderServices, raw json.RawMessage) bool {
 	a.audioQueryMu.Lock()
 	query := a.audioQuery
 	if query == nil || query.sessionID != sessionID {
 		a.audioQueryMu.Unlock()
-		return a.observeRootTool(sessionID, owner, raw)
+		return false
 	}
 	var update struct {
 		Kind    string `json:"sessionUpdate"`
@@ -88,12 +88,12 @@ func (a *Agent) observePromptUpdate(sessionID string, owner agent.ProviderServic
 	}
 	if json.Unmarshal(raw, &update) != nil || update.Kind != contracts.ACPUpdateAgentMessageChunk || update.Content.Type != "text" {
 		a.audioQueryMu.Unlock()
-		return a.observeRootTool(sessionID, owner, raw)
+		return false
 	}
 	heading, _, _ := strings.Cut(strings.TrimSpace(update.Content.Text), "\n")
 	if heading != "# model" {
 		a.audioQueryMu.Unlock()
-		return a.observeRootTool(sessionID, owner, raw)
+		return false
 	}
 	if query.text.Len() > 0 || len(update.Content.Text) > fastagentAudioStatusMaxBytes {
 		query.invalid = true

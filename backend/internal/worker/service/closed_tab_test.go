@@ -818,11 +818,16 @@ func TestShutdown_StopsRunningAgents(t *testing.T) {
 
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		Options:    map[string]string{agent.OptionIDModel: "opus"},
-		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+		WorkingDir: workingDir,
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	require.True(t, svc.Agents.HasAgent("agent-1"))
 

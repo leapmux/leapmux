@@ -85,9 +85,10 @@ type childState struct {
 
 // linkedSubagent is the registry row and the child session of one subagent.
 type linkedSubagent struct {
-	rowKey       string
-	childSession string
-	agentAddress string
+	rootSessionID string
+	rowKey        string
+	childSession  string
+	agentAddress  string
 }
 
 // reset drops every link, when a context clear replaces the session.
@@ -282,7 +283,10 @@ type grokSubagentSpawned struct {
 
 // handleSubagentSpawned links a child session to its registry row, and opens
 // a row for a child that no tool call spawned.
-func (a *Agent) handleSubagentSpawned(update json.RawMessage) {
+func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessage) {
+	if rootSessionID == "" || !a.IsCurrentSession(rootSessionID) {
+		return
+	}
 	var spawned grokSubagentSpawned
 	if err := json.Unmarshal(update, &spawned); err != nil || spawned.SubagentID == "" {
 		slog.Warn("grok subagent_spawned unreadable", "agent_id", a.AgentID(), "error", err)
@@ -314,7 +318,7 @@ func (a *Agent) handleSubagentSpawned(update json.RawMessage) {
 		rowKey = spawned.SubagentID
 	}
 	groupLabel := a.children.workflows[spawned.WorkflowRunID]
-	a.children.link(spawned.SubagentID, linkedSubagent{rowKey: rowKey, childSession: childSession, agentAddress: spawned.AgentAddress})
+	a.children.link(spawned.SubagentID, linkedSubagent{rootSessionID: rootSessionID, rowKey: rowKey, childSession: childSession, agentAddress: spawned.AgentAddress})
 	a.stateMu.Unlock()
 
 	if !linked {
@@ -332,16 +336,17 @@ func (a *Agent) handleSubagentSpawned(update json.RawMessage) {
 		}
 		a.ApplySubagentObservation(obs)
 	}
-	a.AttachChildSession(childSession, rowKey)
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: rootSessionID, SessionID: childSession, RowKey: rowKey})
 }
 
 // childRowForSession returns the registry row of the subagent that runs in a
 // child session, or "".
 func (a *Agent) childRowForSession(sessionID string) string {
+	rootSessionID := a.CurrentSessionID()
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	subagentID, ok := a.children.subagentBySession[sessionID]
-	if !ok {
+	if !ok || a.children.subagents[subagentID].rootSessionID != rootSessionID {
 		return ""
 	}
 	return a.children.subagents[subagentID].rowKey
@@ -408,32 +413,43 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 var _ agent.ChildInterrupter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
 
-// childMessageAddress reads only an address that the current parent owns.
-// A session UUID cannot replace the opaque address from subagent_spawned.
-func (a *Agent) childMessageAddress(childKey string) string {
-	if a.IsStopped() || a.CurrentSessionID() == "" {
-		return ""
+// ownedChild reads a child under the root held by WithSessionID. Opaque
+// addresses and child IDs never acquire a new root through context clear.
+func (a *Agent) ownedChild(rootSessionID, childKey string) (string, linkedSubagent, bool) {
+	if a.IsStopped() || rootSessionID == "" {
+		return "", linkedSubagent{}, false
 	}
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
-	return a.children.subagents[a.children.subagentByRow[childKey]].agentAddress
+	id, found := a.children.subagentByRow[childKey]
+	child := a.children.subagents[id]
+	return id, child, found && child.rootSessionID == rootSessionID
 }
 
 // SendChildInput keeps ordinary input queued while the child runs. Grok takes
 // messages only during its active task, so the queue offers Steer for this input.
 func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	if a.childMessageAddress(childKey) == "" {
-		return agent.ErrChildRouteNotReady
-	}
-	if err := validateGrokChildMessage(content, attachments); err != nil {
-		return err
-	}
-	return agent.ErrAgentBusy
+	return a.WithSessionID(func(rootSessionID string) error {
+		_, child, found := a.ownedChild(rootSessionID, childKey)
+		if !found || child.agentAddress == "" {
+			return agent.ErrChildRouteNotReady
+		}
+		if err := validateGrokChildMessage(content, attachments); err != nil {
+			return err
+		}
+		return agent.ErrAgentBusy
+	})
 }
 
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
-	active := a.childMessageAddress(childKey) != ""
-	return agent.TurnState{Active: active, Steerable: active}
+	var state agent.TurnState
+	_ = a.WithSessionID(func(rootSessionID string) error {
+		_, child, found := a.ownedChild(rootSessionID, childKey)
+		active := found && child.agentAddress != ""
+		state = agent.TurnState{Active: active, Steerable: active}
+		return nil
+	})
+	return state
 }
 
 func validateGrokChildMessage(content string, attachments []*leapmuxv1.Attachment) error {
@@ -453,12 +469,12 @@ func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmux
 		return err
 	}
 	return a.WithSessionID(func(sessionID string) error {
-		address := a.childMessageAddress(childKey)
-		if address == "" {
+		_, child, found := a.ownedChild(sessionID, childKey)
+		if !found || child.agentAddress == "" {
 			return agent.ErrChildRouteNotReady
 		}
 		params, err := json.Marshal(map[string]any{
-			"sessionId": sessionID, "agentAddress": address, "queue": false,
+			"sessionId": sessionID, "agentAddress": child.agentAddress, "queue": false,
 			"content": []map[string]string{{"type": "text", "text": content}},
 		})
 		if err != nil {
@@ -533,28 +549,30 @@ func grokChildMessageResult(raw json.RawMessage) error {
 
 // InterruptChild stops one subagent. childKey is the registry row key.
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
-	a.stateMu.Lock()
-	subagentID, ok := a.children.subagentByRow[childKey]
-	a.stateMu.Unlock()
-	if !ok {
-		// The row carries no live child: it finished, or this process never
-		// linked it, as after a worker restart.
-		return agent.ErrChildRouteNotReady
-	}
-	params, err := json.Marshal(map[string]string{"subagentId": subagentID})
-	if err != nil {
-		return fmt.Errorf("marshal the Grok subagent stop: %w", err)
-	}
-	if _, err := a.SendRequest(grokSubagentCancelMethod, params, a.APITimeout()); err != nil {
-		return fmt.Errorf("stop the Grok subagent: %w", err)
-	}
-	// Mark after the cancel acked: the closer that reaches the transcript
-	// spends this, and the divider then reads "Subagent interrupted" rather
-	// than the plain stop word.
-	a.stateMu.Lock()
-	a.children.markInterrupted(subagentID)
-	a.stateMu.Unlock()
-	return nil
+	return a.WithSessionID(func(rootSessionID string) error {
+		subagentID, child, ok := a.ownedChild(rootSessionID, childKey)
+		if !ok {
+			// The row carries no live child: it finished, or this process never
+			// linked it, as after a worker restart.
+			return agent.ErrChildRouteNotReady
+		}
+		params, err := json.Marshal(map[string]string{"subagentId": subagentID})
+		if err != nil {
+			return fmt.Errorf("marshal the Grok subagent stop: %w", err)
+		}
+		if _, err := a.SendRequest(grokSubagentCancelMethod, params, a.APITimeout()); err != nil {
+			return fmt.Errorf("stop the Grok subagent: %w", err)
+		}
+		// Mark after the cancel acked: the closer that reaches the transcript
+		// spends this, and the divider then reads "Subagent interrupted" rather
+		// than the plain stop word.
+		a.stateMu.Lock()
+		if current, found := a.children.subagents[subagentID]; found && current == child {
+			a.children.markInterrupted(subagentID)
+		}
+		a.stateMu.Unlock()
+		return nil
+	})
 }
 
 // grokWorkflowStatus maps the status word of `workflow_updated`, and states

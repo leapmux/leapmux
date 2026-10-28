@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -53,115 +54,83 @@ func resolvedChildStatus(item nativeItem) bgtask.Status {
 			}
 		}
 	}
-	errorKind := ""
-	if len(result.ErrorKind) > 0 {
-		var value *string
-		if json.Unmarshal(result.ErrorKind, &value) != nil || value == nil {
-			return status
-		}
-		errorKind = *value
-	}
-	switch errorKind {
-	case "":
+	if len(result.ErrorKind) == 0 {
 		return bgtask.StatusSucceeded
-	case "generated_child_cancelled":
-		return bgtask.StatusStopped
-	default:
-		return bgtask.StatusFailed
 	}
+	var errorKind *string
+	if json.Unmarshal(result.ErrorKind, &errorKind) != nil || errorKind == nil {
+		return status
+	}
+	if *errorKind == "generated_child_cancelled" {
+		return bgtask.StatusStopped
+	}
+	return bgtask.StatusFailed
 }
 
 func museChildRowKey(parentSessionID, subagentID string) string {
 	return bgtask.NormalizeRowKey(parentSessionID + ":child:" + subagentID)
 }
 
-// One entry of a workflow item's children fold: the durable child of the run,
-// identified by its childId alone. A separate subagent item can supply the
-// child's addressable session and controls.
-type nativeWorkflowChild struct {
-	ChildID  string `json:"childId"`
-	Attempt  int64  `json:"attempt"`
-	Status   string `json:"status"`
-	Terminal string `json:"terminal"`
-	Label    string `json:"label"`
+func museWorkflowRowKey(sessionID, runID string) string {
+	return bgtask.NormalizeRowKey(sessionID + ":workflow:" + runID)
 }
 
-// The lifecycle words a workflow child's fold states, from the workflow item
-// fold of the installed host. The words are the host's own vocabulary.
-const (
-	workflowChildScheduled = "scheduled"
-	workflowChildStarted   = "started"
-	workflowChildUsage     = "usage"
-	workflowChildTerminal  = "terminal"
-)
-
-func workflowChildStatus(child nativeWorkflowChild) bgtask.Status {
-	switch child.Status {
-	case workflowChildScheduled:
-		return bgtask.StatusPending
-	case workflowChildStarted, workflowChildUsage:
-		return bgtask.StatusRunning
-	case workflowChildTerminal:
-		if child.Terminal == contracts.MuseItemStatusCompleted {
-			return bgtask.StatusSucceeded
-		}
-		if child.Terminal == contracts.MuseItemStatusCancelled {
-			return bgtask.StatusStopped
-		}
-		return bgtask.StatusFailed
-	default:
-		return bgtask.StatusEndedWithUnknownOutcome
-	}
+func museBackgroundTaskRowKey(sessionID, itemID string) string {
+	return bgtask.NormalizeRowKey(sessionID + ":task:" + itemID)
 }
 
-// A workflow runs inside its own item: one registry row for the run, one for
-// each fold child, grouped under the run's entry name. An addressable subagent
-// item joins that same child row when it supplies the native session.
-func (a *Agent) observeWorkflow(params itemParams, item nativeItem) error {
-	if item.WorkflowRunID == "" {
-		return nil
-	}
-	group := bgtask.NormalizeRowKey(params.SessionID + ":workflow:" + item.WorkflowRunID)
-	name := item.EntryID
-	if name == "" {
-		name = item.WorkflowRunID
-	}
-	if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: group, Kind: bgtask.KindWorkflow, GroupKey: group, GroupLabel: name, Title: name, Status: childStatus(item.Status)}); err != nil {
-		return err
-	}
-	var children []nativeWorkflowChild
-	if json.Unmarshal(item.Children, &children) != nil {
-		return nil
-	}
-	var publishErr error
-	for _, child := range children {
-		if child.ChildID == "" {
-			continue
-		}
-		key := museChildRowKey(params.SessionID, child.ChildID)
-		title := child.Label
-		if title == "" && a.childForKey(key) == nil {
-			title = "Child " + child.ChildID
-		}
-		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: key, Kind: bgtask.KindSubagent, GroupKey: group, GroupLabel: name, Title: title, Status: workflowChildStatus(child)}); err != nil {
-			publishErr = errors.Join(publishErr, err)
-		}
-	}
-	return publishErr
+func museRegistryItem(item nativeItem) bool {
+	return item.Kind == museItemSubagent || item.Kind == contracts.MuseItemKindWorkflow || item.Kind == contracts.MuseItemKindToolCall && item.Background
 }
 
 func (a *Agent) observeChildOrTask(params itemParams, parent *sessionState, previous nativeItem) error {
-	item := params.Item
-	if item.Kind == contracts.MuseItemKindToolCall && item.Background {
-		key := bgtask.NormalizeRowKey(params.SessionID + ":task:" + item.ID)
-		return a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: key, Kind: bgtask.KindShell, Title: item.Tool, Status: resolvedChildStatus(item)})
+	a.stateMu.Lock()
+	item := parent.items[params.Item.ID]
+	if item == nil || item.params.Item.Revision != params.Item.Revision {
+		a.stateMu.Unlock()
+		return fmt.Errorf("the Muse registry item is not canonical")
 	}
-	if item.Kind == contracts.MuseItemKindWorkflow {
-		return a.observeWorkflow(params, item)
-	}
-	if item.ChildSessionID == "" || item.SubagentID == "" {
+	publication := item.registryState()
+	a.stateMu.Unlock()
+	publication.mu.Lock()
+	head := publication.registryHeadRevision == params.Item.Revision && publication.registryReconciledRevision < params.Item.Revision
+	alreadyCommitted := publication.registryRevision >= params.Item.Revision
+	alreadyQueued := publication.queuedRevision >= params.Item.Revision
+	headQueued := publication.queuedHeadRevision >= params.Item.Revision
+	publication.mu.Unlock()
+	if (alreadyCommitted || alreadyQueued) && (!head || headQueued) {
 		return nil
 	}
+	plan, err := a.prepareChildOrTaskLocked(params, parent, publication, previous, head)
+	if err != nil {
+		return err
+	}
+	admissionErr := a.queueRegistryBatchLocked(&nativeRegistryBatch{writer: a.sink, publication: publication, revision: params.Item.Revision, head: head, rows: plan.rows})
+	return errors.Join(plan.setupErr, admissionErr)
+}
+
+func (a *Agent) prepareChildOrTaskLocked(params itemParams, parent *sessionState, publication *registryPublication, previous nativeItem, head bool) (nativeRegistryPlan, error) {
+	item := params.Item
+	if item.Kind == contracts.MuseItemKindToolCall && item.Background {
+		key := museBackgroundTaskRowKey(params.SessionID, item.ID)
+		status := resolvedChildStatus(item)
+		return nativeRegistryPlan{rows: []nativeRegistryRow{{upsert: bgtask.Upsert{RowKey: key, Kind: bgtask.KindShell, ParentAgentID: parent.childID, Title: item.Tool, Status: status}, revive: head && status.IsWorking()}}}, nil
+	}
+	if item.Kind == contracts.MuseItemKindWorkflow {
+		return a.prepareWorkflowRegistryLocked(params, parent, publication, previous, head)
+	}
+	if item.ChildSessionID == "" || item.SubagentID == "" {
+		return nativeRegistryPlan{}, nil
+	}
+	authorities, err := a.workflowChildAuthorities(params.SessionID, parent)
+	if err != nil {
+		return nativeRegistryPlan{}, err
+	}
+	authority, hasFold := authorities[item.SubagentID]
+	if hasFold && item.WorkflowRunID != "" && item.WorkflowRunID != authority.runID {
+		return nativeRegistryPlan{}, fmt.Errorf("the Muse child disagrees with its workflow owner")
+	}
+	group, label := authority.group, authority.label
 	key := museChildRowKey(params.SessionID, item.SubagentID)
 	a.stateMu.Lock()
 	child := a.sessions[item.ChildSessionID]
@@ -171,26 +140,38 @@ func (a *Agent) observeChildOrTask(params itemParams, parent *sessionState, prev
 	if created {
 		id, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: item.ID, ProviderChildKey: key, AgentSessionID: item.ChildSessionID, Title: item.Objective, Options: optionmap.Map{}})
 		if err != nil {
-			return err
+			return nativeRegistryPlan{}, err
 		}
-		child = &sessionState{sink: parent.sink.ChildSink(id), items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog(item.ChildSessionID), childKey: key, childID: id, parentSessionID: params.SessionID, subagentID: item.SubagentID}
+		child = &sessionState{sink: parent.sink.ChildSink(id), items: make(map[string]*itemState), completed: make(map[string]turnCompletionState), log: newNativeLog(item.ChildSessionID), childKey: key, childID: id, parentSessionID: params.SessionID, subagentID: item.SubagentID, childViewPrefix: childViewPrefixPending, viewRecovery: &viewRecovery{}, openingPrompt: &childOpeningPrompt{writer: parent.sink, childAgentID: id, text: item.Objective}}
 		a.stateMu.Lock()
 		a.sessions[item.ChildSessionID] = child
 		a.stateMu.Unlock()
 		promptErr = parent.sink.PersistChildPrompt(id, item.Objective)
 		if agent.OutputRetained(promptErr) {
+			a.stateMu.Lock()
+			child.openingPrompt = nil
+			a.stateMu.Unlock()
 			promptErr = nil
+		} else {
+			a.stateMu.Lock()
+			child.viewRecovery = nil
+			child.childViewRequested = false
+			a.stateMu.Unlock()
+			a.failChildProjectionLocked(item.ChildSessionID, child, promptErr, nil)
 		}
 	}
-	group := ""
-	if item.WorkflowRunID != "" {
-		group = bgtask.NormalizeRowKey(params.SessionID + ":workflow:" + item.WorkflowRunID)
+	if group == "" && item.WorkflowRunID != "" {
+		group = museWorkflowRowKey(params.SessionID, item.WorkflowRunID)
 	}
-	publishErr := a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: key, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, ParentAgentID: parent.childID, GroupKey: group, Title: item.Objective, Description: item.Role, Status: resolvedChildStatus(item)})
-	if created || previous.Kind != "" && (previous.ChildSessionID != item.ChildSessionID || previous.ControlStatus != item.ControlStatus) {
+	status := resolvedChildStatus(item)
+	if hasFold {
+		status = workflowChildStatus(authority.child)
+	}
+	plan := nativeRegistryPlan{setupErr: promptErr, rows: []nativeRegistryRow{{upsert: bgtask.Upsert{RowKey: key, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, ParentAgentID: parent.childID, GroupKey: group, GroupLabel: label, Title: item.Objective, Description: item.Role, Status: status}, revive: head && !hasFold && status.IsWorking()}}}
+	if promptErr == nil && (created || previous.Kind != "" && (previous.ChildSessionID != item.ChildSessionID || previous.ControlStatus != item.ControlStatus)) {
 		a.requestChildView(item.ChildSessionID)
 	}
-	return errors.Join(promptErr, publishErr)
+	return plan, nil
 }
 
 func (a *Agent) requestChildView(id string) {
@@ -231,7 +212,7 @@ func (a *Agent) ActiveChildTurnState(key string) agent.TurnState {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	_, state := a.ownedChildRoute(key)
-	active := state != nil && state.turnID != ""
+	active := state != nil && state.childTurnActive()
 	return agent.TurnState{Active: active, Steerable: active}
 }
 func (a *Agent) SendChildInput(key, text string, attachments []*leapmuxv1.Attachment) error {
@@ -245,9 +226,14 @@ func (a *Agent) childInput(key, text string, attachments []*leapmuxv1.Attachment
 	defer a.sendMu.Unlock()
 	a.stateMu.Lock()
 	id, child := a.ownedChildRoute(key)
-	busy := child != nil && child.turnID != ""
+	busy := child != nil && child.childTurnActive()
+	projectionReady := child != nil && child.childViewPrefix == childViewPrefixReady && (child.projection == nil || child.projection.failed == nil && len(child.projection.frames) == 0 && len(child.projection.heads) == 0)
 	a.stateMu.Unlock()
 	if child == nil || a.IsStopped() {
+		return agent.ErrChildRouteNotReady
+	}
+	if !projectionReady {
+		a.requestChildView(id)
 		return agent.ErrChildRouteNotReady
 	}
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
@@ -269,6 +255,9 @@ func (a *Agent) childInput(key, text string, attachments []*leapmuxv1.Attachment
 	} else if busy {
 		return agent.ErrAgentBusy
 	}
+	// Muse 1.4.13 can refuse a human follow-up after a parent-driven follow-up,
+	// even when the result is drained. Reading that drained result again does
+	// not change eligibility, so the input queue must retain the native refusal.
 	err := a.commandChild(key, method, map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID, "body": text})
 	if err == nil {
 		a.requestChildView(id)
@@ -318,15 +307,15 @@ func (a *Agent) InterruptChild(key string, stop agent.StopContext) error {
 
 // childRouteHistoryItems reads the native folded item forms. A budgeted or
 // unsupported snapshot requires the protocol's paged view instead.
-func childRouteHistoryItems(raw json.RawMessage, head string) ([]nativeItem, bool) {
+func childRouteHistoryItems(raw json.RawMessage, head string) ([]json.RawMessage, bool) {
 	var history struct {
-		Mode     string        `json:"mode"`
-		Items    *[]nativeItem `json:"items"`
+		Mode     string             `json:"mode"`
+		Items    *[]json.RawMessage `json:"items"`
 		Snapshot *struct {
 			SchemaVersion int    `json:"schemaVersion"`
 			ViewCursor    string `json:"viewCursor"`
 			State         struct {
-				Items *[]nativeItem `json:"items"`
+				Items *[]json.RawMessage `json:"items"`
 			} `json:"state"`
 		} `json:"snapshot"`
 	}
@@ -346,70 +335,210 @@ func childRouteHistoryItems(raw json.RawMessage, head string) ([]nativeItem, boo
 	return nil, false
 }
 
-// restoreChildRoutes rebuilds child ownership from native metadata without
-// replaying a parent conversation that the worker already stores.
+// restoreChildRoutes installs the complete native fold before projecting rows.
+// Folded objects supply metadata, never invented notification frames.
 func (a *Agent) restoreChildRoutes(id string, history json.RawMessage, head string) error {
-	items, served := childRouteHistoryItems(history, head)
+	objects, served := childRouteHistoryItems(history, head)
 	if !served {
 		events, err := a.readViewPages(id, "", head)
 		if err != nil {
 			return err
 		}
+		reached := head == ""
 		for _, raw := range events {
 			var event struct {
-				Params itemParams `json:"params"`
+				Method string `json:"method"`
+				Params struct {
+					SessionID string          `json:"sessionId"`
+					Cursor    string          `json:"viewCursor"`
+					Item      json.RawMessage `json:"item"`
+				} `json:"params"`
 			}
-			if json.Unmarshal(raw, &event) != nil {
+			if json.Unmarshal(raw, &event) != nil || event.Params.SessionID != id {
 				return fmt.Errorf("the native Muse child history is invalid")
 			}
-			items = append(items, event.Params.Item)
+			switch event.Method {
+			case contracts.MuseMethodItemStarted, contracts.MuseMethodItemUpdated, contracts.MuseMethodItemCompleted:
+				if len(event.Params.Item) == 0 {
+					return fmt.Errorf("the native Muse history event has no item")
+				}
+				objects = append(objects, slices.Clone(event.Params.Item))
+			}
+			if head != "" && event.Params.Cursor == head {
+				reached = true
+			}
+		}
+		if !reached {
+			return fmt.Errorf("the native Muse history did not reach its head")
 		}
 	}
-	latest := make(map[string]nativeItem)
+	a.dispatcher.mu.Lock()
+	a.stateMu.Lock()
+	parent := a.sessions[id]
+	root := id == a.sessionID && a.currentSessionState(id, parent)
+	a.stateMu.Unlock()
+	if !root {
+		a.dispatcher.mu.Unlock()
+		return agent.ErrChildRouteNotReady
+	}
+	err := a.installRegistryHeadLocked(id, parent, objects)
+	a.dispatcher.mu.Unlock()
+	a.drainDeferredOutputActions()
+	a.drainControls()
+	return err
+}
+
+// installRegistryHeadLocked reconciles a complete native head for one owned
+// session. The caller holds dispatcher.mu and supplies its captured session state.
+func (a *Agent) installRegistryHeadLocked(id string, parent *sessionState, objects []json.RawMessage) error {
+	type restoredItem struct {
+		item nativeItem
+		raw  json.RawMessage
+	}
+	latest := make(map[string]restoredItem)
 	var order []string
-	for _, item := range items {
-		if item.ID == "" || item.Revision <= 0 || (item.Kind != museItemSubagent && item.Kind != contracts.MuseItemKindWorkflow) {
+	for _, raw := range objects {
+		var item nativeItem
+		if json.Unmarshal(raw, &item) != nil {
+			return fmt.Errorf("the native Muse history item is invalid")
+		}
+		if item.ID == "" || item.Revision <= 0 || !museRegistryItem(item) {
 			continue
 		}
-		previous, seen := latest[item.ID]
+		prior, seen := latest[item.ID]
 		if !seen {
 			order = append(order, item.ID)
 		}
-		if !seen || item.Revision > previous.Revision {
-			latest[item.ID] = item
+		if seen && item.Revision == prior.item.Revision && !agent.JSONCanonicalEqual(prior.raw, raw) {
+			return fmt.Errorf("the native Muse history repeats an item revision with different content")
+		}
+		if seen && item.Revision != prior.item.Revision {
+			older, newer := prior.item, item
+			if older.Revision > newer.Revision {
+				older, newer = newer, older
+			}
+			if err := validateWorkflowAttemptAdvance(older, newer); err != nil {
+				return err
+			}
+		}
+		if !seen || item.Revision > prior.item.Revision {
+			latest[item.ID] = restoredItem{item, slices.Clone(raw)}
 		}
 	}
-	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
 	a.stateMu.Lock()
-	parent := a.sessions[id]
-	current := id == a.sessionID && a.currentSessionState(id, parent)
-	a.stateMu.Unlock()
-	if !current {
+	if !a.currentSessionState(id, parent) {
+		a.stateMu.Unlock()
 		return agent.ErrChildRouteNotReady
 	}
-	var restoreErr error
 	for _, key := range order {
-		item := latest[key]
-		a.stateMu.Lock()
-		previous := parent.items[key]
-		if previous != nil && previous.params.Item.Revision >= item.Revision {
+		restored := latest[key]
+		current := parent.items[key]
+		if current != nil && current.params.Item.Revision == restored.item.Revision && !agent.JSONCanonicalEqual(current.nativeObject(), restored.raw) {
 			a.stateMu.Unlock()
-			continue
+			return fmt.Errorf("the native Muse history conflicts with the current item revision")
 		}
-		params := itemParams{SessionID: id, Item: item}
-		// Subagent items are silent metadata. Rendered workflow items must still
-		// arrive through their original native frames before a revision is stored.
-		if item.Kind == museItemSubagent {
-			parent.items[key] = &itemState{params: cloneItemParams(params), persistedRevision: item.Revision, deltas: make(map[string]string), cursors: make(map[string]bool), order: parent.nextItemOrder}
+		if current != nil && restored.item.Revision > current.params.Item.Revision {
+			if err := validateWorkflowAttemptAdvance(current.params.Item, restored.item); err != nil {
+				a.stateMu.Unlock()
+				return err
+			}
+		} else if current == nil {
+			if err := validateWorkflowAttemptAdvance(nativeItem{}, restored.item); err != nil {
+				a.stateMu.Unlock()
+				return err
+			}
+		}
+	}
+	previous := make(map[string]nativeItem, len(order))
+	var publish []string
+	for _, key := range order {
+		restored := latest[key]
+		current := parent.items[key]
+		if current != nil {
+			if current.params.Item.Revision > restored.item.Revision {
+				continue
+			}
+			previous[key] = current.params.Item
+		} else {
+			current = &itemState{deltas: make(map[string]string), cursors: make(map[string]bool), order: parent.nextItemOrder}
 			parent.nextItemOrder++
+			parent.items[key] = current
 		}
+		prior := current.params
+		if restored.item.Revision > current.params.Item.Revision {
+			current.params = cloneItemParams(itemParams{SessionID: id, Item: restored.item})
+			current.nativeItemRaw = slices.Clone(restored.raw)
+			current.raw = nil
+			publication := current.registryState()
+			publication.mu.Lock()
+			publication.registryHeadRevision = 0
+			publication.mu.Unlock()
+			parent.ensureNativeItemIndex().replace(prior, current)
+		}
+		publication := current.registryState()
+		publication.mu.Lock()
+		needsHead := publication.registryReconciledRevision < restored.item.Revision && publication.queuedHeadRevision < restored.item.Revision
+		if needsHead {
+			publication.registryHeadRevision = restored.item.Revision
+		}
+		publication.mu.Unlock()
+		if needsHead {
+			publish = append(publish, key)
+		}
+	}
+	a.stateMu.Unlock()
+	var restoreErr error
+	for _, key := range publish {
+		a.stateMu.Lock()
+		params := cloneItemParams(parent.items[key].params)
 		a.stateMu.Unlock()
-		var prior nativeItem
-		if previous != nil {
-			prior = previous.params.Item
-		}
-		restoreErr = errors.Join(restoreErr, a.observeChildOrTask(params, parent, prior))
+		restoreErr = errors.Join(restoreErr, a.observeChildOrTask(params, parent, previous[key]))
 	}
 	return restoreErr
+}
+
+// sessionRegistryRowKeys derives all rows from the current native items.
+// The caller holds stateMu.
+func sessionRegistryRowKeys(sessionID string, state *sessionState) []string {
+	keys := make(map[string]bool)
+	add := func(key string) {
+		if key != "" {
+			keys[key] = true
+		}
+	}
+	add(state.childKey)
+	for _, stored := range state.items {
+		item := stored.params.Item
+		switch item.Kind {
+		case contracts.MuseItemKindWorkflow:
+			if item.WorkflowRunID == "" {
+				continue
+			}
+			add(museWorkflowRowKey(sessionID, item.WorkflowRunID))
+			var children []struct {
+				ChildID string `json:"childId"`
+			}
+			if json.Unmarshal(item.Children, &children) == nil {
+				for _, child := range children {
+					if child.ChildID != "" {
+						add(museChildRowKey(sessionID, child.ChildID))
+					}
+				}
+			}
+		case museItemSubagent:
+			if item.SubagentID != "" {
+				add(museChildRowKey(sessionID, item.SubagentID))
+			}
+		case contracts.MuseItemKindToolCall:
+			if item.Background {
+				add(museBackgroundTaskRowKey(sessionID, item.ID))
+			}
+		}
+	}
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	slices.Sort(result)
+	return result
 }

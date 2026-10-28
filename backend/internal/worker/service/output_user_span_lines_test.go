@@ -59,7 +59,7 @@ func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, ag
 		AgentProvider: provider,
 	}))
 
-	sink := svc.Output.NewSink(agentID, provider)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, provider)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    agentID,
 		Options:    map[string]string{agent.OptionIDModel: "opus"},

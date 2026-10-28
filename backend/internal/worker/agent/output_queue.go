@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 )
 
-// ErrOutputInFlight reports that another caller drains this queue.
+// ErrOutputInFlight reports an active drainer or a reservation whose data is not ready.
 // A reentrant caller must leave its submitted writes for that caller.
 var ErrOutputInFlight = errors.New("an output write is in flight")
 
@@ -51,11 +51,12 @@ func (queue *OutputQueue) executes(ticket *OutputTicket) bool {
 // OutputQueue keeps native writes, generated rows and dependent effects in submission order.
 // Failed writes remain at the head. No callback runs with mu held.
 type OutputQueue struct {
-	running bool
-	idle    chan struct{}
-	mu      sync.Mutex
-	pending []*OutputTicket
-	retry   *outputRetry
+	running   bool
+	idle      chan struct{}
+	mu        sync.Mutex
+	pending   []*OutputTicket
+	readyWake *OutputTicket
+	retry     *outputRetry
 }
 
 // Append admits a complete batch before any of its callbacks can run.
@@ -69,6 +70,23 @@ func (queue *OutputQueue) Append(writes ...OutputWrite) []*OutputTicket {
 	queue.pending = append(queue.pending, tickets...)
 	queue.mu.Unlock()
 	return tickets
+}
+
+// FlushAfterReady publishes one readiness transition before attempting a flush.
+// Call it once after publishing each ticket's prepared data, without holding provider locks.
+// Only the current head can wake an existing drainer that observed unready data.
+func (queue *OutputQueue) FlushAfterReady(tickets ...*OutputTicket) error {
+	queue.mu.Lock()
+	if queue.running && len(queue.pending) != 0 {
+		for _, ticket := range tickets {
+			if queue.pending[0] == ticket {
+				queue.readyWake = ticket
+				break
+			}
+		}
+	}
+	queue.mu.Unlock()
+	return queue.Flush()
 }
 
 // Flush attempts pending writes until the queue is empty or a write fails.
@@ -108,12 +126,30 @@ func (queue *OutputQueue) Flush() (err error) {
 		}
 		ticket := queue.pending[0]
 		run, label := ticket.write.Run, ticket.write.Label
+		// Prepared data published before this attempt is already visible to
+		// its callback. Only a later readiness transition can require another attempt.
+		queue.readyWake = nil
 		queue.mu.Unlock()
+		var writeErr error
 		if run == nil {
-			return errors.New("the pending output has no write function")
+			writeErr = errors.New("the pending output has no write function")
+		} else if err := run(); err != nil {
+			writeErr = fmt.Errorf("%s: %w", label, err)
 		}
-		if err := run(); err != nil {
-			return fmt.Errorf("%s: %w", label, err)
+		if writeErr != nil {
+			queue.mu.Lock()
+			headChanged := len(queue.pending) == 0 || queue.pending[0] != ticket
+			if errors.Is(writeErr, ErrOutputInFlight) && (headChanged || queue.readyWake == ticket) {
+				queue.readyWake = nil
+				queue.mu.Unlock()
+				continue
+			}
+			// Finish under the same lock as the readiness check. A publisher
+			// then either wakes this drainer or starts the next one itself.
+			queue.finishLocked()
+			finished = true
+			queue.mu.Unlock()
+			return writeErr
 		}
 		ticket.done.Store(true)
 		queue.mu.Lock()
@@ -127,6 +163,7 @@ func (queue *OutputQueue) Flush() (err error) {
 
 func (queue *OutputQueue) finishLocked() {
 	queue.running = false
+	queue.readyWake = nil
 	close(queue.idle)
 }
 

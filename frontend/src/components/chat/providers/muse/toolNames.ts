@@ -26,7 +26,6 @@ export const MUSE_TOOL = {
   RequestUserInput: 'request_user_input',
   SubagentSpawn: 'subagent_spawn',
   SubagentStatus: 'subagent_status',
-  SubagentSendMessage: 'subagent_send_message',
   SubagentWait: 'subagent_wait',
   SubagentReadResult: 'subagent_read_result',
   SubagentCancel: 'subagent_cancel',

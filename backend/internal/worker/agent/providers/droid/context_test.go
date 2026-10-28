@@ -3,6 +3,7 @@ package droid
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +15,69 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+func TestContextRequestsAndTurnPublicationsUseIndependentSequences(t *testing.T) {
+	t.Parallel()
+	a, sink, writer := newDroidContextTestAgent(t)
+	a.startTurn()
+	const count = 64
+	start := make(chan struct{})
+	contextDone, publicationsDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(contextDone)
+		<-start
+		for range count {
+			a.readContextUsage()
+		}
+	}()
+	go func() {
+		defer close(publicationsDone)
+		<-start
+		for range count {
+			a.PublishTurnActive()
+		}
+	}()
+	close(start)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	ids := make(map[string]bool, count)
+	for range count {
+		var request droidEnvelope
+		select {
+		case request = <-writer.requests:
+		case <-ctx.Done():
+			t.Fatal("the concurrent context request did not arrive")
+		}
+		assert.Equal(t, droidMethodGetContextStats, request.Method)
+		assert.False(t, ids[request.ID], "every context request must have its own native identity")
+		ids[request.ID] = true
+		response := newDroidEnvelope(droidTypeResponse)
+		response.ID = request.ID
+		response.Result = json.RawMessage(`{"used":200,"remaining":800,"limit":1000}`)
+		line, err := response.Marshal()
+		require.NoError(t, err)
+		a.HandleOutput(line)
+	}
+	for _, done := range []<-chan struct{}{contextDone, publicationsDone} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatal("the concurrent context requests and turn publications did not finish")
+		}
+	}
+	require.Len(t, ids, count)
+	for number := 1; number <= count; number++ {
+		assert.Contains(t, ids, fmt.Sprintf("leapmux-%d", number))
+	}
+	sequences, states := sink.TurnSeqs(), sink.TurnStates()
+	require.Len(t, sequences, count+1)
+	require.Len(t, states, count+1)
+	for index, sequence := range sequences {
+		assert.Equal(t, uint64(index+1), sequence, "context requests must not spend the turn ordering sequence")
+		assert.True(t, states[index].Active)
+		assert.True(t, states[index].Steerable)
+	}
+}
 
 func newDroidContextTestAgent(t *testing.T) (*Agent, *agenttest.Sink, *droidRequestWriter) {
 	t.Helper()

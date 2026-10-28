@@ -54,7 +54,7 @@ func TestControlPublicationFailureLogsReleaseTheMutationBeforeCallbacks(t *testi
 			svc, _, _ := setupTestService(t)
 			const agentID = "control-failure-log-reentry"
 			createClaimTestAgent(t, svc, agentID)
-			sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			if boundary == "stop instance delete" {
 				_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{AgentID: agentID, WorkingDir: t.TempDir()}, sink, claudetest.StartSilent)
 				require.NoError(t, err)
@@ -156,7 +156,7 @@ func TestControlPublicationWatcherCanPublishAnotherRequestSynchronously(t *testi
 			svc, _, _ := setupTestService(t)
 			const agentID = "control-publication-reentry"
 			createClaimTestAgent(t, svc, agentID)
-			sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			if operation == "stop" {
 				_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: agentID, WorkingDir: t.TempDir()}, sink, claudetest.StartSilent)
 				require.NoError(t, err)
@@ -373,7 +373,7 @@ func TestControlCancellationBroadcastsTheRemovedInstanceToken(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "cancel-test"}}
 	registerAgentWatch(svc, "cancel-test", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	payload := []byte(`{"id":7,"method":"item/commandExecution/requestApproval"}`)
@@ -400,7 +400,7 @@ func TestControlPublicationStoresTheBroadcastPayloadAndClaim(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "control-test"}}
 	registerAgentWatch(svc, "control-test", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	payload := []byte(` {"jsonrpc":"2.0", "id":7,"wide":9007199254740993} `)
@@ -431,7 +431,7 @@ func TestControlPublicationPersistsAndBroadcastsSourceSequence(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "control-source"}}
 	registerAgentWatch(svc, "control-source", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	request := agent.ControlRequest{RequestID: "dialog", Payload: []byte(` {"id":"dialog","method":"select"} `), SourceSeq: 23}
@@ -451,7 +451,7 @@ func TestControlPublicationDoesNotPublishAfterStorageFailure(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	writer := newTestWatcher("control-test")
 	registerAgentWatch(svc, "control-test", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	_, err := svc.DB.ExecContext(context.Background(), `CREATE TRIGGER reject_control_request
@@ -470,7 +470,7 @@ func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	payload := []byte(`{"id":7,"request_id":"permission-1","method":"interaction/requestPermission"}`)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "permission-1", Payload: payload}))
 	first, err := svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "permission-1"})
@@ -489,7 +489,7 @@ func TestControlPublicationCancellationKeepsAReplacementInstance(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	request := agent.ControlRequest{RequestID: "jsonrpc:7", InstanceID: "first-instance", Payload: []byte(`{"id":7,"method":"approve"}`)}
 	require.NoError(t, sink.PublishControlRequest(request))
 	request.InstanceID = "second-instance"
@@ -507,7 +507,7 @@ func TestControlPublicationStartsANewClaimForAnotherProviderSession(t *testing.T
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	request := agent.ControlRequest{RequestID: "same-request", Payload: []byte(`{"question":"Choose one"}`), SourceSeq: 10}
 	sink.UpdateSessionID("old-session")
 	require.NoError(t, sink.PublishControlRequest(request))
@@ -528,7 +528,7 @@ func TestControlPublicationConcurrentAnnouncementsShareOneClaim(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "control-test"}}
 	registerAgentWatch(svc, "control-test", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	const count = 8
@@ -652,7 +652,7 @@ func TestControlPublicationKeepsOwnershipDuringATurnOrProcessChange(t *testing.T
 				oldSink.SetTurnState(agent.TurnState{}, 2)
 				oldSink.SetTurnState(agent.TurnState{Active: true}, 3)
 			} else {
-				newSink = svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				newSink = newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 				svc.Output.NoteAgentProcessStarted("agent-1")
 				newSink.SetTurnState(agent.TurnState{Active: true}, 1)
 			}
@@ -775,7 +775,7 @@ func TestRetiredSinkCancellationKeepsTheReplacementInstance(t *testing.T) {
 	t.Parallel()
 	svc, _, oldSink, _ := stopOwnershipFixture(t)
 	publishStopControl(t, oldSink, "request")
-	newSink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	newSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted("agent-1")
 	newSink.SetTurnState(agent.TurnState{Active: true}, 1)
 	publishStopControl(t, newSink, "request")
@@ -804,7 +804,7 @@ func TestRetiredStoreCompletionPublishesNoControl(t *testing.T) {
 		done <- oldSink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: []byte(`{"question":"old question"}`)})
 	}()
 	<-entered
-	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted("agent-1")
 	close(release)
 	require.NoError(t, <-done)
@@ -841,7 +841,7 @@ func TestWaitingCancellationRechecksTheNativePublisherAfterAdmission(t *testing.
 		defer st.mu.Unlock()
 		return st.controlMutations == 2
 	}, 30*time.Second, 5*time.Millisecond)
-	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted("agent-1")
 	release()
 	<-done
@@ -929,7 +929,7 @@ func TestNonBlockingControlPublicationKeepsOneClaimAcrossScopes(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	sink.SetTurnState(agent.TurnState{Active: true}, 1)
 	question := agent.ControlRequest{RequestID: "question", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`)}
 	require.NoError(t, sink.PublishControlRequest(question))
@@ -962,7 +962,7 @@ func TestProcessExitKeepsTheNonBlockingControl(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "process-exit"}}
 	registerAgentWatch(svc, "process-exit", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
@@ -985,7 +985,7 @@ func TestAgentTeardownDeletesEveryControlRequest(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "teardown"}}
 	registerAgentWatch(svc, "teardown", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
@@ -1011,7 +1011,7 @@ func TestSessionChangeRetiresOnlyTheOtherSessionsQuestions(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "session-change"}}
 	registerAgentWatch(svc, "session-change", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	sink.UpdateSessionID("session-a")
@@ -1134,7 +1134,7 @@ func TestClearAgentSessionIDRetiresTheClearedSessionsQuestions(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "cleared-session"}}
 	registerAgentWatch(svc, "cleared-session", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	sink.UpdateSessionID("session-a")
@@ -1155,7 +1155,7 @@ func TestNonBlockingPublicationRejectsAnObsoleteSession(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	sink.UpdateSessionID("current-session")
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: "obsolete-question", AgentSessionID: "previous-session", NonBlocking: true,
@@ -1173,7 +1173,7 @@ func TestCompletedAsyncQuestionIsNotRepublished(t *testing.T) {
 				t.Parallel()
 				svc, _, _ := setupTestService(t)
 				row := createAsyncQuestionTestAgent(t, svc)
-				sink := svc.Output.NewSink(row.ID, row.AgentProvider)
+				sink := newTestRootOutputSink(t, svc.Output, row.ID, row.AgentProvider)
 				request := agent.ControlRequest{RequestID: "question-1", InstanceID: "claim-1",
 					AgentSessionID: "session-1", NonBlocking: true, Payload: asyncQuestionPayload("question-1")}
 				require.NoError(t, sink.PublishControlRequest(request))
@@ -1184,7 +1184,7 @@ func TestCompletedAsyncQuestionIsNotRepublished(t *testing.T) {
 				_, _, err := processControlResponseForTest(svc, row.ID, row, response, request.InstanceID)
 				require.NoError(t, err)
 				if replaceSink {
-					sink = svc.Output.NewSink(row.ID, row.AgentProvider)
+					sink = newTestRootOutputSink(t, svc.Output, row.ID, row.AgentProvider)
 				}
 
 				require.NoError(t, sink.PublishControlRequest(request))

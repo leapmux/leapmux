@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +18,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -22,20 +26,198 @@ import (
 )
 
 // setupRootSink creates a root main-agent row and binds a sink to it. The
-// per-test CreateAgent + NewSink preamble is identical across the child-agent
+// per-test CreateAgent + NewRootSink preamble is identical across the child-agent
 // tests; this helper keeps each test focused on the behavior under test. The
 // sink is NOT registered with the agent manager (these tests drive the sink
 // directly), unlike setupAgentWithWatcher.
-func setupRootSink(t *testing.T, rootID string) (*Service, agent.ProviderServices) {
+func setupRootSink(t *testing.T, rootID string, options ...setupOption) (*Service, agent.ProviderServices) {
 	t.Helper()
-	svc, _, _ := setupTestService(t)
+	svc, _, _ := setupTestService(t, options...)
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            rootID,
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	return svc, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	return svc, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+}
+
+type unavailableChildTranscriptHead struct {
+	db.DBTX
+	childID     string
+	unavailable atomic.Bool
+	beforeRead  func(context.Context)
+}
+
+func (store *unavailableChildTranscriptHead) QueryRowContext(ctx context.Context, query string, arguments ...any) *sql.Row {
+	if strings.HasPrefix(query, "-- name: GetMaxSeqByAgentID :one") && len(arguments) == 1 && arguments[0] == store.childID {
+		if store.beforeRead != nil {
+			store.beforeRead(ctx)
+		}
+		if store.unavailable.Load() {
+			return store.DBTX.QueryRowContext(ctx, "SELECT missing_initial_child_prompt_head")
+		}
+	}
+	return store.DBTX.QueryRowContext(ctx, query, arguments...)
+}
+
+func TestPersistChildPrompt_HeadReadFailureRetainsTheAssignmentBeforeChildOutput(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	svc, sink := setupRootSink(t, "prompt-head-root", withClock(clock))
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", AgentSessionID: "native-child-session", Title: "Original assignment"})
+	require.NoError(t, err)
+	store := &unavailableChildTranscriptHead{DBTX: svc.DB, childID: childID}
+	store.unavailable.Store(true)
+	svc.Output.queries = db.New(store)
+	err = sink.PersistChildPrompt(childID, "The original assignment.")
+	assert.Error(t, err)
+	assert.True(t, agent.OutputRetained(err), "the service must own the assignment before it reads the transcript head")
+	err = sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"content":"The distinct child answer."}`), agent.SpanInfo{})
+	assert.True(t, agent.OutputRetained(err))
+	assert.Empty(t, transcriptMessages(t, svc, childID), "the child answer cannot pass the refused opening prompt")
+	store.unavailable.Store(false)
+	queue := agent.OutputQueueFor(sink.ChildSink(childID))
+	require.NotNil(t, queue)
+	require.NoError(t, queue.Flush())
+	rows := transcriptMessages(t, svc, childID)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "The original assignment.", rows[0]["content"])
+	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER), rows[0]["__source"])
+	assert.Equal(t, "The distinct child answer.", rows[1]["content"])
+	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT), rows[1]["__source"])
+	assert.False(t, queue.HasPending())
+}
+
+func TestPersistChildPrompt_RetriesWithoutAnotherProviderFrameAndOrdersEveryChildShorthand(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	svc, sink := setupRootSink(t, "prompt-retry-root", withClock(clock))
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
+	require.NoError(t, err)
+	store := &unavailableChildTranscriptHead{DBTX: svc.DB, childID: childID}
+	store.unavailable.Store(true)
+	svc.Output.queries = db.New(store)
+	trap := clock.Trap().NewTimer(agent.OutputRetryTimerTag)
+	t.Cleanup(trap.Close)
+	assert.True(t, agent.OutputRetained(sink.PersistChildPrompt(childID, "The original assignment.")))
+	assert.True(t, agent.OutputRetained(sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"content":"The answer."}`), agent.SpanInfo{})))
+	assert.True(t, agent.OutputRetained(sink.PersistChildUserMessage(childID, "The later user input.")))
+	assert.True(t, agent.OutputRetained(sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"content":"The turn end."}`)}, agent.SpanInfo{})))
+	assert.Empty(t, transcriptMessages(t, svc, childID))
+	ctx := testutil.DeadlineContext(t)
+	delay := testutil.WaitForTimer(t, ctx, trap)
+	assert.Equal(t, time.Second, delay)
+	store.unavailable.Store(false)
+	clock.Advance(delay).MustWait(ctx)
+	testutil.RequireEventually(t, func() bool {
+		rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+		return err == nil && len(rows) == 4
+	})
+	rows := transcriptMessages(t, svc, childID)
+	require.Len(t, rows, 4)
+	assert.Equal(t, "The original assignment.", rows[0]["content"])
+	assert.Equal(t, "The answer.", rows[1]["content"])
+	assert.Equal(t, "The later user input.", rows[2]["content"])
+	assert.Equal(t, "The turn end.", rows[3]["content"])
+	assert.False(t, agent.OutputQueueFor(sink.ChildSink(childID)).HasPending())
+}
+
+func TestPersistChildPrompt_ConcurrentRepeatsKeepOneOriginalReservation(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "prompt-concurrent-root")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
+	require.NoError(t, err)
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseRead := sync.OnceFunc(func() { close(release) })
+	var once sync.Once
+	store := &unavailableChildTranscriptHead{DBTX: svc.DB, childID: childID, beforeRead: func(ctx context.Context) {
+		once.Do(func() {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		})
+	}}
+	svc.Output.queries = db.New(store)
+	var group sync.WaitGroup
+	t.Cleanup(func() { releaseRead(); group.Wait() })
+	first, repeated := make(chan error, 1), make(chan error, 1)
+	group.Go(func() { first <- sink.PersistChildPrompt(childID, "The original assignment.") })
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the opening prompt did not reach its reserved head read")
+	}
+	group.Go(func() { repeated <- sink.PersistChildPrompt(childID, "A different concurrent assignment.") })
+	select {
+	case err := <-repeated:
+		assert.True(t, agent.OutputRetained(err))
+	case <-ctx.Done():
+		t.Fatal("the repeated prompt waited for storage instead of joining its reservation")
+	}
+	assert.True(t, agent.OutputRetained(sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"content":"The child answer."}`), agent.SpanInfo{})))
+	assert.Empty(t, transcriptMessages(t, svc, childID))
+	releaseRead()
+	select {
+	case err := <-first:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the reserved opening prompt did not finish")
+	}
+	rows := transcriptMessages(t, svc, childID)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "The original assignment.", rows[0]["content"])
+	assert.Equal(t, "The child answer.", rows[1]["content"])
+}
+
+func TestPersistChildPrompt_OriginalSessionSurvivesSinkReplacement(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	svc, original := setupRootSink(t, "prompt-replacement-root", withClock(clock))
+	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", AgentSessionID: "original-child-session", Title: "Assignment"})
+	require.NoError(t, err)
+	store := &unavailableChildTranscriptHead{DBTX: svc.DB, childID: childID}
+	store.unavailable.Store(true)
+	svc.Output.queries = db.New(store)
+	assert.True(t, agent.OutputRetained(original.PersistChildPrompt(childID, "The original assignment.")))
+	replacement := newTestRootOutputSink(t, svc.Output, "prompt-replacement-root", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	replacement.ChildSink(childID).UpdateSessionID("replacement-child-session")
+	assert.True(t, agent.OutputRetained(replacement.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"content":"The replacement answer."}`), agent.SpanInfo{})))
+	store.unavailable.Store(false)
+	queue := agent.OutputQueueFor(replacement.ChildSink(childID))
+	require.NoError(t, queue.Flush())
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "original-child-session", rows[0].AgentSessionID)
+	assert.Equal(t, "replacement-child-session", rows[1].AgentSessionID)
+	require.NoError(t, replacement.PersistChildPrompt(childID, "A later different assignment."))
+	assert.Len(t, transcriptMessages(t, svc, childID), 2)
+}
+
+func TestPersistChildPrompt_DeletedHistoryIsEmptyWithoutResettingItsSequence(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "prompt-deleted-root")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
+	require.NoError(t, err)
+	require.NoError(t, sink.PersistChildPrompt(childID, "The first assignment."))
+	old, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, old, 1)
+	_, err = svc.Queries.DeleteMessageByAgentAndID(t.Context(), db.DeleteMessageByAgentAndIDParams{AgentID: childID, ID: old[0].ID})
+	require.NoError(t, err)
+	head, err := svc.Queries.GetMaxSeqByAgentID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Zero(t, head)
+	require.NoError(t, sink.PersistChildPrompt(childID, "The new opening assignment."))
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Greater(t, rows[0].Seq, old[0].Seq)
+	assert.Equal(t, "The new opening assignment.", transcriptMessages(t, svc, childID)[0]["content"])
 }
 
 // newRootAgent adds a SECOND root to an existing service, so a test can ask one
@@ -49,7 +231,7 @@ func newRootAgent(t *testing.T, svc *Service, rootID string) agent.ProviderServi
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	return svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	return newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 }
 
 func TestEnsureChildAgent_CreatesOnce(t *testing.T) {
@@ -114,7 +296,7 @@ func TestPersistSubagentReportResolvesTheChildAndDeduplicatesDurably(t *testing.
 	require.NoError(t, err)
 	assert.True(t, stored)
 
-	secondSink := svc.Output.NewSink("root-report", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	secondSink := newTestRootOutputSink(t, svc.Output, "root-report", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	stored, err = secondSink.PersistChildSubagentReport(write)
 	require.NoError(t, err)
 	assert.False(t, stored, "a new sink still reads the database uniqueness rule")
@@ -342,7 +524,7 @@ func TestEnsureChildAgent_SpawnSpanFallbackAfterRegistryLoss(t *testing.T) {
 	// upsert: a fresh OutputHandler with no cache. The child row is in the DB
 	// but the in-memory registry cache is gone.
 	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil, svc.Clock)
-	sink2 := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink2 := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// The spawn-span fallback reattaches the same child row.
 	id2, err := sink2.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "first"})
@@ -378,7 +560,7 @@ func TestChildSpawnSpan_AnswersFromTheChildRow(t *testing.T) {
 	// A fresh handler models a worker restart: no cache exists, and the row still
 	// answers, because the span lives in the agents table and not in memory.
 	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil, svc.Clock)
-	sink2 := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink2 := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	span, err = sink2.ChildSpawnSpan(childID)
 	require.NoError(t, err)
 	assert.Equal(t, "span-1", span, "the spawn span survives the process that recorded it")
@@ -535,7 +717,7 @@ func TestNestedChild_RegistersUnderRoot(t *testing.T) {
 }
 
 // TestChildSink_TrackerRegisteredAsChildKind verifies the typed registry
-// records root vs child distinctly: NewSink seeds a root-kind tracker,
+// records root vs child distinctly: NewRootSink seeds a root-kind tracker,
 // ChildSink seeds a child-kind tracker. This is the invariant cleanup and the
 // orphan sweep rely on to reason about each population.
 func TestChildSink_TrackerRegisteredAsChildKind(t *testing.T) {
@@ -546,8 +728,8 @@ func TestChildSink_TrackerRegisteredAsChildKind(t *testing.T) {
 	// require (not assert) so a seeding regression fails here, not by skipping
 	// the kind check below.
 	_, rootKind, ok := svc.Output.trackers.get("root-1")
-	require.True(t, ok, "root tracker seeded by NewSink")
-	assert.Equal(t, spanTrackerRoot, rootKind, "NewSink registers the root kind")
+	require.True(t, ok, "root tracker seeded by NewRootSink")
+	assert.Equal(t, spanTrackerRoot, rootKind, "NewRootSink registers the root kind")
 
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
@@ -774,7 +956,7 @@ func TestObsoleteParentCleanupKeepsTheReplacementChildAndHeldSettle(t *testing.T
 	require.NoError(t, err)
 	oldChild := requireChildOutputSink(t, oldRoot, childID)
 	oldChild.UpdateSessionID("original-child-session")
-	svc.Output.NewSink(oldRoot.agentID, oldRoot.agentProvider)
+	newTestRootOutputSink(t, svc.Output, oldRoot.agentID, oldRoot.agentProvider)
 	currentRoot := requireRootOutputSink(t, svc.Output, oldRoot.agentID)
 	currentChild := requireChildOutputSink(t, currentRoot, childID)
 	currentChild.UpdateSessionID("replacement-child-session")
@@ -818,7 +1000,7 @@ func TestRetiredChildCapturedOperationsKeepOriginalSessionAndGeometry(t *testing
 	message := agent.CaptureTranscript(oldChild, agent.MessageContent{Original: []byte(`{"type":"assistant","text":"original"}`)}, span)
 	notification := agent.CaptureTranscript(oldChild, agent.MessageContent{Original: []byte(`{"type":"system","subtype":"notice"}`)}, agent.SpanInfo{})
 	divider := agent.CaptureTranscript(oldChild, agent.MessageContent{Original: []byte(`{"type":"result","num_tool_uses":4}`)}, agent.SpanInfo{})
-	svc.Output.NewSink(oldRoot.agentID, oldRoot.agentProvider)
+	newTestRootOutputSink(t, svc.Output, oldRoot.agentID, oldRoot.agentProvider)
 	currentChild := requireChildOutputSink(t, requireRootOutputSink(t, svc.Output, oldRoot.agentID), childID)
 	currentChild.UpdateSessionID("replacement-child-session")
 	currentChild.ReportProgress(agent.NativeTokenProgress("replacement-model", 31))
@@ -846,7 +1028,7 @@ func TestRetiredChildCapturedUncachedSinkKeepsReplacementMapsExact(t *testing.T)
 	oldRoot := requireRootOutputSink(t, svc.Output, "root-uncached-history")
 	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "uncached-spawn", ProviderChildKey: "uncached-child", Title: "Child"})
 	require.NoError(t, err)
-	svc.Output.NewSink(oldRoot.agentID, oldRoot.agentProvider)
+	newTestRootOutputSink(t, svc.Output, oldRoot.agentID, oldRoot.agentProvider)
 	currentRoot := requireRootOutputSink(t, svc.Output, oldRoot.agentID)
 	currentChild := requireChildOutputSink(t, currentRoot, childID)
 	currentChild.UpdateSessionID("replacement-only-session")
@@ -1643,7 +1825,6 @@ func TestReviveBackgroundTask_RowWithNoTranscript(t *testing.T) {
 func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
@@ -1652,12 +1833,12 @@ func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 
 	// Put the DB back to running behind the cache's back, so the two disagree
 	// exactly as a concurrent revive would leave them.
-	require.NoError(t, svc.Queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
+	updateBackgroundTaskFixture(t, svc.Queries, db.UpdateAgentBackgroundTaskStatusParams{
 		Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 		UpdatedAt:    sqltime.NewSQLiteTime(nowMillis()),
 		OwnerAgentID: "root-1",
 		RowKey:       "task-1",
-	}))
+	})
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 
@@ -1852,7 +2033,10 @@ func TestEnsureChildAgentReportsTypedNativeKeyRefusal(t *testing.T) {
 func TestEnsureChildAgentKeepsReadFailureDistinctFromIdentityRefusal(t *testing.T) {
 	t.Parallel()
 	svc, _ := setupRootSink(t, "read-failure-root")
-	missingParent := svc.Output.NewSink("absent-parent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: "absent-parent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
+	missingParent := newTestRootOutputSink(t, svc.Output, "absent-parent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	_, deleteErr := svc.DB.ExecContext(t.Context(), "DELETE FROM agents WHERE id = ?", "absent-parent")
+	require.NoError(t, deleteErr)
 	id, err := missingParent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "missing-parent-spawn", ProviderChildKey: "missing-parent-child"})
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrChildIdentityRefused)

@@ -9,26 +9,38 @@ function finished(toolName: string, frame: Record<string, unknown>) {
 }
 
 const REQUEST = { description: 'Child probe', prompt: 'List', registryKey: 'call' }
+const SESSION_ID = '97d857a0-9cd7-4bbf-987b-a6ab094a074b'
 
 describe('qwenAgentRequest', () => {
-  it('reads the launch and keys the run by the call that launched it', () => {
-    expect(qwenAgentRequest({ description: 'Child probe', prompt: 'List the files', subagent_type: 'general-purpose', run_in_background: true }, 'call-1')).toEqual({
+  it('reads the launch and keys the run by its native owner and tool call', () => {
+    expect(qwenAgentRequest({ description: 'Child probe', prompt: 'List the files', subagent_type: 'general-purpose', run_in_background: true }, 'call_shared', SESSION_ID)).toEqual({
       description: 'Child probe',
       prompt: 'List the files',
       agentType: 'general-purpose',
       metadata: [{ label: 'Background', value: 'Yes' }],
-      registryKey: 'call-1',
+      registryKey: 'qwen-registry-v1:a1177c0911fd2197b36567c453224ef3d6fb6c4b7368399506542fa820c9aae5',
     })
   })
 
   // A launch with no arguments still draws a card, and an absent call id is no key.
   it('states a generic description and omits what the launch does not state', () => {
-    expect(qwenAgentRequest({}, '')).toEqual({ description: 'Subagent', prompt: '' })
+    expect(qwenAgentRequest({}, '', SESSION_ID)).toEqual({ description: 'Subagent', prompt: '' })
   })
 
   it('reads only a boolean true as a background launch', () => {
-    expect(qwenAgentRequest({ run_in_background: 'true' }, 'c')).not.toHaveProperty('metadata')
-    expect(qwenAgentRequest({ run_in_background: false }, 'c')).not.toHaveProperty('metadata')
+    expect(qwenAgentRequest({ run_in_background: 'true' }, 'c', SESSION_ID)).not.toHaveProperty('metadata')
+    expect(qwenAgentRequest({ run_in_background: false }, 'c', SESSION_ID)).not.toHaveProperty('metadata')
+  })
+
+  it.each([undefined, ''])('omits the registry link when the stored owner is %j', (owner) => {
+    expect(qwenAgentRequest({ description: 'Child probe', prompt: 'List' }, 'call_shared', owner)).toEqual({ description: 'Child probe', prompt: 'List' })
+  })
+
+  it('keeps the same native tool ID separate across owners', () => {
+    const first = qwenAgentRequest({}, 'call_shared', SESSION_ID)
+    const second = qwenAgentRequest({}, 'call_shared', '654fbfe5-9769-4517-8dfe-fcfbf19d61ac')
+    expect(first.registryKey).not.toBe(second.registryKey)
+    expect(second.registryKey).toBe('qwen-registry-v1:969cf556a29f630185028b09391152541fe83ab2388c78dbf467dbbb54695cf5')
   })
 })
 

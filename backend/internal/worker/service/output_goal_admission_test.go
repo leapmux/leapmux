@@ -37,7 +37,7 @@ func TestGoalAdmissionRejectsObsoleteRoot(t *testing.T) {
 				before := storedGoalColumns(t, svc)
 				beforeRows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: sink.agentID})
 				require.NoError(t, err)
-				svc.Output.NewSink(sink.agentID, sink.agentProvider)
+				newTestRootOutputSink(t, svc.Output, sink.agentID, sink.agentProvider)
 				beforeEvents := len(decodeAgentEvents(writer.testResponseWriter))
 				performGoalOperation(services, operation)
 				assert.Equal(t, before, storedGoalColumns(t, svc), "an obsolete root must change no stored goal field")
@@ -78,7 +78,7 @@ func TestGoalAdmissionRejectsReplacementDuringCapabilities(t *testing.T) {
 				}
 				switch replacement {
 				case "root":
-					svc.Output.NewSink(sink.agentID, sink.agentProvider)
+					newTestRootOutputSink(t, svc.Output, sink.agentID, sink.agentProvider)
 				case "session", "A-B-A":
 					services.UpdateSessionID("replacement-goal-session")
 					if replacement == "A-B-A" {
@@ -139,7 +139,7 @@ func TestGoalAdmissionRejectsExpiredQueuedEvents(t *testing.T) {
 				case "progress":
 					services.UpsertGoal(goalPublicationUpdate("Original goal", 47))
 				}
-				replacement := svc.Output.NewSink(sink.agentID, sink.agentProvider)
+				replacement := newTestRootOutputSink(t, svc.Output, sink.agentID, sink.agentProvider)
 				replacement.UpdateSessionID("replacement-goal-session")
 			}
 			beforeEvents := len(decodeAgentEvents(writer.testResponseWriter))
@@ -177,7 +177,7 @@ func TestGoalAdmissionPreservesExpiredNotificationCapture(t *testing.T) {
 	refuseGoalNotificationWrites(t, svc)
 	services.UpsertGoal(goalPublicationUpdate("Original retained goal", 23))
 	sink := requireRootOutputSink(t, svc.Output, "goal-publication-owner")
-	replacement := svc.Output.NewSink(sink.agentID, sink.agentProvider)
+	replacement := newTestRootOutputSink(t, svc.Output, sink.agentID, sink.agentProvider)
 	replacement.UpdateSessionID("replacement-goal-session")
 	before := len(decodeAgentEvents(writer.testResponseWriter))
 	allowGoalNotificationWrites(t, svc)

@@ -136,6 +136,8 @@ type TranscriptServices interface {
 	// CaptureMessage freezes the native session and live owner before a delayed write.
 	// A supplied publication keeps its original owner.
 	CaptureMessage(content MessageContent, span SpanInfo) MessageContent
+	// TranscriptScopeFor plans independent span geometry under the capture's original authority.
+	TranscriptScopeFor(CapturedTranscript) (TranscriptScope, error)
 	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
 	ReadToolRequest(spanID string) (*StoredMessage, error)
 	// ReadToolResult resolves the LATEST persisted row of one tool-call span, which is
@@ -175,6 +177,13 @@ type TranscriptServices interface {
 	// TestTurnEndPrecedesTheClear_<Provider>, because each one reaches its turn
 	// end through a different handler.
 	PersistTurnEnd(content MessageContent, span SpanInfo) error
+}
+
+// PreparedTranscriptWriter owns preparation before the global output queue
+// reserves a row. A transcript buffer uses it to admit a local position first.
+// Implementations must retain the selected bytes and invoke prepare only once.
+type PreparedTranscriptWriter interface {
+	PersistPreparedMessage(source leapmuxv1.MessageSource, template MessageContent, span SpanInfo, prepare func() []byte) error
 }
 
 // TurnServices publishes the provider's turn state.
@@ -241,6 +250,13 @@ type SpanServices interface {
 	SetSpanType(spanID, spanType string)
 	GetSpanType(spanID string) string
 	ReserveSpanColor(spanID, parentSpanID string) int32
+}
+
+// TranscriptScope plans captures without changing the live span tracker.
+// Use one scope sequentially; a color reservation belongs to its next capture.
+type TranscriptScope interface {
+	SpanServices
+	CaptureTranscript(MessageContent, SpanInfo) (CapturedTranscript, error)
 }
 
 // ProgressServices publishes live generation progress.
@@ -509,6 +525,11 @@ type ChildServices interface {
 	// therefore cannot duplicate the prompt, and a provider that learns the
 	// prompt only AFTER the subagent has started talking does not wedge it
 	// below the transcript it is supposed to introduce.
+	//
+	// A valid submission reserves the child's output queue before reading stored
+	// emptiness. A retained error means that queue owns the original assignment;
+	// later child output waits behind it. Do not submit another copy after a
+	// retained error. Concurrent repeats join the first pending assignment.
 	PersistChildPrompt(childAgentID, prompt string) error
 
 	// PersistChildUserMessage APPENDS text to a child transcript as a USER
@@ -649,6 +670,11 @@ type OutputEffectServices interface {
 	OutputQueue() *OutputQueue
 	// CaptureSteerReport retains the original publisher and span context. A failed effect can be retried.
 	CaptureSteerReport(count int, outcome SteerOutcome) func() error
+	// CaptureBackgroundTaskExit retains the original physical registry owner and exit decision.
+	// A nil operation means that no process-exit registry write is admitted.
+	CaptureBackgroundTaskExit(stopped bool) func() error
+	// CaptureBackgroundTaskStartFailure retains only the invoked failed attempt's physical writer.
+	CaptureBackgroundTaskStartFailure() func() error
 }
 
 type ServiceFacets interface {

@@ -508,14 +508,12 @@ func (a *Agent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID string, kno
 		return false, nil
 	}
 	// The two writes are independent, so the intent keeps a fact for each: a
-	// FAILED prompt write retains the intent with no fact settled, which also
-	// PREVENTS revival -- reopening the row would display a restart whose
-	// delivered message never reached the transcript. A SUCCEEDED prompt write
-	// followed by a failed revival retains the intent with the prompt fact
-	// settled, so the retry retries only the revival: re-persisting would
-	// duplicate the delivered message.
+	// An unretained prompt failure keeps the intent with no fact settled and
+	// prevents revival. An accepted write, including a retained failure, keeps
+	// its queue position. If revival then fails, the retry repeats only the
+	// revival so it cannot duplicate the delivered message.
 	if delivered && !promptPersisted {
-		if err := a.sink.PersistChildUserMessage(childID, ev.Prompt); err != nil {
+		if err := a.sink.PersistChildUserMessage(childID, ev.Prompt); err != nil && !agent.OutputRetained(err) {
 			slog.Warn("claude restart persist message failed", "child", childID, "error", err)
 			a.tasks.rearmClaudeRestart(ev.TaskID, false)
 			return true, err
@@ -557,9 +555,7 @@ func (a *Agent) handleClaudeTaskProgress(ev *claudeTaskEnvelope) {
 	}
 	// A Workflow run reports its agents in the same frame (workflow.go). The
 	// run row keeps its own activity update above.
-	for _, row := range a.workflows.progress(ev.TaskID, ev.WorkflowProgress) {
-		providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(row))
-	}
+	providerkit.LogRegistryRefusal("claude", "workflow progress", a.workflows.progress(ev.TaskID, ev.WorkflowProgress, a.sink))
 }
 
 func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
@@ -613,9 +609,7 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	// A Workflow run's agent rows close with it (workflow.go): a snapshot
 	// settles each agent that finished, and the run's own outcome ends the
 	// rest.
-	for _, row := range a.workflows.finished(ev.TaskID, status) {
-		providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(row))
-	}
+	providerkit.LogRegistryRefusal("claude", "workflow completion", a.workflows.finished(ev.TaskID, status, a.sink))
 	// Drop the index entry.
 	a.tasks.forgetTaskIndex(ev.TaskID)
 }

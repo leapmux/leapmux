@@ -33,6 +33,7 @@ const OUTAGE_MESSAGE = 'Connection to worker lost, reconnecting…'
 interface ReplayRequest {
   entry: Readonly<WatchAgentEntry>
   completed: boolean
+  identity: string | undefined
 }
 
 interface WorkerStream {
@@ -65,8 +66,8 @@ export interface UseWatchEventsStreamsOpts {
   onWorkerOnline: (workerId: string, online: boolean) => void
   /** Report accepted FULL promotions to the caller that loads initial messages. */
   onPromoted: (workerId: string, agentIds: string[]) => void
-  onReplayRequested?: (workerId: string, replayId: bigint, entries: readonly WatchAgentEntry[]) => void
-  onReplayRetired?: (workerId: string, replayId: bigint, agentIds: readonly string[], reason: 'removed' | 'demoted' | 'rejected' | 'closed') => void
+  onReplayRequested?: (workerId: string, replayId: bigint, entries: readonly WatchAgentEntry[], identities: ReadonlyMap<string, string>) => void
+  onReplayRetired?: (workerId: string, replayId: bigint, agentIds: readonly string[], reason: 'removed' | 'demoted' | 'rejected' | 'closed' | 'replaced') => void
 }
 
 /**
@@ -128,7 +129,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
   /**
    * Retire only the specified receipts. Group the callback by each exact request ID.
    */
-  function retireReplays(workerId: string, s: WorkerStream, agentIds: readonly string[], reason: 'removed' | 'demoted' | 'rejected' | 'closed', requestId?: bigint): void {
+  function retireReplays(workerId: string, s: WorkerStream, agentIds: readonly string[], reason: 'removed' | 'demoted' | 'rejected' | 'closed' | 'replaced', requestId?: bigint): void {
     const groups = new Map<bigint, string[]>()
     for (const agentId of agentIds) {
       const id = s.replayRequests.get(agentId)?.entry.replayId
@@ -161,17 +162,23 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     retireReplays(workerId, s, [...s.replayRequests.keys()].filter(agentId => modes.get(agentId) !== WatchMode.FULL), 'demoted')
     const previousFull = new Set(s.transmittedPlan?.agents.filter(entry => entry.mode === WatchMode.FULL).map(entry => entry.agentId))
     const requested: WatchAgentEntry[] = []
+    const identities = new Map<string, string>()
     s.inflightReplays = new Map()
     const agents = plan.agents.map((entry) => {
       if (entry.mode !== WatchMode.FULL)
         return create(WatchAgentEntrySchema, { ...entry, replayId: 0n })
+      const identity = plan.agentReplayIdentities?.get(entry.agentId)
+      if (identity !== undefined)
+        identities.set(entry.agentId, identity)
       const existing = s.replayRequests.get(entry.agentId)
-      if (existing && previousFull.has(entry.agentId))
+      if (existing && previousFull.has(entry.agentId) && existing.identity === identity)
         return { ...existing.entry }
-      if (existing && !existing.completed)
+      if (existing && existing.identity !== identity)
+        retireReplays(workerId, s, [entry.agentId], 'replaced', existing.entry.replayId)
+      else if (existing && !existing.completed)
         retireReplays(workerId, s, [entry.agentId], 'rejected', existing.entry.replayId)
       const fixed = Object.freeze(create(WatchAgentEntrySchema, { ...entry, replayId: requestId }))
-      s.replayRequests.set(entry.agentId, { entry: fixed, completed: false })
+      s.replayRequests.set(entry.agentId, { entry: fixed, completed: false, identity })
       s.inflightReplays.set(entry.agentId, fixed.replayId)
       requested.push({ ...fixed })
       return { ...fixed }
@@ -180,10 +187,11 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       agents,
       terminals: plan.terminals.map(entry => ({ ...entry })),
       terminalResync: new Set(plan.terminalResync),
+      agentReplayIdentities: identities,
     }
     s.transmittedPlan = transmitted
     if (requested.length > 0)
-      opts.onReplayRequested?.(workerId, requestId, requested.map(entry => ({ ...entry })))
+      opts.onReplayRequested?.(workerId, requestId, requested.map(entry => ({ ...entry })), new Map(identities))
     return transmitted
   }
 

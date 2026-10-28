@@ -5,12 +5,12 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 var sessionStateUpdates = func() map[string]struct{} {
@@ -46,6 +46,8 @@ type conversation struct {
 	// childAgentID is the id of the child agent, and "" for the main conversation.
 	childAgentID string
 	out          *acpTurnOutput
+	// publicationMutex is the child feed mutex when this conversation has one.
+	publicationMutex *sync.Mutex
 }
 
 // main returns the conversation of the session that the agent serves.
@@ -123,7 +125,9 @@ func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessa
 	case contracts.ACPUpdatePlan:
 		c.handlePlan(update)
 	default:
-		if err := c.sink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{}); err != nil {
+		admission := c.out.reserveCurrentTranscript()
+		defer admission.release()
+		if err := admission.transcript(c.sink()).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{}); err != nil {
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "type", updateType, "error", err)
 		}
 	}
@@ -179,18 +183,18 @@ func (c *conversation) flushAssistantBuffer() {
 }
 
 func (c *conversation) flushTextBuffer(kind agent.AssembledMessageKind) {
-	text, messageID := c.out.takeText(kind)
+	text, messageID, admission := c.out.takeOwnedText(kind)
 	if text == "" {
+		admission.release()
 		return
 	}
-	c.persistFinishedText(kind, messageID, text, agent.MessageCompletionComplete)
+	c.persistFinishedTextTo(admission, kind, messageID, text, agent.MessageCompletionComplete)
 }
 
-// persistFinishedText closes the live counter and stores the segment with its actual completion.
-// Close the counter even for empty text, so it cannot count characters from the next segment.
-func (c *conversation) persistFinishedText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistFinishedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+	defer admission.release()
 	c.sink().ReportProgress(agent.CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
-	c.persistAssembledText(kind, messageID, text, completion)
+	c.persistAssembledTextTo(admission.transcript(c.sink()), kind, messageID, text, completion)
 }
 
 // persistAssembledText stores one assembled text segment.
@@ -202,13 +206,13 @@ func (c *conversation) persistFinishedText(kind agent.AssembledMessageKind, mess
 // column that holds the agent's own bytes -- and the interrupted path already used
 // this envelope, so the completed path had a second shape for the same content.
 func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
-	if text == "" {
-		return
-	}
+	c.persistAssembledTextTo(c.sink(), kind, messageID, text, completion)
+}
+
+func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) (agent.MessageContent, func() []byte, error) {
 	raw, err := agent.MarshalAssembledMessage(kind, text, completion)
 	if err != nil {
-		slog.Warn("marshal assembled acp text", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)
-		return
+		return agent.MessageContent{}, nil, err
 	}
 	selectText := c.b.hooks.SegmentText
 	prepare := func() []byte {
@@ -226,52 +230,55 @@ func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, mes
 		}
 		return selectedRaw
 	}
-	if err := agent.PersistPreparedMessage(c.sink(), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}, prepare); err != nil {
-		slog.Error("persist assembled acp text", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)
-	}
+	return agent.MessageContent{Original: raw}, prepare, nil
 }
 
-// finishTurn ends the turn of this conversation that did not reach a turn-end
-// frame: the text that it assembled and each tool call that it left open are
-// stored with completion.
-func (c *conversation) finishTurn(turn acpTurnSnapshot, completion agent.MessageCompletion) {
-	c.persistAssembledText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
-	c.persistAssembledText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
-	c.persistIncompleteTools(turn.incompleteTools, completion)
+func (c *conversation) persistAssembledTextTo(writer agent.TranscriptServices, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+	if text == "" {
+		return
+	}
+	template, prepare, err := c.preparedAssembledText(kind, messageID, text, completion)
+	if err == nil {
+		err = agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, template, agent.SpanInfo{}, prepare)
+	}
+	if err != nil && !agent.OutputRetained(err) {
+		slog.Error("persist assembled ACP text", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)
+	}
 }
 
 func (c *conversation) persistIncompleteTools(tools []acpIncompleteTool, completion agent.MessageCompletion) {
 	for _, tool := range tools {
-		if tool.encodeErr != nil {
-			slog.Warn("marshal incomplete acp tool", "agent_id", c.b.AgentID(), "tool_call_id", tool.toolCallID, "error", tool.encodeErr)
-		} else {
-			content := c.b.acpMessageContent(tool.original, tool.content)
-			content.Completion = completion
-			if err := c.persistClosingTool(tool.toolCallID, content); err != nil {
-				slog.Error("persist incomplete acp tool", "agent_id", c.b.AgentID(), "tool_call_id", tool.toolCallID, "error", err)
-			}
+		c.persistIncompleteTool(tool, completion)
+	}
+}
+
+func (c *conversation) persistIncompleteTool(tool acpIncompleteTool, completion agent.MessageCompletion) {
+	defer tool.admission.release()
+
+	if tool.encodeErr != nil {
+		slog.Warn("marshal incomplete acp tool", "agent_id", c.b.AgentID(), "tool_call_id", tool.toolCallID, "error", tool.encodeErr)
+	} else {
+		content := c.b.acpMessageContent(tool.original, tool.content)
+		content.Completion = completion
+		if err := c.persistClosingToolTo(tool.admission.transcript(c.sink()), tool.toolCallID, content); err != nil {
+			slog.Error("persist incomplete acp tool", "agent_id", c.b.AgentID(), "tool_call_id", tool.toolCallID, "error", err)
 		}
-		c.sink().CloseSpan(tool.toolCallID)
-		c.completeToolOutput(tool.toolCallID)
-		if tool.rowKey != "" {
-			if c.b.childIdentityRefused(tool.rowKey) {
-				continue
-			}
-			c.b.finishChildConversation(tool.rowKey, agent.IncompleteTaskStatus(completion))
-			if c.b.childIdentityRefused(tool.rowKey) {
-				continue
-			}
-			if err := c.sink().CloseBackgroundTask(tool.rowKey, agent.IncompleteTaskStatus(completion)); err != nil {
-				slog.Warn("close incomplete acp subagent", "agent_id", c.b.AgentID(), "row_key", tool.rowKey, "error", err)
-			} else {
-				c.b.openRows.closed(tool.rowKey)
-			}
-			// The row is over, so the child agent releases its service state, as
-			// it does when the agent closes the row. This runs before forgetChild,
-			// which drops the only record of the child agent.
-			c.b.cleanupChildAgent(tool.rowKey)
-			c.b.forgetChild(tool.rowKey)
+	}
+	c.sink().CloseSpan(tool.toolCallID)
+	c.completeToolOutput(tool.toolCallID)
+	if tool.rowKey != "" {
+		if c.b.childIdentityRefused(tool.rowKey) {
+			return
 		}
+		c.b.finishChildConversation(tool.rowKey, agent.IncompleteTaskStatus(completion))
+		if c.b.childIdentityRefused(tool.rowKey) {
+			return
+		}
+		if err := c.closeRegistryRow(tool.rowKey, agent.IncompleteTaskStatus(completion)); err != nil {
+			slog.Warn("close incomplete acp subagent", "agent_id", c.b.AgentID(), "row_key", tool.rowKey, "error", err)
+		}
+		// The queue retains the original cleanup delegate before the route disappears.
+		c.b.forgetChild(tool.rowKey)
 	}
 }
 
@@ -282,13 +289,13 @@ func (c *conversation) persistIncompleteTools(tools []acpIncompleteTool, complet
 // default and the Closing span shape, so a change to either now lands in one place.
 // Each caller keeps its own error message, and its own order for completeTool, the span
 // close and the background-task close, because the two sites do not agree on that order.
-func (c *conversation) persistClosingTool(toolCallID string, content agent.MessageContent) error {
+func (c *conversation) persistClosingToolTo(writer agent.TranscriptServices, toolCallID string, content agent.MessageContent) error {
 	sink := c.sink()
 	spanType := sink.GetSpanType(toolCallID)
 	if spanType == "" {
 		spanType = contracts.ACPUpdateToolCall
 	}
-	return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
+	return writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
 		SpanID: toolCallID, SpanType: spanType, Closing: true,
 	})
 }
@@ -317,6 +324,9 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 	if tc.ToolCallID == "" {
 		return
 	}
+	target, admission := c.out.reserveToolTranscript(tc.ToolCallID, true)
+	defer admission.release()
+	writer := admission.transcript(c.sink())
 
 	spanType := tc.Kind
 	if spanType == "" {
@@ -324,8 +334,7 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 	}
 
 	// Ask the provider's detector BEFORE persisting, so a spawn it recognizes
-	// here never reserves a color and never opens a span. The observation is
-	// applied further down, at the point it was applied before.
+	// here never reserves a color and never opens a span.
 	var obs *SubagentObservation
 	if c.b.hooks.SubagentFromToolCall != nil {
 		obs = c.b.hooks.SubagentFromToolCall(tc)
@@ -339,7 +348,8 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 		opened := sink.GetSpanType(tc.ToolCallID) != ""
 		c.out.completeTool(tc.ToolCallID)
 		c.completeToolOutput(tc.ToolCallID)
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{
+		c.applySubagentObservation(obs)
+		if err := writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist final acp tool_call", "agent_id", c.b.AgentID(), "kind", tc.Kind, "status", tc.Status, "error", err)
@@ -347,19 +357,20 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 		if opened {
 			sink.CloseSpan(tc.ToolCallID)
 		}
-		c.applySubagentObservation(obs)
 		return
 	}
-	c.rememberIncompleteTool(tc.ToolCallID, update)
+	c.rememberIncompleteTool(tc.ToolCallID, update, target)
 
 	// A subagent spawn owns no span: its output lands in its own child
 	// transcript, so a rail held open for the whole subagent run only pushes
 	// every concurrent tool one column right.
 	spawns := ObservationIsSpawn(obs)
-	if err := providerkit.OpenToolSpan(sink, agent.MessageContent{Original: update}, tc.ToolCallID, spanType, spawns); err != nil {
+	receipt := agent.NewTranscriptWriteReceipt()
+	services := acpTranscriptSpanServices{TranscriptServices: writer, SpanServices: sink}
+	if err := providerkit.OpenToolSpan(services, agent.MessageContent{Original: update, WriteReceipt: receipt}, tc.ToolCallID, spanType, spawns); err != nil && !agent.OutputRetained(err) {
 		slog.Error("persist acp tool_call", "agent_id", c.b.AgentID(), "kind", tc.Kind, "error", err)
 	} else {
-		c.rememberToolRequest(tc.ToolCallID, update)
+		c.rememberToolRequest(tc.ToolCallID, update, receipt, target)
 	}
 	c.applySubagentObservation(obs)
 }
@@ -371,12 +382,12 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 // interrupted turn stored a frame the agent never sent. The turn-end row now stores
 // the agent's own last frame, and LeapMux's own completion column states that the
 // call did not finish.
-func (c *conversation) rememberIncompleteTool(toolCallID string, update json.RawMessage) {
+func (c *conversation) rememberIncompleteTool(toolCallID string, update json.RawMessage, target *acpTranscriptTarget) {
 	var incoming map[string]json.RawMessage
 	if json.Unmarshal(update, &incoming) != nil {
 		return
 	}
-	c.out.rememberIncompleteTool(toolCallID, incoming, update)
+	c.out.rememberIncompleteTool(toolCallID, incoming, update, target)
 }
 
 func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
@@ -388,6 +399,9 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 	if tcu.ToolCallID == "" {
 		return
 	}
+	_, admission := c.out.reserveToolTranscript(tcu.ToolCallID, false)
+	defer admission.release()
+	writer := admission.transcript(c.sink())
 	sink := c.sink()
 	c.enrichToolRequest(tcu.ToolCallID, incoming)
 	// BEFORE the output hooks, because a claimed notification is not output: a
@@ -481,7 +495,7 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 		if c.b.acpInterruptRequested() {
 			content.Completion = agent.MessageCompletionInterrupted
 		}
-		if err := c.persistClosingTool(tcu.ToolCallID, content); err != nil {
+		if err := c.persistClosingToolTo(writer, tcu.ToolCallID, content); err != nil {
 			slog.Error("persist acp tool_call_update", "agent_id", c.b.AgentID(), "status", tcu.Status, "error", err)
 		}
 		sink.CloseSpan(tcu.ToolCallID)
@@ -489,7 +503,9 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 }
 
 func (c *conversation) handlePlan(update json.RawMessage) {
-	if err := c.sink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{}); err != nil {
+	admission := c.out.reserveCurrentTranscript()
+	defer admission.release()
+	if err := admission.transcript(c.sink()).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{}); err != nil {
 		slog.Error("persist acp plan", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)
 	}
 }
@@ -514,6 +530,17 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		return
 	}
 	b := c.b
+	if obs.RegistryOnly {
+		if err := c.applyRegistryObservation(obs); err != nil {
+			slog.Warn("admit ACP registry observation", "provider", b.ProviderName(), "row_key", obs.RowKey, "error", err)
+		}
+		return
+	}
+	if obs.CloseRow && !obs.Status.IsFinished() {
+		slog.Warn("refuse ACP registry close with a nonfinal status", "provider", b.ProviderName(), "row_key", obs.RowKey, "status", obs.Status)
+		return
+	}
+	final := obs.CloseRow || obs.Status.IsFinished()
 	// A refused row requires explicit successful validation before any observation write.
 	childAgentID := ""
 	validated := false
@@ -574,28 +601,12 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 	// A rename+close operates on the existing spawn row. It skips the upsert
 	// because the rename already preserved the row's fields.
 	if obs.Mode != ModeCloseOnly && obs.RenameFrom == "" {
-		kind := obs.Kind
-		if kind == bgtask.KindUnspecified {
-			kind = bgtask.KindSubagent
-		}
-		if err := sink.UpsertBackgroundTask(bgtask.Upsert{
-			RowKey:         rowKey,
-			Kind:           kind,
-			ChildAgentID:   childAgentID,
-			ParentAgentID:  c.agentID(),
-			GroupKey:       obs.GroupKey,
-			GroupLabel:     obs.GroupLabel,
-			Title:          obs.Title,
-			TitleIsCommand: obs.TitleIsCommand,
-			ActiveForm:     obs.Activity,
-			Status:         obs.Status,
-		}); err != nil {
-			slog.Warn("acp subagent upsert failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-		} else if obs.Status.IsFinished() {
-			// A final status ends the row in the registry, closed or not.
-			b.openRows.closed(rowKey)
-		} else if !obs.CloseRow {
-			b.openRows.opened(rowKey)
+		if !final {
+			if err := sink.UpsertBackgroundTask(registryObservationUpsert(*obs, rowKey, childAgentID, c.agentID())); err != nil {
+				slog.Warn("acp subagent upsert failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
+			} else {
+				b.openRows.opened(rowKey)
+			}
 		}
 		if obs.ChildTranscriptPayload != nil && childAgentID != "" {
 			if err := sink.PersistChildMessage(childAgentID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, obs.ChildTranscriptPayload, agent.SpanInfo{}); err != nil {
@@ -613,15 +624,22 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		}
 	}
 	lookupOK := true
+	reportFromValidatedChild := false
 	if obs.Report.Text != "" || (obs.CloseRow && childAgentID == "") {
 		var resolvedChildID string
+		var found bool
 		var err error
-		resolvedChildID, _, _, err = sink.LookupBackgroundTask(rowKey)
+		resolvedChildID, _, found, err = sink.LookupBackgroundTask(rowKey)
 		if err != nil {
 			slog.Warn("acp subagent child lookup failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
 			lookupOK = false
-		} else if childAgentID == "" {
-			childAgentID = resolvedChildID
+		} else {
+			// A final span-only child can be validated before its queued Upsert
+			// creates the registry link. Use only that already resolved child.
+			reportFromValidatedChild = final && childAgentID != "" && (!found || resolvedChildID == "")
+			if childAgentID == "" {
+				childAgentID = resolvedChildID
+			}
 		}
 	}
 	if b.childIdentityRefused(rowKey) {
@@ -637,13 +655,24 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 	}
 	if obs.Report.Text != "" {
 		if lookupOK && childAgentID != "" {
-			providerkit.PersistChildSubagentReport(sink, agent.ChildSubagentReportWrite{
-				RowKey: rowKey,
-				Write: agent.SubagentReportWrite{
-					ReportID: obs.ReportID,
-					Report:   obs.Report,
-				},
-			})
+			write := agent.SubagentReportWrite{ReportID: obs.ReportID, Report: obs.Report}
+			if reportFromValidatedChild {
+				providerkit.PersistSubagentReport(sink.ChildSink(childAgentID), write)
+			} else {
+				providerkit.PersistChildSubagentReport(sink, agent.ChildSubagentReportWrite{RowKey: rowKey, Write: write})
+			}
+		}
+	}
+	if final {
+		b.children.mu.Lock()
+		cleanup := b.children.agents[rowKey]
+		b.children.mu.Unlock()
+		if cleanup.parent == nil && childAgentID != "" {
+			cleanup = childAgentRef{id: childAgentID, parent: sink}
+		}
+		if err := c.appendFinalRegistryObservation(rowKey, *obs, childAgentID, cleanup); err != nil {
+			slog.Warn("admit final ACP registry observation", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
+			return
 		}
 	}
 	if obs.CloseRow {
@@ -662,21 +691,7 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		if obs.RenameFrom != "" {
 			b.subagentPrompts.Forget(obs.RenameFrom)
 		}
-		// A row whose close failed stays open, so a context clear tries it again.
-		if err := sink.CloseBackgroundTask(rowKey, obs.Status); err != nil {
-			slog.Warn("acp subagent close failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-		} else {
-			b.openRows.closed(rowKey)
-		}
-		if b.childIdentityRefused(rowKey) {
-			return
-		}
-		// Release the child's per-agent service state so a long-running root
-		// that cycles many subagents does not retain a stale SpanTracker + sink
-		// ref per closed child until the root itself closes. The transcript row survives.
-		if childAgentID != "" {
-			sink.CleanupChildAgent(childAgentID)
-		}
+		// The admitted batch retains the exact native outcome and cleanup parent.
 		b.forgetChild(rowKey)
 	}
 }
@@ -708,13 +723,13 @@ func (c *conversation) resolveObservedChild(obs *SubagentObservation) (string, e
 
 // rememberToolRequest records the request row of one tool call, so a later
 // update that revises its input can enrich that row.
-func (c *conversation) rememberToolRequest(toolID string, content []byte) {
+func (c *conversation) rememberToolRequest(toolID string, content []byte, receipt *agent.TranscriptWriteReceipt, target *acpTranscriptTarget) {
 	c.out.turnMu.Lock()
 	defer c.out.turnMu.Unlock()
 	if c.out.toolRequestContents == nil {
 		c.out.toolRequestContents = make(map[string]*acpToolRequestContent)
 	}
-	c.out.toolRequestContents[toolID] = &acpToolRequestContent{original: append([]byte(nil), content...)}
+	c.out.toolRequestContents[toolID] = &acpToolRequestContent{original: append([]byte(nil), content...), receipt: receipt, target: target}
 }
 
 // noteToolRequestFields folds late request fields into the open tool call that
@@ -761,20 +776,55 @@ func (c *conversation) notePermissionToolCall(toolCallID string, toolCall map[st
 func (c *conversation) enrichToolRequest(toolID string, fields map[string]json.RawMessage) {
 	c.out.turnMu.Lock()
 	previous := c.out.toolRequestContents[toolID]
+	var admission *acpTranscriptAdmission
+	if previous != nil {
+		admission = previous.target.reserve()
+	}
 	c.out.turnMu.Unlock()
 	if previous == nil {
 		return
 	}
-	next, changed := revisedToolRequestSupplement(previous, fields)
+	defer admission.release()
+	writer := admission.transcript(c.sink())
+	base := *previous
+	pending := false
+	if overlay, ok := writer.(PendingToolRequestWriter); ok {
+		snapshot, found, err := overlay.ReadPendingToolRequest(previous.receipt)
+		if err != nil {
+			slog.Warn("read pending ACP tool input", "error", err)
+			return
+		}
+		if found {
+			base.original = snapshot.Content.Original
+			base.supplemental = snapshot.Content.Supplemental
+			base.revision = snapshot.Revision
+			pending = true
+		} else if previous.pending {
+			stored, err := writer.ReadToolRequest(toolID)
+			if err != nil || stored == nil {
+				if err != nil {
+					slog.Warn("read committed ACP tool input", "error", err)
+				}
+				return
+			}
+			base.original = stored.Content.Original
+			base.supplemental = stored.Content.Supplemental
+			base.revision = stored.Revision
+		}
+	}
+	next, changed := revisedToolRequestSupplement(&base, fields)
 	if !changed {
 		return
 	}
-	updated, err := c.sink().EnrichMessage(agent.MessageEnrichment{
-		SpanID: toolID, OriginalContent: previous.original,
-		PreviousRevision: previous.revision, SupplementalContent: next,
-	})
+	var updated bool
+	var err error
+	if pending {
+		updated, err = writer.(PendingToolRequestWriter).EnrichPendingToolRequest(previous.receipt, base.revision, base.original, next)
+	} else {
+		updated, err = writer.EnrichMessage(agent.MessageEnrichment{SpanID: toolID, OriginalContent: base.original, PreviousRevision: base.revision, SupplementalContent: next})
+	}
 	if err != nil {
-		slog.Warn("Publish updated ACP tool input", "error", err)
+		slog.Warn("publish updated ACP tool input", "error", err)
 		return
 	}
 	if !updated {
@@ -782,7 +832,7 @@ func (c *conversation) enrichToolRequest(toolID string, fields map[string]json.R
 	}
 	c.out.turnMu.Lock()
 	if c.out.toolRequestContents[toolID] == previous {
-		c.out.toolRequestContents[toolID] = &acpToolRequestContent{original: previous.original, supplemental: next, revision: previous.revision + 1}
+		c.out.toolRequestContents[toolID] = &acpToolRequestContent{original: append([]byte(nil), base.original...), supplemental: append([]byte(nil), next...), revision: base.revision + 1, receipt: previous.receipt, target: previous.target, pending: pending}
 	}
 	c.out.turnMu.Unlock()
 }

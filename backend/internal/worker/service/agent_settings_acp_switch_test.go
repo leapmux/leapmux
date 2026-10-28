@@ -38,7 +38,7 @@ func TestUpdateAgentSettings_ModelSwitchGivesTheStoredEffortToARunningACPAgent(t
 	require.NoError(t, svc.Queries.CreateAgent(ctx, row))
 	_, err := svc.Agents.StartAgentWith(ctx,
 		agent.Options{AgentID: row.ID, AgentProvider: provider, WorkingDir: row.WorkingDir},
-		svc.Output.NewSink(row.ID, provider),
+		newTestRootOutputSink(t, svc.Output, row.ID, provider),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 			return newRunningTestAgent(), nil
 		})

@@ -193,7 +193,7 @@ func TestKeyedNativeTurnEndReplaySurvivesSinkReplacementAndKeepsSessionsSeparate
 	sink.UpdateSessionID("native-session-a")
 	content := agent.MessageContent{Original: []byte(`{"type":"result"}`), AgentSessionID: "native-session-a", IdempotencyKey: "native-turn:0"}
 	require.NoError(t, sink.PersistTurnEnd(content, agent.SpanInfo{}))
-	replacement := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	replacement := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, replacement.PersistTurnEnd(content, agent.SpanInfo{}))
 	content.AgentSessionID = "native-session-b"
 	replacement.UpdateSessionID(content.AgentSessionID)

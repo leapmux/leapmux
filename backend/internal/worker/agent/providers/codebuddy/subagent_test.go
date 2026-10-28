@@ -11,6 +11,32 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+func TestCodebuddyTaskIndexKeepsEachSpawnRouteTogether(t *testing.T) {
+	t.Parallel()
+	var index codebuddyTaskIndex
+	check := func(spawn, row, child string) {
+		t.Helper()
+		actualRow, actualChild := index.child(spawn)
+		assert.Equal(t, row, actualRow)
+		assert.Equal(t, child, actualChild)
+	}
+	check("unknown", "", "")
+	index.rememberChild("spawn", "old-row", "")
+	check("spawn", "old-row", "")
+	index.rememberChild("spawn", "old-row", "child")
+	check("spawn", "old-row", "child")
+	index.rememberChild("spawn", "current-row", "child")
+	index.rememberChild("alias", "current-row", "child")
+	index.rememberChild("other", "other-row", "other-child")
+	index.forgetRow("old-row")
+	check("spawn", "current-row", "child")
+	check("alias", "current-row", "child")
+	index.forgetRow("current-row")
+	check("spawn", "", "")
+	check("alias", "", "")
+	check("other", "other-row", "other-child")
+}
+
 func TestCodebuddyWorkflowTaskGroupsItsChildAgent(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}

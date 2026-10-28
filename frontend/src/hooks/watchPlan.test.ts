@@ -1,5 +1,5 @@
 import type { AgentTab, Tab } from '~/stores/tab.types'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
 import {
@@ -127,6 +127,44 @@ describe('isTabOnScreen', () => {
 })
 
 describe('buildWatchPlans', () => {
+  it.each(['absent', 'another workspace'] as const)('captures only the child FULL identity with its root %s', (placement) => {
+    const child = agent({
+      id: 'child-1',
+      parentAgentId: 'root-1',
+      rootAgentId: 'root-1',
+    })
+    const root = agent({ id: 'root-1', workspaceId: 'ws-root' })
+    const tabs = placement === 'absent' ? [child] : [child, root]
+    const identity = vi.fn(() => 'root-1')
+    const plan = buildWatchPlans(tabs, 'ws-1', () => `${TabType.AGENT}:child-1`, {
+      getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
+      agentReplayIdentity: identity,
+    }).get('w1')
+    expect(plan?.agents.map(entry => ({ id: entry.agentId, mode: entry.mode }))).toEqual([
+      { id: 'child-1', mode: WatchMode.FULL },
+      { id: 'root-1', mode: WatchMode.NOTIFY },
+    ])
+    expect(plan?.agentReplayIdentities).toEqual(new Map([['child-1', 'root-1']]))
+    expect(identity).toHaveBeenCalledExactlyOnceWith('child-1')
+  })
+
+  it('captures the final actual root FULL entry after a child adds its NOTIFY entry', () => {
+    const tabs = [
+      agent({ id: 'child-1', tileId: 'child-tile', parentAgentId: 'root-1' }),
+      agent({ id: 'root-1', tileId: 'root-tile' }),
+    ]
+    const plan = buildWatchPlans(tabs, 'ws-1', tileId => `${TabType.AGENT}:${tileId === 'child-tile' ? 'child-1' : 'root-1'}`, {
+      getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
+      agentReplayIdentity: () => 'root-1',
+    }).get('w1')
+    expect(plan?.agents).toHaveLength(2)
+    expect(plan?.agents.every(entry => entry.mode === WatchMode.FULL)).toBe(true)
+    expect(plan?.agentReplayIdentities).toEqual(new Map([
+      ['child-1', 'root-1'],
+      ['root-1', 'root-1'],
+    ]))
+  })
+
   it('feeds every on-screen tile in a split layout as FULL', () => {
     const tabs = [
       agent({ id: 'a1', tileId: 'tile-1' }),
@@ -367,6 +405,34 @@ describe('buildWatchPlans', () => {
 })
 
 describe('watchPlanKey', () => {
+  it('renews FULL context without reacting to equal identities, cursors, or NOTIFY context', () => {
+    const plan = {
+      agents: [agentWatchEntry('child', 1n, 1n, WatchMode.FULL), agentWatchEntry('root', 0n, 0n, WatchMode.NOTIFY)],
+      terminals: [],
+      terminalResync: new Set<string>(),
+      agentReplayIdentities: new Map([['child', 'root-a'], ['root', 'ignored-a']]),
+    }
+    const equal = {
+      ...plan,
+      agents: [agentWatchEntry('root', 0n, 0n, WatchMode.NOTIFY), agentWatchEntry('child', 99n, 98n, WatchMode.FULL)],
+      agentReplayIdentities: new Map([['root', 'ignored-b'], ['child', 'root-a']]),
+    }
+    expect(watchPlanKey(equal)).toBe(watchPlanKey(plan))
+    expect(watchPlanKey({ ...plan, agentReplayIdentities: new Map([['child', 'root-b']]) })).not.toBe(watchPlanKey(plan))
+  })
+
+  it('distinguishes unresolved, absent, and punctuation-bearing FULL identities', () => {
+    const plan = {
+      agents: [agentWatchEntry('child', 0n, 0n, WatchMode.FULL)],
+      terminals: [],
+      terminalResync: new Set<string>(),
+    }
+    expect(watchPlanKey(plan)).toBe(`a:child:${WatchMode.FULL}|t:`)
+    const keys = [watchPlanKey(plan), ...['', 'root', 'root:"other",agent:1', 'root\\other'].map(identity =>
+      watchPlanKey({ ...plan, agentReplayIdentities: new Map([['child', identity]]) }))]
+    expect(new Set(keys).size).toBe(5)
+  })
+
   it('is stable when only cursors change and moves when a mode changes', () => {
     const a = {
       agents: [{ agentId: 'a1', mode: WatchMode.FULL, cursorSeq: BigInt(1) } as never],

@@ -181,6 +181,28 @@ func (sink *indexedReadSink) ReadToolResult(id string) (*agent.StoredMessage, er
 	return sink.ProviderServices.ReadToolResult(id)
 }
 
+func (sink *indexedReadSink) ReadToolResultForSession(id, sessionID string) (*agent.StoredMessage, error) {
+	sink.mu.Lock()
+	sink.reads[id]++
+	sink.mu.Unlock()
+	return sink.ProviderServices.ReadToolResultForSession(id, sessionID)
+}
+func (sink *indexedReadSink) ReadToolResultBySeq(sequence int64) (*agent.StoredMessage, error) {
+	stored, err := sink.ProviderServices.ReadToolResultBySeq(sequence)
+	if stored != nil {
+		// The persisted frame identifies the item whose exact sequence was read.
+		var envelope struct {
+			Params itemParams `json:"params"`
+		}
+		if json.Unmarshal(stored.Content.Original, &envelope) == nil {
+			sink.mu.Lock()
+			sink.reads[envelope.Params.Item.ID]++
+			sink.mu.Unlock()
+		}
+	}
+	return stored, err
+}
+
 func TestNativeLogIndexedTargetsWithdrawEveryAffectedItem(t *testing.T) {
 	a, sink := testAgent(t)
 	sink.UpdateSessionID("session")

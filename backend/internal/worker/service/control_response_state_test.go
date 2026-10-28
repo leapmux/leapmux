@@ -128,7 +128,7 @@ func TestControlRequestReplayRetainsResponseState(t *testing.T) {
 func TestControlResponseBroadcastsDeliveryProgress(t *testing.T) {
 	svc, dispatcher, writer := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	watcher := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "response-state"}}
 	registerAgentWatch(svc, "response-state", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
 	payload := []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`)
@@ -317,7 +317,7 @@ func TestBroadcastControlResponseStateCarriesNonBlocking(t *testing.T) {
 func TestControlCancellationRetainsConfirmedDelivery(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	watcher := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "delivered-cancel"}}
 	registerAgentWatch(svc, "delivered-cancel", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: []byte(`{"id":1}`)}))

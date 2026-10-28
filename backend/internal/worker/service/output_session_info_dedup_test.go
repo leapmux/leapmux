@@ -102,7 +102,7 @@ func newSessionInfoServiceFixture(t *testing.T) (*Service, agent.ProviderService
 	mock := &sessionInfoCapturingWriter{channelID: "ch-1"}
 	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 	return svc, sink, mock
 }
 

@@ -13,7 +13,7 @@ type spanTrackerKind uint8
 
 const (
 	// spanTrackerRoot is the kind for a root main agent that owns a provider
-	// process. Created by NewSink; deleted by CleanupAgent.
+	// process. Created by NewRootSink; deleted by CleanupAgent.
 	spanTrackerRoot spanTrackerKind = iota
 	// spanTrackerChild is the kind for a virtual child agent (a subagent
 	// transcript fed by the parent provider's process; it never owns a
@@ -31,7 +31,7 @@ const (
 // A child tracker is created on the first ChildSink(childID) call and deleted
 // on CleanupChildAgent(childID) (a single child's closing update) or
 // CleanupChildAgents (the root-close batch). A root tracker is created on
-// NewSink and deleted on CleanupAgent.
+// NewRootSink and deleted on CleanupAgent.
 //
 // # Pointer stability
 //
@@ -58,7 +58,7 @@ const (
 //
 // The persist hot path does not touch the registry: a sink captures its
 // *SpanTracker pointer once at construction and calls Snapshot on the pointer
-// directly. The registry is touched only on lifecycle (NewSink / ChildSink /
+// directly. The registry is touched only on lifecycle (NewRootSink / ChildSink /
 // Cleanup) and on the read-only snapshot fallback (trackerForSnapshot). So
 // getOrCreate takes the write Lock. It runs at most once per id (a child sink
 // is cached on its root after the first call). A single critical section reads
@@ -92,7 +92,7 @@ func newSpanTrackerRegistry() *spanTrackerRegistry {
 // pointer, preserving pointer stability.
 //
 // The whole method runs under the write lock. getOrCreate is a lifecycle call
-// (NewSink / ChildSink, at most once per id — a child sink is cached on its
+// (NewRootSink / ChildSink, at most once per id — a child sink is cached on its
 // root after the first call), so it is not on the persist hot path, which uses
 // the sink's captured *SpanTracker pointer directly. A single critical section
 // reads and writes the one entry, so the tracker and the kind can never be

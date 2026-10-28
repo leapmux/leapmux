@@ -67,7 +67,7 @@ func (b *FamilyBase) handleDaemonEvent(raw json.RawMessage) {
 		}
 		if json.Unmarshal(event.Properties, &properties) == nil && (properties.Part.SessionID == "" || properties.Part.SessionID == sessionID) {
 			b.observeDaemonPart(properties.Part.ID, properties.Part.MessageID)
-			b.observeTaskPart(properties.Part.openCodeTaskPart)
+			b.observeTaskPart(sessionID, properties.Part.openCodeTaskPart)
 		}
 	case openCodeEventPartDelta:
 		if providerkit.StringField(event.Properties, "field") == "text" && providerkit.StringField(event.Properties, "delta") != "" {
@@ -186,6 +186,25 @@ func (b *FamilyBase) resetDaemonGeneration() {
 	b.daemonMu.Lock()
 	b.daemonMessages, b.daemonParts, b.lastAssistant = nil, nil, ""
 	b.daemonMu.Unlock()
+}
+
+func (b *FamilyBase) clearSessionState() {
+	b.resetDaemonGeneration()
+	rootSessionID := b.CurrentSessionID()
+	b.childSessionsMu.Lock()
+	for callID, child := range b.childSessions {
+		if child.rootSessionID != rootSessionID {
+			delete(b.childSessions, callID)
+		}
+	}
+	b.childSessionsMu.Unlock()
+	b.childStopMu.Lock()
+	for callID, owner := range b.stoppedChildren {
+		if owner != rootSessionID {
+			delete(b.stoppedChildren, callID)
+		}
+	}
+	b.childStopMu.Unlock()
 }
 
 // captureDaemonCleanup retains entry identities, so a delayed cleanup cannot delete a later turn's entries.

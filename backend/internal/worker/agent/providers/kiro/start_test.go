@@ -183,6 +183,7 @@ func TestHelperProcessKiroCLI(*testing.T) {
 		}
 	}
 	usageReads := 0
+	sessionsOpened := 0
 	var heldUsage []json.RawMessage
 	for scanner.Scan() {
 		_, _ = log.Write(append(append([]byte(nil), scanner.Bytes()...), '\n'))
@@ -227,7 +228,14 @@ func TestHelperProcessKiroCLI(*testing.T) {
 			result = json.RawMessage(kiroInitializeFixture)
 		case acp.MethodSessionNew, acp.MethodSessionLoad:
 			effort = ""
-			result = kiroFakeSession(model)
+			session := kiroFakeSession(model)
+			if req.Method == acp.MethodSessionNew {
+				sessionsOpened++
+				if sessionsOpened > 1 {
+					session["sessionId"] = fmt.Sprintf("%s-%d", kiroFakeSessionID, sessionsOpened)
+				}
+			}
+			result = session
 		case acp.MethodSessionSetConfigOption:
 			switch req.Params.ConfigID {
 			case "model":

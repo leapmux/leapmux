@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -39,6 +40,39 @@ const qwenWorkflowCompletedEntry = `{"kind":"workflow","id":"wf_1","toolUseId":"
 
 const qwenWorkflowOpenFrame = `{"sessionUpdate":"tool_call","toolCallId":"call_wf","status":"pending","title":"Workflow","kind":"other","rawInput":{"name":"triage"},"_meta":{"toolName":"workflow"}}`
 
+// The reader admits final registry writes before stopped closes. Its flush
+// follows the native session lease release, so stopped alone proves no storage
+// completion. Observe the root queue without flushing accepted work here.
+func waitForQwenWorkflowStorage(t *testing.T, a *Agent, poller *workflowPoller) {
+	t.Helper()
+	require.NotNil(t, poller)
+	select {
+	case <-poller.stopped:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the workflow native reader did not finish")
+	}
+	waitForQwenRegistryStorage(t, a)
+}
+
+func waitForQwenRegistryStorage(t *testing.T, a *Agent) {
+	t.Helper()
+	queue := agent.OutputQueueFor(a.Sink())
+	require.NotNil(t, queue)
+	testutil.RequireEventually(t, func() bool { return !queue.HasPending() })
+}
+
+// A retired session's last reader clears its ownership after the post-read
+// flush. These fixtures can then release intentionally refused storage without
+// racing a flush that reader completion alone does not join.
+func waitForQwenWorkflowReaders(t *testing.T, a *Agent) {
+	t.Helper()
+	testutil.RequireEventually(t, func() bool {
+		a.stateMu.Lock()
+		defer a.stateMu.Unlock()
+		return a.workflowReader == nil
+	})
+}
+
 // One poll of a running run draws the run row's activity and one row per
 // dispatch, in the run row's group.
 func TestQwenWorkflowPollerDrawsDispatchRows(t *testing.T) {
@@ -61,27 +95,27 @@ func TestQwenWorkflowPollerDrawsDispatchRows(t *testing.T) {
 	<-opened
 	clock.Advance(workflowPollInterval).MustWait(ctx)
 	testutil.RequireEventually(t, func() bool {
-		_, ok := sink.BackgroundTask("call_wf/dispatch-2")
+		_, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-2"))
 		return ok
 	})
 
-	run, ok := sink.BackgroundTask("call_wf")
+	run, ok := sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.KindWorkflow, run.Kind, "the run keeps its workflow kind")
 	assert.Equal(t, bgtask.StatusRunning, run.Status)
 	assert.Equal(t, "Two native assignments", run.ActiveForm)
 
-	first, ok := sink.BackgroundTask("call_wf/dispatch-1")
+	first, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.KindSubagent, first.Kind)
 	assert.Equal(t, "First native unit", first.Title)
 	assert.Equal(t, "First task.", first.ActiveForm, "the dispatch row's secondary line comes from the prompt head")
-	assert.Equal(t, "call_wf", first.GroupKey)
+	assert.Equal(t, qwenWorkflowRowKey(qwenTestSession, "call_wf"), first.GroupKey)
 	assert.Equal(t, "triage", first.GroupLabel)
 	assert.Equal(t, bgtask.StatusRunning, first.Status)
 	assert.Empty(t, first.ChildAgentID, "a workflow agent owns no transcript")
 
-	second, ok := sink.BackgroundTask("call_wf/dispatch-2")
+	second, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-2"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, second.Status)
 	assert.False(t, second.EndedAt.IsZero(), "a settled dispatch closes its row")
@@ -109,24 +143,20 @@ func TestQwenWorkflowFinalFrameClosesUnsettledDispatches(t *testing.T) {
 	<-opened
 	clock.Advance(workflowPollInterval).MustWait(ctx)
 	testutil.RequireEventually(t, func() bool {
-		_, ok := sink.BackgroundTask("call_wf/dispatch-1")
+		_, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 		return ok
 	})
 
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"completed","_meta":{"toolName":"workflow"}}`))
 	// The owned poll loop performs the final read, so the settled row arrives
 	// asynchronously after the final frame.
-	testutil.RequireEventually(t, func() bool {
-		first, ok := sink.BackgroundTask("call_wf/dispatch-1")
-		if !ok || first.Status != bgtask.StatusSucceeded {
-			return false
-		}
-		a.stateMu.Lock()
-		defer a.stateMu.Unlock()
-		return len(a.children.workflows) == 0
-	})
-	first, ok := sink.BackgroundTask("call_wf/dispatch-1")
+	waitForQwenWorkflowStorage(t, a, poller)
+	first, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	assert.False(t, first.EndedAt.IsZero())
 	a.stateMu.Lock()
 	assert.Empty(t, a.children.workflows, "the final frame forgets the poller")
@@ -160,12 +190,15 @@ func TestQwenWorkflowPollerStopsAtFinalEntry(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	testutil.WaitForTimer(t, ctx, trap)
 	<-opened
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
 	clock.Advance(workflowPollInterval).MustWait(ctx)
-	testutil.RequireEventually(t, func() bool {
-		first, ok := sink.BackgroundTask("call_wf/dispatch-1")
-		return ok && first.Status == bgtask.StatusSucceeded
-	})
-	second, ok := sink.BackgroundTask("call_wf/dispatch-2")
+	waitForQwenWorkflowStorage(t, a, poller)
+	first, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
+	second, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-2"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusFailed, second.Status, "a dispatch keeps its own settled outcome")
 
@@ -173,13 +206,20 @@ func TestQwenWorkflowPollerStopsAtFinalEntry(t *testing.T) {
 	assert.Equal(t, 1, requests, "a settled run polls no further")
 }
 
-// A list that states no entry of this tool call ends the poller without rows.
-func TestQwenWorkflowPollerEndsOnAnAbsentEntry(t *testing.T) {
+// A preparing call can precede registration in the native workflow list.
+func TestQwenWorkflowPollerWaitsForTheNativeEntry(t *testing.T) {
 	t.Parallel()
 	clock := testutil.NewQuartzMock(t)
 	trap := clock.Trap().NewTicker("qwen", "workflow")
 	defer trap.Close()
-	a, sink, _ := newQwenAgent(t, clock, qwenWorkflowTaskList(`{"kind":"agent","id":"other","toolUseId":"call_9","status":"running"}`))
+	var reads atomic.Int64
+	a, sink, _ := newQwenAgent(t, clock, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		entry := qwenWorkflowRunningEntry
+		if request.Method == qwenTaskListMethod && reads.Add(1) == 1 {
+			entry = ""
+		}
+		return qwenWorkflowTaskList(entry)(request)
+	})
 
 	// The trap holds the poller's ticker until the test releases it, and the
 	// poller starts on the goroutine that reads the tool call, so that read
@@ -196,10 +236,111 @@ func TestQwenWorkflowPollerEndsOnAnAbsentEntry(t *testing.T) {
 	testutil.RequireEventually(t, func() bool {
 		a.stateMu.Lock()
 		defer a.stateMu.Unlock()
-		return len(a.children.workflows) == 0
+		return reads.Load() == 1
 	})
-	_, ok := sink.BackgroundTask("call_wf/dispatch-1")
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
+	require.NotNil(t, poller, "an absent entry must keep the preparing run tracked")
+	_, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 	assert.False(t, ok, "a run the list does not state draws no dispatch row")
+	clock.Advance(workflowPollInterval).MustWait(ctx)
+	testutil.RequireEventually(t, func() bool {
+		_, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
+		return ok
+	})
+}
+
+func TestQwenWorkflowAbsentEntryStillReadsTheFinalSnapshot(t *testing.T) {
+	t.Parallel()
+	var ready atomic.Bool
+	a, sink, _ := newQwenAgent(t, nil, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		entry := ""
+		if ready.Load() {
+			entry = qwenWorkflowCompletedEntry
+		}
+		return qwenWorkflowTaskList(entry)(request)
+	})
+	poller := newWorkflowPoller(a, "call_wf", "triage")
+	require.False(t, poller.poll(), "preparing work remains unresolved")
+	ready.Store(true)
+	poller.finishRun(bgtask.StatusSucceeded)
+	row, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-2"))
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status, "the final snapshot keeps the dispatch's own failure")
+}
+
+func TestQwenWorkflowRunsShareOneSessionTaskListRead(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	entries := qwenWorkflowRunningEntry + "," + strings.ReplaceAll(qwenWorkflowRunningEntry, "call_wf", "call_second")
+	a, sink, requests := newQwenAgent(t, clock, qwenWorkflowTaskList(entries))
+	a.HandleOutput(rawUpdate(t, qwenWorkflowOpenFrame))
+	a.HandleOutput(rawUpdate(t, strings.ReplaceAll(qwenWorkflowOpenFrame, "call_wf", "call_second")))
+	clock.Advance(workflowPollInterval).MustWait(testutil.DeadlineContext(t))
+	testutil.RequireEventually(t, func() bool {
+		_, first := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
+		_, second := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_second", "dispatch-1"))
+		return first && second
+	})
+	syncPeer(t, a)
+	assert.Len(t, requestsFor(requests(), qwenTaskListMethod), 1, "one session snapshot supplies every tracked run")
+	a.stateMu.Lock()
+	first := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
+	a.stopWorkflowPoller("call_wf", bgtask.StatusSucceeded)
+	waitForQwenWorkflowStorage(t, a, first)
+	row, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	a.stateMu.Lock()
+	assert.NotNil(t, a.children.workflows["call_second"], "another active workflow keeps its reader")
+	a.stateMu.Unlock()
+	clock.Advance(workflowPollInterval).MustWait(testutil.DeadlineContext(t))
+	testutil.RequireEventually(t, func() bool { return len(requestsFor(requests(), qwenTaskListMethod)) == 3 })
+}
+
+func TestQwenWorkflowFinalFrameDuringASharedReadRequiresAFreshSnapshot(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	var reads atomic.Int64
+	ctx := testutil.DeadlineContext(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseReply := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseReply)
+	a, sink, requests := newQwenAgent(t, clock, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		entry := qwenWorkflowRunningEntry
+		if request.Method == qwenTaskListMethod {
+			if reads.Add(1) == 1 {
+				close(entered)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			} else {
+				entry = qwenWorkflowCompletedEntry
+			}
+		}
+		return qwenWorkflowTaskList(entry)(request)
+	})
+	a.HandleOutput(rawUpdate(t, qwenWorkflowOpenFrame))
+	clock.Advance(workflowPollInterval).MustWait(ctx)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the shared workflow read did not start")
+	}
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
+	a.stopWorkflowPoller("call_wf", bgtask.StatusSucceeded)
+	releaseReply()
+	waitForQwenWorkflowStorage(t, a, poller)
+	row, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-2"))
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status, "only the later snapshot carries this dispatch's failure")
+	assert.Equal(t, []bgtask.Status{bgtask.StatusSucceeded, bgtask.StatusFailed}, sink.BackgroundTaskStatuses(row.RowKey), "the fresh native final outcome replaces the earlier snapshot's success")
+	assert.Len(t, requestsFor(requests(), qwenTaskListMethod), 2)
 }
 
 // The status words of a run and a dispatch map onto row statuses.
@@ -234,12 +375,12 @@ func TestQwenStopAllWorkflowPollersLeavesRowsAtTheirState(t *testing.T) {
 	<-opened
 	clock.Advance(workflowPollInterval).MustWait(ctx)
 	testutil.RequireEventually(t, func() bool {
-		_, ok := sink.BackgroundTask("call_wf/dispatch-1")
+		_, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 		return ok
 	})
 
 	a.stopAllBackgroundTranscripts()
-	first, ok := sink.BackgroundTask("call_wf/dispatch-1")
+	first, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, first.Status, "a teardown states no outcome of its own")
 }
@@ -353,10 +494,11 @@ func TestQwenWorkflowMissingSnapshotKeepsUnfinishedDispatchesTracked(t *testing.
 	poller := newWorkflowPoller(a, "call_wf", "triage")
 	var entry qwenWorkflowEntry
 	require.NoError(t, json.Unmarshal([]byte(qwenWorkflowRunningEntry), &entry))
-	poller.apply(&entry)
+	require.NoError(t, poller.apply(&entry))
+	a.FlushRegistryObservations()
 
 	assert.False(t, poller.poll(), "an absent snapshot must retain the final-frame owner of unfinished rows")
-	row, ok := sink.BackgroundTask("call_wf/dispatch-1")
+	row, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, row.Status, "an absent snapshot states no final outcome")
 	a.stateMu.Lock()
@@ -364,10 +506,11 @@ func TestQwenWorkflowMissingSnapshotKeepsUnfinishedDispatchesTracked(t *testing.
 	a.stateMu.Unlock()
 	poller.start(clock)
 	a.stopWorkflowPoller("call_wf", bgtask.StatusSucceeded)
-	testutil.RequireEventually(t, func() bool {
-		row, ok := sink.BackgroundTask("call_wf/dispatch-1")
-		return ok && row.Status == bgtask.StatusSucceeded && !row.EndedAt.IsZero()
-	})
+	waitForQwenWorkflowStorage(t, a, poller)
+	row, ok = sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.False(t, row.EndedAt.IsZero())
 }
 
 func TestQwenWorkflowFinalSnapshotClosesUnfinishedDispatches(t *testing.T) {
@@ -377,7 +520,7 @@ func TestQwenWorkflowFinalSnapshotClosesUnfinishedDispatches(t *testing.T) {
 	poller := newWorkflowPoller(a, "call_wf", "triage")
 
 	assert.True(t, poller.poll(), "the completed workflow needs no more reads")
-	row, ok := sink.BackgroundTask("call_wf/dispatch-1")
+	row, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "the final run status settles an unfinished dispatch")
 	assert.False(t, row.EndedAt.IsZero())
@@ -401,10 +544,18 @@ func TestQwenWorkflowFinalFrameCannotReopenFromAnOlderSnapshot(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the final workflow read did not start")
 	}
-	before, ok := sink.BackgroundTask("call_wf")
+	before, ok := sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	require.True(t, ok)
-	require.Equal(t, bgtask.StatusSucceeded, before.Status, "the native final frame closes the run before the held snapshot")
+	// A reader that owns sessionMu.RLock can postpone the known final's
+	// storage. The native final still precedes the held snapshot in the queue.
+	if before.Status != bgtask.StatusSucceeded {
+		require.Equal(t, bgtask.StatusRunning, before.Status)
+		queue := agent.OutputQueueFor(a.Sink())
+		require.NotNil(t, queue)
+		require.True(t, queue.HasPending(), "the known final must remain retained until the native session lease releases")
+	}
 	releaseReply()
+	waitForQwenWorkflowStorage(t, a, poller)
 	poller.mu.Lock()
 	assert.Equal(t, bgtask.StatusSucceeded, poller.rows["dispatch-1"], "the final frame settles the older snapshot before the loop retires")
 	poller.mu.Unlock()
@@ -413,10 +564,11 @@ func TestQwenWorkflowFinalFrameCannotReopenFromAnOlderSnapshot(t *testing.T) {
 		defer a.stateMu.Unlock()
 		return len(a.children.workflows) == 0
 	})
-	after, ok := sink.BackgroundTask("call_wf")
+	after, ok := sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, after.Status, "an older running snapshot cannot reopen the completed run")
-	first, ok := sink.BackgroundTask("call_wf/dispatch-1")
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(after.RowKey), "the older snapshot cannot publish running after the known final")
+	first, ok := sink.BackgroundTask(qwenWorkflowDispatchRowKey(qwenTestSession, "call_wf", "dispatch-1"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	syncPeer(t, a)

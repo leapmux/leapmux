@@ -29,7 +29,7 @@ func decodeNotifWrapper(t *testing.T, content []byte, compression leapmuxv1.Cont
 // setupNotifThreadTest stands up a worker service with one agent and returns
 // the sink + a row-listing helper bound to that agent. Used by the
 // notification-threading tests below to remove repeated CreateAgent /
-// NewSink / ListMessagesByAgentID boilerplate.
+// NewRootSink / ListMessagesByAgentID boilerplate.
 func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent.ProviderServices, func() []db.Message) {
 	t.Helper()
 	ctx := context.Background()
@@ -42,7 +42,7 @@ func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent
 		AgentProvider: provider,
 	}))
 
-	sink := svc.Output.NewSink("agent-1", provider)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", provider)
 	listRows := func() []db.Message {
 		t.Helper()
 		rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
@@ -174,7 +174,7 @@ func TestNotificationThreading_StaleSinkCannotResolveTheCurrentRetry(t *testing.
 	t.Parallel()
 	svc, old := setupRootSink(t, "retry-owner")
 	old.UpdateSessionID("same-native-session")
-	current := svc.Output.NewSink("retry-owner", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	current := newTestRootOutputSink(t, svc.Output, "retry-owner", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	current.PersistLeapMuxNotification(map[string]interface{}{"type": "api_retry", "count": 1})
 	list := func() []db.Message {
 		rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "retry-owner"})
@@ -235,7 +235,7 @@ func TestRelaunchOnExitPreservesNotificationThread(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	listRows := func() []db.Message {
 		rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 20})
 		require.NoError(t, err)

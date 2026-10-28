@@ -1,7 +1,9 @@
 import type { ToolMetadataEntry } from '../../../model/toolMetadata'
 import type { AgentRequest, AgentRun, AgentRunStatus } from '../../../model/tools/agent'
 import type { ACPToolFacts } from '../../acp/extractors/toolCall'
+import { QWEN_TOOL } from '~/generated/contracts/qwen-protocol'
 import { isObject, pickBoolean, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { qwenRegistryRowKey } from '../registryKey'
 
 /** The `rawOutput` type of a subagent run, which Qwen states on every `agent` result. */
 const QWEN_TASK_EXECUTION = 'task_execution'
@@ -48,16 +50,17 @@ function qwenRunStatus(status: string): AgentRunStatus {
 }
 
 /** The launch of one `agent` call. */
-export function qwenAgentRequest(input: Record<string, unknown>, toolCallId: string): AgentRequest {
+export function qwenAgentRequest(input: Record<string, unknown>, toolCallId: string, agentSessionId: string | undefined): AgentRequest {
   const agentType = pickString(input, 'subagent_type')
   const metadata = presentEntries([['Background', pickBoolean(input, 'run_in_background') === true ? 'Yes' : '']])
+  const registryKey = qwenRegistryRowKey(QWEN_TOOL.Agent, agentSessionId, toolCallId)
   return {
     description: pickString(input, 'description') || 'Subagent',
     prompt: pickString(input, 'prompt'),
     ...(agentType ? { agentType } : {}),
     ...(metadata.length > 0 ? { metadata } : {}),
-    // The worker keys the subagent's background task by the call that launched it.
-    ...(toolCallId ? { registryKey: toolCallId } : {}),
+    // The stored native root owns the call, including on a child transcript.
+    ...(registryKey === undefined ? {} : { registryKey }),
   }
 }
 

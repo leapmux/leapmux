@@ -51,7 +51,7 @@ type FamilyBase struct {
 	childStopMu sync.Mutex
 	// stoppedChildren holds the task calls whose subagent the user stopped, until
 	// the close of that subagent's row reads the stop. Guarded by childStopMu.
-	stoppedChildren map[string]struct{}
+	stoppedChildren map[string]string
 	childSessionsMu sync.Mutex
 	// childSessions holds the session of each running subagent, by the task
 	// call that started it. Guarded by childSessionsMu.

@@ -7,6 +7,9 @@
 -- single registrant.
 CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
+    -- Monotonic physical output ownership. Virtual children do not allocate it.
+    output_generation INTEGER NOT NULL DEFAULT 0
+        CHECK (typeof(output_generation) = 'integer') CHECK (output_generation >= 0),
     working_dir      TEXT NOT NULL DEFAULT '',
     home_dir                 TEXT    NOT NULL DEFAULT '',
     plan_file_path           TEXT    NOT NULL DEFAULT '',
@@ -658,6 +661,9 @@ CREATE TABLE agent_todos (
 -- and travels only over the E2EE WatchEvents channel.
 CREATE TABLE agent_background_tasks (
     owner_agent_id  TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE, -- ROOT main agent
+    -- Zero identifies unclaimed cloned history. Runtime writers supply a positive value.
+    output_generation INTEGER NOT NULL
+        CHECK (typeof(output_generation) = 'integer') CHECK (output_generation >= 0),
     row_key         TEXT NOT NULL,  -- provider linkage key (tool_use id / thread id / session id / task id)
     seq             INTEGER NOT NULL,
     kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 3), -- BackgroundTaskKind ordinal (SUBAGENT | SHELL | WORKFLOW)

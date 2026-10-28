@@ -44,7 +44,9 @@ func TestPromptPreparationRunsForChildrenWithoutRootSettings(t *testing.T) {
 		blocks[0]["text"] = "prepared"
 		return nil
 	}
-	require.NoError(t, b.SendChildPromptDetached("child", "input", nil, func(json.RawMessage, error) {}))
+	target := ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child", RowKey: "child-row"}
+	require.True(t, b.AttachChildSession(target))
+	require.NoError(t, b.SendChildPromptDetached(target, "input", nil, func(json.RawMessage, error) {}))
 	var request struct {
 		Params map[string]any `json:"params"`
 	}
@@ -62,6 +64,66 @@ func TestDetachedPromptRefusesAReplacedSession(t *testing.T) {
 	err := b.SendPromptDetached("old-session", "input", []*leapmuxv1.Attachment{}, func(json.RawMessage, error) {})
 	require.Error(t, err)
 	assert.Empty(t, []byte(out.String()))
+}
+
+func TestChildPromptRefusesAnUnservedSessionBeforePreparation(t *testing.T) {
+	t.Parallel()
+	out := &agenttest.Stdin{}
+	b, _ := newACPTurnBase(t, out)
+	prepared := false
+	b.hooks.PreparePrompt = func(string, []agent.ClassifiedAttachment, []map[string]any) error {
+		prepared = true
+		return nil
+	}
+	err := b.SendChildPromptDetached(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "unserved-child", RowKey: "child-row"}, "input", nil, func(json.RawMessage, error) {})
+	assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
+	assert.False(t, prepared)
+	assert.Empty(t, out.String())
+}
+
+func TestChildOperationsRefuseAnUninitializedProcess(t *testing.T) {
+	t.Parallel()
+	var b Base
+	target := ChildSessionTarget{RootSessionID: "root", SessionID: "child", RowKey: "row"}
+	assert.ErrorIs(t, b.SendChildPromptDetached(target, "input", nil, func(json.RawMessage, error) {}), agent.ErrChildRouteNotReady)
+	_, err := b.LoadChildSession(target)
+	assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
+}
+
+func TestChildPromptRejectsInvalidAndRetiredTargetsBeforePreparation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(*Base, *ChildSessionTarget)
+	}{
+		{name: "empty root", change: func(_ *Base, target *ChildSessionTarget) { target.RootSessionID = "" }},
+		{name: "empty child", change: func(_ *Base, target *ChildSessionTarget) { target.SessionID = "" }},
+		{name: "empty row", change: func(_ *Base, target *ChildSessionTarget) { target.RowKey = "" }},
+		{name: "root as child", change: func(_ *Base, target *ChildSessionTarget) { target.SessionID = target.RootSessionID }},
+		{name: "wrong root", change: func(_ *Base, target *ChildSessionTarget) { target.RootSessionID = "another-root" }},
+		{name: "replaced root", change: func(b *Base, _ *ChildSessionTarget) { b.SetSessionIDForTest("replacement-root") }},
+		{name: "absent root", change: func(b *Base, _ *ChildSessionTarget) { b.SetSessionIDForTest("") }},
+		{name: "stopped process", change: func(b *Base, _ *ChildSessionTarget) { b.SetStoppedForTest(true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := &agenttest.Stdin{}
+			b, _ := newACPTurnBase(t, out)
+			target := ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child", RowKey: "row"}
+			require.True(t, b.AttachChildSession(target))
+			tc.change(b, &target)
+			prepared := false
+			b.hooks.PreparePrompt = func(string, []agent.ClassifiedAttachment, []map[string]any) error {
+				prepared = true
+				return nil
+			}
+			err := b.SendChildPromptDetached(target, "input", nil, func(json.RawMessage, error) {})
+			assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
+			assert.False(t, prepared)
+			assert.Empty(t, out.String())
+			assert.False(t, b.AttachChildSession(target))
+		})
+	}
 }
 
 func TestPromptPreparationReceivesTheOriginalClassifiedAudio(t *testing.T) {
@@ -88,7 +150,9 @@ func TestPromptPreparationReceivesTheOriginalClassifiedAudio(t *testing.T) {
 			}
 			attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}}
 			if child {
-				require.NoError(t, b.SendChildPromptDetached(wantSession, "listen", attachments, func(json.RawMessage, error) {}))
+				target := ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: wantSession, RowKey: "child-row"}
+				require.True(t, b.AttachChildSession(target))
+				require.NoError(t, b.SendChildPromptDetached(target, "listen", attachments, func(json.RawMessage, error) {}))
 			} else {
 				require.NoError(t, b.SendInput("listen", attachments))
 			}

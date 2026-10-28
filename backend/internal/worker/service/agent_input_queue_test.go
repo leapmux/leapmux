@@ -151,7 +151,7 @@ func TestReadOnlyChildUserMessageIsRefusedBeforeQueueMutation(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID: "readonly-parent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
 			}))
-			childID, err := svc.Output.NewSink("readonly-parent", provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "readonly-spawn", ProviderChildKey: "native-child", Title: "native child"})
+			childID, err := newTestRootOutputSink(t, svc.Output, "readonly-parent", provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "readonly-spawn", ProviderChildKey: "native-child", Title: "native child"})
 			require.NoError(t, err)
 			if active {
 				_, err = svc.InputQueue.TurnStarted(ctx, childID, false)
@@ -195,7 +195,7 @@ func TestChildInputAdmissionKeepsSupportedMessagesAndControlFeedback(t *testing.
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID: "admission-parent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: tc.provider,
 			}))
-			childID, err := svc.Output.NewSink("admission-parent", tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "admission-spawn", ProviderChildKey: "native-child", Title: "native child"})
+			childID, err := newTestRootOutputSink(t, svc.Output, "admission-parent", tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "admission-spawn", ProviderChildKey: "native-child", Title: "native child"})
 			require.NoError(t, err)
 			_, err = svc.InputQueue.SetPaused(ctx, childID, true)
 			require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestAgentInfoPublishesEffectiveSteeringCapability(t *testing.T) {
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
@@ -256,11 +256,11 @@ func TestAgentInfoPublishesEffectivePreemptionCapability(t *testing.T) {
 		if agentID == "steerable" {
 			_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 				AgentID: agentID, WorkingDir: workingDir,
-			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), claudetest.StartEcho)
+			}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), claudetest.StartEcho)
 		} else {
 			_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 				AgentID: agentID, WorkingDir: workingDir,
-			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
+			}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
 		}
 		require.NoError(t, err)
 		t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
@@ -303,13 +303,13 @@ func TestLiveStatusChangePublishesPreemptionCapability(t *testing.T) {
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		}))
 	}
-	preemptSink := svc.Output.NewSink(preemptAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	preemptSink := newTestRootOutputSink(t, svc.Output, preemptAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: preemptAgentID, WorkingDir: workingDir,
 	}, preemptSink, agenttest.NonSteerable(claudetest.StartSilent))
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(preemptAgentID) })
-	coldSink := svc.Output.NewSink(coldAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	coldSink := newTestRootOutputSink(t, svc.Output, coldAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 
 	preemptWatcher := newTestWriter()
 	coldWatcher := newTestWriter()
@@ -340,7 +340,7 @@ func TestPreemptQueuedAgentInputRPC(t *testing.T) {
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
@@ -381,7 +381,7 @@ func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
@@ -433,13 +433,13 @@ func TestLiveStatusChangePublishesSteeringCapability(t *testing.T) {
 
 	// A running Claude Code process steers, and an agent with no process cannot
 	// -- the same split the test above uses.
-	steeringSink := svc.Output.NewSink(steeringAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	steeringSink := newTestRootOutputSink(t, svc.Output, steeringAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: steeringAgentID, WorkingDir: workingDir,
 	}, steeringSink, claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(steeringAgentID) })
-	coldSink := svc.Output.NewSink(coldAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	coldSink := newTestRootOutputSink(t, svc.Output, coldAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// Two channels, because one channel holds one watch set: a second
 	// registration on the same channel replaces the first.
@@ -471,7 +471,7 @@ func TestCompactOperationFallsBackToProviderInputWhenNativeCompactionIsUnsupport
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
@@ -570,7 +570,8 @@ func TestAgentProcessExitPausesRootAndChildQueues(t *testing.T) {
 	_, err := svc.DB.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = 1`)
 	require.NoError(t, err)
 
-	svc.HandleAgentProcessExit("root-1", assert.AnError, false)
+	newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: "root-1", Err: assert.AnError, Stopped: false, Output: requireRootOutputSink(t, svc.Output, "root-1")})
 	for _, agentID := range []string{"root-1", "child-1"} {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		require.NoError(t, err)
@@ -979,7 +980,7 @@ func TestChildQueuePublishesOnlyEffectiveSteeringCapability(t *testing.T) {
 		ID: rootID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
-	sink := svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	sink := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "zcode-span", ProviderChildKey: "zcode-child", Title: "read-only child"})
 	require.NoError(t, err)
 	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -1037,7 +1038,7 @@ func TestAutoRetryProducersUseGeneratedQueueKinds(t *testing.T) {
 	require.NoError(t, err)
 
 	// Through the sink facet, exactly as a provider asks.
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	sink.ScheduleUsageLimitRetry(time.Now().Add(time.Hour), []byte(`{"reset":"usage"}`))
 	sink.ScheduleServerErrorRetry([]byte(`{"error":"overloaded"}`))
 
@@ -1096,7 +1097,7 @@ func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
@@ -1381,7 +1382,7 @@ func startMockAgentWrappingSink(
 		ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	if wrap != nil {
 		sink = wrap(sink)
 	}
@@ -1481,7 +1482,7 @@ func TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored(t *testing.T
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
 		ID: agentID, AgentSessionID: "sess-stored",
 	}))
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: agentID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 		WorkingDir: workingDir, APITimeout: 200 * time.Millisecond,
@@ -1741,7 +1742,7 @@ func TestPlanExecutionQueuesThePlanStoredThroughTheSink(t *testing.T) {
 		_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 		require.NoError(t, err)
 		plan := "  # Approved plan\n\nKeep the exact content.\n"
-		svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE).UpdatePlan([]byte(plan), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, "Approved plan")
+		newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE).UpdatePlan([]byte(plan), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, "Approved plan")
 		require.NoError(t, svc.enqueuePlanExecution("agent-1", "build", "plan-execution"))
 		snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 		require.NoError(t, err)
@@ -1975,7 +1976,7 @@ func newRequeueFixture(t *testing.T) (*Service, agent.ProviderServices) {
 	}))
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
-	return svc, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE)
+	return svc, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE)
 }
 
 type echoSinkAgent struct{ agenttest.IdleAgent }
@@ -2035,7 +2036,7 @@ func TestHandleAgentProcessExitResolvesUnechoedSteers(t *testing.T) {
 		svc, _ := newSteerEchoServiceFixture(t)
 		_, err := svc.InputQueue.SetPaused(t.Context(), "agent-1", false)
 		require.NoError(t, err)
-		svc.HandleAgentProcessExit("agent-1", nil, stopped)
+		svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: "agent-1", Err: nil, Stopped: stopped, Output: requireRootOutputSink(t, svc.Output, "agent-1")})
 		svc.Output.WaitActivityRefreshes()
 		snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
 		require.NoError(t, err)
@@ -2275,7 +2276,7 @@ func TestOrderedUncertainSteerKeepsItsOriginalPublisher(t *testing.T) {
 			}})
 			agent.NewOrderedProviderServices(&queue, sink).ReportSteersUncertain(1)
 			if replaceProcess {
-				svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+				newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			} else {
 				sink.UpdateSessionID("replacement-session")
 			}

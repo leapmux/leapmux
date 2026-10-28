@@ -66,7 +66,7 @@ func newRefreshTestFixture(t *testing.T, seed settingsSeed) refreshTestFixture {
 	mock := newTestWatcher("ch-1")
 	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	return refreshTestFixture{svc: svc, sink: sink, mock: mock}
 }
 
@@ -551,7 +551,7 @@ func TestPersistCatalogIfChanged(t *testing.T) {
 		ID:           "agent-1",
 	}))
 
-	svc.Output.NewSink("agent-1", copilot)
+	newTestRootOutputSink(t, svc.Output, "agent-1", copilot)
 	sink := requireRootOutputSink(t, svc.Output, "agent-1")
 	existing, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
@@ -702,7 +702,7 @@ func liveSwitchFixture(t *testing.T, storedModel string, wrap ...func(agent.Agen
 		OptionGroups: mustMarshalOptionGroups(t, stored),
 		ID:           "agent-1",
 	}))
-	sink := svc.Output.NewSink("agent-1", provider)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", provider)
 	starter := &switchingStarter{models: fixtureModels()}
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", AgentProvider: provider, WorkingDir: t.TempDir(), Options: options,
@@ -859,7 +859,7 @@ func replaceSettingsSource(t *testing.T, svc *Service) agent.ProviderServices {
 	t.Helper()
 	svc.Agents.StopAndWaitAgent("agent-1")
 	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-	sink := svc.Output.NewSink("agent-1", provider)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", provider)
 	options := map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"}
 	require.NoError(t, svc.Queries.SetAgentOptions(t.Context(), db.SetAgentOptionsParams{ID: "agent-1", Options: marshalOptions(options)}))
 	starter := &switchingStarter{models: fixtureModels()}

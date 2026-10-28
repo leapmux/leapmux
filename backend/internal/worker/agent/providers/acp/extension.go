@@ -28,6 +28,9 @@ type PromptEnding struct {
 //
 // A zero hook keeps the base behavior that the hook controls.
 type Hooks struct {
+	// OpenRootTranscript allocates an immutable root output target under turnMu.
+	OpenRootTranscript func(RootTranscriptStart, agent.ProviderServices) RootTranscript
+
 	// WithBypassPermission invokes the claim while the provider's settings lock
 	// confirms Bypass. The claim never waits for delivery or calls the sink.
 	WithBypassPermission func(claim func())
@@ -225,6 +228,9 @@ type Hooks struct {
 	// Wait calls it after Process.Wait and before it ends the turn and child
 	// conversations. A provider must not send another request to the exited process.
 	BeforeWaitCleanup func()
+	// AfterWaitCleanup closes provider factories after the base admits its final
+	// root and child writes. Retained queue writes keep their original ownership.
+	AfterWaitCleanup func()
 	// ChildUpdateRoute reads the registry row key of the subagent that one
 	// update of the main session belongs to, from the update type and its
 	// `_meta`. It returns "" for an update of the main session. Qwen Code tags
@@ -271,7 +277,7 @@ type Hooks struct {
 	// then starts no new turn whatever the answer, and the provider decides what
 	// becomes of the input -- Qwen Code drops it and says so in the transcript,
 	// because the reader stopped the turn that the input was for.
-	FollowUpPrompt func(stopped bool) (content string, attachments []*leapmuxv1.Attachment, ok bool)
+	FollowUpPrompt func(sessionID string, stopped bool) (content string, attachments []*leapmuxv1.Attachment, ok bool)
 	// PromptPrepared runs after admission and before any per-request preparation or native write.
 	// It also runs for a continuation prompt. No turn or state mutex is held.
 	PromptPrepared func()

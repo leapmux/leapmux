@@ -843,6 +843,31 @@ describe('muse native to-do vocabulary', () => {
   })
 })
 
+describe('qwen registry namespace', () => {
+  const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'qwen-protocol')
+
+  it('emits the shared registry prefix for both readers', () => {
+    const contract = readContract('qwen-protocol')
+    expect(contract.registryKeys).toEqual({ Prefix: 'qwen-registry-v1:' })
+    expect(checkProviderProtocol(spec, contract, readContract)).toEqual({})
+    expect(emitGoProviderProtocol(spec, contract)).toMatch(/QwenRegistryKeyPrefix\s+=\s+"qwen-registry-v1:"/)
+    const ts = emitTsProviderProtocol(spec, contract)
+    expect(ts).toContain('export const QWEN_REGISTRY_KEY = {')
+    expect(ts).toContain('export type QwenRegistryKey = typeof QWEN_REGISTRY_KEY[keyof typeof QWEN_REGISTRY_KEY]')
+    expect(ts).not.toContain('export type undefined')
+    expect(ts).toContain('Prefix: "qwen-registry-v1:"')
+  })
+
+  it('requires the registry namespace in the contract and schema', () => {
+    const contract = readContract('qwen-protocol')
+    const validate = buildAjv().compile(readContract('qwen-protocol.schema'))
+    expect(validate(contract)).toBe(true)
+    delete contract.registryKeys
+    expect(validate(contract)).toBe(false)
+    expectContractError(() => checkProviderProtocol(spec, contract, readContract), 'registryKeys is missing or empty')
+  })
+})
+
 describe('muse native question selection vocabulary', () => {
   const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'muse-protocol')
   const selectionModes = { Single: 'single', Multiple: 'multiple' }
@@ -2942,5 +2967,23 @@ describe('typed string vocabulary', () => {
 
   it('rejects a struct that takes the generated type identifier', () => {
     expectContractError(() => checkProviderStructs(spec, { ...data, structs: { ProbeKind: { table: 'kinds', fields: [{ key: 'Text', type: 'string' }] } } }), 'ProbeKind')
+  })
+})
+
+describe('emitTsProviderProtocol', () => {
+  const table = { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', doc: 'native tools' }
+  const descriptor = { name: 'type-probe-protocol', title: 'Probe', goPrefix: 'Probe', tsPrefix: 'PROBE', tables: [table] }
+  const data = { tools: { Read: 'read' } }
+
+  it.each([undefined, null, 42, '', ' ', 'undefined', 'Has Space'])('refuses the invalid type alias %j before emitting a table', (tsType) => {
+    const spec = { ...descriptor, tables: [{ ...table, tsType }] }
+    expectContractError(() => emitTsProviderProtocol(spec, data), 'table tools.tsType')
+  })
+
+  it('emits a declared type alias and keeps Go emission independent of it', () => {
+    const emitted = emitTsProviderProtocol({ ...descriptor, tables: [{ ...table, tsType: 'ProbeTool' }] }, data)
+    expect(emitted).toContain('export type ProbeTool = typeof PROBE_TOOL[keyof typeof PROBE_TOOL]')
+    expect(emitted).not.toContain('export type undefined')
+    expect(emitGoProviderProtocol(descriptor, data)).toContain('ProbeToolRead = "read"')
   })
 })

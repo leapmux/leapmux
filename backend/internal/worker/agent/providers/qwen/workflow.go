@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -28,7 +29,7 @@ import (
 // (a stop, a CLI that reports no history) takes its agents' rows down with
 // the run's own final status.
 
-// workflowPollInterval paces one run's task-list polls.
+// workflowPollInterval paces the session's shared task-list reads.
 const workflowPollInterval = 700 * time.Millisecond
 
 // qwenWorkflowEntry is the workflow part of one task-list answer.
@@ -83,29 +84,36 @@ type workflowPoller struct {
 	agent      *Agent
 	sessionID  string
 	toolCallID string
+	rowKey     string
 	title      string
+	// reader owns this run's asynchronous reads. Agent.stateMu protects it.
+	reader *workflowSessionReader
 
 	// mu protects snapshots and row application, including the final read.
 	mu   sync.Mutex
 	rows map[string]bgtask.Status
-	// settled records that a poll saw the run's entry settle or vanish, so a
+	// settled records that a poll saw the run's entry settle, so a
 	// closing stop needs no further read.
-	settled     bool
-	started     atomic.Bool
-	stopOnce    sync.Once
-	finishOnce  sync.Once
-	finalStatus chan bgtask.Status
-	done        chan struct{}
-	stopped     chan struct{}
+	settled      bool
+	pendingFinal bgtask.Status
+	started      atomic.Bool
+	stopOnce     sync.Once
+	finishOnce   sync.Once
+	endOnce      sync.Once
+	finalStatus  chan bgtask.Status
+	done         chan struct{}
+	stopped      chan struct{}
 }
 
 // newWorkflowPoller tracks the run of one workflow tool call. title is the run
 // row's own group label.
 func newWorkflowPoller(a *Agent, toolCallID, title string) *workflowPoller {
+	sessionID := a.CurrentSessionID()
 	return &workflowPoller{
 		agent:       a,
-		sessionID:   a.CurrentSessionID(),
+		sessionID:   sessionID,
 		toolCallID:  toolCallID,
+		rowKey:      qwenWorkflowRowKey(sessionID, toolCallID),
 		title:       title,
 		rows:        make(map[string]bgtask.Status),
 		done:        make(chan struct{}),
@@ -114,43 +122,151 @@ func newWorkflowPoller(a *Agent, toolCallID, title string) *workflowPoller {
 	}
 }
 
-// start runs the poll loop. It runs once: a second call does nothing.
+// start joins the session-owned reader. Every run receives the same snapshot.
 func (p *workflowPoller) start(clock quartz.Clock) {
 	if !p.started.CompareAndSwap(false, true) {
 		return
 	}
 	if p.stopRequested() {
 		p.agent.retireWorkflowPoller(p)
-		close(p.stopped)
 		return
 	}
-	ticker := clock.NewTicker(workflowPollInterval, "qwen", "workflow")
-	go func() {
-		defer close(p.stopped)
-		defer ticker.Stop()
-		defer p.agent.retireWorkflowPoller(p)
-		ticks := ticker.C
-		for {
-			select {
-			case <-p.done:
-				return
-			case final := <-p.finalStatus:
-				p.finishRun(final)
-				return
-			case <-ticks:
-				if p.poll() {
+	a := p.agent
+	a.stateMu.Lock()
+	reader := a.workflowReader
+	created := reader == nil || reader.sessionID != p.sessionID
+	if created {
+		reader = &workflowSessionReader{agent: a, sessionID: p.sessionID, wake: make(chan struct{}, 1), pollers: make(map[*workflowPoller]struct{})}
+		a.workflowReader = reader
+	}
+	reader.pollers[p] = struct{}{}
+	p.reader = reader
+	a.stateMu.Unlock()
+	if created {
+		ticker := clock.NewTicker(workflowPollInterval, "qwen", "workflow")
+		go func() {
+			defer ticker.Stop()
+			for {
+				tick := false
+				select {
+				case <-ticker.C:
+					tick = true
+				case <-reader.wake:
+				}
+				if !reader.refresh(tick) {
 					return
 				}
-				p.mu.Lock()
-				settled := p.settled
-				p.mu.Unlock()
-				if settled {
-					ticker.Stop()
-					ticks = nil
+			}
+		}()
+	}
+	p.wakeReader()
+}
+
+type workflowSessionReader struct {
+	agent     *Agent
+	sessionID string
+	wake      chan struct{}
+	// pollers retains every admitted read until it finishes, including runs
+	// removed from the public lookup by teardown. Agent.stateMu protects it.
+	pollers map[*workflowPoller]struct{}
+}
+
+func (p *workflowPoller) wakeReader() {
+	p.agent.stateMu.Lock()
+	reader := p.reader
+	p.agent.stateMu.Unlock()
+	if reader != nil && reader.sessionID == p.sessionID {
+		select {
+		case reader.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// refresh owns at most one native request. A final frame captured before the
+// request shares its snapshot with every active run. A later final frame wakes
+// another read, so an earlier snapshot cannot consume its final-read obligation.
+func (reader *workflowSessionReader) refresh(tick bool) bool {
+	a := reader.agent
+	a.stateMu.Lock()
+	pollers := make([]*workflowPoller, 0, len(reader.pollers))
+	for poller := range reader.pollers {
+		pollers = append(pollers, poller)
+	}
+	a.stateMu.Unlock()
+	finals := make(map[*workflowPoller]bgtask.Status)
+	active := pollers[:0]
+	for _, poller := range pollers {
+		if poller.stopRequested() {
+			a.retireWorkflowPoller(poller)
+			continue
+		}
+		active = append(active, poller)
+		poller.mu.Lock()
+		select {
+		case final := <-poller.finalStatus:
+			poller.pendingFinal = final
+		default:
+		}
+		if poller.pendingFinal != bgtask.StatusUnspecified {
+			finals[poller] = poller.pendingFinal
+		}
+		poller.mu.Unlock()
+	}
+	if len(active) > 0 && (tick || len(finals) > 0) {
+		err := a.WithSessionID(func(sessionID string) error {
+			if sessionID != reader.sessionID || sessionID == "" {
+				for _, poller := range active {
+					a.retireWorkflowPoller(poller)
+				}
+				return nil
+			}
+			entries, readErr := a.listWorkflowRuns(sessionID)
+			for _, poller := range active {
+				poller.mu.Lock()
+				final, finishing := finals[poller]
+				stopped := poller.stopRequested()
+				var admissionErr error
+				if !stopped {
+					if entry := entries[poller.toolCallID]; readErr == nil && entry != nil {
+						admissionErr = poller.apply(entry)
+						if admissionErr == nil && qwenWorkflowStatusFinal(entry.Status) {
+							poller.settled = true
+							final = qwenWorkflowRowStatus(entry.Status)
+						}
+					}
+					if admissionErr == nil && (finishing || poller.settled) {
+						admissionErr = poller.closeUnsettled(final)
+					}
+					if admissionErr == nil && finishing {
+						poller.pendingFinal = bgtask.StatusUnspecified
+					}
+				}
+				retire := stopped || admissionErr == nil && (finishing || poller.settled && !poller.hasUnsettledRows())
+				poller.mu.Unlock()
+				if admissionErr != nil {
+					slog.Warn("admit Qwen workflow registry output", "tool_call_id", poller.toolCallID, "error", admissionErr)
+				}
+				if retire {
+					a.retireWorkflowPoller(poller)
 				}
 			}
+			return readErr
+		})
+		if err != nil {
+			slog.Debug("qwen workflow task list failed", "agent_id", a.AgentID(), "session_id", reader.sessionID, "error", err)
 		}
-	}()
+	}
+	a.FlushRegistryObservations()
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if len(reader.pollers) > 0 {
+		return true
+	}
+	if a.workflowReader == reader {
+		a.workflowReader = nil
+	}
+	return false
 }
 
 // stop ends the poll loop. It returns after the loop ended, so no poll runs
@@ -164,6 +280,7 @@ func (p *workflowPoller) stop() {
 
 func (p *workflowPoller) requestStop() {
 	p.stopOnce.Do(func() { close(p.done) })
+	p.wakeReader()
 }
 
 func (p *workflowPoller) stopRequested() bool {
@@ -186,11 +303,15 @@ func (p *workflowPoller) stopRequested() bool {
 // free to deliver its reply, and teardown must still own and join that read.
 func (p *workflowPoller) finish(final bgtask.Status) {
 	p.finishOnce.Do(func() { p.finalStatus <- final })
+	p.wakeReader()
 }
 
 func (p *workflowPoller) finishRun(final bgtask.Status) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		p.mu.Unlock()
+		p.agent.FlushRegistryObservations()
+	}()
 	_, err := p.withOwningSession(func(sessionID string) error {
 		var readErr error
 		if !p.settled {
@@ -200,14 +321,20 @@ func (p *workflowPoller) finishRun(final bgtask.Status) {
 				return nil
 			}
 			if readErr == nil && entry != nil {
-				p.apply(entry)
+				if err := p.apply(entry); err != nil {
+					p.pendingFinal = final
+					return err
+				}
 				if qwenWorkflowStatusFinal(entry.Status) {
 					final = qwenWorkflowRowStatus(entry.Status)
 				}
 			}
 		}
 		if final != bgtask.StatusUnspecified {
-			p.closeUnsettled(final)
+			if err := p.closeUnsettled(final); err != nil {
+				p.pendingFinal = final
+				return err
+			}
 		}
 		return readErr
 	})
@@ -218,10 +345,13 @@ func (p *workflowPoller) finishRun(final bgtask.Status) {
 
 // poll asks Qwen for the session's task list with its workflow entries, and
 // applies the rows of this poller's run. It reports whether the reader can
-// retire. A vanished run with unfinished rows still needs its final frame.
+// retire. A run absent from the list still needs registration or its final frame.
 func (p *workflowPoller) poll() bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		p.mu.Unlock()
+		p.agent.FlushRegistryObservations()
+	}()
 	retired, err := p.withOwningSession(func(sessionID string) error {
 		entry, err := p.listRun(sessionID)
 		if err != nil {
@@ -231,13 +361,14 @@ func (p *workflowPoller) poll() bool {
 			return nil
 		}
 		if entry == nil {
-			p.settled = true
 			return nil
 		}
-		p.apply(entry)
+		if err := p.apply(entry); err != nil {
+			return err
+		}
 		if qwenWorkflowStatusFinal(entry.Status) {
 			p.settled = true
-			p.closeUnsettled(qwenWorkflowRowStatus(entry.Status))
+			return p.closeUnsettled(qwenWorkflowRowStatus(entry.Status))
 		}
 		return nil
 	})
@@ -246,7 +377,7 @@ func (p *workflowPoller) poll() bool {
 		// failure answers itself on the next tick.
 		slog.Debug("qwen workflow task list failed", "agent_id", p.agent.AgentID(), "tool_call_id", p.toolCallID, "error", err)
 	}
-	return retired || p.stopRequested() || p.settled && !p.hasUnsettledRows()
+	return retired || p.stopRequested() || err == nil && p.settled && !p.hasUnsettledRows()
 }
 
 // The caller holds mu while reading the dispatch states.
@@ -274,11 +405,16 @@ func (p *workflowPoller) withOwningSession(operation func(string) error) (bool, 
 
 // listRun reads the task list and returns this run's entry.
 func (p *workflowPoller) listRun(sessionID string) (*qwenWorkflowEntry, error) {
+	entries, err := p.agent.listWorkflowRuns(sessionID)
+	return entries[p.toolCallID], err
+}
+
+func (a *Agent) listWorkflowRuns(sessionID string) (map[string]*qwenWorkflowEntry, error) {
 	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "includeWorkflows": true})
 	if err != nil {
 		return nil, err
 	}
-	response, err := p.agent.SendRequest(qwenTaskListMethod, params, p.agent.APITimeout())
+	response, err := a.SendRequest(qwenTaskListMethod, params, a.APITimeout())
 	if err != nil {
 		return nil, fmt.Errorf("list the Qwen tasks: %w", err)
 	}
@@ -288,17 +424,27 @@ func (p *workflowPoller) listRun(sessionID string) (*qwenWorkflowEntry, error) {
 	if err := json.Unmarshal(response, &list); err != nil {
 		return nil, fmt.Errorf("read the Qwen task list: %w", err)
 	}
+	entries := make(map[string]*qwenWorkflowEntry)
 	for index := range list.Tasks {
-		if list.Tasks[index].Kind == qwenBackgroundWorkflow && list.Tasks[index].ToolUseID == p.toolCallID {
-			return &list.Tasks[index], nil
+		entry := &list.Tasks[index]
+		if entry.Kind == qwenBackgroundWorkflow {
+			entries[entry.ToolUseID] = entry
 		}
 	}
-	return nil, nil
+	return entries, nil
 }
 
 // apply upserts the run row's activity and one row per dispatch. A dispatch
 // that settled closes its row with its own outcome.
-func (p *workflowPoller) apply(entry *qwenWorkflowEntry) {
+func (p *workflowPoller) apply(entry *qwenWorkflowEntry) error {
+	// The caller keeps the native session lease. Record this source before
+	// ACP admission, which can wait behind a progress hook that needs stateMu.
+	p.agent.stateMu.Lock()
+	if input, exists := p.agent.tools.byCall[p.toolCallID]; exists && input.name == contracts.QwenToolWorkflow {
+		input.workflowMetadataObserved = true
+		p.agent.tools.byCall[p.toolCallID] = input
+	}
+	p.agent.stateMu.Unlock()
 	// The entry's label identifies the workflow and the group shared by the
 	// run's row and its dispatch rows. It corrects the generic title of a run whose
 	// opening frame stated no arguments.
@@ -308,58 +454,69 @@ func (p *workflowPoller) apply(entry *qwenWorkflowEntry) {
 	}
 	// The shared applier defaults an unspecified kind to a subagent row, so the
 	// run's own upsert restates the workflow kind its row opened with.
-	p.agent.ApplySubagentObservation(&acp.SubagentObservation{
-		RowKey:     p.toolCallID,
-		Kind:       bgtask.KindWorkflow,
-		GroupKey:   p.toolCallID,
-		GroupLabel: label,
-		Title:      entry.Label,
-		Activity:   entry.CurrentPhase,
-		Status:     qwenWorkflowRowStatus(entry.Status),
-	})
+	if err := p.agent.ApplyRegistryObservation(&acp.SubagentObservation{
+		RegistryOnly: true,
+		RowKey:       p.rowKey,
+		Kind:         bgtask.KindWorkflow,
+		GroupKey:     p.rowKey,
+		GroupLabel:   label,
+		Title:        entry.Label,
+		Activity:     entry.CurrentPhase,
+		Status:       qwenWorkflowRowStatus(entry.Status),
+	}); err != nil {
+		return err
+	}
 	for _, dispatch := range entry.Dispatches {
 		if dispatch.ID == "" {
 			continue
 		}
 		status := qwenWorkflowRowStatus(dispatch.Status)
 		observation := &acp.SubagentObservation{
-			RowKey:     p.toolCallID + "/" + dispatch.ID,
-			Kind:       bgtask.KindSubagent,
-			GroupKey:   p.toolCallID,
-			GroupLabel: label,
-			Title:      dispatch.Label,
-			Activity:   bgtask.FirstLine(dispatch.Prompt),
-			Status:     status,
+			RegistryOnly: true,
+			RowKey:       qwenWorkflowDispatchRowKey(p.sessionID, p.toolCallID, dispatch.ID),
+			Kind:         bgtask.KindSubagent,
+			GroupKey:     p.rowKey,
+			GroupLabel:   label,
+			Title:        dispatch.Label,
+			Activity:     bgtask.FirstLine(dispatch.Prompt),
+			Status:       status,
 		}
 		if status.IsFinished() {
 			observation.CloseRow = true
 		}
+		if err := p.agent.ApplyRegistryObservation(observation); err != nil {
+			return err
+		}
 		p.rows[dispatch.ID] = status
-		p.agent.ApplySubagentObservation(observation)
 	}
+	return nil
 }
 
 // closeUnsettled closes every dispatch row that no snapshot settled. The
 // caller holds p.mu.
-func (p *workflowPoller) closeUnsettled(final bgtask.Status) {
+func (p *workflowPoller) closeUnsettled(final bgtask.Status) error {
 	for dispatchID, status := range p.rows {
 		if status.IsFinished() {
 			continue
 		}
-		p.agent.ApplySubagentObservation(&acp.SubagentObservation{
-			RowKey:   p.toolCallID + "/" + dispatchID,
-			Kind:     bgtask.KindSubagent,
-			Status:   final,
-			CloseRow: true,
-		})
+		if err := p.agent.ApplyRegistryObservation(&acp.SubagentObservation{
+			RegistryOnly: true,
+			RowKey:       qwenWorkflowDispatchRowKey(p.sessionID, p.toolCallID, dispatchID),
+			Kind:         bgtask.KindSubagent,
+			Status:       final,
+			CloseRow:     true,
+		}); err != nil {
+			return err
+		}
 		p.rows[dispatchID] = final
 	}
+	return nil
 }
 
 // startWorkflowPoller tracks the workflow run that the tool call toolCallID
 // started. The run row's title identifies the group that its dispatch rows join.
 func (a *Agent) startWorkflowPoller(toolCallID string, rawInput json.RawMessage) {
-	poller := newWorkflowPoller(a, toolCallID, workflowObservation(toolCallID, rawInput).Title)
+	poller := newWorkflowPoller(a, toolCallID, workflowObservation(a.CurrentSessionID(), toolCallID, rawInput).Title)
 	a.stateMu.Lock()
 	if a.workflowStopping {
 		a.stateMu.Unlock()
@@ -411,6 +568,10 @@ func (a *Agent) retireWorkflowPoller(poller *workflowPoller) {
 	if a.children.workflows[poller.toolCallID] == poller {
 		delete(a.children.workflows, poller.toolCallID)
 	}
+	if poller.reader != nil {
+		delete(poller.reader.pollers, poller)
+	}
+	poller.endOnce.Do(func() { close(poller.stopped) })
 }
 
 // stopAllWorkflowPollers ends every poller, when the session or the process

@@ -56,7 +56,7 @@ func TestProviderTurnAdmissionRejectsAnOldEndedHandlerAfterANewerActiveHandler(t
 				t.Fatal("the ended handler did not reach its delayed queue admission")
 			}
 			if replacementProcess {
-				replacement := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				replacement := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 				replacement.SetTurnState(agent.TurnState{Active: true, Steerable: true}, 1)
 			} else {
 				sink.SetTurnState(agent.TurnState{Active: true, Steerable: true}, 3)
@@ -92,13 +92,13 @@ type rootSessionReadSignal struct {
 
 func (store *rootSessionReadSignal) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	row := store.DBTX.QueryRowContext(ctx, query, args...)
-	if strings.Contains(query, "-- name: GetAgentByID :one") && store.reads.Add(1) == 2 {
+	if strings.Contains(query, "-- name: AllocateAgentOutputGeneration :one") && store.reads.Add(1) == 1 {
 		close(store.entered)
 	}
 	return row
 }
 
-func TestRootSessionSetterSerializesNewSinkSessionRestoration(t *testing.T) {
+func TestRootSessionSetterSerializesRootSinkSourceAllocation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
@@ -120,12 +120,14 @@ func TestRootSessionSetterSerializesNewSinkSessionRestoration(t *testing.T) {
 		t.Fatal("the root setter did not reach its held database write")
 	}
 	replacementFinished := make(chan agent.ProviderServices, 1)
-	go func() { replacementFinished <- svc.Output.NewSink(root.agentID, root.agentProvider) }()
+	go func() { replacementFinished <- newTestRootOutputSink(t, svc.Output, root.agentID, root.agentProvider) }()
+	mutation := svc.Output.transcriptMutationMutex(root.agentID)
+	testutil.RequireEventually(t, func() bool { return mutation.writerAdmissions.Load() == 2 })
 	readCrossed := false
 	select {
 	case <-store.entered:
 		readCrossed = true
-	case <-time.After(30 * time.Second):
+	default:
 	}
 	release()
 	select {
@@ -322,7 +324,7 @@ func TestObsoleteSinkTurnReportPreservesActivityBeforeAndAfterAdoption(t *testin
 			t.Parallel()
 			svc, oldSink, ownerID, _ := setupBgTaskTestWithService(t)
 			oldSink.SetTurnState(agent.TurnState{Active: true}, 1)
-			replacement := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			replacement := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			if adopted {
 				svc.Output.NoteAgentProcessStarted(ownerID)
 				replacement.SetTurnState(agent.TurnState{Active: true, Steerable: true}, 1)
@@ -362,7 +364,7 @@ func TestObsoleteSinkSessionSetterPreservesTheReplacementSession(t *testing.T) {
 				svc, oldSink, ownerID, _ := setupBgTaskTestWithService(t)
 				oldSink.UpdateSessionID("session-a")
 				captured := agent.CaptureTranscript(oldSink, agent.MessageContent{Original: []byte(`{"type":"assistant","text":"original"}`)}, agent.SpanInfo{})
-				replacement := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				replacement := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 				replacement.UpdateSessionID("session-b")
 				if returnsToOriginal {
 					replacement.UpdateSessionID("session-a")

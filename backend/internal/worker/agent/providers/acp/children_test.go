@@ -357,7 +357,7 @@ func TestChildTransientFailureKeepsTheExistingRouteAndLaterValidation(t *testing
 func TestChildIdentityRefusalProtectsAttachedSessionReaders(t *testing.T) {
 	t.Parallel()
 	b, sink, child, _ := newChildRefusalBase(t, "native-old")
-	b.AttachChildSession("child-session", "call-spawn")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 	require.True(t, b.FeedChildUpdate("call-spawn", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"child-open","title":"Read","status":"pending"}`)))
 	before := child.Messages()
 	validateRefusalChild(b, "call-spawn", "native-new")
@@ -584,6 +584,7 @@ func TestChildRoute_AnIncompleteSpawnReleasesItsChildAgent(t *testing.T) {
 	require.Empty(t, probe.releasedChildren())
 
 	b.finishAllTurnOutput(agent.MessageCompletionInterrupted)
+	b.FlushRegistryObservations()
 
 	row, ok := sink.BackgroundTask("call-spawn")
 	require.True(t, ok)
@@ -640,7 +641,7 @@ func TestChildSession_TheAgentsMessagesOpenAndContinueTheChildTranscript(t *test
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 	b.hooks.ChildUserMessages = true
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "step-session", ChildAgentKey: "step-session", Title: "step", Status: bgtask.StatusRunning, Spawns: true})
-	b.AttachChildSession("step-session", "step-session")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "step-session", RowKey: "step-session"})
 
 	for _, update := range []string{
 		`{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Do the step."}}`,
@@ -681,7 +682,7 @@ func TestChildSession_WithoutTheHookTheAgentsMessagesAreDropped(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "step-session", ChildAgentKey: "step-session", Status: bgtask.StatusRunning})
-	b.AttachChildSession("step-session", "step-session")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "step-session", RowKey: "step-session"})
 
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "step-session", `{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"History."}}`))
 
@@ -694,7 +695,7 @@ func TestChildSession_ASpawnPromptKeepsItsPlaceBeforeTheAgentsFirstMessage(t *te
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 	b.hooks.ChildUserMessages = true
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "step-session", ChildAgentKey: "step-session", Status: bgtask.StatusRunning, Spawns: true, Prompt: "The spawn's prompt."})
-	b.AttachChildSession("step-session", "step-session")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "step-session", RowKey: "step-session"})
 
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "step-session", `{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"The same instruction."}}`))
 
@@ -730,7 +731,7 @@ func TestChildSession_UpdatesOfAnAttachedSessionReachTheChild(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
-	b.AttachChildSession("child-session", "call-spawn")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "child-session", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"From the child."}}`))
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "other-session", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"From nowhere."}}`))
@@ -751,7 +752,7 @@ func TestChildSession_TheMainSessionIsNeverAChild(t *testing.T) {
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Status: bgtask.StatusRunning})
 	// A provider that attaches the main session by mistake routes nothing:
 	// the main session is dispatched before the child map is read.
-	b.AttachChildSession("session-1", "call-spawn")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "session-1", RowKey: "call-spawn"})
 
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"main"}}`))
 	assert.Equal(t, "main", b.TurnAssistantTextForTest().String())
@@ -931,7 +932,7 @@ func TestChildSession_ARenamedRowKeepsItsTranscriptAndItsSessionRoute(t *testing
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
-	b.AttachChildSession("child-session", "call-spawn")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "child-session", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Before, "}}`))
 
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "ses-child", RenameFrom: "call-spawn", Status: bgtask.StatusRunning})
@@ -959,7 +960,7 @@ func TestChildSession_AFailedRenameKeepsTheRouteOfTheOldRow(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: &registryProbeSink{ProviderServices: agent.NewProviderServices(sink), failRename: true}, sessionID: "session-1"}
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
-	b.AttachChildSession("child-session", "call-spawn")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "ses-child", RenameFrom: "call-spawn", ChildAgentKey: "ses-child", Status: bgtask.StatusRunning})
 
@@ -978,8 +979,8 @@ func TestAttachChildSession_AnEmptySessionOrRowAttachesNothing(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 
-	b.AttachChildSession("", "call-spawn")
-	b.AttachChildSession("child-session", "")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "", RowKey: "call-spawn"})
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: ""})
 	b.FinishChildTurn("call-none")
 
 	assert.Empty(t, b.childSessionRow(""))
@@ -999,7 +1000,7 @@ func TestOpenToolSink_FindsTheTranscriptOfARunningCall(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
-	b.AttachChildSession("child-session", "call-spawn")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"tool_call","toolCallId":"main-call","title":"Run","kind":"execute","status":"in_progress"}`))
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "child-session", `{"sessionUpdate":"tool_call","toolCallId":"child-call","title":"Run","kind":"execute","status":"in_progress"}`))
 
@@ -1069,7 +1070,7 @@ func TestLoadChildSessionReturnsItsOwnModelWithoutChangingTheRoot(t *testing.T) 
 			t.Parallel()
 			b, requests := acptest.NewAgentForRPCWithResponder(t, func() *Base { return &Base{} }, func(b *Base) *Base { return b }, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(tc.raw)} })
 			b.SetCurrentModel("private/parent")
-			model, err := b.LoadChildSession("child-session")
+			model, err := b.LoadChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "child-row"})
 			if tc.fails {
 				require.Error(t, err)
 			} else {

@@ -11,21 +11,6 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// deferGoalAction queues a goal write after the caller releases dispatchMu.
-func (a *Agent) deferGoalAction(apply func()) {
-	a.deferredGoalActions = append(a.deferredGoalActions, apply)
-}
-
-// takeDeferredGoalActions takes the queued goal writes under dispatchMu.
-// An action that enters dispatch again appends to a separate queue.
-func (a *Agent) takeDeferredGoalActions() []func() {
-	a.dispatchMu.Lock()
-	deferred := a.deferredGoalActions
-	a.deferredGoalActions = nil
-	a.dispatchMu.Unlock()
-	return deferred
-}
-
 // parseMuseGoalEvent reads the goal field of session/goalChanged.
 // An absent or invalid goal preserves the current goal. An explicit null clears it.
 // A valid goal requires a readable objective and a nonblank status.

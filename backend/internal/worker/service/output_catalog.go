@@ -26,7 +26,7 @@ type catalogOperation struct {
 	comparison *catalogComparisonIdentity
 }
 
-// lockCatalogSource follows the same root lease order as NewSink.
+// lockCatalogSource follows the same root lease order as NewRootSink.
 // The caller acquires catalogMu before these leases and releases all locks before callbacks.
 func (source catalogSource) lockCatalogSource() func() {
 	mutation := source.sink.h.transcriptMutationMutex(source.sink.rootAgentID)

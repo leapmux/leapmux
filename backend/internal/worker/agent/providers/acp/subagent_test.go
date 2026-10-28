@@ -214,7 +214,7 @@ func TestACPChildIdentityRestorationUsesTheDirectNestedDelegate(t *testing.T) {
 	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "parent-child", ChildAgentKey: "parent-child", ChildAgentSessionID: "native-parent", Status: bgtask.StatusRunning,
 	})
-	b.AttachChildSession("native-parent", "parent-child")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "native-parent", RowKey: "parent-child"})
 	parent := root.Child("child-of-parent-child")
 	grandchild := seedRefusalChild(t, parent, "reused-spawn", "native-grandchild")
 	rootChild := seedRefusalChild(t, root, "reused-spawn", "native-root-child")

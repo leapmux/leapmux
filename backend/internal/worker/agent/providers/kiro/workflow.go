@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -62,9 +63,10 @@ type workflowState struct {
 
 // workflowRun is what LeapMux knows about one run.
 type workflowRun struct {
-	name      string
-	objective string
-	status    string
+	rootSessionID string
+	name          string
+	objective     string
+	status        string
 	// steps maps the node path of a step to the session it runs in, which is
 	// also the key of its registry row, while the step runs.
 	steps map[string]string
@@ -132,15 +134,16 @@ func nodePathKey(path []string) string {
 
 // handleWorkflowNotification dispatches one workflow notification of the main
 // session.
-func (a *Agent) handleWorkflowNotification(method string, params json.RawMessage) {
+func (a *Agent) handleWorkflowNotification(rootSessionID, method string, params json.RawMessage) {
 	var note kiroWorkflowNotification
 	if err := json.Unmarshal(params, &note); err != nil || note.WorkflowID == "" {
 		slog.Warn("kiro workflow notification unreadable", "agent_id", a.AgentID(), "method", method, "error", err)
 		return
 	}
-	if !a.ownsWorkflow(note) {
+	if rootSessionID == "" || !a.IsCurrentSession(rootSessionID) || note.ParentSessionID != "" && note.ParentSessionID != rootSessionID {
 		return
 	}
+	note.ParentSessionID = rootSessionID
 	switch method {
 	case kiroWorkflowRunStartMethod:
 		a.handleRunStart(note)
@@ -159,17 +162,38 @@ func (a *Agent) handleWorkflowNotification(method string, params json.RawMessage
 	}
 }
 
-// ownsWorkflow reports whether a run belongs to the session that this agent
-// serves. A notification that states no parent belongs to a run this agent
-// already follows.
-func (a *Agent) ownsWorkflow(note kiroWorkflowNotification) bool {
-	if note.ParentSessionID != "" {
-		return a.IsCurrentSession(note.ParentSessionID)
+// routeWorkflowNotification retains the root of a known run when the native
+// notification omits its parent. A later context clear cannot reassign it.
+func (a *Agent) routeWorkflowNotification(line *providerkit.ParsedLine) bool {
+	return a.RouteSessionNotification(acp.SessionNotification{
+		Raw: line.Raw, ResolveSession: a.workflowNotificationSession, Dispatch: a.dispatchWorkflowNotification,
+	})
+}
+
+func (a *Agent) workflowNotificationSession(raw json.RawMessage) (string, bool) {
+	line := providerkit.ParseLine(raw)
+	var owner struct {
+		ParentSessionID string `json:"parentSessionId"`
+		WorkflowID      string `json:"workflowId"`
 	}
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	_, known := a.workflows.runs[note.WorkflowID]
-	return known
+	if json.Unmarshal(line.Params, &owner) != nil || owner.WorkflowID == "" {
+		slog.Warn("kiro workflow notification unreadable", "agent_id", a.AgentID(), "method", line.Method)
+		return "", false
+	}
+	rootSessionID := owner.ParentSessionID
+	if rootSessionID == "" {
+		a.stateMu.Lock()
+		if run := a.workflows.runs[owner.WorkflowID]; run != nil {
+			rootSessionID = run.rootSessionID
+		}
+		a.stateMu.Unlock()
+	}
+	return rootSessionID, rootSessionID != ""
+}
+
+func (a *Agent) dispatchWorkflowNotification(rootSessionID string, raw json.RawMessage) {
+	line := providerkit.ParseLine(raw)
+	a.handleWorkflowNotification(rootSessionID, line.Method, line.Params)
 }
 
 // runForLocked returns the run of one notification, and records it on first
@@ -179,8 +203,8 @@ func (a *Agent) runForLocked(note kiroWorkflowNotification) *workflowRun {
 		a.workflows.runs = make(map[string]*workflowRun)
 	}
 	run := a.workflows.runs[note.WorkflowID]
-	if run == nil {
-		run = &workflowRun{status: kiroRunRunning, steps: make(map[string]string)}
+	if run == nil || run.rootSessionID != note.ParentSessionID {
+		run = &workflowRun{rootSessionID: note.ParentSessionID, status: kiroRunRunning, steps: make(map[string]string)}
 		a.workflows.runs[note.WorkflowID] = run
 	}
 	if name := strings.TrimSpace(note.WorkflowName); name != "" {
@@ -262,7 +286,7 @@ func (a *Agent) handleNodeStart(note kiroWorkflowNotification) {
 		GroupKey:      note.WorkflowID,
 		GroupLabel:    label,
 	})
-	a.AttachChildSession(note.SessionID, note.SessionID)
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: note.ParentSessionID, SessionID: note.SessionID, RowKey: note.SessionID})
 }
 
 // kiroNodeStatus maps the status of a node that ended.

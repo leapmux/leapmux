@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -113,7 +114,7 @@ func TestFailedChildNativeResultWriteAcceptsTheNextValidAttempt(t *testing.T) {
 	assert.Len(t, transcriptMessages(t, svc, childID), 1)
 }
 
-func TestChildRegistryLinkFailureReturnsAnErrorAndReplaysTheSameChild(t *testing.T) {
+func TestChildRegistryLinkFailureRollsBackCreationAndReplaysTheNativeIdentity(t *testing.T) {
 	t.Parallel()
 	svc, sink, _, rows := setupBgTaskTestWithService(t)
 	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_child_link BEFORE INSERT ON agent_background_tasks BEGIN SELECT RAISE(FAIL, 'the store refused the child link'); END`)
@@ -122,13 +123,21 @@ func TestChildRegistryLinkFailureReturnsAnErrorAndReplaysTheSameChild(t *testing
 	_, err = sink.EnsureChildAgent(spec)
 	require.ErrorContains(t, err, "the store refused the child link")
 	assert.Empty(t, rows())
-	child, err := svc.Queries.GetChildAgentByProviderKey(t.Context(), db.GetChildAgentByProviderKeyParams{ParentAgentID: sqlString("agent-1"), ProviderChildKey: spec.ProviderChildKey})
-	require.NoError(t, err)
+	_, err = svc.Queries.GetChildAgentByProviderKey(t.Context(), db.GetChildAgentByProviderKeyParams{ParentAgentID: sqlString("agent-1"), ProviderChildKey: spec.ProviderChildKey})
+	require.ErrorIs(t, err, sql.ErrNoRows, "a refused initial linkage must not commit a partial child")
 	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER refuse_child_link")
 	require.NoError(t, err)
 	replayID, err := sink.EnsureChildAgent(spec)
 	require.NoError(t, err)
-	assert.Equal(t, child.ID, replayID)
+	require.NotEmpty(t, replayID)
+	child, err := svc.Queries.GetChildAgentByProviderKey(t.Context(), db.GetChildAgentByProviderKeyParams{ParentAgentID: sqlString("agent-1"), ProviderChildKey: spec.ProviderChildKey})
+	require.NoError(t, err)
+	assert.Equal(t, replayID, child.ID)
+	assert.Equal(t, spec.ProviderChildKey, child.ProviderChildKey)
+	assert.Equal(t, spec.SpawnSpanID, child.SpawnSpanID)
+	againID, err := sink.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	assert.Equal(t, replayID, againID, "a committed native child keeps its identity on further replay")
 	linked := rows()
 	require.Len(t, linked, 1)
 	assert.Equal(t, child.ID, linked[0].ChildAgentID)

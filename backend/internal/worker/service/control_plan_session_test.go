@@ -106,7 +106,7 @@ func TestPlanApprovalRequiresConfirmedLiveSettings(t *testing.T) {
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID: "agent-1", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		WorkingDir: row.WorkingDir, APITimeout: 10 * time.Millisecond,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{

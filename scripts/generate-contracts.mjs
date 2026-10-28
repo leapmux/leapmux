@@ -2752,7 +2752,8 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Qwen Code',
     preamble: [
       'Qwen owns the extension method, the `_meta` keys, and the tool, mode and permission-option',
-      'names below. Both sides read them -- the worker routes the subagent updates, resolves the',
+      'names below. LeapMux owns the registry prefix. Both sides read these values: the worker',
+      'routes the subagent updates, resolves the',
       'plan approval and ends the turns Qwen starts; the browser plugin draws the same tool calls',
       'and dialogs and reads the same turn end.',
     ].join('\n// '),
@@ -2766,6 +2767,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'QwenMode', doc: 'approval modes, carried on LeapMux\'s permission-mode axis' },
       { key: 'permissionOptions', goTable: 'PermissionOption', tsTable: 'PERMISSION_OPTION', tsType: 'QwenPermissionOption', doc: 'option ids of the permission requests both sides answer' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'QwenConfigId', doc: 'config-option ids of the axes both sides address by id' },
+      { key: 'registryKeys', goTable: 'RegistryKey', tsTable: 'REGISTRY_KEY', tsType: 'QwenRegistryKey', owner: 'LeapMux chose this', doc: 'prefix of session-qualified Qwen registry identities shared by the worker and browser' },
     ],
   },
   {
@@ -3085,8 +3087,8 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'audioMimeTypes', subsetOf: 'attachment-media.audioMimeTypes', goTable: 'AudioMIME', tsTable: 'AUDIO_MIME', doc: 'audio MIME types carried by the native Google adapter' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'FastagentOption', doc: 'LeapMux option IDs for native launch settings' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'FastagentMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
-      { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'FastagentTool', doc: 'native local command tools' },
-      { key: 'archive', goTable: 'Archive', tsTable: 'ARCHIVE', tsType: 'FastagentArchiveField', doc: 'provenance of recovered root command records' },
+      { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'FastagentTool', readers: ['ts'], readersWhy: 'The worker preserves native requests and results without comparing these names. The browser uses them to render shell tools.', doc: 'native local command tools' },
+      { key: 'archive', goTable: 'Archive', tsTable: 'ARCHIVE', tsType: 'FastagentArchiveField', doc: 'provenance of unchanged native history elements' },
     ],
   },
   {
@@ -3112,6 +3114,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'inputOutcomes', goTable: 'InputOutcome', tsTable: 'INPUT_OUTCOME', tsType: 'MuseInputOutcome', doc: 'native question settlement outcomes', readers: ['ts'], readersWhy: 'The Worker retains the native settlement frame. The browser reads each outcome word for display.' },
       { key: 'compactionOutcomes', goTable: 'CompactionOutcome', tsTable: 'COMPACTION_OUTCOME', tsType: 'MuseCompactionOutcome', doc: 'native compaction outcomes' },
       { key: 'logEvents', goTable: 'LogEvent', tsTable: 'LOG_EVENT', tsType: 'MuseLogEvent', doc: 'native log events that supply structured results' },
+      { key: 'parentInput', goTable: 'ParentInput', tsTable: 'PARENT_INPUT', tsType: 'MuseParentInputToken', doc: 'native causal vocabulary for delivered parent instructions' },
       { key: 'supplementFields', goTable: 'SupplementField', tsTable: 'SUPPLEMENT_FIELD', tsType: 'MuseSupplementField', owner: 'LeapMux chose these', doc: 'separate native records and recovery failures' },
       { key: 'streamKinds', goTable: 'StreamKind', tsTable: 'STREAM_KIND', tsType: 'MuseStreamKind', doc: 'native raw log stream kinds that both sides inspect' },
       { key: 'optionIds', goTable: 'OptionID', tsTable: 'OPTION_ID', tsType: 'MuseOptionID', owner: 'LeapMux chose these', doc: 'startup option identifiers' },
@@ -3634,6 +3637,7 @@ export function emitTsProviderProtocol(spec, p) {
       const members = p[t.key].map(key => `${parent.spec.tsPrefix}_${parent.table.tsTable}.${key}`).join(', ')
       return `/** ${t.owner ?? spec.title} ${t.doc}. */\nexport const ${spec.tsPrefix}_${t.tsTable}: ReadonlySet<string> = new Set([${members}])`
     }
+    mustBe(typeof t.tsType === 'string' && /^[A-Z][A-Za-z0-9]*$/.test(t.tsType), `${spec.name}.json`, `table ${t.key}.tsType must be a PascalCase identifier`)
     const rows = Object.entries(p[t.key]).map(([name, literal]) => `  ${name}: ${jsonString(literal)},`).join('\n')
     const symbol = `${spec.tsPrefix}_${t.tsTable}`
     // `owner` identifies who chose the literals when that is not the provider's

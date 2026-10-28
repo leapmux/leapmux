@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 
@@ -41,10 +40,7 @@ func (qwenProvider) Classify(content json.RawMessage) agent.NotificationClassifi
 // placeholder before the model sees its bytes.
 func (qwenProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == contracts.AttachmentMediaKindAudio {
-		if len(attachment.Data) == 0 || !slices.Contains(contracts.QwenAudioMIMEMembers, attachment.MIMEType) {
-			return fmt.Errorf("cannot send Qwen Code audio attachment %q with media type %s", attachment.Filename, attachment.MIMEType)
-		}
-		return nil
+		return providerkit.ValidateAudioAttachment(attachment, "Qwen Code audio attachment", contracts.QwenAudioMIMEMembers)
 	}
 	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
 		return err

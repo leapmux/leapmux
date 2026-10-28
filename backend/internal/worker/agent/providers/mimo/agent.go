@@ -64,9 +64,9 @@ type Agent struct {
 	// sessionSwitching blocks new work on the old session while ClearContext
 	// creates and installs its replacement.
 	sessionSwitching bool
-	// inputSends counts HTTP prompt calls by session. ClearContext aborts a
-	// session that still owns a call, even before MiMo reports a busy turn.
-	inputSends map[string]int
+	// inputSends owns HTTP prompt calls by session. Context clear waits for
+	// these calls before aborting the outgoing native session.
+	inputSends map[string]map[*mimoInputSend]struct{}
 
 	catalog mimoCatalog
 	// model is the `<provider>/<model>` every prompt states. Empty until the
@@ -173,7 +173,7 @@ func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, 
 		connected:        make(chan struct{}),
 		streamDone:       make(chan struct{}),
 		clock:            clock,
-		inputSends:       map[string]int{},
+		inputSends:       map[string]map[*mimoInputSend]struct{}{},
 		messages:         map[string]*mimoMessageRecord{},
 		parts:            map[string]*mimoTextPart{},
 		tools:            map[string]*mimoToolCall{},
@@ -265,18 +265,15 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.manualFollowupSending = true
 		a.manualFollowupBusy = false
 	}
-	a.inputSends[sessionID]++
+	send := a.admitInputLocked(sessionID)
 	a.Mu.Unlock()
 	err = a.rpc.promptAsync(a.Context(), sessionID, request)
+	a.finishInput(sessionID, send, err)
 	if manualFollowup {
 		// An event can report busy before prompt_async answers. The stream
 		// handler and HTTP acceptance must apply in one order.
 		a.dispatchMu.Lock()
 		a.Mu.Lock()
-		a.inputSends[sessionID]--
-		if a.inputSends[sessionID] == 0 {
-			delete(a.inputSends, sessionID)
-		}
 		sameSession := a.sessionID == sessionID
 		accepted := err == nil && sameSession && !a.StoppedLocked()
 		startTurn := accepted && a.manualFollowupBusy
@@ -294,10 +291,6 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.dispatchMu.Unlock()
 	} else {
 		a.Mu.Lock()
-		a.inputSends[sessionID]--
-		if a.inputSends[sessionID] == 0 {
-			delete(a.inputSends, sessionID)
-		}
 		if err == nil && a.sessionID == sessionID && !steer {
 			a.manualCompactionReady = false
 		}
@@ -307,6 +300,36 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		return classifyDeliveryError("prompt", err)
 	}
 	return nil
+}
+
+type mimoInputSend struct {
+	done chan struct{}
+	err  error // Written before done closes; readers wait for done.
+}
+
+// admitInputLocked registers a request before context clear can close admission.
+// The caller holds a.Mu and has validated the captured session and target.
+func (a *Agent) admitInputLocked(sessionID string) *mimoInputSend {
+	send := &mimoInputSend{done: make(chan struct{})}
+	if a.inputSends == nil {
+		a.inputSends = make(map[string]map[*mimoInputSend]struct{})
+	}
+	if a.inputSends[sessionID] == nil {
+		a.inputSends[sessionID] = make(map[*mimoInputSend]struct{})
+	}
+	a.inputSends[sessionID][send] = struct{}{}
+	return send
+}
+
+func (a *Agent) finishInput(sessionID string, send *mimoInputSend, err error) {
+	a.Mu.Lock()
+	send.err = err
+	delete(a.inputSends[sessionID], send)
+	if len(a.inputSends[sessionID]) == 0 {
+		delete(a.inputSends, sessionID)
+	}
+	close(send.done)
+	a.Mu.Unlock()
 }
 
 // promptRequestLocked builds a prompt from the current settings:

@@ -1,0 +1,764 @@
+{
+  "_readme": "Actual Muse workflow-child ownership records captured by the scripted native host probe on 2026-10-26. The spawn payload uses schema version 4 while the envelope remains version 1. Records are unchanged native objects.",
+  "parentSessionId": "01a177bc-3c59-7db0-bc02-232ef5eb3847",
+  "childSessionId": "fa45eafd-8cf9-7ca4-889b-bbf63aa3ec7c",
+  "subagentId": "01a177bc-406d-70b3-ab38-7c953fb9471f",
+  "runId": "f78e6c96-5cf9-7ca4-8733-99cb1e618988",
+  "records": [
+    {
+      "schema_version": 1,
+      "id": "01a177bc-3c59-7f2c-9872-9b9251bdd9ff",
+      "stream": {
+        "kind": "session",
+        "id": "01a177bc-3c59-7db0-bc02-232ef5eb3847"
+      },
+      "sequence": 71,
+      "recorded_at": 1793010188412158,
+      "record_type": "event",
+      "durability": "durable",
+      "causation_id": null,
+      "payload_type": "subagent.control.spawn_accepted",
+      "payload_schema_version": 4,
+      "payload": {
+        "kind": "subagent_control",
+        "record": {
+          "kind": "spawn_accepted",
+          "command_id": "402409e5-9335-597c-aec5-6e7b8d0e1bdb",
+          "parent_session_id": "01a177bc-3c59-7db0-bc02-232ef5eb3847",
+          "parent_run_id": "01a177bc-3e16-7608-bfa1-ab5742cc36ad",
+          "subagent_id": "01a177bc-406d-70b3-ab38-7c953fb9471f",
+          "agent_path": "main/workflow-agent/1",
+          "depth": 1,
+          "role": "workflow-agent",
+          "objective": "CURRENT_MUSE_CHILD LEAPMUXE2ESCENARIO:muse-current-workflow",
+          "task_id": "a83e779d-437c-52df-895c-960c5a30615c",
+          "task_stream": "task/a83e779d-437c-52df-895c-960c5a30615c",
+          "definition_grant_audit": {
+            "definition_name": "workflow-subagent",
+            "selection_mode": "default",
+            "launch_lane": "workflow",
+            "source": {
+              "kind": "built_in",
+              "scope": "builtin"
+            },
+            "effective_grant": {
+              "work_tools": [
+                "add_memory",
+                "bash",
+                "bash_input",
+                "edit_file",
+                "edit_memory",
+                "monitor",
+                "read_file",
+                "read_memory",
+                "read_skill",
+                "search",
+                "web_fetch",
+                "web_search",
+                "write_file"
+              ],
+              "session_control_tools": []
+            },
+            "resolution_summary": {
+              "definition_tool_mode": "all",
+              "requested_work_tool_count": 13,
+              "parent_omitted_work_tool_count": 0,
+              "definition_denied_work_tool_count": 0,
+              "caller_narrowed_work_tool_count": 0,
+              "lane_denied_tool_count": 0
+            },
+            "capability_context": "context:workflow:51dfba2d672ff49c0dd293923d17ee2dde8185284100f20a44a8bf75bb599ffa",
+            "configuration_epoch": "epoch:workflow:resume-context-required-v1:1b647d5c8896eaba0fe89f579cdc4316b3aabe317870507cb2b3f4f5356cc7e9"
+          },
+          "workflow_run_id": "workflow-run-model-tool-native-workflow",
+          "spawn_decision": {
+            "schema_version": 1,
+            "command_key": {
+              "root_agent_id": "01a177bc-3c59-7db0-bc02-232ef5eb3847",
+              "caller_agent_id": "01a177bc-3c59-7db0-bc02-232ef5eb3847",
+              "command_kind": "spawn",
+              "command_id": "402409e5-9335-597c-aec5-6e7b8d0e1bdb",
+              "command_id_digest": "sha256:4126075eef477cd8ad4bd2074b8eedc08a17b5d20b6e8095a25adb8135e4e1c6"
+            },
+            "request_fingerprint": {
+              "normalization_version": 1,
+              "domain": "agent.spawn.v1",
+              "canonical_evidence": {
+                "immediate_parent_session_id": "01a177bc-3c59-7db0-bc02-232ef5eb3847",
+                "immediate_parent_run_id": "01a177bc-3e16-7608-bfa1-ab5742cc36ad",
+                "tool_surface_version": "2",
+                "name_input_evidence": {
+                  "kind": "workflow_omitted"
+                },
+                "role": {
+                  "byte_length": 14,
+                  "digest": "sha256:6400b978e88808049c0d5fa39c3a1e46478353947f7a41b8931a468bab0a36a0"
+                },
+                "objective": {
+                  "byte_length": 59,
+                  "digest": "sha256:cfd0b1b6e19ddb43b309d341c0a09a560df1d9f6255eb1352e2d42023c7d6786"
+                },
+                "resolved_agent_definition_id": "workflow-subagent",
+                "definition_grant_digest": "sha256:2ce72da44dbd73b1696fbf72c48fe43f4718a44dfd2aaa801e9c6bae98b848b3",
+                "definition_context_digest": "sha256:4d44517ee0dfa8aeb92b55b944740bf445be5fe8a2dbc08d57ea9546f3d4e19d",
+                "definition_toolset_digest": "sha256:ba03fd9efe2f71223fe3db4c2b42fbf38f61d67299b1471255fdfa66731335d6",
+                "lane": "workflow",
+                "workflow_provenance": {
+                  "logical_run_id": "workflow-run-model-tool-native-workflow",
+                  "ticket": "ccae8e82-faf6-585c-92bf-c3af080505b6"
+                },
+                "child_completion_contract": "default_text"
+              },
+              "digest": "sha256:fb7070e53f7ca2f75c350db725f9032a377ffef45173d8414310c09c7dcd42e8"
+            },
+            "durability_disposition": "committed",
+            "admission_disposition": "accepted",
+            "result_rendering_version": 1,
+            "guidance_version": 1,
+            "capacity": {
+              "scope": "root",
+              "occupied": 2,
+              "limit": 8,
+              "available": 6
+            }
+          },
+          "agent_lineage_admission": {
+            "schema_version": 1,
+            "agent_instance_id": "01a177bc-406d-70b3-ab38-7c953fb9471f",
+            "root_agent_id": "01a177bc-3c59-7db0-bc02-232ef5eb3847",
+            "immediate_parent_agent_id": "01a177bc-3c59-7db0-bc02-232ef5eb3847"
+          },
+          "child_permission_derivation_admission": {
+            "schema_version": 1,
+            "source_permission_position": {
+              "id": "01a177bc-3c5a-7153-8f1e-b3a271213f67",
+              "sequence": 2
+            },
+            "admitted_approval_backend_mode": "on_request",
+            "derivation_seed": {
+              "current": {
+                "schema_version": 1,
+                "permission_epoch": 1,
+                "source": {
+                  "kind": "launch_overrides",
+                  "id": null,
+                  "display_name": "Launch overrides"
+                },
+                "resolved_snapshot": {
+                  "schema_version": 1,
+                  "filesystem": {
+                    "mode": "unrestricted",
+                    "minimal_runtime_set_version": null,
+                    "workspace_roots": [],
+                    "rules": [],
+                    "protected_metadata": false
+                  },
+                  "local_command_network": {
+                    "mode": "enabled",
+                    "targets": [],
+                    "unix_sockets": []
+                  },
+                  "approval": "on_request",
+                  "reviewer": "human"
+                },
+                "definition_sha256": "sha256:7c3328431f1bb84c4eff94014c0a3dfe674eaa147ae6725c28a1ac5fdc9cd81b",
+                "managed_ancestor_sha256": [],
+                "managed_enforcement": {
+                  "schema_version": 1,
+                  "constraint_epoch": 0,
+                  "constraint_sha256": "sha256:59b1b03f052965a55de5fd072b4e03118eb5b7302d48caa89e9b8e5ae34d0530",
+                  "component_ceilings": {
+                    "filesystem_modes": [
+                      "managed",
+                      "unrestricted"
+                    ],
+                    "network_modes": [
+                      "restricted",
+                      "proxy_only",
+                      "enabled"
+                    ],
+                    "approval": [
+                      "on_request",
+                      "prompt_unmatched",
+                      "allow_all"
+                    ],
+                    "reviewer": [
+                      "human",
+                      "auto_review",
+                      "none"
+                    ]
+                  },
+                  "filesystem_rules": [],
+                  "network_targets": [],
+                  "unix_sockets": [],
+                  "managed_targets_only": false,
+                  "platform": "macos",
+                  "backend_id": "legacy-v1"
+                },
+                "resulting_snapshot_sha256": "sha256:73f076a9a280c1ca4018f1e581f92d11a07c77b1e5a0e3dbfc1b6139aef67eb5"
+              },
+              "catalog": {
+                "schema_version": 1,
+                "built_in_rows": [
+                  {
+                    "profile": {
+                      "source": {
+                        "kind": "built_in",
+                        "id": ":read-only",
+                        "display_name": "Read only"
+                      },
+                      "description": "Reads files only.",
+                      "resolved": {
+                        "schema_version": 1,
+                        "filesystem": {
+                          "mode": "managed",
+                          "minimal_runtime_set_version": 1,
+                          "workspace_roots": [],
+                          "rules": [
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":minimal"
+                              },
+                              "access": "read"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":root"
+                              },
+                              "access": "read"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":workspace_roots"
+                              },
+                              "access": "read"
+                            }
+                          ],
+                          "protected_metadata": true
+                        },
+                        "local_command_network": {
+                          "mode": "restricted",
+                          "targets": [],
+                          "unix_sockets": []
+                        },
+                        "approval": "on_request",
+                        "reviewer": "human"
+                      },
+                      "definition_sha256": "sha256:dbc239a9e17982ce71a2458f6e17f0f39f190387a94316d44b6f102571d4fed2"
+                    },
+                    "selectable": true
+                  },
+                  {
+                    "profile": {
+                      "source": {
+                        "kind": "built_in",
+                        "id": ":ask-me",
+                        "display_name": "Ask me"
+                      },
+                      "description": "Edits workspace and temporary files; requires approval for protected writes, new network targets, and other restricted actions.",
+                      "resolved": {
+                        "schema_version": 1,
+                        "filesystem": {
+                          "mode": "managed",
+                          "minimal_runtime_set_version": 1,
+                          "workspace_roots": [],
+                          "rules": [
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":minimal"
+                              },
+                              "access": "read"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":root"
+                              },
+                              "access": "read"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":runtime_temp"
+                              },
+                              "access": "write"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":slash_tmp"
+                              },
+                              "access": "write"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":tmpdir"
+                              },
+                              "access": "write"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":workspace_roots"
+                              },
+                              "access": "write"
+                            }
+                          ],
+                          "protected_metadata": true
+                        },
+                        "local_command_network": {
+                          "mode": "proxy_only",
+                          "targets": [],
+                          "unix_sockets": []
+                        },
+                        "approval": "on_request",
+                        "reviewer": "human"
+                      },
+                      "definition_sha256": "sha256:156dd95d8dac50c7cc9741815435c2e16aa6e2450477c5005e5220cdd8d50a93"
+                    },
+                    "selectable": true
+                  },
+                  {
+                    "profile": {
+                      "source": {
+                        "kind": "built_in",
+                        "id": ":auto-review",
+                        "display_name": "Auto-review"
+                      },
+                      "description": "Same access as Ask me; AI reviews eligible actions; trusted permission hooks may decide approval requests first.",
+                      "resolved": {
+                        "schema_version": 1,
+                        "filesystem": {
+                          "mode": "managed",
+                          "minimal_runtime_set_version": 1,
+                          "workspace_roots": [],
+                          "rules": [
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":minimal"
+                              },
+                              "access": "read"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":root"
+                              },
+                              "access": "read"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":runtime_temp"
+                              },
+                              "access": "write"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":slash_tmp"
+                              },
+                              "access": "write"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":tmpdir"
+                              },
+                              "access": "write"
+                            },
+                            {
+                              "subject": {
+                                "kind": "special",
+                                "value": ":workspace_roots"
+                              },
+                              "access": "write"
+                            }
+                          ],
+                          "protected_metadata": true
+                        },
+                        "local_command_network": {
+                          "mode": "proxy_only",
+                          "targets": [],
+                          "unix_sockets": []
+                        },
+                        "approval": "on_request",
+                        "reviewer": "auto_review"
+                      },
+                      "definition_sha256": "sha256:1576a8aa30f83059aca9efe4de3dd46919b0887095f5efedb5e5f255ffa778a7"
+                    },
+                    "selectable": true
+                  },
+                  {
+                    "profile": {
+                      "source": {
+                        "kind": "built_in",
+                        "id": ":unrestricted",
+                        "display_name": "Unrestricted"
+                      },
+                      "description": "No filesystem sandbox or approval prompts; local commands have direct network access; project trust is unchanged.",
+                      "resolved": {
+                        "schema_version": 1,
+                        "filesystem": {
+                          "mode": "unrestricted",
+                          "minimal_runtime_set_version": null,
+                          "workspace_roots": [],
+                          "rules": [],
+                          "protected_metadata": false
+                        },
+                        "local_command_network": {
+                          "mode": "enabled",
+                          "targets": [],
+                          "unix_sockets": []
+                        },
+                        "approval": "allow_all",
+                        "reviewer": "none"
+                      },
+                      "definition_sha256": "sha256:0714d877b370c0d61ce9759ee419f9865542af940190a780cf2cf91604eaba9b"
+                    },
+                    "selectable": true
+                  }
+                ],
+                "user_state": "absent",
+                "managed_state": "absent",
+                "startup_override_row": {
+                  "profile": {
+                    "source": {
+                      "kind": "launch_overrides",
+                      "id": null,
+                      "display_name": "Launch overrides"
+                    },
+                    "description": "Filesystem: unrestricted · local-command network: enabled · approval: on_request · reviewer: human.",
+                    "resolved": {
+                      "schema_version": 1,
+                      "filesystem": {
+                        "mode": "unrestricted",
+                        "minimal_runtime_set_version": null,
+                        "workspace_roots": [],
+                        "rules": [],
+                        "protected_metadata": false
+                      },
+                      "local_command_network": {
+                        "mode": "enabled",
+                        "targets": [],
+                        "unix_sockets": []
+                      },
+                      "approval": "on_request",
+                      "reviewer": "human"
+                    },
+                    "definition_sha256": "sha256:7c3328431f1bb84c4eff94014c0a3dfe674eaa147ae6725c28a1ac5fdc9cd81b"
+                  },
+                  "selectable": true
+                }
+              }
+            }
+          },
+          "admitted_execution": {
+            "schema_version": 1,
+            "definition": {
+              "resolved_id": "workflow-subagent",
+              "source": "built_in",
+              "scope": {
+                "kind": "fixed",
+                "project_depth": null,
+                "plugin_id": null
+              },
+              "selection_mode": "default",
+              "description": "Workflow child agent for one delegated Workflow task.",
+              "prompt": "Complete the delegated Workflow task using only the effective capabilities supplied for this agent. Return a concise result to the Workflow owner.",
+              "model": null,
+              "effort": null,
+              "work_tool_selector": {
+                "mode": "all",
+                "names": []
+              },
+              "disallowed_work_tools": [],
+              "skills": [],
+              "memory_scope": null,
+              "execution_request": null
+            },
+            "context_binding": {
+              "configuration_epoch_id": "epoch:workflow:resume-context-required-v1:1b647d5c8896eaba0fe89f579cdc4316b3aabe317870507cb2b3f4f5356cc7e9",
+              "registry_snapshot_id": "registry:4c9768a5-58f6-4917-aedc-6fc53c42e578",
+              "catalog_id": "catalog:run:01a177bc-3e16-7608-bfa1-ab5742cc36ad:0",
+              "parent_snapshot_id": "parent:1b647d5c8896eaba0fe89f579cdc4316b3aabe317870507cb2b3f4f5356cc7e9",
+              "capability_context_id": "context:workflow:51dfba2d672ff49c0dd293923d17ee2dde8185284100f20a44a8bf75bb599ffa",
+              "lane_policy_id": "lane:workflow:1b647d5c8896eaba0fe89f579cdc4316b3aabe317870507cb2b3f4f5356cc7e9",
+              "policy_id": "policy:51dfba2d672ff49c0dd293923d17ee2dde8185284100f20a44a8bf75bb599ffa",
+              "sandbox_id": "sandbox:51dfba2d672ff49c0dd293923d17ee2dde8185284100f20a44a8bf75bb599ffa",
+              "trust_id": "trust:51dfba2d672ff49c0dd293923d17ee2dde8185284100f20a44a8bf75bb599ffa",
+              "effect_policy_id": "effect:51dfba2d672ff49c0dd293923d17ee2dde8185284100f20a44a8bf75bb599ffa",
+              "approval_mode_id": "approval:19504b4ba8f6787da05b5eb1094102f2e4dc1a3a57fde56e56f728d44dc5a27b",
+              "cancellation_owner_id": "cancel:51dfba2d672ff49c0dd293923d17ee2dde8185284100f20a44a8bf75bb599ffa"
+            },
+            "launch_lane": "workflow",
+            "effective_tools": [
+              {
+                "class": "work",
+                "class_position": 0,
+                "binding": {
+                  "name": "read_skill",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "skills",
+                    "implementation": "skills/read-skill/v2",
+                    "configuration_sha256": "sha256:f0065dea89fcbdc642e3eff3871ff261dd2dbfc8b0d7ba303dec222e6ab2cd11"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 1,
+                "binding": {
+                  "name": "web_search",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/client-web-search/v1",
+                    "configuration_sha256": "sha256:4b6ca0ead582263c0d70fda84a68859f3c5b73dfcc4a4f31bd2c7999371e776e"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 2,
+                "binding": {
+                  "name": "read_file",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/read-file/v1",
+                    "configuration_sha256": "sha256:c7fa92c3b021b8f22ed0d7a6565fc7a61126082679688641c506ca34b229e6ff"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 3,
+                "binding": {
+                  "name": "search",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/search/v1",
+                    "configuration_sha256": "sha256:bd69d5b16a50a940abf6fb3e5a10037b75159ab4d435e4e9a37b7cebf6982425"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 4,
+                "binding": {
+                  "name": "write_file",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/write-file/v1",
+                    "configuration_sha256": "sha256:20e636c27068be5220eff1a162b26b968a0abcb5b47582a7048b32322279be6e"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 5,
+                "binding": {
+                  "name": "edit_file",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/edit-file/v1",
+                    "configuration_sha256": "sha256:20e636c27068be5220eff1a162b26b968a0abcb5b47582a7048b32322279be6e"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 6,
+                "binding": {
+                  "name": "read_memory",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/read-memory/v1",
+                    "configuration_sha256": "sha256:c7cce5475e290b3d5743645f37fca9958e9e36227a441f03da0a65bbdab45d2f"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 7,
+                "binding": {
+                  "name": "add_memory",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/add-memory/v1",
+                    "configuration_sha256": "sha256:c7cce5475e290b3d5743645f37fca9958e9e36227a441f03da0a65bbdab45d2f"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 8,
+                "binding": {
+                  "name": "edit_memory",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/edit-memory/v1",
+                    "configuration_sha256": "sha256:c7cce5475e290b3d5743645f37fca9958e9e36227a441f03da0a65bbdab45d2f"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 9,
+                "binding": {
+                  "name": "web_fetch",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/client-web-fetch-reqwest/v1",
+                    "configuration_sha256": "sha256:84b7c1499ec75e148ba7742650313cbbf492e3d11dc242cb43a9139143f989a2"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 10,
+                "binding": {
+                  "name": "bash",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/managed-exec/v1",
+                    "configuration_sha256": "sha256:3a229968ba5df35b66788c0b329be70bc5b4f4f02646d514504d05be326cf4f9"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 11,
+                "binding": {
+                  "name": "bash_input",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/managed-exec-input/v1",
+                    "configuration_sha256": "sha256:3a229968ba5df35b66788c0b329be70bc5b4f4f02646d514504d05be326cf4f9"
+                  }
+                }
+              },
+              {
+                "class": "work",
+                "class_position": 12,
+                "binding": {
+                  "name": "monitor",
+                  "delivery": "direct",
+                  "executor": {
+                    "kind": "owner_bound",
+                    "owner": "builtin",
+                    "implementation": "builtin/monitor/v1",
+                    "configuration_sha256": "sha256:90d5a2301e6099359acf756ad7f634ebf2cb80631b21fd5c603955ac0fb05274"
+                  }
+                }
+              }
+            ],
+            "resolution_trace": {
+              "requested_work_tools": [
+                "read_skill",
+                "web_search",
+                "read_file",
+                "search",
+                "write_file",
+                "edit_file",
+                "read_memory",
+                "add_memory",
+                "edit_memory",
+                "web_fetch",
+                "bash",
+                "bash_input",
+                "monitor"
+              ],
+              "parent_omitted_work_tools": [],
+              "definition_denied_work_tools": [],
+              "caller_narrowed_work_tools": [],
+              "lane_denied_tools": []
+            },
+            "rendered_skills": null,
+            "memory_blob": null
+          }
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "id": "01a177bc-40ef-7490-992c-4462fa76dd31",
+      "stream": {
+        "kind": "session",
+        "id": "01a177bc-3c59-7db0-bc02-232ef5eb3847"
+      },
+      "sequence": 79,
+      "recorded_at": 1793010188527230,
+      "record_type": "event",
+      "durability": "durable",
+      "causation_id": null,
+      "payload_type": "subagent.control.child_session_bound",
+      "payload_schema_version": 1,
+      "payload": {
+        "kind": "subagent_control",
+        "record": {
+          "kind": "child_session_bound",
+          "schema_version": 1,
+          "subagent_id": "01a177bc-406d-70b3-ab38-7c953fb9471f",
+          "child_session_id": "fa45eafd-8cf9-7ca4-889b-bbf63aa3ec7c",
+          "storage_layout": "nested_session_v1"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "id": "01a177bc-413d-7aa3-b0ae-080786e49d44",
+      "stream": {
+        "kind": "session",
+        "id": "01a177bc-3c59-7db0-bc02-232ef5eb3847"
+      },
+      "sequence": 80,
+      "recorded_at": 1793010188605151,
+      "record_type": "event",
+      "durability": "durable",
+      "causation_id": null,
+      "payload_type": "subagent.control.start_attested",
+      "payload_schema_version": 1,
+      "payload": {
+        "kind": "subagent_control",
+        "record": {
+          "kind": "start_attested",
+          "subagent_id": "01a177bc-406d-70b3-ab38-7c953fb9471f",
+          "subagent_session_id": "fa45eafd-8cf9-7ca4-889b-bbf63aa3ec7c",
+          "run_stream": "run/f78e6c96-5cf9-7ca4-8733-99cb1e618988",
+          "parent_trace_id": "01a177bc3e167608bfa1ab5742cc36ad",
+          "parent_span_id": "45bc1852e090cba0"
+        }
+      }
+    }
+  ]
+}

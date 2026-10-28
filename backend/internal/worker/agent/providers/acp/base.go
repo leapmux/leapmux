@@ -3,6 +3,7 @@ package acp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,6 +94,11 @@ const (
 // Base extends JSONRPCProcess with the fields and methods that every ACP agent
 // shares. The package documentation lists the ACP providers.
 type Base struct {
+	pendingFollowUp     *acpFollowUpPrompt
+	rootCallbacks       rootTranscriptCallbacks
+	nativeModeID        string
+	promptOutputDrained bool
+
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
 	// interruptRequested records that the reader stopped the current turn.
@@ -145,7 +151,7 @@ type Base struct {
 	// Claude's hasGoalCommand describes the binary for the same reason.
 	availableCommands map[string]struct{}
 	// subagentPrompts holds each spawn prompt until its child transcript exists. See SubagentObservation.Prompt.
-	// The registry RowKey identifies each entry, and subagentPromptMu protects the map.
+	// The registry RowKey identifies each entry, and PendingPrompts protects the map.
 	// Child creation consumes an entry, and row closure removes it.
 	// A provider that never links a child therefore cannot grow the map without a limit.
 	subagentPrompts providerkit.PendingPrompts
@@ -159,10 +165,13 @@ type Base struct {
 	reapplySettings       func()                // called by ClearContext after session/new to re-apply model, mode, etc.
 	refreshFromSession    func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
 	sessionID             string
-	workingDir            string
-	model                 string
-	permissionMode        string
-	currentPrimaryAgent   string
+	// seenSessionIDs includes observed conversation IDs after their routes
+	// retire. Mu protects it. Hash keys retain no large native ID strings.
+	seenSessionIDs      map[[sha256.Size]byte]struct{}
+	workingDir          string
+	model               string
+	permissionMode      string
+	currentPrimaryAgent string
 	// secondaryReports counts native reports, including repeats of the current value. Mu protects it.
 	secondaryReports uint64
 	availableModels  []*agentapi.ModelInfo
@@ -211,6 +220,10 @@ type Base struct {
 	// ClearContext releases sessionMu before reapplySettings, whose RPCs acquire the read lock separately for each call.
 	sessionMu      sync.RWMutex
 	sessionUpdates acpSessionUpdates
+	// childDispatch keeps child loads and prompts outside a complete context
+	// clear, including cleanup after sessionMu releases. Reader callbacks never
+	// acquire it: they must deliver the replies those operations await.
+	childDispatch childSessionDispatch
 }
 
 // handleACPPromptResponse drains one turn and persists its prompt response.
@@ -231,19 +244,11 @@ func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 // The boundary already contains the prompt's text.
 // The live text counter now counts the agent turn, so that turn stays open.
 func (b *Base) persistFinishedTurn(frame json.RawMessage) {
-	main := b.main()
 	textCompletion, incomplete := b.turnOutputCompletions()
-	turn, hasPromptBoundary := b.drainPromptTurn()
-	if !hasPromptBoundary {
-		main.persistFinishedText(agentapi.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, textCompletion)
-		main.persistFinishedText(agentapi.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, textCompletion)
-	}
-	main.persistIncompleteTools(turn.incompleteTools, incomplete)
-	b.clearCompletedTerminals()
-	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
-
-	b.persistPromptResponse(frame, numToolUses)
-	b.enqueueTurnOutputCleanup(false)
+	turn := b.detachRootPrompt()
+	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
+		b.persistPromptResponseTo(writer, frame, count, turn.sessionID)
+	})
 }
 
 // turnOutputCompletions classifies buffered text and unfinished tools at a normal turn-end frame.
@@ -269,51 +274,38 @@ func acpTextProgressScope(kind agentapi.AssembledMessageKind) string {
 // A prompt with a queued agent turn closes only the tool calls that the prompt left open.
 // The agent turn retains its progress. See BeginAgentTurn.
 func (b *Base) finishIncompleteACPPrompt(completion agentapi.MessageCompletion) int {
-	defer b.enqueueTurnOutputCleanup(false)
-	turn, hasPromptBoundary := b.drainPromptTurn()
-	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
-	if !hasPromptBoundary {
-		b.finishACPTurn(turn, completion)
-		return numToolUses
-	}
-	if b.IsDiscardingOutput() {
-		return numToolUses
-	}
-	b.main().persistIncompleteTools(turn.incompleteTools, completion)
-	b.clearCompletedTerminals()
-	return numToolUses
+	turn := b.detachRootPrompt()
+	return b.finishRootSnapshot(turn, completion, completion, RootTranscriptPromptEnded, nil)
 }
 
-// finishFailedACPPrompt stores the failed output before the failure note and native end frame.
-func (b *Base) finishFailedACPPrompt(err error, ending PromptEnding) {
-	numToolUses := b.finishIncompleteACPPrompt(agentapi.MessageCompletionError)
+func (b *Base) finishFailedRootSnapshot(turn acpTurnSnapshot, err error, ending PromptEnding) {
 	slog.Error("ACP prompt failed", "agent_id", b.AgentID(), "error", err)
-	if !ending.NoteWritten {
-		b.sink.PersistLeapMuxNotification(map[string]interface{}{
-			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err),
-		})
-	}
-	if len(ending.EndFrame) > 0 && !b.IsDiscardingOutput() {
-		b.persistPromptResponse(ending.EndFrame, numToolUses)
-	}
+	b.finishRootSnapshot(turn, agentapi.MessageCompletionError, agentapi.MessageCompletionError, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
+		if !ending.NoteWritten {
+			if turn.endingAdmission == nil {
+				b.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err)})
+			} else {
+				b.persistRootFailure(writer, err)
+			}
+		}
+		if len(ending.EndFrame) > 0 {
+			b.persistPromptResponseTo(writer, ending.EndFrame, count, turn.sessionID)
+		}
+	})
 }
 
 // finishAllTurnOutput ends output for both the prompt and an agent turn queued behind it.
 // Stop and process exit end both turns.
 func (b *Base) finishAllTurnOutput(completion agentapi.MessageCompletion) {
-	b.finishACPTurn(b.drainTurn(), completion)
-	b.enqueueTurnOutputCleanup(true)
+	b.finishACPTurn(b.detachAllRootOutput(), completion)
 }
 
 func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCompletion) {
-	if b.IsDiscardingOutput() {
-		b.ResetCumulativeOutput()
-		b.sink.ReportProgress(agentapi.ResetProgress())
-		return
-	}
-	b.main().finishTurn(turn, completion)
-	b.clearCompletedTerminals()
+	b.finishACPTurnFor(turn, completion, RootTranscriptPromptEnded)
+}
+
+func (b *Base) finishACPTurnFor(turn acpTurnSnapshot, completion agentapi.MessageCompletion, reason RootTranscriptEnd) {
+	b.finishRootSnapshot(turn, completion, completion, reason, nil)
 	b.sink.ReportProgress(agentapi.ResetProgress())
 }
 
@@ -391,7 +383,15 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 // ApplySubagentObservation applies a provider observation outside a main-session tool call.
 // The observation can report a subagent spawn or end, or the progress of a workflow run.
 func (b *Base) ApplySubagentObservation(obs *SubagentObservation) {
+	if obs != nil && obs.RegistryOnly {
+		if err := b.ApplyRegistryObservation(obs); err != nil {
+			slog.Warn("admit ACP registry observation", "provider", b.ProviderName(), "row_key", obs.RowKey, "error", err)
+		}
+		b.FlushRegistryObservations()
+		return
+	}
 	b.main().applySubagentObservation(obs)
+	b.FlushRegistryObservations()
 }
 
 // observeAvailableCommands replaces the advertised ACP command set. A change
@@ -470,6 +470,11 @@ func (b *Base) HasAvailableCommand(command string) bool {
 // Then reapplySettings, when present, applies the provider settings to the new session, such as the model and permission mode.
 // A failed session/new leaves the outgoing session current with its turn stopped, as Stop does.
 func (b *Base) ClearContext() (string, error) {
+	resumeChildren := b.childDispatch.pause()
+	defer func() {
+		resumeChildren()
+		b.FlushRegistryObservations()
+	}()
 	b.sessionMu.Lock()
 	outgoingSessionID := b.CurrentSessionID()
 	if outgoingSessionID != "" {
@@ -486,8 +491,9 @@ func (b *Base) ClearContext() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	b.finishACPTurnFor(outgoingTurn, agentapi.MessageCompletionInterrupted, RootTranscriptSessionReplaced)
+	waitRootTargets(outgoingTurn)
 	b.notePromptActive()
-	b.finishACPTurn(outgoingTurn, agentapi.MessageCompletionInterrupted)
 	// Remove each unconsumed spawn prompt also.
 	// Its row belongs to the outgoing session, which will supply no closing observation to remove it.
 	// Keeping it would retain it for the agent process's lifetime.
@@ -498,9 +504,7 @@ func (b *Base) ClearContext() (string, error) {
 	if b.hooks.ClearProviderState != nil {
 		b.hooks.ClearProviderState()
 	}
-	// A session/new reply with the outgoing ID still serves that session.
-	// The method therefore retires none of its state.
-	if outgoingSessionID != "" && outgoingSessionID != sessionID {
+	if outgoingSessionID != "" {
 		b.retireSession(outgoingSessionID)
 	}
 
@@ -557,18 +561,30 @@ func (b *Base) newSessionLocked() (sessionID string, resp json.RawMessage, outgo
 	if err := json.Unmarshal(resp, &session); err != nil {
 		return "", nil, acpTurnSnapshot{}, fmt.Errorf("read new ACP session: %w", err)
 	}
-	if session.SessionID == "" {
-		return "", nil, acpTurnSnapshot{}, fmt.Errorf("the new ACP session has no ID")
+	b.Mu.Lock()
+	b.recordSessionIDLocked(b.sessionID)
+	validationErr := b.validateNewSessionIDLocked(session.SessionID)
+	b.Mu.Unlock()
+	if validationErr != nil {
+		return "", nil, acpTurnSnapshot{}, validationErr
 	}
 
 	// Serialize received updates with the session swap. Preserve the previous session's final updates before its turn drains.
 	b.sessionUpdates.mu.Lock()
 	defer b.sessionUpdates.mu.Unlock()
 	b.flushPreviousSessionUpdates()
+	// Buffered outgoing metadata can establish another known child identity.
+	b.Mu.Lock()
+	validationErr = b.validateNewSessionIDLocked(session.SessionID)
+	b.Mu.Unlock()
+	if validationErr != nil {
+		return "", nil, acpTurnSnapshot{}, validationErr
+	}
 	// Lock order: sessionMu -> sessionUpdates.mu -> lifecycleMu -> turnMu -> b.Mu.
 	b.replaceTerminalSession(func() {
-		outgoing = b.replaceSession(func() {
+		outgoing = b.replaceRootSession(func() {
 			b.Mu.Lock()
+			b.recordSessionIDLocked(session.SessionID)
 			b.sessionID = session.SessionID
 			// The swap ends the preceding session's turn and clears every field owned by that turn.
 			// The interrupt note is one such field.
@@ -582,6 +598,29 @@ func (b *Base) newSessionLocked() (sessionID string, resp json.RawMessage, outgo
 		})
 	})
 	return session.SessionID, resp, outgoing, nil
+}
+
+func (b *Base) recordSessionIDLocked(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if b.seenSessionIDs == nil {
+		b.seenSessionIDs = make(map[[sha256.Size]byte]struct{})
+	}
+	b.seenSessionIDs[sha256.Sum256([]byte(sessionID))] = struct{}{}
+}
+
+func (b *Base) validateNewSessionIDLocked(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("the new ACP session has no ID")
+	}
+	if sessionID == b.sessionID {
+		return fmt.Errorf("the agent returned the current session ID instead of a new session")
+	}
+	if _, used := b.seenSessionIDs[sha256.Sum256([]byte(sessionID))]; used {
+		return fmt.Errorf("the agent returned an existing session ID for a new session")
+	}
+	return nil
 }
 
 // WithSessionID runs fn with the current session ID and holds sessionMu.RLock for the complete call.
@@ -962,6 +1001,7 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 	// Keep every refresh step under one lock.
 	// A concurrent config_option_update cannot then store a new option beside an old model or secondary value.
 	b.Mu.Lock()
+	b.nativeModeID = secondaryVal
 	b.refreshModelsLocked(models, modelsFieldInfos, model, b.hooks.ModelIDNormalizer)
 	secondaryListBefore := *sc.available
 	sc.refreshLocked(modes, secondaryVal, configOptions)
@@ -1351,25 +1391,42 @@ func (b *Base) SteerAdvertisedResult(content string, attachments []*leapmuxv1.At
 //   - Release host terminals.
 //   - Stop the agent process.
 func (b *Base) Stop() {
+	defer b.FlushRegistryObservations()
 	b.NoteIntentionalStop()
-	b.clearActivePrompt()
+	b.rootCallbacks.closeAdmission()
 	b.releaseAllTerminals()
 	b.Process.Stop()
-	b.finishAllTurnOutput(agentapi.MessageCompletionInterrupted)
+	b.rootCallbacks.wait()
+	b.sessionUpdates.mu.Lock()
+	turn := b.detachAllRootOutput()
+	b.sessionUpdates.mu.Unlock()
+	b.finishACPTurnFor(turn, agentapi.MessageCompletionInterrupted, RootTranscriptStopped)
+	waitRootTargets(turn)
 	b.finishAllChildConversations()
+	b.clearActivePrompt()
 }
 
 // Wait blocks until the agent process exits, then releases host terminals that remain after a crash or natural exit.
 // Stop already releases them when the caller intentionally stops the process.
 // releaseAllTerminals is idempotent.
 func (b *Base) Wait() error {
+	defer b.FlushRegistryObservations()
 	err := b.Process.Wait()
+	b.rootCallbacks.closeAdmission()
+	b.rootCallbacks.wait()
 	if b.hooks.BeforeWaitCleanup != nil {
 		b.hooks.BeforeWaitCleanup()
 	}
 	b.releaseAllTerminals()
-	b.finishAllTurnOutput(b.ProcessExitCompletion())
+	b.sessionUpdates.mu.Lock()
+	turn := b.detachAllRootOutput()
+	b.sessionUpdates.mu.Unlock()
+	b.finishACPTurnFor(turn, b.ProcessExitCompletion(), RootTranscriptProcessExited)
+	waitRootTargets(turn)
 	b.finishAllChildConversations()
+	if b.hooks.AfterWaitCleanup != nil {
+		b.hooks.AfterWaitCleanup()
+	}
 	return err
 }
 
@@ -1411,6 +1468,18 @@ func (b *Base) clearActivePrompt() {
 	b.notePromptActive()
 }
 
+func (b *Base) clearActivePromptForSession(sessionID string) bool {
+	b.Mu.Lock()
+	if b.sessionID != sessionID || b.agentTurnQueued || b.agentTurnActive {
+		b.Mu.Unlock()
+		return false
+	}
+	b.resetTurnStateLocked()
+	b.Mu.Unlock()
+	b.notePromptActive()
+	return true
+}
+
 // resetTurnStateLocked clears every field that belongs to one turn.
 // The caller must hold b.Mu.
 // This method defines the complete set once, so a session swap and turn end cannot clear different subsets.
@@ -1425,7 +1494,9 @@ func (b *Base) clearActivePrompt() {
 // handleToolCallUpdate reads it without checking promptActive, and the prompt response runs on a separate goroutine.
 // Otherwise a tool update after the turn's end would report an interruption for as long as the tab stays idle.
 func (b *Base) resetTurnStateLocked() {
+	b.pendingFollowUp = nil
 	b.promptActive = false
+	b.promptOutputDrained = false
 	b.agentTurnActive = false
 	b.agentTurnQueued = false
 	b.queuedAgentTurnEnd = nil
@@ -1452,13 +1523,11 @@ func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string 
 	return c.Text
 }
 
-// persistPromptResponse stores the turn-end row. The caller closes each text
-// segment first, so this handles the response frame and the spans alone.
-func (b *Base) persistPromptResponse(resp json.RawMessage, numToolUses int) {
-	if err := b.sink.PersistTurnEnd(agentapi.WithToolUseCount(agentapi.MessageContent{Original: resp}, numToolUses), agentapi.SpanInfo{}); err != nil {
-		slog.Error("persist acp prompt result", "agent_id", b.AgentID(), "error", err)
+func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp json.RawMessage, numToolUses int, sessionID string) {
+	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(agentapi.MessageContent{Original: resp}, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
+		slog.Error("persist ACP prompt result", "agent_id", b.AgentID(), "error", err)
 	}
-	b.sink.ResetSpans()
+	b.resetCompletedRootSpans(sessionID)
 }
 
 // ToolCallEnvelope holds a parsed ACP session/notification tool_call.
@@ -1531,6 +1600,9 @@ const (
 //
 // Shared code converts the observation into sink calls, so provider-specific names and shapes stay outside this file.
 type SubagentObservation struct {
+	// RegistryOnly retains registry writes without resolving or writing a child conversation.
+	// The output queue owns the complete immutable batch after successful admission.
+	RegistryOnly bool
 	// These fields describe the registry row.
 	// RowKey is the provider linkage key, such as a toolCallId or child session ID.
 	// An empty RowKey causes no registry write.
@@ -2612,6 +2684,7 @@ func (b *Base) applyHandshakeMode(handshake *SessionResult, defaultMode string) 
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	b.availableModes = modes
+	b.nativeModeID = handshake.CurrentModeID
 	b.permissionMode = mode
 	if b.hooks.ModeChannel == ModeChannelPermissionMode {
 		b.syncConfigOptionModeLocked(handshake.ConfigOptions)
@@ -3463,6 +3536,7 @@ func (b *Base) HandleOutput(content []byte) {
 // It routes session updates and permission requests. It offers every other
 // method to the provider's extraMethod, and persists what that leaves.
 func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
+	defer b.FlushRegistryObservations()
 	switch line.Method {
 	case acpMethodSessionUpdate:
 		b.handleACPSessionUpdate(line.Params)

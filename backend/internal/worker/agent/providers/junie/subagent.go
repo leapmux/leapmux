@@ -53,7 +53,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 			RowKey: childID, ChildAgentKey: childID, Title: title,
 			Prompt: event.Task, Status: bgtask.StatusRunning, Spawns: true,
 		})
-		a.AttachChildSession(childID, childID)
+		a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: childID, RowKey: childID})
 		a.startChildTail(childID, title, event.Task)
 		return true
 	}

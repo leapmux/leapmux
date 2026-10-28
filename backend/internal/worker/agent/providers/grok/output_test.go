@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 // queueChanged is Grok's report of the prompt that runs in one session.
@@ -203,7 +204,7 @@ func TestGrokResponseCompletedOfAChildSessionIsNotTheParentsUsage(t *testing.T) 
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
 	// A row routes the child session, so the agent serves it, and only the
 	// main-session rule keeps its usage off the parent.
-	a.AttachChildSession("child-session", "call_spawn")
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_spawn"})
 	a.HandleOutput(notification(t, "child-session", map[string]any{
 		"sessionUpdate": "response_completed", "usage": map[string]any{"input_tokens": 999},
 	}))
@@ -217,7 +218,7 @@ func TestGrokReportsCompactionInTheTranscript(t *testing.T) {
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
 	// A child session that a row routes compacts its own context, which is not
 	// the parent's.
-	a.AttachChildSession("child-session", "call_spawn")
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_spawn"})
 	a.HandleOutput(notification(t, "child-session", map[string]any{"sessionUpdate": "auto_compact_started", "percentage": 90}))
 	for _, update := range []map[string]any{
 		{"sessionUpdate": "auto_compact_started", "percentage": 86},
@@ -260,7 +261,7 @@ func TestGrokReportsARetryInProgressOnly(t *testing.T) {
 	}
 	// A child session's retry is the child's own. A row routes the session, so
 	// the agent serves it, and only the main-session rule keeps it out.
-	a.AttachChildSession("child-session", "call_spawn")
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_spawn"})
 	a.HandleOutput(notification(t, "child-session", map[string]any{"sessionUpdate": "retry_state", "type": "retrying", "attempt": 1, "max_retries": 5}))
 
 	// Each retry in progress stores its native frame as a retry row; the

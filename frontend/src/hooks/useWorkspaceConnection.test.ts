@@ -8,7 +8,7 @@ import { createRoot, mapArray } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentChatMessageSchema, AgentControlCancelRequestSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentChatMessageSchema, AgentControlCancelRequestSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { AgentEventSchema, TabType, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlCancellation, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireRateLimitUpdateFromSessionInfo, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
@@ -27,7 +27,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { LIVE_STATUS_FIELDS, TERMINAL_LIVE_STATUS_FIELDS } from '~/stores/tab.helpers'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
-import { installTestBridge } from '~/test-support/crdtBridge'
+import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
@@ -112,6 +112,9 @@ function makeTabStores(workspaceId = WS) {
   return {
     ...stores,
     rootTileId: harness.rootTileId,
+    seedWorkspace(workspaceId: string, rootTileId: string) {
+      return seedWorkspace(harness, workspaceId, rootTileId)
+    },
     /** Place an agent and write its metadata. Select its tab unless activate is false. */
     addAgent(id: string, meta: Record<string, unknown> = {}, opts: { tileId?: string, activate?: boolean } = {}) {
       nextPosition += 1
@@ -2764,7 +2767,7 @@ describe('useWorkspaceConnection replay ownership', () => {
     rootAgentId?: string
     hydrated?: boolean
     workerId?: string
-    relatedAgents?: Array<{ id: string, parentAgentId?: string, rootAgentId?: string, workerId?: string, visible?: boolean, hydrated?: boolean }>
+    relatedAgents?: Array<{ id: string, parentAgentId?: string, rootAgentId?: string, workerId?: string, workspaceId?: string, visible?: boolean, hydrated?: boolean }>
   } = {}) {
     const agentId = initial.agentId ?? 'a1'
     const handles: Array<{ workerId: string, handle: workerRpc.WatchEventsHandle, emit: (event: AgentEvent) => void, end: () => void, requestId: () => bigint }> = []
@@ -2784,7 +2787,11 @@ describe('useWorkspaceConnection replay ownership', () => {
         return tileId
       }
       for (const related of initial.relatedAgents ?? []) {
-        const tileId = related.visible ? tabs.layoutStore.splitTile(primaryTile(), 'horizontal') : primaryTile()
+        let tileId: string | null
+        if (related.workspaceId && related.workspaceId !== WS)
+          tileId = tabs.seedWorkspace(related.workspaceId, `${related.workspaceId}-root-tile`)
+        else
+          tileId = related.visible ? tabs.layoutStore.splitTile(primaryTile(), 'horizontal') : primaryTile()
         if (!tileId)
           throw new Error('A visible related agent requires its own tile.')
         tabs.addAgent(related.id, { workerId: related.workerId ?? 'w1', agentStatus: AgentStatus.ACTIVE, hydrated: related.hydrated ?? related.rootAgentId !== undefined, ...(related.parentAgentId === undefined ? {} : { parentAgentId: related.parentAgentId }), ...(related.rootAgentId === undefined ? {} : { rootAgentId: related.rootAgentId }) }, { tileId, activate: related.visible ?? false })
@@ -3147,6 +3154,242 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(state.metadata.get('child-1')?.hydrated).toBe(false)
     expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('replayed-goal')
     expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['replayed-task'])
+  })
+
+  it.each([
+    { relationship: 'absent child linkage', parentAgentId: undefined },
+    { relationship: 'an incomplete parent chain', parentAgentId: 'missing-parent' },
+  ])('restores a child failed queue when hydration resolves $relationship during replay', async ({ parentAgentId }) => {
+    const state = mountReplay({
+      agentId: 'child-1',
+      hydrated: false,
+      ...(parentAgentId === undefined ? {} : { parentAgentId }),
+      relatedAgents: [{ id: 'root-1' }],
+    })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const stream = state.handles[0]!
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: entry.replayId,
+      event: { case: 'catchUpStart', value: { latestSeq: 0n, activityState: AgentActivityState.IDLE } },
+    }, 'child-1'))
+    expect(state.chatStore.state.catchingUp['child-1']).toBe(true)
+
+    // ListAgents can supply the worker-owned linkage after this FULL request leaves.
+    state.metadata.patch('child-1', { parentAgentId: 'root-1', rootAgentId: 'root-1', hydrated: true })
+    expect(state.view.getAgentTab('child-1')?.rootAgentId).toBe('root-1')
+    expect(state.agentSessionStore.acceptsReplay('child-1', entry.replayId)).toBe(true)
+
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'child-1',
+      revision: 7n,
+      paused: true,
+      pauseReason: AgentInputQueuePauseReason.DELIVERY_FAILED,
+      activeTurn: false,
+      items: [{
+        id: 'failed-child-input',
+        agentId: 'child-1',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.FAILED,
+        text: 'Keep this refused child instruction.',
+        error: 'subagent_state_ineligible',
+      }],
+    })
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: entry.replayId,
+      event: { case: 'inputQueueChanged', value: { snapshot } },
+    }, 'child-1'))
+    expect(state.agentInputQueueStore.get('child-1')).toEqual(snapshot)
+    expect(state.agentInputQueueStore.get('root-1')).toBeUndefined()
+
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: entry.replayId,
+      event: { case: 'catchUpComplete', value: { latestSeq: 0n, startTailSeq: 0n } },
+    }, 'child-1'))
+    expect(state.chatStore.state.catchingUp['child-1']).toBe(false)
+    expect(state.agentSessionStore.acceptsReplay('child-1', entry.replayId)).toBe(false)
+  })
+
+  it.each([
+    { placement: 'an absent parent tab', rootWorkspace: undefined },
+    { placement: 'a parent in another workspace', rootWorkspace: 'ws-root' },
+  ])('renews the child replay after root hydration with $placement', async ({ rootWorkspace }) => {
+    const state = mountReplay({
+      agentId: 'child-1',
+      hydrated: false,
+      ...(rootWorkspace === undefined
+        ? {}
+        : {
+            relatedAgents: [{
+              id: 'root-1',
+              rootAgentId: 'root-1',
+              workspaceId: rootWorkspace,
+              hydrated: true,
+            }],
+          }),
+    })
+    await flushStream()
+    const initial = requestedEntry(state)
+    const stream = state.handles[0]!
+    if (rootWorkspace === undefined)
+      expect(state.view.getAgentTab('root-1')).toBeUndefined()
+    else
+      expect(state.view.getAgentTab('root-1')?.workspaceId).toBe(rootWorkspace)
+    expect(state.view.getAgentTab('child-1')?.workspaceId).toBe(WS)
+
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: initial.replayId,
+      event: { case: 'catchUpStart', value: { latestSeq: 0n, activityState: AgentActivityState.IDLE } },
+    }, 'child-1'))
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'child-1',
+      revision: 7n,
+      paused: true,
+      pauseReason: AgentInputQueuePauseReason.DELIVERY_FAILED,
+      activeTurn: false,
+      items: [{
+        id: 'retained-child-input',
+        agentId: 'child-1',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.FAILED,
+        text: 'Keep this refused child instruction across replay replacement.',
+        error: 'subagent_state_ineligible',
+      }],
+    })
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: initial.replayId,
+      event: { case: 'inputQueueChanged', value: { snapshot } },
+    }, 'child-1'))
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: initial.replayId,
+      event: { case: 'catchUpComplete', value: { latestSeq: 0n, startTailSeq: 0n } },
+    }, 'child-1'))
+    expect(state.agentInputQueueStore.get('child-1')).toEqual(snapshot)
+    expect(state.chatStore.state.catchingUp['child-1']).toBe(false)
+    expect(state.agentSessionStore.acceptsReplay('child-1', initial.replayId)).toBe(false)
+    expect(state.chatStore.goal.get('root-1')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('root-1')).toEqual([])
+
+    state.metadata.patch('child-1', {
+      parentAgentId: 'root-1',
+      rootAgentId: 'root-1',
+      hydrated: true,
+    })
+    await flushStream()
+    const replacement = requestedEntry(state)
+    expect(replacement.replayId).not.toBe(initial.replayId)
+    expect(replacement.replayId).toBeGreaterThan(initial.replayId)
+    expect(state.requests.at(-1)?.request.agents.find(entry => entry.agentId === 'root-1')?.mode).toBe(WatchMode.NOTIFY)
+    expect(state.agentSessionStore.acceptsReplay('child-1', replacement.replayId)).toBe(true)
+    expect(state.agentInputQueueStore.get('child-1')).toEqual(snapshot)
+
+    for (const topic of ['goal', 'tasks'] as const) {
+      stream.emit(rootPublication(topic, {
+        replayId: initial.replayId,
+        value: 'stale',
+      }))
+    }
+    expect(state.chatStore.goal.get('root-1')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('root-1')).toEqual([])
+
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: replacement.replayId,
+      event: { case: 'catchUpStart', value: { latestSeq: 0n, activityState: AgentActivityState.IDLE } },
+    }, 'child-1'))
+    for (const topic of ['goal', 'tasks'] as const) {
+      stream.emit(rootPublication(topic, {
+        replayId: replacement.replayId,
+        value: 'restored',
+      }))
+    }
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('restored-goal')
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['restored-task'])
+    expect(state.agentInputQueueStore.get('child-1')).toEqual(snapshot)
+
+    // The replacement receipt must retain live topic claims until its replay ends.
+    for (const topic of ['goal', 'tasks'] as const) {
+      stream.emit(rootPublication(topic, {
+        replay: false,
+        value: 'live',
+        stamp: '2026-10-09T00:00:04.000Z',
+      }))
+      stream.emit(rootPublication(topic, {
+        replayId: replacement.replayId,
+        value: 'later-replay',
+        stamp: '2026-10-09T00:00:05.000Z',
+      }))
+    }
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('live-goal')
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['live-task'])
+    expect(state.agentInputQueueStore.get('child-1')).toEqual(snapshot)
+
+    stream.emit(receivedEvent({
+      agentId: 'child-1',
+      replay: true,
+      replayId: replacement.replayId,
+      event: { case: 'catchUpComplete', value: { latestSeq: 0n, startTailSeq: 0n } },
+    }, 'child-1'))
+    expect(state.chatStore.state.catchingUp['child-1']).toBe(false)
+    expect(state.agentSessionStore.acceptsReplay('child-1', replacement.replayId)).toBe(false)
+    expect(state.agentInputQueueStore.get('child-1')).toEqual(snapshot)
+
+    await flushStream()
+    const requestCount = state.requests.length
+    state.metadata.patch('child-1', {
+      parentAgentId: 'root-1',
+      rootAgentId: 'root-1',
+      hydrated: true,
+    })
+    await flushStream()
+    expect(state.requests).toHaveLength(requestCount)
+    expect(requestedEntry(state).replayId).toBe(replacement.replayId)
+  })
+
+  it('captures the final root of coalesced hydration changes in its replacement receipt', async () => {
+    const state = mountReplay({
+      agentId: 'child-1',
+      parentAgentId: 'root-before',
+      rootAgentId: 'root-before',
+    })
+    await flushStream()
+    const initial = requestedEntry(state)
+    state.metadata.patch('child-1', { rootAgentId: 'root-intermediate' })
+    state.metadata.patch('child-1', { rootAgentId: 'root-after' })
+    await flushStream()
+    const replacement = requestedEntry(state)
+    expect(replacement.replayId).not.toBe(initial.replayId)
+    expect(state.requests.flatMap(record => record.request.agents).some(entry => entry.agentId === 'root-intermediate')).toBe(false)
+    const stream = state.handles[0]!
+    for (const topic of ['goal', 'tasks'] as const) {
+      stream.emit(rootPublication(topic, {
+        destination: 'root-intermediate',
+        replayId: replacement.replayId,
+      }))
+    }
+    expect(state.chatStore.goal.get('root-intermediate')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('root-intermediate')).toEqual([])
+    for (const topic of ['goal', 'tasks'] as const) {
+      stream.emit(rootPublication(topic, {
+        destination: 'root-after',
+        replayId: replacement.replayId,
+      }))
+    }
+    expect(state.chatStore.goal.get('root-after')?.nativeId).toBe('replayed-goal')
+    expect(state.chatStore.backgroundTasks.get('root-after').map(task => task.rowKey)).toEqual(['replayed-task'])
   })
 
   it.each(['statusChange', 'controlRequest', 'controlResponseChanged', 'controlCancel', 'todosChanged', 'inputQueueChanged', 'goalChanged', 'backgroundTasksChanged'] as const)('refuses an absent or foreign payload agent for replay %s', async (kind) => {

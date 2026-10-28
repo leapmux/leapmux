@@ -19,7 +19,7 @@ func TestControlResponsePreservesNativeIDsThroughStorageAndClaims(t *testing.T) 
 			request := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`, wireID))
 			_, requestID, valid := agent.ExtractJSONRPCID(request)
 			require.True(t, valid)
-			sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+			sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: request}))
 			stored, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: requestID})
 			require.NoError(t, err)
@@ -42,7 +42,7 @@ func TestControlResponsePreservesNativeIDsThroughStorageAndClaims(t *testing.T) 
 func TestControlResponseKeepsConcurrentNumericAndStringRequestsSeparate(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	for _, nativeID := range []string{`7`, `"7"`} {
 		identity, ok := agent.NewControlRequestIdentity(json.RawMessage(nativeID))
 		requestID := identity.Key

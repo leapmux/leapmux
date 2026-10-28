@@ -182,13 +182,24 @@ func TestQwenFollowUpPromptSendsWhatNoDrainTook(t *testing.T) {
 	require.NoError(t, a.SteerInput("first", nil))
 	require.NoError(t, a.SteerInput("second", []*leapmuxv1.Attachment{{Filename: "a.png", MimeType: "image/png", Data: []byte{1}}}))
 
-	content, attachments, ok := a.followUpPrompt(false)
+	content, attachments, ok := a.followUpPrompt(a.CurrentSessionID(), false)
 	require.True(t, ok)
 	assert.Equal(t, "first\n\nsecond", content)
 	assert.Len(t, attachments, 1)
 
-	_, _, ok = a.followUpPrompt(false)
+	_, _, ok = a.followUpPrompt(a.CurrentSessionID(), false)
 	assert.False(t, ok, "the input goes once")
+}
+
+func TestQwenForeignTurnCannotTakeTheCurrentSessionsFollowUpInput(t *testing.T) {
+	a, _, _ := newQwenAgent(t, nil, nil)
+	a.SetPromptActiveForTest(true)
+	require.NoError(t, a.SteerInput("the current session's input", nil))
+	_, _, ok := a.followUpPrompt("retired-session", false)
+	assert.False(t, ok)
+	content, _, ok := a.followUpPrompt(a.CurrentSessionID(), false)
+	require.True(t, ok)
+	assert.Equal(t, "the current session's input", content)
 }
 
 func TestQwenStoppedTurnDropsItsInputAndSaysSo(t *testing.T) {
@@ -198,21 +209,21 @@ func TestQwenStoppedTurnDropsItsInputAndSaysSo(t *testing.T) {
 	require.NoError(t, a.SteerInput("never read", nil))
 	require.NoError(t, a.SteerInput("never read either", nil))
 
-	_, _, ok := a.followUpPrompt(true)
+	_, _, ok := a.followUpPrompt(a.CurrentSessionID(), true)
 	assert.False(t, ok, "a stopped turn starts nothing")
 	notifications := sink.Notifications()
 	require.Len(t, notifications, 1)
 	assert.Equal(t, contracts.NotificationTypeAgentStatus, notifications[0][contracts.NotificationFieldType])
 	assert.Equal(t, "2 messages sent during the stopped turn did not reach Qwen Code", notifications[0][contracts.NotificationFieldText])
 
-	_, _, ok = a.followUpPrompt(false)
+	_, _, ok = a.followUpPrompt(a.CurrentSessionID(), false)
 	assert.False(t, ok, "the dropped input stays dropped")
 }
 
 func TestQwenFollowUpPromptWithNothingQueuedIsSilent(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
-	_, _, ok := a.followUpPrompt(true)
+	_, _, ok := a.followUpPrompt(a.CurrentSessionID(), true)
 	assert.False(t, ok)
 	assert.Empty(t, sink.Notifications())
 }
@@ -259,7 +270,7 @@ func TestQwenClearDropsTheSessionState(t *testing.T) {
 
 	a.clearProviderState()
 
-	_, _, ok := a.followUpPrompt(false)
+	_, _, ok := a.followUpPrompt(a.CurrentSessionID(), false)
 	assert.False(t, ok, "input for the old session never reaches the new one")
 	a.stateMu.Lock()
 	assert.Empty(t, a.tools.byCall)
@@ -353,7 +364,7 @@ func TestQwenConcurrentSteersReachQwenOnceInOrder(t *testing.T) {
 			got = append(got, item.DisplayText)
 		}
 	}
-	if rest, _, ok := a.followUpPrompt(false); ok {
+	if rest, _, ok := a.followUpPrompt(a.CurrentSessionID(), false); ok {
 		got = append(got, strings.Split(rest, "\n\n")...)
 	}
 

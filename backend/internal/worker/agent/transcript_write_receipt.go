@@ -62,3 +62,32 @@ func (receipt *TranscriptWriteReceipt) ClaimContextUsage() bool {
 func (receipt *TranscriptWriteReceipt) ClaimOutputCompletion() bool {
 	return receipt != nil && receipt.created.Load() && receipt.outputClaimed.CompareAndSwap(false, true)
 }
+
+// CapturedPublication returns the original publication and native session of an
+// ordered write. A receipt without a prepared ordered write returns false.
+// This reads immutable capture data without retaining another payload copy.
+func (receipt *TranscriptWriteReceipt) CapturedPublication() (TranscriptPublication, string, bool) {
+	if receipt == nil {
+		return nil, "", false
+	}
+	receipt.orderedMu.Lock()
+	record := receipt.ordered
+	receipt.orderedMu.Unlock()
+	if record == nil || !record.ready.Load() || record.captured.write == nil {
+		return nil, "", false
+	}
+	content := record.captured.write.content
+	return content.Publication, content.AgentSessionID, true
+}
+
+// OrderedWriteComplete reports whether this receipt's ordered operation finished.
+// A receipt without an ordered operation returns false.
+func (receipt *TranscriptWriteReceipt) OrderedWriteComplete() bool {
+	if receipt == nil {
+		return false
+	}
+	receipt.orderedMu.Lock()
+	record := receipt.ordered
+	receipt.orderedMu.Unlock()
+	return record != nil && record.ticket.Done()
+}

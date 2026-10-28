@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/coder/quartz"
@@ -97,7 +98,9 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		ExtraMethod:            a.handleExtraMethod,
 		// Qwen streams a foreground subagent in the parent session, tagged with
 		// the tool call that spawned it.
-		ChildUpdateRoute:           childUpdateRoute,
+		ChildUpdateRoute: func(updateType string, metadata map[string]json.RawMessage) string {
+			return qwenAgentRowKey(a.CurrentSessionID(), childUpdateRoute(updateType, metadata))
+		},
 		SessionMetadataHandler:     a.handleSessionMetadata,
 		ChunkMessageID:             a.chunkMessageID,
 		SubagentFromToolCall:       a.subagentFromToolCall,

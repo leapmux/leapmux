@@ -1,0 +1,173 @@
+{
+  "_readme": "Qwen registry keys hash four UTF-8 components: source, native root session, native tool call and workflow dispatch (empty for a root). Each component starts with its unsigned eight-byte big-endian byte length. Prefix the lowercase SHA-256 hex digest with the shared Qwen registry prefix. Empty required identities produce no key. JSON-decoded lone surrogates encode as U+FFFD in both readers. These fixed digests were computed independently with Python hashlib and struct.",
+  "cases": [
+    {
+      "name": "agent in source session",
+      "source": "agent",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "call_shared",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:a1177c0911fd2197b36567c453224ef3d6fb6c4b7368399506542fa820c9aae5"
+    },
+    {
+      "name": "agent in replacement session",
+      "source": "agent",
+      "sessionId": "654fbfe5-9769-4517-8dfe-fcfbf19d61ac",
+      "toolCallId": "call_shared",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:969cf556a29f630185028b09391152541fe83ab2388c78dbf467dbbb54695cf5"
+    },
+    {
+      "name": "workflow in source session",
+      "source": "workflow",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "call_shared",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:ec431696f1d789f6ccb726221e7502121b4aaab7ceb01ab62c91f4d2a6b9c38d"
+    },
+    {
+      "name": "workflow dispatch",
+      "source": "workflow",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "call_shared",
+      "dispatchId": "dispatch-1",
+      "expectedKey": "qwen-registry-v1:efe480f6869b94a40378e0cb3290f9521f28095e627ea9ce09fe63af44e078b4"
+    },
+    {
+      "name": "workflow in replacement session",
+      "source": "workflow",
+      "sessionId": "654fbfe5-9769-4517-8dfe-fcfbf19d61ac",
+      "toolCallId": "call_shared",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:19a937e62169a4441758e7003f01290ac5a89a2f649fab64c52efd5d50000446"
+    },
+    {
+      "name": "empty owner",
+      "source": "agent",
+      "sessionId": "",
+      "toolCallId": "call_shared",
+      "dispatchId": "",
+      "expectedKey": ""
+    },
+    {
+      "name": "empty tool ID",
+      "source": "agent",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "",
+      "dispatchId": "",
+      "expectedKey": ""
+    },
+    {
+      "name": "zero-like IDs",
+      "source": "agent",
+      "sessionId": "0",
+      "toolCallId": "0",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:10f3c8abbac16a6dffeb7d476d3e1db515995cfa5edd159a39e84c55f1ef14bc"
+    },
+    {
+      "name": "opaque separators",
+      "source": "workflow",
+      "sessionId": "a:b/\u0000c",
+      "toolCallId": "d:e/f",
+      "dispatchId": "g:h/i",
+      "expectedKey": "qwen-registry-v1:c23ed693d1a208089df6d770e91daa703740775fffb6889eae18cca083551b87"
+    },
+    {
+      "name": "component boundary first",
+      "source": "workflow",
+      "sessionId": "a",
+      "toolCallId": "bc",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:4f318ff50e01df1867358369efbf1067b66ace581b08dac9883a8609d08f93f0"
+    },
+    {
+      "name": "component boundary second",
+      "source": "workflow",
+      "sessionId": "ab",
+      "toolCallId": "c",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:dfd3627c08a116b0c551cb3d7a1ca5ccf052322d85a1debe044d5e12f3fe5d6d"
+    },
+    {
+      "name": "HTML characters",
+      "source": "agent",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "<child>&report",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:5bc7a448e7595c214c2840f96086359e8c6e2053e101f1fb6d961760460df245"
+    },
+    {
+      "name": "UTF-8 text",
+      "source": "agent",
+      "sessionId": "\uc138\uc158",
+      "toolCallId": "\uc791\uc5c5-\u4f60\u597d",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:0d91c50406311d6c5cc18d74466de68aa782ac0db90c210186ad1668a3f737ce"
+    },
+    {
+      "name": "supplementary-plane text",
+      "source": "workflow",
+      "sessionId": "session-\ud83e\uddea",
+      "toolCallId": "call-\ud83d\ude00",
+      "dispatchId": "dispatch-\ud801\udc00",
+      "expectedKey": "qwen-registry-v1:09decd9349651e2c42024bbf4c0984e7143e483d434b3ff3ff60eb377c936e37"
+    },
+    {
+      "name": "lone surrogate",
+      "source": "agent",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "call-\ud800",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:b664817a75b1b0a7607d325c1de5390ce410c2fdffc52b2a7c2c70b64b6c8ec8"
+    },
+    {
+      "name": "replacement character",
+      "source": "agent",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "call-\ufffd",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:b664817a75b1b0a7607d325c1de5390ce410c2fdffc52b2a7c2c70b64b6c8ec8"
+    },
+    {
+      "name": "long native ID",
+      "source": "agent",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "opaque-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:a8ac47fbf990f9b6039f144e006cb5e4ffe8a2a4ed7d60800b906240c694c8c8"
+    },
+    {
+      "name": "long dispatch ID",
+      "source": "workflow",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "call_shared",
+      "dispatchId": "dispatch-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "expectedKey": "qwen-registry-v1:ef037645ad4ed10bda0af49e7d24a497393533ae16ec249ba519fd0be0ddab13"
+    },
+    {
+      "name": "empty dispatch is workflow root",
+      "source": "workflow",
+      "sessionId": "owner",
+      "toolCallId": "call",
+      "dispatchId": "",
+      "expectedKey": "qwen-registry-v1:bdc6607220dbefc9859805c5c7b5816218732d8e833e3ea74df9a09a758324e1"
+    },
+    {
+      "name": "zero-like dispatch",
+      "source": "workflow",
+      "sessionId": "owner",
+      "toolCallId": "call",
+      "dispatchId": "0",
+      "expectedKey": "qwen-registry-v1:a3f6a9113ee8a7e56b0d1c1c3af2fa135d9ed6b50671948513025d223c1ad131"
+    },
+    {
+      "name": "agent cannot carry a dispatch",
+      "source": "agent",
+      "sessionId": "97d857a0-9cd7-4bbf-987b-a6ab094a074b",
+      "toolCallId": "call_shared",
+      "dispatchId": "dispatch-1",
+      "expectedKey": ""
+    }
+  ]
+}

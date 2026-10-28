@@ -1,8 +1,10 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { FASTAGENT_ARCHIVE } from '../../../src/generated/contracts/fastagent-protocol'
-import { isObject } from '../../../src/lib/jsonPick'
+import { fastAgentArchiveSource, sameFastAgentArchiveCall } from '../../../src/components/chat/providers/fastagent/archiveSource'
+import { FAST_AGENT_SHELL } from '../../../src/components/chat/providers/fastagent/protocol'
+import { isObject, pickObject } from '../../../src/lib/jsonPick'
+import { parseMessageContent } from '../../../src/lib/messageParser'
 import { fastAgentTest } from '../fastagent-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -17,7 +19,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { fastAgentNativeBashToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { createToolOutputControl } from '../helpers/toolOutputControl'
-import { interruptButton, resumePausedQueue, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { interruptButton, resumePausedQueue, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { fastAgentNativeOutput, fastAgentTerminalOutputFileLimit } from './nativeToolOutput'
 import { enableNativeCommands } from './scenarios'
 
@@ -65,24 +67,25 @@ for (const exitCode of [0, 7]) {
       call: (output, id) => fastAgentNativeBashToolCall(id, nativeOutputFileCommand(output, { exitCode })),
       proof: async (capture) => {
         const readReceipt = (snapshot: NativeMessageSnapshot) => {
-          const frames = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).map(nativeMessageBody)
-          const results = frames.filter(isObject).filter((frame) => {
-            const meta = isObject(frame._meta) ? frame._meta[FASTAGENT_ARCHIVE.Namespace] : undefined
-            return frame.sessionUpdate === 'tool_call_update' && isObject(meta)
-              && meta[FASTAGENT_ARCHIVE.SessionID] === capture.agent.agentSessionId
-              && meta[FASTAGENT_ARCHIVE.CallID] === capture.call.id
-          })
+          const sources = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).map(message => ({ message, parsed: parseMessageContent(message), source: fastAgentArchiveSource(parseMessageContent(message)) }))
+          const results = sources.filter(entry => entry.source?.kind === 'result' && entry.source.callId === capture.call.id)
           expect(results).toHaveLength(1)
-          const frame = results[0]
-          if (!frame || typeof frame.toolCallId !== 'string' || !isObject(frame.rawOutput)
-            || !Array.isArray(frame.rawOutput.content) || !isObject(frame.rawOutput.content[0]) || typeof frame.rawOutput.content[0].text !== 'string') {
+          const result = results[0]
+          if (!result || result.source?.kind !== 'result' || !result.parsed.parentObject)
             throw new Error('The native Fast Agent root archive result is absent or incomplete.')
-          }
-          const requests = frames.filter(isObject).filter(request => request.sessionUpdate === 'tool_call' && request.toolCallId === frame.toolCallId)
+          const source = result.source
+          const frame = result.parsed.parentObject
+          const requests = sources.filter(entry => entry.source?.kind === 'request' && sameFastAgentArchiveCall(entry.source, source))
           expect(requests).toHaveLength(1)
-          expect(requests[0]?.rawInput).toEqual(capture.call.arguments)
-          expect(frame.status).toBe(exitCode === 0 ? 'completed' : 'failed')
-          const previewText = frame.rawOutput.content[0].text
+          expect(source.request.args).toEqual(capture.call.arguments)
+          expect(result.message.spanId).toBe(source.spanId)
+          const metadata = pickObject(frame, '_meta')
+          expect(pickObject(metadata, FAST_AGENT_SHELL.Metadata)?.[FAST_AGENT_SHELL.ExitCode]).toBe(exitCode)
+          const blocks = frame.content
+          const first = Array.isArray(blocks) ? blocks[0] : undefined
+          if (!isObject(first) || first.type !== 'text' || typeof first.text !== 'string')
+            throw new Error('The native Fast Agent result has no original text block.')
+          const previewText = first.text
           const path = fastAgentNativeOutput(previewText)
           assertPrivateNativePath(path, getGlobalState().tmpDir)
           expect(readFileSync(path, 'utf8')).toBe(output.text)
@@ -90,7 +93,7 @@ for (const exitCode of [0, 7]) {
           expect(previewText).toContain(output.firstMarker)
           expect(previewText).toContain(output.lastMarker)
           expect(previewText).not.toContain(output.omittedMarker)
-          return { frame, callId: frame.toolCallId, previewText, paths: [path] }
+          return { frame, source, callId: source.spanId, previewText, paths: [path] }
         }
         const receipt = readReceipt(capture.snapshot)
         await testInfo.attach('fast-agent-native-root-archive-result', { body: JSON.stringify(receipt), contentType: 'application/json' })
@@ -110,7 +113,7 @@ for (const exitCode of [0, 7]) {
   })
 }
 
-fastAgentTest('keeps the interrupted native archive result with its original turn', async ({ native }, testInfo) => {
+fastAgentTest('keeps interrupted native output with its original turn', async ({ native }, testInfo) => {
   await enableNativeCommands(native)
   const owner = await currentNativeAgent(native)
   const control = createToolOutputControl(owner.workingDir)
@@ -123,20 +126,23 @@ fastAgentTest('keeps the interrupted native archive result with its original tur
     await interruptButton(native.page).click()
     await waitForAgentIdle(native.page)
     const readReceipt = (snapshot: NativeMessageSnapshot) => {
-      const results = snapshot.messages.filter(message => message.agentSessionId === owner.agentSessionId).map(nativeMessageBody).filter(isObject).filter((frame) => {
-        const archive = isObject(frame._meta) ? frame._meta[FASTAGENT_ARCHIVE.Namespace] : undefined
-        return frame.sessionUpdate === 'tool_call_update' && isObject(archive) && archive[FASTAGENT_ARCHIVE.CallID] === callId
-      })
+      const rows = snapshot.messages.filter(message => message.agentSessionId === owner.agentSessionId)
+      const sources = rows.map(message => ({ message, source: fastAgentArchiveSource(parseMessageContent(message)) }))
+      const results = sources.filter(entry => entry.source?.kind === 'result' && entry.source.callId === callId)
       expect(results).toHaveLength(1)
-      const frame = results[0]
-      if (!frame || typeof frame.toolCallId !== 'string' || !isObject(frame.rawOutput) || !Array.isArray(frame.rawOutput.content))
+      const result = results[0]
+      if (!result || result.source?.kind !== 'result')
         throw new Error('The interrupted Fast Agent native archive result is absent.')
-      expect(frame.status).toBe('failed')
-      expect(frame.rawOutput.isError).toBe(true)
-      expect(frame.rawOutput.content).toEqual([{ type: 'text', text: '**The user interrupted this tool call**' }])
-      return { frame, callId: frame.toolCallId, previewText: '**The user interrupted this tool call**' }
+      const source = result.source
+      const requests = sources.filter(entry => entry.source?.kind === 'request' && sameFastAgentArchiveCall(entry.source, source))
+      expect(requests).toHaveLength(1)
+      expect(source.request.args.command).toBe(control.command)
+      expect(source.result).toMatchObject({ isError: true, content: [{ type: 'text', text: '**The user interrupted this tool call**' }] })
+      expect(result.message.spanId).toBe(source.spanId)
+      return { frame: source.result, callId: source.spanId, previewText: '**The user interrupted this tool call**' }
     }
     const receipt = readReceipt(await readNativeMessageSnapshot(native, owner.id))
+    await expect(userBubbles(native.page)).toHaveCount(1)
     await testInfo.attach('fast-agent-interrupted-native-archive', { body: JSON.stringify(receipt), contentType: 'application/json' })
     await proveNativeToolOutputFilePaths({
       context: native,
@@ -147,6 +153,7 @@ fastAgentTest('keeps the interrupted native archive result with its original tur
       status: 'cancelled',
       workerProof: () => expectUnchangedNativeRecord(native, owner, readReceipt, receipt),
     })
+    await expect(userBubbles(native.page)).toHaveCount(1)
     await resumePausedQueue(native.page)
     await sendNativeAnswer(native, 'Reply once after the interrupted native command.', 'The native session remains usable after interruption.')
     await expectUnchangedNativeRecord(native, owner, readReceipt, receipt)

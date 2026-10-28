@@ -13,6 +13,8 @@ import (
 )
 
 type acpIncompleteTool struct {
+	target     *acpTranscriptTarget
+	admission  *acpTranscriptAdmission
 	toolCallID string
 	// original is the last frame the agent sent for this tool call, byte for byte.
 	// It is what the transcript row stores.
@@ -30,18 +32,27 @@ type acpIncompleteTool struct {
 // updates, and each frame repeats only what changed. One struct holds the last
 // frame and the merge, so the two can never describe different tool calls.
 type acpToolUpdateState struct {
+	target   *acpTranscriptTarget
 	original json.RawMessage
 	fields   map[string]json.RawMessage
 	order    uint64
 }
 
 type acpTurnSnapshot struct {
-	assistantMessageID string
-	thoughtMessageID   string
-	assistantText      string
-	thoughtText        string
-	completedToolUses  int
-	incompleteTools    []acpIncompleteTool
+	sessionID                                             string
+	interrupted                                           bool
+	cleanup                                               func()
+	cleanupCaptured                                       bool
+	hasPromptBoundary                                     bool
+	thoughtAdmission, assistantAdmission, endingAdmission *acpTranscriptAdmission
+	rootTargets                                           []*acpTranscriptTarget
+	priorText                                             *agent.CapturedTranscriptBatch
+	assistantMessageID                                    string
+	thoughtMessageID                                      string
+	assistantText                                         string
+	thoughtText                                           string
+	completedToolUses                                     int
+	incompleteTools                                       []acpIncompleteTool
 }
 
 // acpPromptBoundary is the end of a prompt's output while an agent turn waits
@@ -50,6 +61,7 @@ type acpTurnSnapshot struct {
 // own goroutine. Everything that the agent streams in between belongs to the
 // agent turn. The boundary keeps what is still the prompt's.
 type acpPromptBoundary struct {
+	target *acpTranscriptTarget
 	// completedToolUses counts the prompt's tool calls that completed, including
 	// a call of the prompt that completes after the boundary.
 	completedToolUses int
@@ -61,7 +73,10 @@ type acpPromptBoundary struct {
 // Callers can hold session, update, or terminal lifecycle locks.
 // Session replacement acquires turnMu before the protocol-state lock.
 type acpTurnOutput struct {
-	turnMu sync.Mutex
+	rootTarget, promptTarget       *acpTranscriptTarget
+	foldedTargets                  []*acpTranscriptTarget
+	assistantTarget, thoughtTarget *acpTranscriptTarget
+	turnMu                         sync.Mutex
 
 	turnAssistantText strings.Builder
 	turnThoughtText   strings.Builder
@@ -87,6 +102,9 @@ type acpTurnOutput struct {
 
 func (o *acpTurnOutput) appendAssistant(text, messageID string) {
 	o.turnMu.Lock()
+	if o.turnAssistantText.Len() == 0 {
+		o.assistantTarget = o.rootTarget
+	}
 	if messageID != "" && (o.turnAssistantText.Len() == 0 || o.assistantMessageID == "") {
 		o.assistantMessageID = messageID
 	}
@@ -100,6 +118,9 @@ func (o *acpTurnOutput) appendThought(text, messageID string) (fresh bool) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
 	fresh = o.turnThoughtText.Len() == 0
+	if fresh {
+		o.thoughtTarget = o.rootTarget
+	}
 	if messageID != "" && (fresh || o.thoughtMessageID == "") {
 		o.thoughtMessageID = messageID
 	}
@@ -128,28 +149,52 @@ func (o *acpTurnOutput) switchMessage(kind agent.AssembledMessageKind, id string
 }
 
 func (o *acpTurnOutput) takeText(kind agent.AssembledMessageKind) (text, messageID string) {
+	text, messageID, admission := o.takeOwnedText(kind)
+	admission.release()
+	return text, messageID
+}
+
+func (o *acpTurnOutput) takeOwnedText(kind agent.AssembledMessageKind) (text, messageID string, admission *acpTranscriptAdmission) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
-	builder, id := &o.turnAssistantText, &o.assistantMessageID
+	builder, id, target := &o.turnAssistantText, &o.assistantMessageID, &o.assistantTarget
 	if kind == agent.AssembledMessageKindReasoning {
-		builder, id = &o.turnThoughtText, &o.thoughtMessageID
+		builder, id, target = &o.turnThoughtText, &o.thoughtMessageID, &o.thoughtTarget
 	}
 	text, messageID = builder.String(), *id
+	if text != "" {
+		admission = (*target).reserve()
+	}
 	builder.Reset()
 	*id = ""
-	return text, messageID
+	*target = nil
+	return text, messageID, admission
 }
 
 // takeBufferedTextLocked takes both text segments and their identities. The caller holds turnMu.
 func (o *acpTurnOutput) takeBufferedTextLocked() acpTurnSnapshot {
-	snapshot := acpTurnSnapshot{
-		assistantText: o.turnAssistantText.String(), thoughtText: o.turnThoughtText.String(),
-		assistantMessageID: o.assistantMessageID, thoughtMessageID: o.thoughtMessageID,
+	snapshot := acpTurnSnapshot{assistantText: o.turnAssistantText.String(), thoughtText: o.turnThoughtText.String(), assistantMessageID: o.assistantMessageID, thoughtMessageID: o.thoughtMessageID}
+	// Reserve in render order before detaching the selected bytes.
+	if snapshot.thoughtText != "" {
+		snapshot.thoughtAdmission = o.thoughtTarget.reserve()
+	}
+	if snapshot.assistantText != "" {
+		snapshot.assistantAdmission = o.assistantTarget.reserve()
 	}
 	o.turnAssistantText.Reset()
 	o.turnThoughtText.Reset()
 	o.assistantMessageID, o.thoughtMessageID = "", ""
+	o.assistantTarget, o.thoughtTarget = nil, nil
 	return snapshot
+}
+
+func (turn acpTurnSnapshot) releaseTranscriptAdmissions() {
+	turn.thoughtAdmission.release()
+	turn.assistantAdmission.release()
+	for _, tool := range turn.incompleteTools {
+		tool.admission.release()
+	}
+	turn.endingAdmission.release()
 }
 
 func (o *acpTurnOutput) drainTurn() acpTurnSnapshot {
@@ -277,6 +322,7 @@ func (o *acpTurnOutput) markPromptBoundaryLocked() acpTurnSnapshot {
 		return acpTurnSnapshot{}
 	}
 	boundary := &acpPromptBoundary{
+		target:            o.promptTarget,
 		completedToolUses: o.turnToolUses,
 		openTools:         make(map[string]struct{}, len(o.toolUpdateState)),
 	}
@@ -322,6 +368,10 @@ func (o *acpTurnOutput) dropPromptBoundaryLocked() bool {
 		return false
 	}
 	o.turnToolUses += boundary.completedToolUses
+	if o.rootTarget != nil && o.rootTarget != boundary.target {
+		o.foldedTargets = appendRootTarget(o.foldedTargets, o.rootTarget)
+	}
+	o.rootTarget = boundary.target
 	o.promptBoundary = nil
 	return true
 }
@@ -334,11 +384,16 @@ func (o *acpTurnOutput) dropPromptBoundaryLocked() bool {
 func (o *acpTurnOutput) drainPromptTurn() (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
+	return o.drainPromptTurnLocked()
+}
+
+func (o *acpTurnOutput) drainPromptTurnLocked() (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
 	boundary := o.promptBoundary
 	if boundary == nil {
 		return o.drainTurnLocked(), false
 	}
 	o.promptBoundary = nil
+	snapshot.hasPromptBoundary = true
 	snapshot.completedToolUses = boundary.completedToolUses
 	for toolCallID := range boundary.openTools {
 		if _, open := o.toolUpdateState[toolCallID]; open {
@@ -346,6 +401,16 @@ func (o *acpTurnOutput) drainPromptTurn() (snapshot acpTurnSnapshot, hasPromptBo
 		}
 	}
 	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
+	for i := range snapshot.incompleteTools {
+		snapshot.incompleteTools[i].admission = snapshot.incompleteTools[i].target.reserve()
+	}
+	snapshot.endingAdmission = boundary.target.reserve()
+	snapshot.rootTargets = appendRootTarget(nil, boundary.target)
+	for _, target := range o.foldedTargets {
+		snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, target)
+	}
+	o.foldedTargets = nil
+	o.promptTarget = nil
 	for _, tool := range snapshot.incompleteTools {
 		o.forgetToolLocked(tool.toolCallID)
 	}
@@ -370,6 +435,24 @@ func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
 		snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
 	}
 	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
+	for i := range snapshot.incompleteTools {
+		snapshot.incompleteTools[i].admission = snapshot.incompleteTools[i].target.reserve()
+	}
+	snapshot.rootTargets = appendRootTarget(nil, o.promptTarget)
+	snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, o.rootTarget)
+	if o.promptBoundary != nil {
+		snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, o.promptBoundary.target)
+	}
+	for _, target := range o.foldedTargets {
+		snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, target)
+	}
+	endingTarget := o.promptTarget
+	if endingTarget == nil {
+		endingTarget = o.rootTarget
+	}
+	snapshot.endingAdmission = endingTarget.reserve()
+	o.rootTarget, o.promptTarget = nil, nil
+	o.foldedTargets = nil
 	o.promptBoundary = nil
 	o.toolUpdateState = nil
 	o.toolRequestContents = nil
@@ -387,6 +470,7 @@ func (o *acpTurnOutput) incompleteToolLocked(toolCallID string) acpIncompleteToo
 	encoded, err := json.Marshal(state.fields)
 	return acpIncompleteTool{
 		toolCallID: toolCallID,
+		target:     state.target,
 		original:   state.original,
 		content:    encoded,
 		rowKey:     o.toolSubagentRows[toolCallID],
@@ -422,10 +506,11 @@ func (o *acpTurnOutput) forgetToolLocked(toolCallID string) string {
 
 // rememberIncompleteTool records the opening frame of a tool call. An earlier frame
 // wins each field, because this runs for the frame that OPENS the call.
-func (o *acpTurnOutput) rememberIncompleteTool(toolCallID string, incoming map[string]json.RawMessage, original json.RawMessage) {
+func (o *acpTurnOutput) rememberIncompleteTool(toolCallID string, incoming map[string]json.RawMessage, original json.RawMessage, target *acpTranscriptTarget) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
 	state := o.toolUpdateStateLocked(toolCallID, len(incoming))
+	state.target = target
 	state.original = append(json.RawMessage(nil), original...)
 	for key, value := range incoming {
 		if _, exists := state.fields[key]; !exists {
@@ -525,4 +610,22 @@ func (o *acpTurnOutput) markSpanReleased(toolCallID string) bool {
 	}
 	o.spawnSpansReleased[toolCallID] = struct{}{}
 	return true
+}
+
+func (o *acpTurnOutput) reserveCurrentTranscript() *acpTranscriptAdmission {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	return o.rootTarget.reserve()
+}
+
+func (o *acpTurnOutput) reserveToolTranscript(toolCallID string, opening bool) (*acpTranscriptTarget, *acpTranscriptAdmission) {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	target := o.rootTarget
+	if state := o.toolUpdateState[toolCallID]; state != nil {
+		target = state.target
+	} else if !opening {
+		target = nil
+	}
+	return target, target.reserve()
 }

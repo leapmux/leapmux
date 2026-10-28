@@ -6,10 +6,14 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // acpToolRequestContent records the last published request for conditional updates.
 type acpToolRequestContent struct {
+	receipt      *agent.TranscriptWriteReceipt
+	target       *acpTranscriptTarget
+	pending      bool
 	original     []byte
 	supplemental []byte
 	revision     int64

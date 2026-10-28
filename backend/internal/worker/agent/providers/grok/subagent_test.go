@@ -3,7 +3,10 @@ package grok
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -355,6 +359,140 @@ func TestGrokChildMessageAddressReplacementAndContextClear(t *testing.T) {
 	assert.ErrorIs(t, steerer.SteerChildInput("owned", "old address", nil), agent.ErrChildRouteNotReady)
 	syncPeer(t, a)
 	assert.Len(t, requestsFor(requests(), "_x.ai/subagent/message"), 1, "context clear cannot revive the old child route")
+}
+
+func pauseGrokContextClearBeforeCleanup(t *testing.T, a *Agent) (func(), func()) {
+	t.Helper()
+	// Cleanup runs after t.Context is canceled, so the join keeps its own deadline.
+	deadline, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 30*time.Second)
+	t.Cleanup(cancel)
+	entered, release := make(chan struct{}), make(chan struct{})
+	cleanup := a.HooksForTest().ClearProviderState
+	a.HooksForTest().ClearProviderState = func() {
+		close(entered)
+		<-release
+		cleanup()
+	}
+	done := make(chan struct{})
+	var clearErr error
+	go func() {
+		_, clearErr = a.ClearContext()
+		close(done)
+	}()
+	unblock := sync.OnceFunc(func() { close(release) })
+	wait := func() {
+		t.Helper()
+		unblock()
+		select {
+		case <-done:
+			require.NoError(t, clearErr)
+			return
+		default:
+		}
+		select {
+		case <-done:
+			require.NoError(t, clearErr)
+		case <-deadline.Done():
+			t.Fatal("context clear did not finish")
+		}
+	}
+	t.Cleanup(wait)
+	select {
+	case <-entered:
+	case <-deadline.Done():
+		t.Fatal("context clear did not reach provider cleanup")
+	}
+	return unblock, wait
+}
+
+func TestGrokChildRoutesRefuseTheOutgoingOwnerBeforeProviderCleanup(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == grokSubagentMessageMethod {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"incorrect-owner"}}`)}
+		}
+		return openingSession("replacement-root")(request)
+	})
+	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.outgoing"}))
+	_, finish := pauseGrokContextClearBeforeCleanup(t, a)
+	defer finish()
+	require.Equal(t, "replacement-root", a.CurrentSessionID())
+	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("owned"))
+	assert.ErrorIs(t, a.SendChildInput("owned", "queued", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, a.SteerChildInput("owned", "steer", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, a.InterruptChild("owned", agent.StopContext{}), agent.ErrChildRouteNotReady)
+	syncPeer(t, a)
+	assert.Empty(t, requestsFor(requests(), grokSubagentMessageMethod))
+	assert.Empty(t, requestsFor(requests(), grokSubagentCancelMethod))
+}
+
+func TestGrokReplacementChildNotificationSurvivesProviderCleanup(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == grokSubagentMessageMethod {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"new-owner"}}`)}
+		}
+		return openingSession("replacement-root")(request)
+	})
+	_, finish := pauseGrokContextClearBeforeCleanup(t, a)
+	a.HandleOutput(notification(t, "replacement-root", map[string]any{
+		"sessionUpdate": grokUpdateSubagentSpawned,
+		"subagent_id":   "replacement-child",
+		"description":   "Replacement child",
+		"agentAddress":  "aa1.replacement",
+	}))
+	finish()
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState("replacement-child"))
+	require.NoError(t, a.SteerChildInput("replacement-child", "new input", nil))
+	sent := requestsFor(requests(), grokSubagentMessageMethod)
+	require.Len(t, sent, 1)
+	assert.Equal(t, "replacement-root", sent[0].Params["sessionId"])
+	assert.Equal(t, "aa1.replacement", sent[0].Params["agentAddress"])
+}
+
+func TestGrokRepeatedSessionIDRefusesTheClearAndPreservesItsChild(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == grokSubagentMessageMethod {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"retained-child"}}`)}
+		}
+		return openingSession(grokTestSession)(request)
+	})
+	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.retained"}))
+	_, err := a.ClearContext()
+	require.ErrorContains(t, err, "current session ID")
+	assert.Equal(t, grokTestSession, a.CurrentSessionID())
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState("owned"))
+	require.NoError(t, a.SteerChildInput("owned", "still owned", nil))
+	sent := requestsFor(requests(), grokSubagentMessageMethod)
+	require.Len(t, sent, 1)
+	assert.Equal(t, grokTestSession, sent[0].Params["sessionId"])
+	assert.Equal(t, "aa1.retained", sent[0].Params["agentAddress"])
+}
+
+func TestGrokClearRejectsAnIDAnnouncedByOutgoingBufferedChildMetadata(t *testing.T) {
+	t.Parallel()
+	var subject atomic.Pointer[Agent]
+	childFrame := spawned(t, "announced-child", "Announced child", map[string]any{
+		"child_session_id": "collision", "agentAddress": "aa1.announced",
+	})
+	a, _, _ := newGrokAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == acp.MethodSessionNew {
+			current := subject.Load()
+			if current == nil {
+				return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"the test provider is unavailable"}`)}
+			}
+			current.HandleOutput(childFrame)
+			return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"collision"}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	subject.Store(a)
+	_, err := a.ClearContext()
+	require.ErrorContains(t, err, "existing session ID")
+	assert.Equal(t, grokTestSession, a.CurrentSessionID())
+	assert.True(t, a.ServesSession("collision"), "the accepted outgoing child's native identity remains a child")
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState("announced-child"))
 }
 
 func TestGrokChildMessageRequiresALiveRootSession(t *testing.T) {

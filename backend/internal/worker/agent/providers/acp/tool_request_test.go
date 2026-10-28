@@ -104,7 +104,7 @@ func TestACPPermissionRequestStatesTheInputInTheChildTranscript(t *testing.T) {
 	t.Parallel()
 	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
-	b.AttachChildSession("child-session", "call-spawn")
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 	b.HandleOutput(acpNotificationLine(t, "child-session", fastAgentRefusedWriteOpening))
 	b.HandleOutput(acpPermissionLine(t, 0, "child-session", fastAgentRefusedWriteAsk))
 

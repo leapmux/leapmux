@@ -232,6 +232,10 @@ func (a *Agent) applyCursorSubagentLifecycle(parentSessionID string, owner agent
 	if updateType != "subagent_spawned" && updateType != "subagent_state_update" {
 		return false
 	}
+	rootSessionID, served := a.SessionRoot(parentSessionID)
+	if !served {
+		return true
+	}
 	var lifecycle cursorSubagentLifecycle
 	var identity cursorSubagentIdentity
 	if owner == nil || parentSessionID == "" || json.Unmarshal(update, &lifecycle) != nil || json.Unmarshal(metadata["cursor"], &identity) != nil ||
@@ -270,7 +274,7 @@ func (a *Agent) applyCursorSubagentLifecycle(parentSessionID string, owner agent
 		}
 		a.nativeTasks[rowKey] = cursorNativeTask{sessionID: lifecycle.SessionID, parentSessionID: parentSessionID, status: bgtask.StatusRunning}
 		a.Mu.Unlock()
-		a.AttachChildSession(lifecycle.SessionID, rowKey)
+		a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: rootSessionID, SessionID: lifecycle.SessionID, RowKey: rowKey})
 		return true
 	}
 	var status bgtask.Status

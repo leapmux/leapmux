@@ -1985,7 +1985,11 @@ func (svc *Service) agentsHasAgentFor(agentRow *db.Agent, rootID string) bool {
 func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan gitModePlan, agentOpts agent.Options, h *startupEntry) {
 	agentID := agentOpts.AgentID
 	defer svc.AgentStartup.finishEntry(h)
-	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
+	sink, sourceErr := svc.Output.NewRootSink(agentID, agentOpts.AgentProvider)
+	if sourceErr != nil {
+		svc.failAgentStartup(&dbAgent, gitModeResult{}, sourceErr, nil, h)
+		return
+	}
 
 	// Phase 0: execute the git-mode mutation (worktree add, branch create,
 	// checkout). Validation already ran synchronously in OpenAgent; what
@@ -2213,7 +2217,6 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 			}
 		}
 	}()
-	sink := svc.Output.NewSink(agentID, provider)
 	// This is a relaunch like any other, so it mints its own control socket.
 	// opts came from the OPEN path, and resolveConfirmedStartupSettings replaces
 	// only opts.Options -- so without this the new process would inherit the
@@ -2224,6 +2227,10 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 		defer unlock()
 		// Hold the startup before the stop. The caller announces the outcome.
 		defer svc.holdRelaunch(agentID, provider).release()
+		sink, sourceErr := svc.Output.NewRootSink(agentID, provider)
+		if sourceErr != nil {
+			return nil, false, sourceErr
+		}
 		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", opts, sink, svc.restartAgentLocked)
 	}()
 	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
@@ -3020,7 +3027,10 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		agentOpts.ResumeSessionID = resumeSessionID
 		agentOpts.Options = options
 		agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(svc.Agents.Registry(), options, current.AgentProvider)
-		sink := svc.Output.NewSink(agentID, current.AgentProvider)
+		sink, sourceErr := svc.Output.NewRootSink(agentID, current.AgentProvider)
+		if sourceErr != nil {
+			return nil, false, sourceErr
+		}
 		confirmed, launched, launchErr := svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
 		if launchErr != nil {
 			return confirmed, launched, launchErr
@@ -3559,7 +3569,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// Amp states a new thread on the init line of the thread's first message.
 	// If the row kept the cleared session until then, the agent would report
 	// it, and a cold start in that window would resume it and bring back the
-	// context that the user cleared. The write also comes before NewSink,
+	// context that the user cleared. The write also comes before NewRootSink,
 	// which reads the stored session as the scope of the new transcript rows.
 	svc.clearAgentSessionID(agentID)
 
@@ -3572,9 +3582,14 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// is what makes a clear the recovery from a refused native resume, which a
 	// repeated resume could damage further.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
-	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	sink.ClearGoal(false)
-	confirmedSettings, err := svc.mintAndLaunch(recovery.launchContext(), "clear", launchOptions, sink, svc.startAgent)
+	confirmedSettings, err := func() (map[string]string, error) {
+		sink, sourceErr := svc.Output.NewRootSink(agentID, dbAgent.AgentProvider)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		sink.ClearGoal(false)
+		return svc.mintAndLaunch(recovery.launchContext(), "clear", launchOptions, sink, svc.startAgent)
+	}()
 	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		switch recovery.interruption(svc) {
@@ -3917,8 +3932,13 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	// comes up with no `leapmux control` at all.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	launchOptions.ResumeSessionID = resumeSessionID
-	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.mintAndLaunch(startupCtx, "resume", launchOptions, sink, priority.launcher(svc))
+	confirmedSettings, err := func() (map[string]string, error) {
+		sink, sourceErr := svc.Output.NewRootSink(agentID, dbAgent.AgentProvider)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		return svc.mintAndLaunch(startupCtx, "resume", launchOptions, sink, priority.launcher(svc))
+	}()
 	if err != nil {
 		// No process to keep alive, so release the startup context here rather
 		// than stranding it until the worker exits.
@@ -4238,9 +4258,14 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 	// A fresh process needs a fresh control socket -- see remintAgentControlIPC.
 	// mintAndLaunch keeps a failed mint and a failed start on one exit, so the
 	// notice and the session-id reset are written by one piece of code.
-	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	sink.ClearGoal(false)
-	confirmedSettings, err := svc.mintAndLaunch(bgCtx(), "restart", launchOptions, sink, svc.startAgent)
+	confirmedSettings, err := func() (map[string]string, error) {
+		sink, sourceErr := svc.Output.NewRootSink(agentID, dbAgent.AgentProvider)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		sink.ClearGoal(false)
+		return svc.mintAndLaunch(bgCtx(), "restart", launchOptions, sink, svc.startAgent)
+	}()
 	if err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		svc.clearAgentSessionID(agentID)

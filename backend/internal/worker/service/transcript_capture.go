@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -147,9 +148,35 @@ func (owner *transcriptOwner) PublishSessionInfo(info map[string]interface{}) bo
 	return true
 }
 
-func (h *OutputHandler) transcriptMutationMutex(rootAgentID string) *sync.RWMutex {
-	value, _ := h.transcriptMu.LoadOrStore(rootAgentID, &sync.RWMutex{})
-	return value.(*sync.RWMutex)
+// transcriptMutationLock keeps the original mutex as the only admission authority.
+// writerAdmissions observes current and waiting writers for deterministic lifecycle tests.
+type transcriptMutationLock struct {
+	sync.RWMutex
+	writerAdmissions atomic.Int64
+}
+
+func (lock *transcriptMutationLock) Lock() {
+	lock.writerAdmissions.Add(1)
+	lock.RWMutex.Lock()
+}
+
+func (lock *transcriptMutationLock) Unlock() {
+	lock.RWMutex.Unlock()
+	lock.writerAdmissions.Add(-1)
+}
+
+func (lock *transcriptMutationLock) TryLock() bool {
+	lock.writerAdmissions.Add(1)
+	if lock.RWMutex.TryLock() {
+		return true
+	}
+	lock.writerAdmissions.Add(-1)
+	return false
+}
+
+func (h *OutputHandler) transcriptMutationMutex(rootAgentID string) *transcriptMutationLock {
+	value, _ := h.transcriptMu.LoadOrStore(rootAgentID, &transcriptMutationLock{})
+	return value.(*transcriptMutationLock)
 }
 
 func readCapturedOwner(content agent.MessageContent) (*transcriptOwner, error) {
@@ -228,14 +255,21 @@ func (sink *agentOutputSink) CaptureMessage(content agent.MessageContent, span a
 		scope.transcriptThreads[key] = thread
 	}
 	activity.mu.Unlock()
-	connector := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
-	depth, lines, color := sink.tracker.Snapshot(span.ParentSpanID, connector, span.Closing)
-	if span.SpanColor != 0 || span.NoSpan {
-		color = span.SpanColor
-	}
-	_, passthroughLines, _ := sink.tracker.Snapshot("", "", false)
 	owner := &transcriptOwner{sink: sink, activity: activity, scope: scope, session: session, sessionID: content.AgentSessionID,
-		thread: thread, depth: depth, spanLines: lines, spanColor: color, passthroughLines: passthroughLines, span: span}
-	content.Publication = &transcriptPublication{owner: owner}
+		thread: thread}
+	content.Publication = &transcriptPublication{owner: owner.withSpanSnapshot(sink.tracker, span)}
 	return content
+}
+
+// withSpanSnapshot keeps immutable authority and replaces only span geometry.
+func (owner *transcriptOwner) withSpanSnapshot(tracker *SpanTracker, span agent.SpanInfo) *transcriptOwner {
+	next := *owner
+	connector := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
+	next.depth, next.spanLines, next.spanColor = tracker.Snapshot(span.ParentSpanID, connector, span.Closing)
+	if span.SpanColor != 0 || span.NoSpan {
+		next.spanColor = span.SpanColor
+	}
+	_, next.passthroughLines, _ = tracker.Snapshot("", "", false)
+	next.span = span
+	return &next
 }

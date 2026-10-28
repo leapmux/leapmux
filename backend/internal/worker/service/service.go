@@ -878,8 +878,10 @@ func logAutoRetryError(action, agentID string, err error, attributes ...any) {
 // stale on resume) and gives its background-task registry a final status (stopped on an
 // explicit Stop, interrupted on a crash). It fires for every exit including a
 // relaunch's old-process stop; stopAndWait serializes this hook before a new
-// process registers, so fresh spawns can never be clobbered.
-func (svc *Service) HandleAgentProcessExit(agentID string, _ error, stopped bool) {
+// process registers. Registry finalization retains the original output generation
+// in its queue, so a later retry cannot close fresh replacement rows.
+func (svc *Service) HandleAgentProcessExit(exit agent.ProcessExit) {
+	agentID, stopped := exit.AgentID, exit.Stopped
 	subtreeIDs := svc.agentSubtreeIDs(agentID)
 	for _, id := range subtreeIDs {
 		if _, err := svc.InputQueue.ResolveUnechoedSteers(bgCtx(), id, -1); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
@@ -887,7 +889,9 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ error, stopped bool
 		}
 	}
 	svc.Output.ClearPendingControlRequests(agentID)
-	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
+	if err := svc.Output.enqueueBackgroundTaskExit(exit.Output, stopped); err != nil {
+		slog.Error("retain the exited process registry", "agent_id", agentID, "error", err)
+	}
 	// Re-publish the session goal, which now reads DORMANT: the projection
 	// derives that from the running-agent map, and AgentAlive already answers
 	// false inside this callback. Nothing is written -- this only tells a browser
@@ -909,7 +913,7 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ error, stopped bool
 			slog.Warn("pause agent input queue after process exit failed", "agent_id", queueAgentID, "error", err)
 		}
 	}
-	// Last, so it observes the cleared prompts and the ended registry rows. This
+	// Last, so it observes cleared prompts and admitted registry finalization. This
 	// is also the only signal a client gets that a CRASHED agent stopped working:
 	// this handler broadcasts no AgentStatusChange, so without it a lost process
 	// left every watching tab showing work that had already died.

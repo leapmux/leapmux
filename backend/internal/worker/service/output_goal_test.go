@@ -38,7 +38,7 @@ func setupGoalTest(t *testing.T) (*Service, agent.ProviderServices, string, func
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	readRow := func() db.Agent {
 		t.Helper()
 		row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
@@ -339,7 +339,7 @@ func TestGoal_ClearIssuesTheWriteFromStoredState(t *testing.T) {
 
 	sink.UpsertGoal(activeGoal("Old objective", 100, created))
 	// A new sink represents a restarted Worker. The original goal remains in its stored row.
-	coldSink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	coldSink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	coldSink.ClearGoal(false)
 
 	row := readRow()
@@ -456,12 +456,12 @@ func TestGoal_LoadGoalAnswersNilForAChild(t *testing.T) {
 // Its child sink must not replace the root's session objective with that goal.
 func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 	t.Parallel()
-	svc, sink, _, readRow := setupGoalTest(t)
+	_, sink, _, readRow := setupGoalTest(t)
 	sink.UpsertGoal(activeGoal("Root objective", 10, time.Unix(1_700_000_000, 0).UTC()))
 
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "child-key-1", Title: "A subagent"})
 	require.NoError(t, err)
-	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	childSink := sink.ChildSink(childID)
 
 	childSink.UpsertGoal(activeGoal("Subagent objective", 1, time.Unix(1_700_005_000, 0).UTC()))
 	childSink.ClearGoal(false)
@@ -920,7 +920,7 @@ func TestGoalStatusUpdatePreservesStoredIdentityAfterSinkRestart(t *testing.T) {
 	sink.UpsertGoal(original)
 	before := readRow()
 
-	restarted := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
+	restarted := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
 	restarted.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused)
 
 	after := readRow()

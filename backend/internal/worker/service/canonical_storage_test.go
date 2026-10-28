@@ -128,7 +128,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// agent_background_tasks: created_at/updated_at are Go-bound on the Upsert;
 	// ended_at/updated_at are Go-bound on the Close. Agent agent-1 (root) already
 	// exists; insert a running row then close it so ended_at is non-null.
-	require.NoError(t, queries.UpsertAgentBackgroundTask(ctx, gendb.UpsertAgentBackgroundTaskParams{
+	writeBackgroundTaskFixture(t, queries, gendb.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "agent-1",
 		RowKey:       "bg-1",
 		Seq:          1,
@@ -136,15 +136,15 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 		CreatedAt:    sqltime.NewSQLiteTime(now),
 		UpdatedAt:    sqltime.NewSQLiteTime(now),
-	}))
-	require.NoError(t, queries.CloseAgentBackgroundTask(ctx, gendb.CloseAgentBackgroundTaskParams{
+	})
+	closeBackgroundTaskFixture(t, queries, gendb.CloseAgentBackgroundTaskParams{
 		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
 		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 		EndedAt:        sqltime.SQLiteNullTimeOf(now),
 		UpdatedAt:      sqltime.NewSQLiteTime(now),
 		OwnerAgentID:   "agent-1",
 		RowKey:         "bg-1",
-	}))
+	})
 
 	// agents.goal_created_at / goal_updated_at are Go-bound on UpdateAgentGoal.
 	require.NoError(t, queries.UpdateAgentGoal(ctx, gendb.UpdateAgentGoalParams{

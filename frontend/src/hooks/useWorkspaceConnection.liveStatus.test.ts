@@ -93,7 +93,7 @@ function mountConnection(initial: AgentStatus) {
     replay: WatchReplayMode.LATEST,
     cursorSeq: 0n,
     replayId: 1n,
-  })])
+  })], new Map([['a1', 'a1']]))
   return {
     dispose,
     status: () => view.getAgentTab('a1')?.agentStatus,

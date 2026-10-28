@@ -35,6 +35,7 @@ func (b *Base) ObserveCurrentMode(modeID string) {
 	}
 	axis := b.secondaryChannel()
 	b.Mu.Lock()
+	b.nativeModeID = modeID
 	b.secondaryReports++
 	changed := *axis.field != modeID
 	*axis.field = modeID

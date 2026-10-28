@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 )
 
@@ -36,6 +37,16 @@ func JSONCanonicalEqual(left, right json.RawMessage) bool {
 	return bytes.Equal(leftCanonical, rightCanonical)
 }
 
+// JSONCanonicalDigest identifies an encoded value without retaining its bytes.
+// Object key order does not affect the digest. Number spellings remain exact.
+func JSONCanonicalDigest(raw json.RawMessage) ([sha256.Size]byte, error) {
+	canonical, err := canonicalJSON(raw)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(canonical), nil
+}
+
 // canonicalJSON re-encodes a value with every object's keys in sorted order.
 //
 // It is a COMPARISON aid for JSONCanonicalEqual and never a storage form: rewriting a
@@ -43,8 +54,8 @@ func JSONCanonicalEqual(left, right json.RawMessage) bool {
 //
 // Two values it reads as one: an object that REPEATS a key keeps the last one, because
 // the decode is into a map. Two spellings of one document then compare equal, and an
-// update that only removed the duplicate is dropped. Every producer here is a Go
-// marshaler, which never emits one.
+// update that only removed the duplicate is dropped. Callers that require unique member
+// names must validate them before comparison.
 //
 // Numbers stay as their ORIGINAL bytes. Decoding them into `any` would round every
 // integer through a float64 and silently change a value past 2^53, which is a size

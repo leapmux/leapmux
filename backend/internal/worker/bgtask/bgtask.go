@@ -325,13 +325,15 @@ func (s Status) IsWorking() bool {
 // registry pipeline stays decoupled from the proto generated types. A zero
 // EndedAt means the task is still active.
 type Item struct {
-	RowKey        string
-	ChildAgentID  string
-	ParentAgentID string
-	Kind          Kind
-	GroupKey      string
-	GroupLabel    string
-	Title         string
+	// OutputGeneration is Worker storage authority and never enters the public projection.
+	OutputGeneration int64
+	RowKey           string
+	ChildAgentID     string
+	ParentAgentID    string
+	Kind             Kind
+	GroupKey         string
+	GroupLabel       string
+	Title            string
 	// TitleIsCommand marks Title as a verbatim shell command rather than prose,
 	// so a client can set it as code. Only a provider that hands the command
 	// over ITSELF may set it: an ACP terminal/create carries the command and

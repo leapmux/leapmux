@@ -1,39 +1,16 @@
 import type { CommandExit } from '../../../model/commandResult'
 import type { ToolCallSpec } from '../../../model/toolCall'
 import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
-import { FASTAGENT_TOOL } from '~/generated/contracts/fastagent-protocol'
-import { pickNumber, pickObject } from '~/lib/jsonPick'
 import { withCommandExit } from '../../../model/commandResult'
-import { acpRemapFacts, acpSpecFor } from '../../acp/extractors/toolCall'
 import { declinedToolCallSpec } from '../../declinedToolCall'
-import { FAST_AGENT_SHELL, isFastAgentRefusalSentence } from '../protocol'
-import { fastAgentArchiveTool } from '../toolIdentity'
+import { isFastAgentRefusalSentence } from '../protocol'
 
 /**
  * Read a Fast Agent call through the shared builder.
  * The adapter marks a refused call as declined and keeps its refusal text.
  * The host-terminal route appends its exit code to the output text.
- * Recovered local commands carry structured exit metadata.
  */
 export const fastAgentToolCallAdapter: ACPToolCallAdapter = (facts, base): ToolCallSpec => {
-  if (fastAgentArchiveTool(facts.tool, facts.agentSessionId) === FASTAGENT_TOOL.Bash) {
-    const shell = acpRemapFacts(facts, { tool: facts.tool, kind: 'execute' })
-    const spec = acpSpecFor(shell, 'execute')
-    const raw = pickObject(facts.tool, 'rawOutput')
-    const metadata = raw ? pickObject(raw, '_meta') : undefined
-    const process = metadata ? pickObject(metadata, FAST_AGENT_SHELL.Metadata) : undefined
-    const code = process ? pickNumber(process, FAST_AGENT_SHELL.ExitCode) : undefined
-    if (code === undefined || !Number.isSafeInteger(code) || spec.result === undefined || !('commands' in spec.result) || spec.result.commands.length !== 1)
-      return spec
-    const command = spec.result.commands[0]
-    if (!command)
-      return spec
-    return {
-      ...spec,
-      ...(code !== 0 && facts.status !== 'cancelled' && facts.status !== 'declined' ? { statusOverride: 'failed' as const } : {}),
-      result: { ...spec.result, commands: [withCommandExit(command, { exitCode: code })] },
-    }
-  }
   const spec = base()
   return fastAgentRefused(facts) ? declinedToolCallSpec(spec, facts.text) : fastAgentCommandSpec(spec)
 }

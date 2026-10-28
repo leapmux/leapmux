@@ -327,7 +327,7 @@ func TestCapturedTailRetainsItsOwnerThroughDelayedWireDelivery(t *testing.T) {
 				require.Contains(t, []string{"first-span", "second-span"}, firstSpan)
 				switch change {
 				case "sink replacement":
-					rootServices = svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+					rootServices = newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 					services = rootServices
 					if population == "child" {
 						services = rootServices.ChildSink(subjectID)
@@ -453,7 +453,7 @@ func TestStoredMessageSequenceReceiptPrecedesWatcherPublication(t *testing.T) {
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "sequence-receipt-owner"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
-			sink := svc.Output.NewSink(ownerID, providerID)
+			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			receipt := agent.NewTranscriptWriteReceipt()
 			var inspected int
 			writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "sequence-receipt-watch"}}
@@ -515,7 +515,7 @@ func TestCapturedProviderPreparationKeepsOriginalPairedSession(t *testing.T) {
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "paired-session-owner"
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
-			sink := svc.Output.NewSink(ownerID, providerID)
+			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			sink.UpdateSessionID("session-s")
 			sink.SetTurnState(agent.TurnState{Active: true}, 1)
 			requestSpan := agent.SpanInfo{SpanID: "reused-native-span"}
@@ -588,7 +588,7 @@ func TestCapturedProviderPreparationCanReplaceItsPublisher(t *testing.T) {
 				svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 				const ownerID = "provider-preparation-owner"
 				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
-				sink := svc.Output.NewSink(ownerID, providerID)
+				sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 				sink.UpdateSessionID("original-session")
 				sink.SetTurnState(agent.TurnState{Active: true}, 1)
 				require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
@@ -605,7 +605,7 @@ func TestCapturedProviderPreparationCanReplaceItsPublisher(t *testing.T) {
 						return
 					}
 					go func() {
-						replacement := svc.Output.NewSink(ownerID, providerID)
+						replacement := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 						svc.Output.NoteAgentProcessStarted(ownerID)
 						replacement.SetTurnState(agent.TurnState{Active: true}, 1)
 						close(replacementFinished)
@@ -783,7 +783,7 @@ func TestNotificationEntryColdCurrentOwnerDoesNotRestoreAStaleAggregate(t *testi
 	_, err := old.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)
 	require.NoError(t, err)
 	svc.Output.lastNotifThread.Delete(ownerID)
-	cold := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	cold := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	_, err = cold.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
 		agent.MessageContent{Original: []byte(`{"type":"current_notice"}`), IdempotencyKey: "current-notice"})
 	require.NoError(t, err)

@@ -229,7 +229,7 @@ func TestGrokChildGoalUpdateIsNotTheParentsGoal(t *testing.T) {
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
 	// A row routes the child session, so the agent serves it, and only the
 	// main-session rule keeps its goal off the parent's card.
-	a.AttachChildSession("child-session", "call_spawn")
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_spawn"})
 	a.HandleOutput(notification(t, "child-session", map[string]any{
 		"sessionUpdate": "goal_updated", "goal_id": "g-child", "objective": "sub", "status": "active",
 	}))

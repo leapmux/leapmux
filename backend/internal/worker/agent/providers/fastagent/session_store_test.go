@@ -70,8 +70,8 @@ func TestReadFastagentRootArchiveHandlesEmptyAndInvalidHistories(t *testing.T) {
 	dir := writeFastagentRootArchive(t, home, "root", cwd, []fastagentHistoryMessage{})
 	histories, err := readFastagentRootArchive(home, "root", cwd)
 	require.NoError(t, err)
-	require.Len(t, histories, 1)
-	assert.Empty(t, histories[0].messages)
+	require.Len(t, histories.histories, 1)
+	assert.Empty(t, histories.histories[0].messages)
 	for _, raw := range []string{"", "{", `{}`, `{"messages":null}`, `{"messages":"bad"}`} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "history_agent.json"), []byte(raw), 0o600))
 		histories, err = readFastagentRootArchive(home, "root", cwd)
@@ -131,5 +131,5 @@ func TestReadFastagentRootArchiveUsesTheWorkingDirectoryIdentity(t *testing.T) {
 	writeFastagentRootArchive(t, home, "root", alias, nil)
 	histories, err := readFastagentRootArchive(home, "root", cwd)
 	require.NoError(t, err)
-	require.Len(t, histories, 1)
+	require.Len(t, histories.histories, 1)
 }

@@ -23,7 +23,7 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	opener := json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"pending"}`)
 	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{
 		"toolCallId": json.RawMessage(`"tool-1"`),
-	}, opener)
+	}, opener, nil)
 	output.completeTool("tool-complete")
 
 	turn := output.drainTurn()
@@ -136,7 +136,7 @@ func TestACPTurnOutputCountsACallOnceWhenItsFinalUpdateRepeats(t *testing.T) {
 
 	var output acpTurnOutput
 	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"tool-1"`)},
-		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"in_progress"}`))
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"in_progress"}`), nil)
 	for range 3 {
 		endToolCall(&output, "tool-1")
 	}
@@ -171,7 +171,7 @@ func TestACPTurnOutputCountsACallOfThePromptOnceAcrossTheBoundary(t *testing.T) 
 
 	var output acpTurnOutput
 	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"tool-1"`)},
-		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"in_progress"}`))
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"in_progress"}`), nil)
 	output.turnMu.Lock()
 	output.markPromptBoundaryLocked()
 	output.turnMu.Unlock()

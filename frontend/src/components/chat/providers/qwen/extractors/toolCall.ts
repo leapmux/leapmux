@@ -131,7 +131,7 @@ function qwenToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSp
   const toolCallId = pickString(facts.tool, 'toolCallId')
 
   if (name === QWEN_TOOL.Agent) {
-    const request = qwenAgentRequest(input, toolCallId)
+    const request = qwenAgentRequest(input, toolCallId, facts.agentSessionId)
     // `facts.finished`, never the frame's own status: a retained row of a turn that
     // ended keeps its report.
     return { kind: 'agent', name, request, ...(facts.finished ? { result: { agents: [qwenAgentRun(facts, request)] } } : {}) }

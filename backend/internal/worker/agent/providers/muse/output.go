@@ -1,7 +1,6 @@
 package muse
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -16,42 +15,40 @@ import (
 
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	func() {
-		a.dispatchMu.Lock()
-		defer a.dispatchMu.Unlock()
+		a.dispatcher.mu.Lock()
+		defer a.dispatcher.mu.Unlock()
 		a.dispatchOutput(line)
 	}()
-	// Goal writes run after dispatchMu releases.
+	// Goal writes run after dispatcher.mu releases.
 	// A native goal observer can call HandleOutput from its UpsertGoal or ClearGoal callback.
 	// The callback must hold no provider or lifecycle lock, because it can enter the same dispatcher.
-	for _, apply := range a.takeDeferredGoalActions() {
-		apply()
-	}
+	a.drainDeferredOutputActions()
 	a.drainControls()
 	if line.Method == methodSessionApprovalChanged {
 		a.queuePermissionApprovals()
 	}
-	// A fresh native child can expose a live head before its stored view prefix.
-	// Retry that prefix on received child events. Replayed frames use
-	// dispatchOutput directly, so they cannot schedule their own reads.
-	if viewCursor(line.Raw) != "" {
-		id := providerkit.StringField(line.Params, "sessionId")
-		a.stateMu.Lock()
-		state := a.sessions[id]
-		needsPrefix := a.currentSessionState(id, state) && state.childID != "" && state.childViewPrefix == childViewPrefixPending
-		a.stateMu.Unlock()
-		if needsPrefix {
-			a.requestChildView(id)
-		}
-	}
+
 }
 
 func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
 	if line.HasID() {
-		if line.Method == contracts.MuseMethodApprovalRequest || line.Method == contracts.MuseMethodUserInputRequest {
-			a.SendResponseDetached(line.ID, map[string]any{}, "acknowledge a Muse control request")
-			a.publishControl(line)
-		} else {
+		if !childControlPublication(line.Method) || (line.Method != contracts.MuseMethodApprovalRequest && line.Method != contracts.MuseMethodUserInputRequest) {
 			a.RefuseUnsupportedRequest(line)
+			return
+		}
+		a.SendResponseDetached(line.ID, map[string]any{}, "acknowledge a Muse control request")
+		id := providerkit.StringField(line.Params, "sessionId")
+		a.stateMu.Lock()
+		state := a.sessions[id]
+		child := a.currentSessionState(id, state) && state.childID != ""
+		a.stateMu.Unlock()
+		if child {
+			a.observeChildNativeTurn(line, state)
+			if !a.bufferViewFrame(line, state) {
+				a.queueChildProjectionLocked(id, state, line.Raw)
+			}
+		} else {
+			a.publishControl(line)
 		}
 		return
 	}
@@ -64,8 +61,9 @@ func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
 		return
 	}
 	var identity struct {
-		SessionID string `json:"sessionId"`
-		TurnID    string `json:"turnId"`
+		SessionID string  `json:"sessionId"`
+		TurnID    string  `json:"turnId"`
+		Cursor    *string `json:"viewCursor"`
 	}
 	if json.Unmarshal(line.Params, &identity) != nil {
 		return
@@ -81,19 +79,37 @@ func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
 		}
 		return
 	}
+	a.observeChildNativeTurn(line, state)
+	a.observeChildControlSettlement(line, state)
 	if a.bufferViewFrame(line, state) {
 		return
 	}
 	if state.childID != "" {
-		if cursor := viewCursor(line.Raw); cursor != "" {
-			a.stateMu.Lock()
-			state.lastViewCursor = cursor
-			a.stateMu.Unlock()
+		switch line.Method {
+		case methodViewGap:
+			a.recoverView(line.Params, state)
+		case contracts.MuseMethodUsageChanged:
+			a.applySessionOutput(line, state)
+		default:
+			a.queueChildProjectionLocked(identity.SessionID, state, line.Raw)
 		}
+		return
+	}
+	a.applySessionOutput(line, state)
+}
+
+// applySessionOutput interprets an admitted frame. The caller holds dispatcher.mu.
+func (a *Agent) applySessionOutput(line *providerkit.ParsedLine, state *sessionState) {
+	var identity struct {
+		SessionID string `json:"sessionId"`
+		TurnID    string `json:"turnId"`
+	}
+	if json.Unmarshal(line.Params, &identity) != nil {
+		return
 	}
 	switch line.Method {
 	case methodTurnStarted:
-		a.startTurn(identity.SessionID, identity.TurnID)
+		a.startTurnLocked(identity.SessionID, identity.TurnID)
 	case contracts.MuseMethodTurnCompleted:
 		a.finishTurn(line.Raw, identity.SessionID, identity.TurnID)
 	case contracts.MuseMethodItemStarted, contracts.MuseMethodItemUpdated, contracts.MuseMethodItemCompleted:
@@ -110,24 +126,32 @@ func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {
 }
 
 func (a *Agent) startTurn(sessionID, turnID string) {
+	a.dispatcher.mu.Lock()
+	a.startTurnLocked(sessionID, turnID)
+	a.dispatcher.mu.Unlock()
+	a.drainDeferredOutputActions()
+}
+
+// The caller holds dispatcher.mu, including native response observers.
+func (a *Agent) startTurnLocked(sessionID, turnID string) {
 	if turnID == "" {
 		return
 	}
 	a.stateMu.Lock()
 	state := a.sessions[sessionID]
-	if state == nil || state.retired || state.completed[turnID] || state.turnID == turnID {
+	if !a.currentSessionState(sessionID, state) || state.completed[turnID] == turnCompletionCaptured || state.turnID == turnID {
 		a.stateMu.Unlock()
 		return
 	}
 	state.turnID = turnID
 	state.toolUses = 0
 	root := sessionID == a.sessionID
-	retiredRoot := !root && state.childID == ""
+	publishChild := !state.nativeTurn.known
 	a.stateMu.Unlock()
 	a.retryFinalizations(state)
 	if root {
 		a.PublishTurnActive()
-	} else if !retiredRoot {
+	} else if publishChild {
 		a.Mu.Lock()
 		seq := a.NextTurnSeq()
 		a.Mu.Unlock()
@@ -140,16 +164,34 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 	if json.Unmarshal(params, &item) != nil || item.Item.ID == "" || item.Item.Revision <= 0 {
 		return
 	}
+	var native struct {
+		Item json.RawMessage `json:"item"`
+	}
+	if json.Unmarshal(params, &native) != nil || len(native.Item) == 0 {
+		return
+	}
 	a.stateMu.Lock()
 	existing := state.items[item.Item.ID]
 	var previous itemParams
 	if existing != nil {
 		previous = existing.params
 		currentRevision := existing.params.Item.Revision
-		if item.Item.Revision < currentRevision || item.Item.Revision == currentRevision && (existing.persistedRevision >= currentRevision || !bytes.Equal(existing.raw, raw)) {
+		if item.Item.Revision < currentRevision || item.Item.Revision == currentRevision && !agent.JSONCanonicalEqual(existing.nativeObject(), native.Item) {
 			a.stateMu.Unlock()
 			return
 		}
+	}
+	if err := validateWorkflowAttemptAdvance(previous.Item, item.Item); err != nil {
+		a.stateMu.Unlock()
+		slog.Warn("read the Muse workflow fold", "error", err)
+		// Invalid child metadata cannot replace canonical ownership. A finished
+		// native frame still belongs in its original transcript.
+		if item.Item.Status != contracts.MuseItemStatusInProgress {
+			if persistErr := state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, museItemMessageContent(slices.Clone(raw), item), agent.SpanInfo{}); persistErr != nil {
+				slog.Warn("persist the invalid Muse workflow frame", "error", persistErr)
+			}
+		}
+		return
 	}
 	if existing == nil {
 		existing = &itemState{deltas: make(map[string]string), cursors: make(map[string]bool), order: state.nextItemOrder}
@@ -159,6 +201,28 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 	if item.Item.Revision > existing.params.Item.Revision {
 		existing.params = item
 		existing.raw = slices.Clone(raw)
+		existing.nativeItemRaw = nil
+		publication := existing.registryState()
+		publication.mu.Lock()
+		publication.registryHeadRevision = 0
+		publication.mu.Unlock()
+	} else if len(existing.raw) == 0 {
+		// A folded head supplies metadata, while this frame supplies the native
+		// transcript record for that same revision.
+		existing.params = item
+		existing.raw = slices.Clone(raw)
+		existing.nativeItemRaw = nil
+	}
+	transcriptDone := existing.retainedRevision >= item.Item.Revision
+	current := a.currentSessionState(item.SessionID, state)
+	if transcriptDone {
+		a.stateMu.Unlock()
+		if current && museRegistryItem(item.Item) {
+			if err := a.observeChildOrTask(item, state, previous.Item); err != nil {
+				slog.Warn("publish Muse child metadata", "error", err)
+			}
+		}
+		return
 	}
 	state.ensureNativeItemIndex().replace(previous, existing)
 	tool := item.Item.Kind == contracts.MuseItemKindToolCall || item.Item.Kind == contracts.MuseItemKindUserShell
@@ -168,7 +232,6 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		state.toolUses++
 	}
 	finished := item.Item.Status != contracts.MuseItemStatusInProgress
-	current := a.currentSessionState(item.SessionID, state)
 	modelTool := open && item.Item.Kind == contracts.MuseItemKindToolCall && current
 	a.stateMu.Unlock()
 	if modelTool && a.flushRetryNotices(state) {
@@ -212,9 +275,10 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 			_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, museItemMessageContent(slices.Clone(raw), item))
 			if err != nil {
 				slog.Warn("persist Muse compaction", "error", err)
-			} else {
+			}
+			if agent.OutputRetained(err) {
 				a.stateMu.Lock()
-				existing.persistedRevision = max(existing.persistedRevision, item.Item.Revision)
+				existing.retainedRevision = max(existing.retainedRevision, item.Item.Revision)
 				a.stateMu.Unlock()
 			}
 			// A compaction runs outside model turns. The host reports no idle state for it.
@@ -230,7 +294,7 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		a.persistItem(state, existing, false)
 	}
 	if item.Item.Kind == contracts.MuseItemKindAgentMessage || item.Item.Kind == contracts.MuseItemKindReasoning {
-		if finished && existing.persistedRevision >= item.Item.Revision {
+		if finished && existing.retainedRevision >= item.Item.Revision {
 			state.generation.Discard(item.Item.ID)
 			for _, scope := range existing.generationScopes {
 				state.generation.Discard(scope)
@@ -238,9 +302,12 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		}
 	}
 	if finished {
-		a.flushRetryNotices(state)
+		ready := a.flushRetryNotices(state)
+		if current && ready && item.Item.Status == contracts.MuseItemStatusCompleted && (item.Item.Kind == contracts.MuseItemKindAgentMessage || item.Item.Kind == contracts.MuseItemKindReasoning) {
+			state.retry.Resolve(state.sink)
+		}
 	}
-	if current && (item.Item.Kind == museItemSubagent || item.Item.Kind == contracts.MuseItemKindWorkflow || item.Item.Background) {
+	if current && museRegistryItem(item.Item) {
 		if err := a.observeChildOrTask(item, state, previous.Item); err != nil {
 			slog.Warn("publish Muse child metadata", "error", err)
 		}
@@ -271,8 +338,12 @@ func museSilentItem(item nativeItem) bool {
 
 func (a *Agent) persistItem(state *sessionState, item *itemState, closing bool) bool {
 	a.stateMu.Lock()
+	if len(item.raw) == 0 {
+		a.stateMu.Unlock()
+		return false
+	}
 	revision := item.params.Item.Revision
-	if item.persistedRevision >= revision {
+	if item.retainedRevision >= revision {
 		a.stateMu.Unlock()
 		return true
 	}
@@ -285,12 +356,23 @@ func (a *Agent) persistItem(state *sessionState, item *itemState, closing bool) 
 	}
 	source := leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
 	content := museItemMessageContent(raw, params)
+	content.WriteReceipt = agent.NewTranscriptWriteReceipt()
 	if err := state.sink.PersistMessage(source, content, span); err != nil {
 		slog.Warn("persist a Muse item", "item", params.Item.ID, "error", err)
-		return museWriteIsRetained(err)
+		if !agent.OutputRetained(err) {
+			return false
+		}
 	}
 	a.stateMu.Lock()
-	item.persistedRevision = max(item.persistedRevision, revision)
+	if revision >= item.retainedRevision {
+		item.retainedRevision = revision
+		if span.SpanID != "" {
+			item.retainedWriteReceipt = content.WriteReceipt
+			if publication, session, known := content.WriteReceipt.CapturedPublication(); known {
+				item.retainedPublication = &nativeToolPublication{publication: publication, sessionID: session}
+			}
+		}
+	}
 	a.stateMu.Unlock()
 	return true
 }
@@ -357,7 +439,7 @@ func (a *Agent) handleDelta(raw []byte, state *sessionState) {
 			scope = item.generationScopes[len(item.generationScopes)-1]
 		}
 	}
-	retired := state.retired
+	retired := !a.currentSessionState(delta.SessionID, state)
 	a.stateMu.Unlock()
 	switch kind {
 	case contracts.MuseItemKindAgentMessage, contracts.MuseItemKindReasoning:
@@ -419,24 +501,27 @@ func (a *Agent) finishTurn(raw []byte, id, turnID string) {
 	}
 	a.stateMu.Lock()
 	state := a.sessions[id]
-	if state == nil || turnID == "" || !state.completed[turnID] && state.turnID != turnID {
+	if state == nil || turnID == "" {
+		a.stateMu.Unlock()
+		return
+	}
+	completionState := state.completed[turnID]
+	if state.turnID != turnID && completionState != turnCompletionObserved && completionState != turnCompletionCaptured {
 		a.stateMu.Unlock()
 		return
 	}
 	root := id == a.sessionID
-	retiredRoot := !root && state.childID == ""
+	current := a.currentSessionState(id, state)
 	a.stateMu.Unlock()
 	state.retry.Reset()
 	if a.captureFinalization(state, id, turnID, raw, completion(frame.Params.Outcome)) == nil {
 		return
 	}
 	a.retryFinalizations(state)
+	if !current {
+		return
+	}
 	if root {
 		a.PublishTurnActive()
-	} else if !retiredRoot {
-		a.Mu.Lock()
-		seq := a.NextTurnSeq()
-		a.Mu.Unlock()
-		state.sink.SetTurnState(agent.TurnState{}, seq)
 	}
 }

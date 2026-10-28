@@ -2,6 +2,7 @@ package acp
 
 import (
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,11 +97,11 @@ func TestACPUnchangedOrFailedSessionReplacementKeepsChildIdentityRefusal(t *test
 			validateRefusalChild(&a.Base, "call-spawn", "native-new")
 			before := child.Messages()
 			_, err := a.ClearContext()
+			message := "current session ID"
 			if outcome == "failed replacement" {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
+				message = "Session creation refused."
 			}
+			require.ErrorContains(t, err, message)
 			assert.Equal(t, "session-1", a.CurrentSessionID())
 			assert.False(t, a.FeedChildUpdate("call-spawn", childRefusalPlan(t, "Still refused.")))
 			assert.Equal(t, before, child.Messages())
@@ -289,7 +290,7 @@ func TestACPClearContextReleasesTheOutgoingTurnBeforeTheNewSession(t *testing.T)
 func TestACPClearContextOfAnIdleSessionAnswersItsRequestsAndCancelsNothing(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
-	a.AttachChildSession("child-session", "call_child")
+	a.AttachChildSession(ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_child"})
 	a.HandleOutput(permissionRequest(t, 35, "child-session"))
 	require.Len(t, sink.PublishedControls(), 1)
 
@@ -329,7 +330,7 @@ func TestACPRefusesAControlRequestOfARetiredSession(t *testing.T) {
 func TestACPPublishesTheControlRequestsOfTheSessionsThatItServes(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
-	a.AttachChildSession("child-session", "call_child")
+	a.AttachChildSession(ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_child"})
 
 	a.HandleOutput(permissionRequest(t, 50, "session-1"))
 	a.HandleOutput(permissionRequest(t, 51, "child-session"))
@@ -352,7 +353,7 @@ func TestACPStoresAControlRequestOfTheMainSessionUnderThatSession(t *testing.T) 
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
 	sink.UpdateSessionID("session-0")
-	a.AttachChildSession("child-session", "call_child")
+	a.AttachChildSession(ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_child"})
 
 	a.HandleOutput(permissionRequest(t, 70, "session-1"))
 	a.HandleOutput(permissionRequest(t, 71, "child-session"))
@@ -409,7 +410,7 @@ func TestACPClearContextForgetsTheChildSessionsOfTheOutgoingSession(t *testing.T
 	a.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call_child", ChildAgentKey: "call_child", Title: "Child", Status: bgtask.StatusRunning,
 	})
-	a.AttachChildSession("child-session", "call_child")
+	a.AttachChildSession(ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_child"})
 	childIDs := sink.ChildAgentIDs()
 	require.Len(t, childIDs, 1)
 
@@ -506,7 +507,7 @@ func TestACPFailedClearContextRetiresNothing(t *testing.T) {
 
 // An agent that answers session/new with the id of the session that it already
 // runs still serves that session, so the clear retires nothing of it.
-func TestACPClearContextRetiresNoSessionThatTheAgentReopened(t *testing.T) {
+func TestACPClearContextRejectsARepeatedSessionIDBeforeCleanup(t *testing.T) {
 	t.Parallel()
 	a, requests := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
 		if method == MethodSessionNew {
@@ -519,16 +520,65 @@ func TestACPClearContextRetiresNoSessionThatTheAgentReopened(t *testing.T) {
 	a.SetClosesSessionsForTest(true)
 	var retired []string
 	a.hooks.RetireSession = func(sessionID string) { retired = append(retired, sessionID) }
-	a.AttachChildSession("child-session", "call_child")
+	providerCleared := false
+	a.hooks.ClearProviderState = func() { providerCleared = true }
+	a.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "call_child", ChildAgentKey: "call_child", Title: "Child", Status: bgtask.StatusRunning,
+	})
+	a.subagentPrompts.Remember("pending-spawn", "Keep this assignment.")
+	sink.UpsertGoal(agent.GoalUpdate{Status: agent.GoalStatusActive, Objective: "Keep the current objective."})
+	a.AttachChildSession(ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_child"})
 
 	sessionID, err := a.ClearContext()
-	require.NoError(t, err)
-	require.Equal(t, "session-1", sessionID)
+	require.ErrorContains(t, err, "current session ID")
+	require.Empty(t, sessionID)
+	assert.Equal(t, "session-1", a.CurrentSessionID())
 	syncTestPeer(t, a)
 
 	assert.Empty(t, sessionIDsOf(requests(), MethodSessionClose), "no close reaches the session that the agent serves")
 	assert.Empty(t, retired)
+	assert.False(t, providerCleared)
 	assert.True(t, a.ServesSession("child-session"))
+	assert.Equal(t, "Keep this assignment.", a.subagentPrompts.PeekForTest("pending-spawn"))
+	row, found := sink.BackgroundTask("call_child")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Zero(t, sink.GoalClears())
+	assert.Empty(t, sink.SessionIDs(), "rejected session creation publishes no replacement")
+}
+
+func TestACPClearContextRejectsAnotherObservedSessionID(t *testing.T) {
+	t.Parallel()
+	for _, previous := range []string{"retired root", "attached child"} {
+		t.Run(previous, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			a, _ := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
+				if method == MethodSessionNew {
+					id := "child-session"
+					if previous == "retired root" {
+						id = "session-1"
+						if calls.Add(1) == 1 {
+							id = "session-2"
+						}
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"` + id + `"}`)}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.sink = agent.NewProviderServices(&agenttest.ControlSink{})
+			if previous == "retired root" {
+				_, err := a.ClearContext()
+				require.NoError(t, err)
+			} else {
+				require.True(t, a.AttachChildSession(ChildSessionTarget{RootSessionID: "session-1", SessionID: "child-session", RowKey: "child-row"}))
+			}
+			before := a.CurrentSessionID()
+			_, err := a.ClearContext()
+			require.ErrorContains(t, err, "existing session ID")
+			assert.Equal(t, before, a.CurrentSessionID())
+		})
+	}
 }
 
 func TestACPAdvertisesSessionClose(t *testing.T) {
@@ -699,8 +749,8 @@ func TestACPClearContextEndsAChildThatTheRegistryResolved(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion)
 }
 
-// A row whose close failed stays open, so the next context clear closes it.
-func TestACPClearContextClosesARowWhoseCloseFailed(t *testing.T) {
+// A context clear preserves the native outcome already retained by the queue.
+func TestACPClearContextPreservesTheNativeOutcomeOfARetainedClose(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
 	probe := &registryProbeSink{ProviderServices: a.sink}
@@ -718,7 +768,7 @@ func TestACPClearContextClosesARowWhoseCloseFailed(t *testing.T) {
 
 	row, ok = sink.BackgroundTask("call_flaky")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusStopped, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 // A context clear closes a renamed row through its new key.
@@ -776,7 +826,7 @@ func TestACPStoresTheTextBeforeAControlRequest(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
 	a.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
-	a.AttachChildSession("child-session", "call-spawn")
+	a.AttachChildSession(ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 	var mainAtObserve, childAtObserve [][]string
 	a.hooks.ControlRequestObserver = func(*providerkit.ParsedLine) {
 		mainAtObserve = append(mainAtObserve, assembledTexts(t, sink.Messages()))

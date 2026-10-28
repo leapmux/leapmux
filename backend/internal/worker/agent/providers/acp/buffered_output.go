@@ -7,17 +7,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// enqueueTurnOutputCleanup keeps provider cleanup after every submitted output row.
-// A process exit drains all turns. An ordinary boundary preserves a queued agent turn.
-func (b *Base) enqueueTurnOutputCleanup(allTurns bool) {
-	b.Mu.Lock()
-	capture := b.hooks.CaptureTurnOutputCleanup
-	if capture == nil || (!allTurns && b.agentTurnQueued) {
-		b.Mu.Unlock()
-		return
-	}
-	cleanup := capture()
-	b.Mu.Unlock()
+// queueTurnOutputCleanup keeps the captured provider cleanup after its output.
+func (b *Base) queueTurnOutputCleanup(cleanup func()) {
 	if cleanup == nil {
 		return
 	}
@@ -78,9 +69,9 @@ func (b *Base) DiscardBufferedOutput(kinds ...agent.AssembledMessageKind) {
 // persistBufferedText writes nonempty segments without completing a scope that holds no text.
 func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agent.MessageCompletion) {
 	if turn.thoughtText != "" {
-		c.persistFinishedText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
+		c.persistFinishedTextTo(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
 	}
 	if turn.assistantText != "" {
-		c.persistFinishedText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
+		c.persistFinishedTextTo(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
 	}
 }

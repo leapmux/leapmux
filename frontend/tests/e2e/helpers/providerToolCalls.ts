@@ -17,6 +17,7 @@ import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
+import { MUSE_PARENT_INPUT } from '../../../src/generated/contracts/muse-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
@@ -40,6 +41,27 @@ import { quotePosixShellArgument } from './shellArguments'
 /** End a Muse workflow child's result contract through its native tool. */
 export function museSubmitResultToolCall(id: string, text: string): MockModelToolCall {
   return { id, name: MUSE_TOOL.SubmitResult, namespace: MUSE_TOOL_NAMESPACE, arguments: { text, notes: null } }
+}
+
+/** Start a Muse native child without a generated workflow. */
+export function museSpawnChildToolCall(id: string, commandId: string, objective: string): MockModelToolCall {
+  return { id, name: MUSE_TOOL.SubagentSpawn, namespace: MUSE_TOOL_NAMESPACE, arguments: {
+    command_id: commandId,
+    role: 'reviewer',
+    task_name: 'parent-input-proof',
+    objective,
+  } }
+}
+
+/** Deliver a model instruction through Muse's native parent tool. */
+export function museSendChildMessageToolCall(id: string, commandId: string, subagentId: string, message: string, mode: 'queue' | 'followup'): MockModelToolCall {
+  return { id, name: MUSE_PARENT_INPUT.Tool, namespace: MUSE_TOOL_NAMESPACE, arguments: {
+    command_id: commandId,
+    subagent_id: subagentId,
+    message,
+    mode,
+    interrupt: false,
+  } }
 }
 
 /**

@@ -69,7 +69,7 @@ func (r *processChangeRig) seedRunning() db.Agent {
 	r.t.Helper()
 	seedOpenAgent(r.t, r.svc, r.id, true)
 	row := requireAgentRow(r.t, r.svc, r.id)
-	r.registerProcess(context.Background(), agent.Options{AgentID: r.id, AgentProvider: r.provider, WorkingDir: row.WorkingDir}, r.svc.Output.NewSink(r.id, r.provider))
+	r.registerProcess(context.Background(), agent.Options{AgentID: r.id, AgentProvider: r.provider, WorkingDir: row.WorkingDir}, newTestRootOutputSink(r.t, r.svc.Output, r.id, r.provider))
 	return row
 }
 

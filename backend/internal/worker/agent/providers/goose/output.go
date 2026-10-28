@@ -181,10 +181,10 @@ func formatGooseCount(value float64) string {
 // runs and drops it when the result lands. Copilot's `progressMessage` takes that
 // route for the same reason. Persisting one would write a row per tick.
 //
-// `message` is an MCP log line about the running call, so it takes that tail too:
-// the row draws it while the call runs. A string `params.data` is the line, with
-// its level beside it when the level reads as a problem; any other value states
-// nothing a reader can use, so it is claimed and dropped.
+// `message` carries MCP log lines and structured child tool requests. Child
+// requests stay with the child handler. A string `params.data` is a log line,
+// with its level beside it when the level reports a problem. An unrelated
+// object supplies no readable log line, so it is claimed and dropped.
 //
 // `platform_event` is an extension announcing that something happened outside this
 // call -- an app created, a resource registered. That outlives the call, so it is a
@@ -214,6 +214,9 @@ func (a *Agent) observeGooseToolNotification(update acp.ToolCallUpdateEnvelope) 
 		a.Sink().ReportProgress(agent.OutputTailProgress(update.ToolCallID, line, false))
 		return true
 	case "message":
+		if isGooseSubagentToolRequest(meta.Params.Data) {
+			return false
+		}
 		data, ok := providerkit.RawString(meta.Params.Data)
 		if !ok || data == "" || update.ToolCallID == "" {
 			return true

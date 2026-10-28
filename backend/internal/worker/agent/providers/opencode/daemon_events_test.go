@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -201,38 +202,97 @@ func TestOpenCodeRetryLookupKeepsTheFinalRowAndCleanupBehindItsText(t *testing.T
 	t.Parallel()
 	a, sink, peer := newDaemonGenerationAgent(t)
 	peer.reply(`{"info":{"id":"message-1","sessionID":"test-session"},"parts":[{"id":"kept","type":"text","text":"clean"}]}`, http.StatusOK)
-	started, release := make(chan struct{}), make(chan struct{})
-	var startOnce, releaseOnce sync.Once
+	lookupStarted, releaseLookup := make(chan struct{}), make(chan struct{})
+	var startOnce sync.Once
+	resumeLookup := sync.OnceFunc(func() { close(releaseLookup) })
 	peer.beforeResponse = func(ctx context.Context) {
-		startOnce.Do(func() { close(started) })
+		startOnce.Do(func() { close(lookupStarted) })
 		select {
-		case <-release:
+		case <-releaseLookup:
 		case <-ctx.Done():
 		}
 	}
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	t.Cleanup(resumeLookup)
+	promptEnding, cleanupStarted := make(chan struct{}), make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	resumeCleanup := sync.OnceFunc(func() { close(releaseCleanup) })
+	t.Cleanup(resumeCleanup)
+	hooks := a.HooksForTest()
+	promptEnded := hooks.PromptEnded
+	hooks.PromptEnded = func(err error, stopped bool) acp.PromptEnding {
+		ending := promptEnded(err, stopped)
+		close(promptEnding)
+		return ending
+	}
+	captureCleanup := hooks.CaptureTurnOutputCleanup
+	hooks.CaptureTurnOutputCleanup = func() func() {
+		cleanup := captureCleanup()
+		return func() {
+			// The returned effect runs after ACP releases its update and turn locks.
+			close(cleanupStarted)
+			<-releaseCleanup
+			cleanup()
+		}
+	}
 	markDaemonRetry(t, a)
 	feedDaemonChunk(t, a, "agent_message_chunk", "message-1", "partial clean")
-	done := make(chan struct{})
-	go func() { a.PrepareSteer(); close(done) }()
+	textDone := make(chan struct{})
+	go func() { a.PrepareSteer(); close(textDone) }()
 	guard := testutil.DeadlineContext(t)
 	select {
-	case <-started:
+	case <-lookupStarted:
 	case <-guard.Done():
 		t.Fatal("the stored-message read did not start")
 	}
-	a.FinishPromptRequestForTest("test-session", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
-	assert.Empty(t, sink.Messages(), "the turn end must wait for the selected text")
-	feedDaemonEvent(t, a, "message.updated", map[string]any{"info": map[string]any{"id": "next-summary", "role": "assistant", "summary": true}})
-	releaseOnce.Do(func() { close(release) })
+	// PrepareSteer owns the session-update lock until its read finishes.
+	// The prompt callback waits for that lock, so the test must not wait for
+	// the callback before releasing the stored-message response.
+	promptDone := make(chan struct{})
+	go func() {
+		a.FinishPromptRequestForTest("test-session", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+		close(promptDone)
+	}()
 	select {
-	case <-done:
+	case <-promptEnding:
+	case <-guard.Done():
+		t.Fatal("the prompt callback did not start")
+	}
+	assert.Empty(t, sink.Messages(), "the turn end must wait for the selected text")
+	resumeLookup()
+	select {
+	case <-textDone:
 	case <-guard.Done():
 		t.Fatal("the selected text did not finish")
+	}
+	select {
+	case <-cleanupStarted:
+	case <-guard.Done():
+		t.Fatal("the cleanup effect did not start after the final row")
 	}
 	require.Len(t, sink.Messages(), 2)
 	assert.Equal(t, []string{"text:clean"}, daemonGenerationRows(sink))
 	assert.True(t, sink.Messages()[1].TurnEnd)
+	a.daemonMu.Lock()
+	oldBeforeCleanup := a.daemonMessages["message-1"]
+	a.daemonMu.Unlock()
+	assert.NotNil(t, oldBeforeCleanup, "the captured cleanup must still wait behind the final row")
+	feedDaemonEvent(t, a, "message.updated", map[string]any{"info": map[string]any{"id": "next-summary", "role": "assistant", "summary": true}})
+	a.daemonMu.Lock()
+	nextSummary := a.daemonMessages["next-summary"]
+	a.daemonMu.Unlock()
+	require.NotNil(t, nextSummary)
+	resumeCleanup()
+	select {
+	case <-promptDone:
+	case <-guard.Done():
+		t.Fatal("the prompt callback did not complete its captured cleanup")
+	}
+	a.daemonMu.Lock()
+	oldAfterCleanup := a.daemonMessages["message-1"]
+	nextAfterCleanup := a.daemonMessages["next-summary"]
+	a.daemonMu.Unlock()
+	assert.Nil(t, oldAfterCleanup, "the cleanup must remove its captured old message")
+	assert.Same(t, nextSummary, nextAfterCleanup, "the cleanup must retain the later message's exact identity")
 	feedDaemonChunk(t, a, "agent_message_chunk", "next-summary", "keep this summary hidden")
 	a.FlushBufferedOutput(agent.MessageCompletionComplete)
 	assert.Equal(t, []string{"text:clean"}, daemonGenerationRows(sink), "the old cleanup must retain later message identities")

@@ -72,7 +72,7 @@ func TestQwenForegroundSubagentLifecycle(t *testing.T) {
 	a.SetPromptActiveForTest(true)
 
 	a.HandleOutput(rawUpdate(t, foregroundSpawnFrames[0]))
-	row, ok := sink.BackgroundTask("call_32d1939343")
+	row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_32d1939343"))
 	require.True(t, ok, "the spawn opens a row at its first frame")
 	assert.Equal(t, "Subagent", row.Title, "the first frame states no arguments")
 	require.NotEmpty(t, row.ChildAgentID)
@@ -82,7 +82,7 @@ func TestQwenForegroundSubagentLifecycle(t *testing.T) {
 		a.HandleOutput(rawUpdate(t, update))
 	}
 
-	row, _ = sink.BackgroundTask("call_32d1939343")
+	row, _ = sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_32d1939343"))
 	assert.Equal(t, "Child probe", row.Title, "the progress frame gives the row its title")
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{"reasoning:Child thinking.", "text:Child will list.", "text:Child done: listed."}, childTexts(child))
@@ -112,7 +112,7 @@ func TestQwenFailedSpawnClosesItsRow(t *testing.T) {
 			a, sink, _ := newQwenAgent(t, nil, nil)
 			a.HandleOutput(rawUpdate(t, foregroundSpawnFrames[0]))
 			a.HandleOutput(sessionUpdate(t, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "call_32d1939343", "status": status}))
-			row, ok := sink.BackgroundTask("call_32d1939343")
+			row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_32d1939343"))
 			require.True(t, ok)
 			assert.Equal(t, want, row.Status)
 		})
@@ -124,7 +124,7 @@ func TestQwenForegroundChildStatusFollowsItsResult(t *testing.T) {
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.HandleOutput(rawUpdate(t, foregroundSpawnFrames[0]))
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_32d1939343","status":"completed","rawOutput":{"type":"task_execution","executionMode":"foreground","status":"failed","result":""}}`))
-	row, _ := sink.BackgroundTask("call_32d1939343")
+	row, _ := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_32d1939343"))
 	assert.Equal(t, bgtask.StatusFailed, row.Status, "a spawn call that completed can carry a child that failed")
 }
 
@@ -205,7 +205,7 @@ func TestQwenBackgroundSubagentStreamsItsTranscript(t *testing.T) {
 	testutil.WaitForTimer(t, ctx, trap)
 	<-read
 
-	row, ok := sink.BackgroundTask("call_686a7e3e21")
+	row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, row.Status, "a background child outlives its spawn call")
 	assert.Equal(t, "Running in the background", row.ActiveForm)
@@ -218,7 +218,7 @@ func TestQwenBackgroundSubagentStreamsItsTranscript(t *testing.T) {
 	appendRecords(t, path, backgroundRecords[3:]...)
 	a.HandleOutput(backgroundDone(t, "completed"))
 
-	row, _ = sink.BackgroundTask("call_686a7e3e21")
+	row, _ = sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"))
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{"reasoning:Child thinking.", "text:Child will list.", "text:Child done: listed."}, childTexts(child),
 		"the records written before the notice all reach the tab, the last ones by the final read")
@@ -253,10 +253,10 @@ func TestQwenBackgroundSpawnWithNoUsablePathStartsNoReader(t *testing.T) {
 	a.stateMu.Lock()
 	assert.Empty(t, a.children.tails, "a path outside a subagents directory is refused")
 	a.stateMu.Unlock()
-	row, _ := sink.BackgroundTask("call_686a7e3e21")
+	row, _ := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"))
 	assert.Equal(t, bgtask.StatusRunning, row.Status, "the row still follows the child")
 	a.HandleOutput(backgroundDone(t, "failed"))
-	row, _ = sink.BackgroundTask("call_686a7e3e21")
+	row, _ = sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"))
 	assert.Equal(t, bgtask.StatusFailed, row.Status)
 }
 
@@ -311,26 +311,31 @@ func TestQwenWorkflowRunKeepsARow(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_wf","status":"pending","title":"Workflow","kind":"other","rawInput":{"name":"triage"},"_meta":{"toolName":"workflow"}}`))
-	row, ok := sink.BackgroundTask("call_wf")
+	row, ok := sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.KindWorkflow, row.Kind)
 	assert.Equal(t, "triage", row.Title)
-	assert.Equal(t, "call_wf", row.GroupKey)
+	assert.Equal(t, qwenWorkflowRowKey(qwenTestSession, "call_wf"), row.GroupKey)
 	assert.Equal(t, "triage", row.GroupLabel)
 
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"in_progress"}`))
-	row, _ = sink.BackgroundTask("call_wf")
+	row, _ = sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
+	require.NotNil(t, poller)
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"completed"}`))
-	row, _ = sink.BackgroundTask("call_wf")
+	waitForQwenWorkflowStorage(t, a, poller)
+	row, _ = sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 func TestQwenWorkflowTitleFallsBack(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "scripts/check.js", workflowObservation("c", json.RawMessage(`{"scriptPath":"scripts/check.js"}`)).Title)
-	assert.Equal(t, "Workflow", workflowObservation("c", json.RawMessage(`{"script":"phase()"}`)).Title)
-	assert.Equal(t, "Workflow", workflowObservation("c", nil).Title)
+	assert.Equal(t, "scripts/check.js", workflowObservation(qwenTestSession, "c", json.RawMessage(`{"scriptPath":"scripts/check.js"}`)).Title)
+	assert.Equal(t, "Workflow", workflowObservation(qwenTestSession, "c", json.RawMessage(`{"script":"phase()"}`)).Title)
+	assert.Equal(t, "Workflow", workflowObservation(qwenTestSession, "c", nil).Title)
 }
 
 // Stop and Wait end every reader through stopAllBackgroundTranscripts. The
@@ -428,14 +433,14 @@ func taskCancels(requests []agenttest.RecordedRequest) []map[string]any {
 // Qwen stops one subagent, in the foreground or the background, through the
 // task cancel of its session. The task id is Qwen's own, and no frame of a
 // foreground spawn states it, so the stop reads it from Qwen's task list by the
-// tool call that spawned the subagent, which is the row key.
+// native tool call that spawned the subagent, after resolving its registry key.
 func TestQwenInterruptChildCancelsTheTaskOfTheSpawn(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":true,"status":"running"}`))
 	interrupter := childInterrupter(t, a)
 
-	require.NoError(t, interrupter.InterruptChild("call_1", agent.StopContext{}))
-	require.NoError(t, interrupter.InterruptChild("call_2", agent.StopContext{}))
+	require.NoError(t, interrupter.InterruptChild(qwenAgentRowKey(qwenTestSession, "call_1"), agent.StopContext{}))
+	require.NoError(t, interrupter.InterruptChild(qwenAgentRowKey(qwenTestSession, "call_2"), agent.StopContext{}))
 	syncPeer(t, a)
 
 	assert.Equal(t, []map[string]any{
@@ -453,23 +458,36 @@ func TestQwenInterruptChildOfAnEndedSubagentSendsNoCancel(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":false,"reason":"not_running","status":"completed"}`))
 
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_3", agent.StopContext{}))
+	require.NoError(t, childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_3"), agent.StopContext{}))
 	syncPeer(t, a)
 	assert.Empty(t, taskCancels(requests()), "a completed subagent takes no cancel")
 
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{}), "a subagent that ended before the cancel arrived needs no stop")
+	require.NoError(t, childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_1"), agent.StopContext{}), "a subagent that ended before the cancel arrived needs no stop")
 }
 
 func TestQwenInterruptChildOfAnUnknownSpawnFails(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":true}`))
 
-	err := childInterrupter(t, a).InterruptChild("call_unknown", agent.StopContext{})
+	err := childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_unknown"), agent.StopContext{})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "call_unknown")
+	assert.Contains(t, err.Error(), qwenAgentRowKey(qwenTestSession, "call_unknown"))
 	syncPeer(t, a)
 	assert.Empty(t, taskCancels(requests()))
+}
+
+func TestQwenInterruptChildRejectsAnEmptyRouteBeforeNativeReads(t *testing.T) {
+	t.Parallel()
+	const tasks = `[{"kind":"agent","id":"native-task-without-spawn","status":"running"}]`
+	a, _, requests := newQwenAgent(t, nil, qwenTaskResponder(tasks, `{"cancelled":true}`))
+
+	err := a.InterruptChild("", agent.StopContext{})
+
+	assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
+	syncPeer(t, a)
+	assert.Empty(t, requestsFor(requests(), qwenTaskListMethod), "an absent route cannot identify a native session task")
+	assert.Empty(t, taskCancels(requests()), "a task without a tool-use ID must not match an absent route")
 }
 
 func TestQwenInterruptChildReportsAFailedTaskList(t *testing.T) {
@@ -481,7 +499,7 @@ func TestQwenInterruptChildReportsAFailedTaskList(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 
-	require.Error(t, childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{}))
+	require.Error(t, childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_1"), agent.StopContext{}))
 }
 
 // A context clear stops the background work of the outgoing session: Qwen's
@@ -549,13 +567,13 @@ func TestQwenCompletedSpawnWithNoResultReportsItsContent(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.HandleOutput(rawUpdate(t, foregroundSpawnFrames[0]))
-	row, ok := sink.BackgroundTask("call_32d1939343")
+	row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_32d1939343"))
 	require.True(t, ok)
 	child := sink.Child(row.ChildAgentID)
 
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_32d1939343","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Plain answer."}}]}`))
 
-	row, _ = sink.BackgroundTask("call_32d1939343")
+	row, _ = sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_32d1939343"))
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{"Plain answer."}, reportTexts(child))
 }
@@ -572,7 +590,7 @@ func TestQwenFailedBackgroundLaunchClosesTheRow(t *testing.T) {
 		"rawOutput": map[string]any{"type": "task_execution", "executionMode": "background", "status": "background"},
 	}))
 
-	row, ok := sink.BackgroundTask("call_686a7e3e21")
+	row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusFailed, row.Status)
 	a.stateMu.Lock()
@@ -599,7 +617,7 @@ func TestQwenRepeatedBackgroundLaunchKeepsOneReader(t *testing.T) {
 	assert.Len(t, a.children.tails, 1)
 	assert.Same(t, first, a.children.tails["call_686a7e3e21"], "the running reader stays")
 	a.stateMu.Unlock()
-	row, _ := sink.BackgroundTask("call_686a7e3e21")
+	row, _ := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"))
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 }
 
@@ -633,9 +651,22 @@ func TestQwenWorkflowRunThatFailsClosesItsRow(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_wf","status":"pending","title":"Workflow","kind":"other","rawInput":{"name":"triage"},"_meta":{"toolName":"workflow"}}`))
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
+	require.NotNil(t, poller)
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"failed"}`))
+	waitForQwenWorkflowStorage(t, a, poller)
+	// The final workflow read owns sessionMu until it releases its snapshot.
+	// Reader retirement clears workflowReader only after that lease and flush.
+	testutil.RequireEventually(t, func() bool {
+		a.stateMu.Lock()
+		defer a.stateMu.Unlock()
+		return a.workflowReader == nil
+	})
+	a.FlushRegistryObservations()
 
-	row, ok := sink.BackgroundTask("call_wf")
+	row, ok := sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusFailed, row.Status)
 }
@@ -649,7 +680,7 @@ func TestQwenInterruptChildReportsAnUnreadableTaskList(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 
-	err := childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{})
+	err := childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_1"), agent.StopContext{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "task list")
@@ -669,7 +700,7 @@ func TestQwenInterruptChildReportsAFailedCancel(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 
-	err := childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{})
+	err := childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_1"), agent.StopContext{})
 
 	require.Error(t, err, "a cancel that Qwen could not run is a failed stop")
 	assert.Contains(t, err.Error(), "stop the Qwen subagent")
@@ -759,7 +790,7 @@ func TestQwenStoppedForegroundChildClosesAsStopped(t *testing.T) {
 			})
 			openForegroundSpawn(t, a, "call_1")
 			if tc.stop != nil {
-				err := childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{})
+				err := childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_1"), agent.StopContext{})
 				if tc.stopErr {
 					require.Error(t, err)
 				} else {
@@ -769,7 +800,7 @@ func TestQwenStoppedForegroundChildClosesAsStopped(t *testing.T) {
 
 			a.HandleOutput(abortedForegroundResult(t, "call_1"))
 
-			row, ok := sink.BackgroundTask("call_1")
+			row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_1"))
 			require.True(t, ok)
 			assert.Equal(t, tc.want, row.Status)
 		})
@@ -783,14 +814,14 @@ func TestQwenStopOfAChildChangesNoOtherVerdict(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":true,"status":"running"}`))
 	openForegroundSpawn(t, a, "call_1")
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{}))
+	require.NoError(t, childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_1"), agent.StopContext{}))
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_1","status":"completed","rawOutput":{"type":"task_execution","executionMode":"foreground","status":"completed","result":"Done."}}`))
-	row, _ := sink.BackgroundTask("call_1")
+	row, _ := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_1"))
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "the work finished before the stop")
 
 	openForegroundSpawn(t, a, "call_9")
 	a.HandleOutput(abortedForegroundResult(t, "call_9"))
-	row, _ = sink.BackgroundTask("call_9")
+	row, _ = sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_9"))
 	assert.Equal(t, bgtask.StatusFailed, row.Status, "nobody stopped this subagent")
 
 	a.stateMu.Lock()
@@ -809,11 +840,11 @@ func TestQwenStoppedBackgroundChildClosesAsInterrupted(t *testing.T) {
 	// A path outside a subagents directory starts no reader, and the row still
 	// follows the child: the subject here is the row's end alone.
 	a.HandleOutput(backgroundLaunchResult(t, "/etc/passwd.jsonl"))
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_686a7e3e21", agent.StopContext{}))
+	require.NoError(t, childInterrupter(t, a).InterruptChild(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"), agent.StopContext{}))
 
 	a.HandleOutput(backgroundDone(t, "failed"))
 
-	row, ok := sink.BackgroundTask("call_686a7e3e21")
+	row, ok := sink.BackgroundTask(qwenAgentRowKey(qwenTestSession, "call_686a7e3e21"))
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
 }
@@ -916,7 +947,7 @@ func TestQwenChildTranscriptBindsTheNativeParentBeforeItsFirstRow(t *testing.T) 
 			t.Parallel()
 			a, sink := nativeChildSessionAgent(t)
 			nativeChildSessionUpdate(t, a, nativeChildSpawn("initial-child", "Run the native child task.", "", background))
-			row, found := sink.BackgroundTask("initial-child")
+			row, found := sink.BackgroundTask(qwenAgentRowKey(qwenInitialChildSession, "initial-child"))
 			require.True(t, found)
 			require.NotEmpty(t, row.ChildAgentID)
 			child := sink.Child(row.ChildAgentID)
@@ -935,7 +966,7 @@ func TestQwenChildTranscriptBindsTheNativeParentBeforeItsFirstRow(t *testing.T) 
 			if background {
 				data, err := json.Marshal(update)
 				require.NoError(t, err)
-				require.True(t, a.FeedChildUpdate("initial-child", data))
+				require.True(t, a.FeedChildUpdate(qwenAgentRowKey(qwenInitialChildSession, "initial-child"), data))
 			} else {
 				update["_meta"] = map[string]any{"toolName": "run_shell_command", "provenance": "subagent", "parentToolCallId": "initial-child"}
 				nativeChildSessionUpdate(t, a, update)
@@ -952,11 +983,11 @@ func TestQwenChildMessagesUseTheirResolvedDelegate(t *testing.T) {
 	t.Parallel()
 	a, sink := nativeChildSessionAgent(t)
 	nativeChildSessionUpdate(t, a, nativeChildSpawn("direct-child", "Direct child prompt.", "", false))
-	childRow, found := sink.BackgroundTask("direct-child")
+	childRow, found := sink.BackgroundTask(qwenAgentRowKey(qwenInitialChildSession, "direct-child"))
 	require.True(t, found)
 	child := sink.Child(childRow.ChildAgentID)
 	nativeChildSessionUpdate(t, a, nativeChildSpawn("nested-child", "Nested child prompt.", "direct-child", false))
-	nestedRow, found := child.BackgroundTask("nested-child")
+	nestedRow, found := child.BackgroundTask(qwenAgentRowKey(qwenInitialChildSession, "nested-child"))
 	require.True(t, found, "the actual child delegate must create its direct nested child")
 	nested := child.Child(nestedRow.ChildAgentID)
 	for _, target := range []struct {
@@ -997,7 +1028,7 @@ func TestQwenChildMessagesUseTheirResolvedDelegate(t *testing.T) {
 	}
 	spawn, err := agent.NewProviderServices(child).ChildSpawnSpan(nestedRow.ChildAgentID)
 	require.NoError(t, err)
-	assert.Equal(t, "nested-child", spawn)
+	assert.Equal(t, qwenAgentRowKey(qwenInitialChildSession, "nested-child"), spawn)
 	foreignSpawn, err := agent.NewProviderServices(sink).ChildSpawnSpan(nestedRow.ChildAgentID)
 	require.NoError(t, err)
 	assert.Empty(t, foreignSpawn, "the root is not the nested child's direct parent")

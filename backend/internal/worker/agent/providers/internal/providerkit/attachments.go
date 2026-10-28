@@ -3,6 +3,7 @@ package providerkit
 import (
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -13,6 +14,15 @@ import (
 // EncodeDataURI builds a data URI from a MIME type and raw bytes.
 func EncodeDataURI(mime string, data []byte) string {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// ValidateAudioAttachment checks nonempty bytes and the provider's accepted
+// media types. The caller selects audio and supplies its diagnostic description.
+func ValidateAudioAttachment(attachment agent.ClassifiedAttachment, description string, allowedMIMEs []string) error {
+	if len(attachment.Data) == 0 || !slices.Contains(allowedMIMEs, attachment.MIMEType) {
+		return fmt.Errorf("cannot send %s %q with media type %s", description, attachment.Filename, attachment.MIMEType)
+	}
+	return nil
 }
 
 // ValidateAudioAttachments checks each audio attachment through the provider's

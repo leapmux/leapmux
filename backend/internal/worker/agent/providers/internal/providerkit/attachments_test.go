@@ -120,3 +120,32 @@ func TestValidateAudioAttachments(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestValidateAudioAttachment(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		mime    string
+		allowed []string
+		valid   bool
+	}{
+		{name: "accepted bytes", data: []byte{0, 255}, mime: "audio/wav", allowed: []string{"audio/ogg", "audio/wav"}, valid: true},
+		{name: "absent bytes", mime: "audio/wav", allowed: []string{"audio/wav"}},
+		{name: "empty bytes", data: []byte{}, mime: "audio/wav", allowed: []string{"audio/wav"}},
+		{name: "unsupported media type", data: []byte{0}, mime: "audio/flac", allowed: []string{"audio/wav"}},
+		{name: "absent media type", data: []byte{0}, allowed: []string{"audio/wav"}},
+		{name: "absent policy", data: []byte{0}, mime: "audio/wav"},
+		{name: "empty policy", data: []byte{0}, mime: "audio/wav", allowed: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateAudioAttachment(agent.ClassifiedAttachment{Filename: "voice.wav", MIMEType: tc.mime, Data: tc.data}, "Test Agent audio attachment", tc.allowed)
+			if tc.valid {
+				assert.NoError(t, err)
+			} else {
+				assert.EqualError(t, err, `cannot send Test Agent audio attachment "voice.wav" with media type `+tc.mime)
+			}
+		})
+	}
+}

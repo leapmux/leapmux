@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -19,7 +20,13 @@ import (
 
 const familyAudioCatalog = `{"all":[{"id":"private","models":{"voice":{"id":"voice","providerID":"private","api":{"id":"gemini","npm":"@ai-sdk/google"},"capabilities":{"input":{"audio":true}}},"text":{"id":"text","providerID":"private","api":{"id":"text","npm":"@ai-sdk/google"},"capabilities":{"input":{"audio":false}}}}}]}`
 
-func newFamilyAudioAgent(t *testing.T, status int, catalog string) (*Agent, func() []agenttest.RecordedRequest, *atomic.Int64) {
+type familyAudioAgentConfig struct {
+	status     int
+	catalog    string
+	childModel string
+}
+
+func newFamilyAudioAgent(t *testing.T, config familyAudioAgentConfig) (*Agent, func() []agenttest.RecordedRequest, *atomic.Int64) {
 	t.Helper()
 	calls := &atomic.Int64{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,12 +34,17 @@ func newFamilyAudioAgent(t *testing.T, status int, catalog string) (*Agent, func
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "/provider", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, err := w.Write([]byte(catalog))
+		w.WriteHeader(config.status)
+		_, err := w.Write([]byte(config.catalog))
 		assert.NoError(t, err)
 	}))
 	t.Cleanup(server.Close)
-	a, requests := acptest.NewAgentForRPCWithResponder(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base }, func(string) agenttest.RPCReply {
+	childReply, err := json.Marshal(map[string]any{"models": map[string]string{"currentModelId": config.childModel}})
+	require.NoError(t, err)
+	a, requests := acptest.NewAgentForRPCWithResponder(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base }, func(method string) agenttest.RPCReply {
+		if method == acp.MethodSessionLoad {
+			return agenttest.RPCReply{Result: childReply}
+		}
 		return agenttest.RPCReply{Result: json.RawMessage(`{"stopReason":"end_turn"}`)}
 	})
 	services := agent.NewProviderServices(&agenttest.Sink{})
@@ -76,7 +88,7 @@ func TestFamilyAudioRequiresTheSelectedModelAndGoogleAdapter(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			a, requests, calls := newFamilyAudioAgent(t, tc.status, tc.catalog)
+			a, requests, calls := newFamilyAudioAgent(t, familyAudioAgentConfig{status: tc.status, catalog: tc.catalog})
 			err := a.SendInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
 			if tc.accepts {
 				require.NoError(t, err)
@@ -103,13 +115,15 @@ func TestFamilyAudioChildUsesItsLoadedModelAndKeepsTheParentRunning(t *testing.T
 	for _, childAccepts := range []bool{false, true} {
 		t.Run(map[bool]string{false: "child refuses", true: "child accepts"}[childAccepts], func(t *testing.T) {
 			t.Parallel()
-			a, requests, _ := newFamilyAudioAgent(t, http.StatusOK, familyAudioCatalog)
 			root, child := "private/voice", "private/text"
 			if childAccepts {
 				root, child = child, root
 			}
+			a, requests, _ := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusOK, catalog: familyAudioCatalog, childModel: child})
 			a.SetCurrentModel(root)
-			a.childSessions = map[string]*openCodeChildSession{"task": {id: "child-session", loaded: true, modelID: child}}
+			a.HandleToolCallForTest(openCodeTaskRequest(t, "task", "", "Listen to the recording."))
+			a.handleDaemonEvent(taskPartEvent(t, a.CurrentSessionID(), "task", "task", "running", "child-session"))
+			testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("task").Steerable })
 			require.True(t, a.BeginAgentTurn())
 			err := a.SteerChildInput("task", "", []*leapmuxv1.Attachment{{Filename: "voice.flac", MimeType: "audio/flac", Data: []byte{0, 255, 1}}})
 			prompts := audioPromptRequests(t, a, requests)
@@ -129,7 +143,7 @@ func TestFamilyAudioChildUsesItsLoadedModelAndKeepsTheParentRunning(t *testing.T
 
 func TestFamilyPlainPromptDoesNotQueryTheAudioCatalog(t *testing.T) {
 	t.Parallel()
-	a, requests, calls := newFamilyAudioAgent(t, http.StatusServiceUnavailable, `{}`)
+	a, requests, calls := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusServiceUnavailable, catalog: `{}`})
 	require.NoError(t, a.SendInput("plain", nil))
 	require.Len(t, audioPromptRequests(t, a, requests), 1)
 	assert.Zero(t, calls.Load())
@@ -137,7 +151,7 @@ func TestFamilyPlainPromptDoesNotQueryTheAudioCatalog(t *testing.T) {
 
 func TestFamilyAudioRefusalAllowsARecordingRetryAfterTheModelChanges(t *testing.T) {
 	t.Parallel()
-	a, requests, calls := newFamilyAudioAgent(t, http.StatusOK, familyAudioCatalog)
+	a, requests, calls := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusOK, catalog: familyAudioCatalog})
 	a.SetCurrentModel("private/text")
 	attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}}
 	require.ErrorContains(t, a.SendInput("listen", attachments), "does not accept audio attachments")
@@ -151,7 +165,7 @@ func TestFamilyAudioRefusalAllowsARecordingRetryAfterTheModelChanges(t *testing.
 
 func TestFamilyAudioSteerRefusalKeepsTheParentTurnActive(t *testing.T) {
 	t.Parallel()
-	a, requests, _ := newFamilyAudioAgent(t, http.StatusOK, familyAudioCatalog)
+	a, requests, _ := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusOK, catalog: familyAudioCatalog})
 	a.SetCurrentModel("private/text")
 	require.True(t, a.BeginAgentTurn())
 	require.ErrorContains(t, a.SteerInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}), "does not accept audio attachments")

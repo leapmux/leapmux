@@ -79,10 +79,6 @@ async function handleGoogleRequest(request: IncomingMessage, response: ServerRes
   await writeGoogleResponse(response, operation === 'streamGenerateContent', model, step, answer.stream(response, request))
 }
 
-function googleToolParts(step: MockModelStep): Record<string, unknown>[] {
-  return step.toolCalls?.map(tool => ({ functionCall: { id: tool.id, name: tool.name, args: tool.arguments ?? {} } })) ?? []
-}
-
 function googleUsage(step: MockModelStep) {
   const input = step.usage?.inputTokens ?? 1
   const output = step.usage?.outputTokens ?? 1
@@ -98,7 +94,7 @@ function googleResponse(model: string, parts: Record<string, unknown>[], step?: 
 }
 
 async function writeGoogleResponse(response: ServerResponse, streaming: boolean, model: string, step: MockModelStep, stream: ModelStream): Promise<void> {
-  const tools = googleToolParts(step)
+  const tools = step.toolCalls?.map(tool => ({ functionCall: { id: tool.id, name: tool.name, args: tool.arguments ?? {} } })) ?? []
   if (!streaming) {
     if (!await bufferModelOutput(stream, step))
       return

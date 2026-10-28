@@ -275,13 +275,15 @@ func (b *Base) HandleUpdateForTest(update json.RawMessage) {
 	b.handleACPUpdate(update)
 }
 
-// HandleToolCallForTest handles a tool_call update, as the reader does.
+// HandleToolCallForTest handles a tool_call and flushes retained registry effects, as the reader does.
 func (b *Base) HandleToolCallForTest(update json.RawMessage) {
+	defer b.FlushRegistryObservations()
 	b.main().handleToolCall(update)
 }
 
-// HandleToolCallUpdateForTest handles a tool_call_update, as the reader does.
+// HandleToolCallUpdateForTest handles a tool_call_update and flushes retained registry effects, as the reader does.
 func (b *Base) HandleToolCallUpdateForTest(update json.RawMessage) {
+	defer b.FlushRegistryObservations()
 	b.main().handleToolCallUpdate(update)
 }
 

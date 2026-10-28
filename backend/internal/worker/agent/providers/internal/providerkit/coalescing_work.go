@@ -37,16 +37,16 @@ func (r *CoalescingWork) InFlight() map[string]bool {
 
 // Run starts work for key, or marks the in-flight run to repeat once more.
 // Calls for one key must use the same operation and read its current state.
-func (r *CoalescingWork) Run(key string, work func()) {
+func (r *CoalescingWork) Run(key string, work func()) bool {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	if _, running := r.pending[key]; running {
 		r.pending[key] = true
 		r.mu.Unlock()
-		return
+		return true
 	}
 	if r.pending == nil {
 		r.pending = make(map[string]bool)
@@ -68,6 +68,7 @@ func (r *CoalescingWork) Run(key string, work func()) {
 			r.mu.Unlock()
 		}
 	}()
+	return true
 }
 
 // CloseAndWait refuses new work and joins every admitted operation. An active
