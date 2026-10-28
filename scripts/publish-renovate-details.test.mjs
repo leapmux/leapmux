@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'bun:test'
 import { githubRequest, migratePullRequest, publishCapturedDetails, publishRecord } from './publish-renovate-details.mjs'
+import { renovateModule } from './renovate-engine.mjs'
 import { COMMENT_MARKER } from './renovate-pr-details.mjs'
 
 const bot = 'leapmux-renovate[bot]'
+const { init } = await renovateModule('logger/index.js')
+await init()
+const { sanitizeMarkdown } = await renovateModule('util/markdown.js')
+const { getChangelogs } = await renovateModule('workers/repository/update/pr/body/changelogs.js')
 const root = '/repos/leapmux/leapmux'
 const template = '## Motivation\n\n- Update dependencies.\n\n## Modifications\n\n{{{table}}}\n\n## Result\n\n- Review and CI remain required.'
 function record() {
@@ -45,6 +50,31 @@ function fixture(actor = bot) {
 }
 
 describe('managed Renovate detail comments', () => {
+  it('preserves already sanitized native release notes and sanitizes fresh warnings and notes once', async () => {
+    const state = fixture()
+    const changelogs = getChangelogs({ hasReleaseNotes: true, upgrades: [{ hasReleaseNotes: true, repoName: 'connectrpc/connect-go', depName: 'connectrpc.com/connect', releases: [{ version: '2.0.0', releaseNotes: { url: 'https://github.com/connectrpc/connect-go/releases/tag/v2.0.0', body: 'Fix a race by [@emcfarlane](https://github.com/emcfarlane) in [#1036](https://github.com/connectrpc/connect-go/pull/1036).' } }] }] })
+    expect(changelogs).toContain('[@&#8203;emcfarlane]')
+    expect(changelogs).toContain('[#&#8203;1036]')
+    await publishRecord({ ...record(), warnings: 'Ask @octocat.', notes: 'See #123.', changelogs }, state.pr, template, { api: state.api, sanitize: sanitizeMarkdown })
+    const body = state.comments.find(comment => comment.user.login === bot).body
+    expect(body).toContain(changelogs.trim())
+    expect(body).toContain('@&#8203;octocat')
+    expect(body).toContain('#&#8203;123')
+    expect(body).not.toContain('&#&#8203;')
+  })
+  it('restores numeric HTML entities that the native sanitizer mistakes for issue references', async () => {
+    const state = fixture()
+    const changelogs = getChangelogs({ hasReleaseNotes: true, upgrades: [{ hasReleaseNotes: true, repoName: 'fixture/library', depName: 'fixture', releases: [{ version: '2.0.0', releaseNotes: { url: 'https://github.com/fixture/library/releases/tag/v2.0.0', body: 'End reason &#39;failed&#39;. Code: `&#39;`. Hex: &#x27;. Thanks @octocat in #123.' } }] }] })
+    expect(changelogs).toContain('&#&#8203;39;')
+    await publishRecord({ ...record(), warnings: 'Copyright &#169;.', notes: 'Quote &#34;text&#34;.', changelogs }, state.pr, template, { api: state.api, sanitize: sanitizeMarkdown })
+    const body = state.comments.find(comment => comment.user.login === bot).body
+    expect(body).toContain('End reason &#39;failed&#39;. Code: `&#39;`. Hex: &#x27;.')
+    expect(body).toContain('Copyright &#169;.')
+    expect(body).toContain('Quote &#34;text&#34;.')
+    expect(body).toContain('@&#8203;octocat')
+    expect(body).toContain('#&#8203;123')
+    expect(body).not.toContain('&#&#8203;')
+  })
   it('publishes complete details before cleaning the body and never edits human comments', async () => {
     const state = fixture()
     const data = record()

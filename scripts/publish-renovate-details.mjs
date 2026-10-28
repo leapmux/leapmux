@@ -6,7 +6,7 @@ import { resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { renovateModule } from './renovate-engine.mjs'
-import { COMMENT_MARKER, DETAIL_FIELDS, partitionLegacyBody, renderDetailComments, validateDetailRecord } from './renovate-pr-details.mjs'
+import { COMMENT_MARKER, partitionLegacyBody, renderDetailComments, validateDetailRecord } from './renovate-pr-details.mjs'
 
 const repositoryPath = '/repos/leapmux/leapmux'
 const botLogin = 'leapmux-renovate[bot]'
@@ -80,11 +80,17 @@ export async function updateDetailComments(pr, bodies, { api = githubRequest, ac
   return urls
 }
 
+function restoreNumericEntities(text) {
+  // Renovate treats the # in a decimal HTML entity as an issue reference.
+  return text.replace(/&#&#8203;(?=\d+;)/g, '&#')
+}
+
 export async function publishRecord(record, pr, template, { api = githubRequest, actorLogin = botLogin, sanitize = text => text } = {}) {
   validateDetailRecord(record)
   requireBotPullRequest(pr, record.branchName)
   const partition = partitionLegacyBody(pr.body, template)
-  const clean = { ...record, ...Object.fromEntries(DETAIL_FIELDS.map(field => [field, sanitize(record[field])])) }
+  // The native changelog renderer already suppresses mentions. A second pass corrupts its HTML entities.
+  const clean = { ...record, warnings: restoreNumericEntities(sanitize(record.warnings)), notes: restoreNumericEntities(sanitize(record.notes)), changelogs: restoreNumericEntities(record.changelogs) }
   // Confirm all comments before removing any details from an existing description.
   const comments = await updateDetailComments(pr.number, renderDetailComments(clean), { api, actorLogin })
   if (pr.body.trim() !== partition.body.trim()) {

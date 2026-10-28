@@ -555,6 +555,8 @@ PR descriptions contain only `Motivation`, `Modifications`, and `Result`, includ
 Warnings, security advisories, and release notes go into managed PR comments.
 The trusted renderer captures those fragments before GitHub truncates the description.
 Long details use numbered comment parts so the full text remains available.
+Each part closes its code fences and collapsed sections.
+An oversized collapsed section repeats its summary in each continuation comment.
 Later runs update the same bot-owned parts and leave human comments unchanged.
 The native renderer contract is tested before installation tokens are minted.
 `task publish-renovate-details -- --dry-run` previews captured records without publishing them.

@@ -52,48 +52,138 @@ export function configureDetailsCapture(trusted, template, { write = record => a
   }
 }
 
-/** Split without losing UTF-8 text, and keep fenced examples readable across comments. */
+function findDetailMarkup(text) {
+  // Use Markdown source positions so examples and HTML comments cannot change the container stack.
+  const { remark } = requireRenovate('remark')
+  const tags = []
+  const spans = []
+  const visit = (node) => {
+    const start = node.position.start.offset
+    const end = node.position.end.offset
+    if (node.type === 'html') {
+      const source = text.slice(start, end)
+      for (const match of source.matchAll(/<!--[\s\S]*?(?:-->|$)|<\/?([a-z][\w-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
+        if (['details', 'summary'].includes(match[1]?.toLowerCase()))
+          tags.push({ start: start + match.index, end: start + match.index + match[0].length, kind: match[1].toLowerCase(), opening: !match[0].startsWith('</') })
+      }
+    }
+    else if (node.type === 'code') {
+      const source = text.slice(start, end)
+      const marker = /^ {0,3}(`{3,}|~{3,})/.exec(source)?.[1]
+      if (marker) {
+        const newline = source.indexOf('\n')
+        const openingEnd = newline < 0 ? source.length : newline + 1
+        const firstLine = source.slice(0, openingEnd).trimEnd()
+        spans.push({ start, end: start + openingEnd, kind: 'fence', opening: true, prefix: `${firstLine}\n`, suffix: `\n${marker}` })
+        const last = /(?:^|\n) {0,3}(`{3,}|~{3,})[ \t]*$/.exec(source)
+        if (last && last.index >= firstLine.length && last[1][0] === marker[0] && last[1].length >= marker.length)
+          spans.push({ start: start + last.index + (source[last.index] === '\n' ? 1 : 0), end, kind: 'fence', opening: false })
+      }
+    }
+    for (const child of node.children ?? []) visit(child)
+  }
+  visit(remark().parse(text))
+  for (let index = 0; index < tags.length; index++) {
+    const tag = tags[index]
+    if (tag.kind !== 'details')
+      continue
+    if (tag.opening) {
+      const summary = tags[index + 1]
+      let end = tag.end
+      if (summary?.kind === 'summary' && summary.opening && !text.slice(tag.end, summary.start).trim()) {
+        const closing = tags[index + 2]
+        if (closing?.kind !== 'summary' || closing.opening)
+          throw new Error('PR detail markup contains an incomplete summary.')
+        end = closing.end
+        index += 2
+      }
+      const header = text.slice(tag.start, end)
+      const fallbackSummary = end === tag.end ? '\n<summary>More information</summary>' : ''
+      spans.push({ ...tag, end, prefix: `${header}${fallbackSummary}\n\n`, suffix: '\n\n</details>' })
+    }
+    else {
+      spans.push(tag)
+    }
+  }
+  spans.sort((a, b) => a.start - b.start)
+  const stack = []
+  for (const [index, span] of spans.entries()) {
+    if (span.opening) {
+      stack.push(index)
+    }
+    else {
+      const opening = spans[stack.pop()]
+      if (opening?.kind !== span.kind)
+        throw new Error('PR detail markup contains an unmatched closing tag.')
+      opening.closingIndex = index
+    }
+  }
+  return spans
+}
+
+/** Split losslessly, and close and reopen Markdown containers within each comment's byte limit. */
 export function splitDetailText(text, limit = 46000) {
   if (typeof text !== 'string' || !Number.isSafeInteger(limit) || limit < 100 || limit > 46000)
     throw new Error('Comment chunks require text and a byte limit from 100 through 46000.')
   const chunks = []
+  const spans = findDetailMarkup(text)
+  let containers = []
   let raw = ''
-  let fence = null
-  let openingFence = null
+  let rawBytes = 0
+  let prefix = ''
+  const opening = () => containers.map(container => container.prefix).join('')
+  const closing = (values = containers) => values.toReversed().map(container => container.suffix).join('')
   const flush = () => {
     if (!raw)
       return
-    chunks.push({ raw, openingFence: openingFence?.line ?? '', closingFence: fence?.marker ?? '' })
+    chunks.push({ raw, prefix, suffix: closing() })
     raw = ''
-    openingFence = fence
+    rawBytes = 0
+    prefix = opening()
   }
-  for (const line of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
-    let remainder = line
-    if (raw && Buffer.byteLength(raw + remainder) > limit)
+  const fits = (value, next = containers) => Buffer.byteLength(prefix) + rawBytes + Buffer.byteLength(value) + Buffer.byteLength(closing(next)) <= limit
+  const appendMarkup = (value, next) => {
+    if (!fits(value, next))
       flush()
-    while (Buffer.byteLength(remainder) > limit) {
-      let count = 0
-      let end = 0
-      for (const character of remainder) {
-        const size = Buffer.byteLength(character)
-        if (count + size > limit)
-          break
-        count += size
-        end += character.length
+    if (!fits(value, next))
+      throw new Error('PR detail markup cannot fit in one comment without losing text.')
+    raw += value
+    rawBytes += Buffer.byteLength(value)
+    containers = next
+  }
+  const appendText = (value) => {
+    for (const line of value.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+      if (raw && !fits(line))
+        flush()
+      for (const character of line) {
+        if (!fits(character))
+          flush()
+        if (!fits(character))
+          throw new Error('PR detail markup leaves no room for the next text character.')
+        raw += character
+        rawBytes += Buffer.byteLength(character)
       }
-      raw += remainder.slice(0, end)
-      remainder = remainder.slice(end)
-      flush()
-    }
-    raw += remainder
-    const match = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)/.exec(line)
-    if (match) {
-      if (!fence)
-        fence = { marker: match[1], line: line.trimEnd() }
-      else if (match[1][0] === fence.marker[0] && match[1].length >= fence.marker.length && !match[2].trim())
-        fence = null
     }
   }
+  let position = 0
+  for (let index = 0; index < spans.length; index++) {
+    const span = spans[index]
+    appendText(text.slice(position, span.start))
+    if (span.opening && span.closingIndex !== undefined) {
+      const end = spans[span.closingIndex].end
+      const complete = text.slice(span.start, end)
+      // Keep a complete section or example intact when it fits in a fresh comment.
+      if (fits(complete) || Buffer.byteLength(opening()) + Buffer.byteLength(complete) + Buffer.byteLength(closing()) <= limit) {
+        appendMarkup(complete, containers)
+        position = end
+        index = span.closingIndex
+        continue
+      }
+    }
+    appendMarkup(text.slice(span.start, span.end), span.opening ? [...containers, span] : containers.slice(0, -1))
+    position = span.end
+  }
+  appendText(text.slice(position))
   flush()
   return chunks
 }
@@ -102,9 +192,7 @@ export function renderDetailComments(record) {
   validateDetailRecord(record)
   const text = DETAIL_FIELDS.map(field => record[field].trim()).filter(Boolean).join('\n\n---\n\n')
   return splitDetailText(text).map((chunk, index, chunks) => {
-    const before = chunk.openingFence ? `${chunk.openingFence}\n` : ''
-    const after = chunk.closingFence ? `\n${chunk.closingFence}` : ''
-    const body = `${COMMENT_MARKER}${index + 1} -->\n## Renovate update details (${index + 1}/${chunks.length})\n\n${before}${chunk.raw}${after}`
+    const body = `${COMMENT_MARKER}${index + 1} -->\n## Renovate update details (${index + 1}/${chunks.length})\n\n${chunk.prefix}${chunk.raw}${chunk.suffix}`
     if (Buffer.byteLength(body) > 50000)
       throw new Error('A PR detail comment exceeds the safe GitHub comment limit.')
     return body
