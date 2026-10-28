@@ -9,6 +9,8 @@ const { init } = await renovateModule('logger/index.js')
 await init()
 const { compile } = await renovateModule('util/template/index.js')
 const { getPrHeader } = await renovateModule('workers/repository/update/pr/body/header.js')
+const { getPrBody } = await renovateModule('workers/repository/update/pr/body/index.js')
+const { setPlatformApi } = await renovateModule('modules/platform/index.js')
 const resultText = '- Dependency changes remain subject to human review and required CI.'
 const template = `## Motivation\n\n- Update dependencies.\n\n## Modifications\n\n{{{table}}}\n\n## Result\n\n${resultText}`
 const fixtures = []
@@ -29,6 +31,28 @@ function setup(write) {
 const record = () => ({ version: 1, repository: 'leapmux/leapmux', branchName: 'renovate/go-security', warnings: 'Artifact generation failed.', notes: 'Security advisory details.', changelogs: 'Release notes.' })
 
 describe('PR detail capture', () => {
+  it('runs through the pinned PR body renderer before platform truncation', () => {
+    const captured = []
+    const capture = setup(value => captured.push(value))
+    setPlatformApi('github')
+    const notes = 'Complete advisory details.\n'.repeat(5000)
+    const branch = {
+      ...capture,
+      branchName: 'renovate/go-security',
+      recreateClosed: false,
+      prBodyColumns: ['Package', 'Change'],
+      warnings: [{ topic: 'fixture', message: 'A warning for the comment.' }],
+      upgrades: [{ depName: 'example.com/library', currentValue: '1.0.0', newValue: '1.1.0', prBodyDefinitions: { Package: '{{depName}}', Change: '{{currentValue}} → {{newValue}}' }, prBodyNotes: [notes] }],
+    }
+    const body = getPrBody(branch, { debugData: {} }, branch)
+    expect(body).toContain('example.com/library')
+    expect(body).not.toContain('Complete advisory details.')
+    expect(body).not.toContain('truncated')
+    expect(captured).toHaveLength(1)
+    expect(captured[0].notes).toContain(notes.trim())
+    expect(captured[0].notes.length).toBeGreaterThan(58000)
+    expect(captured[0].warnings).toContain('A warning for the comment.')
+  })
   it('captures complete native renderer fragments without including them in the body', () => {
     const captured = []
     const capture = setup(value => captured.push(value))
