@@ -293,9 +293,8 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
 
-      # A dry run only reads the caches. It writes none: the composite
-      # exports nothing with the default `outputs` and `save-caches`.
-      - name: Docker build (dry run)
+      # Load and test the image without publishing it or writing shared caches.
+      - name: Build and test Docker image
         uses: ./.github/actions/build-docker-image
         with:
           variant: ${{ matrix.variant }}

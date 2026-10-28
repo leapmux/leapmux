@@ -134,8 +134,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Copy binary
 COPY --from=builder /src/leapmux /usr/local/bin/leapmux
 
-# Copy s6 service definitions
-COPY docker/rootfs/ /
+# Copy the startup script. s6 runs it as CMD and preserves its exit status.
+COPY --chmod=0755 docker/rootfs/usr/local/bin/leapmux-start /usr/local/bin/leapmux-start
 
 # Create data directory
 RUN mkdir -p /data
@@ -144,3 +144,4 @@ EXPOSE 4327
 VOLUME /data
 
 ENTRYPOINT ["/init"]
+CMD ["/usr/local/bin/leapmux-start"]

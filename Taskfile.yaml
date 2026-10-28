@@ -405,6 +405,8 @@ tasks:
 
   # Scripts that need frontend/node_modules depend on this installation task.
   # They do not need the full frontend preparation. A contract validation must not render icons.
+  # frontend/package.json skips macos-alias's implicit node-gyp install script.
+  # prepare-dmg-tools owns that native build and selects the pinned node-gyp version.
   install-frontend-deps:
     desc: Install frontend node modules
     sources:
@@ -1492,6 +1494,18 @@ tasks:
       - *record_artifacts
 
   # --- Docker ---
+
+  test-docker-config:
+    desc: Test Docker workflow requirements and test-runner arguments
+    cmds:
+      - bun test --timeout 30000 ./scripts/test-docker.test.mjs
+
+  test-docker:
+    desc: Test startup and shutdown of a built Docker image
+    requires:
+      vars: [IMAGE]
+    cmds:
+      - node scripts/test-docker.mjs {{.IMAGE | shellQuote}}
 
   docker-build:
     desc: Build all Docker images

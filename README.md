@@ -288,6 +288,7 @@ task test-backend       # Backend tests
 task test-frontend      # Frontend tests (Vitest)
 task test-desktop       # Desktop Go sidecar + Tauri Rust shell tests
 task test-e2e           # End-to-end tests (Playwright)
+task test-docker IMAGE=leapmux:latest # Startup and shutdown of a built Docker image
 ```
 
 Run specific tests by passing arguments after `--`:

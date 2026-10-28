@@ -100,6 +100,9 @@
     "nan": "^2.29.0",
     "vite": "$vite"
   },
+  "ignoreScripts": [
+    "macos-alias"
+  ],
   "patchedDependencies": {
     "vinxi@0.5.11": "patches/vinxi@0.5.11.patch"
   }
