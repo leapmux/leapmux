@@ -105,10 +105,17 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
   const stored = pickObject(acpSupplementRawOutput(facts.extra), REASONIX_TOOL_RECORD.Envelope)
   const saved = stored?.[REASONIX_TOOL_RECORD.RoleField] === REASONIX_TOOL_RECORD.ToolRole && stored[REASONIX_TOOL_RECORD.ToolCallIDField] === tool.toolCallId ? stored : undefined
   const savedText = pickString(saved, REASONIX_TOOL_RECORD.RawContentField, undefined) || pickString(saved, REASONIX_TOOL_RECORD.ContentField, undefined)
+  const storedImages = saved?.[REASONIX_TOOL_RECORD.ImagesField]
+  const imageContent = facts.images.length === 0 && Array.isArray(storedImages)
+    ? storedImages.filter((image): image is string => typeof image === 'string' && image !== '').map(url => ({ type: 'image', url }))
+    : []
   const readResult = pickObject(saved, 'read_result')
   const savedPath = pickString(pickObject(readResult, 'source'), 'canonical_path')
-  const resolvedTool = savedText !== undefined
-    ? { ...tool, content: [{ type: 'content', content: { type: 'text', text: savedText } }] }
+  const content = savedText === undefined
+    ? facts.content
+    : [{ type: 'text', text: savedText }, ...facts.content.filter(block => block.type !== 'text')]
+  const resolvedTool = savedText !== undefined || imageContent.length > 0
+    ? { ...tool, content: [...content, ...imageContent] }
     : tool
   const output = savedText ?? facts.text
   let name = pickString(tool, 'title')

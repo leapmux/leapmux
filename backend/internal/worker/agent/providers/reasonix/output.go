@@ -11,13 +11,16 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// handleExtraMethod routes Reasonix's own status and MCP requests.
+const reasonixMethodMCPStatusUpdate = "_reasonix.io/session/mcpStatus_update"
+
+// handleExtraMethod handles Reasonix session status and MCP health notifications.
 func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 	switch line.Method {
 	case reasonixMethodStatusUpdate:
 		a.handleReasonixStatusUpdate(line.Params)
-	case contracts.ReasonixMethodMcpRequestInteraction:
-		a.PublishSessionControlRequest(line, providerkit.MCPElicitationCancelAnswer())
+	case reasonixMethodMCPStatusUpdate:
+		// The status subscription includes MCP health. It carries no conversation output.
+		return !line.HasID()
 	default:
 		return false
 	}

@@ -67,6 +67,12 @@ export interface McpProbeFormRoundTrip {
   approveTool?: () => Promise<void>
   /** Reload the page after the fill, and require the restored answers before the submit. */
   reloadBeforeSubmit: boolean
+  /** The form that the native provider actually sends when it transforms the MCP schema. */
+  form?: {
+    fill: (page: Page) => Promise<Locator>
+    waitForDraft: (page: Page, userId: string) => Promise<void>
+    expectRestored: (form: Locator) => Promise<void>
+  }
 }
 
 /**
@@ -83,6 +89,7 @@ export async function exerciseMcpProbeFormRoundTrip(
   options: McpProbeFormRoundTrip,
 ): Promise<MockModelRequestRecord> {
   const { page, modelScript } = context
+  const surface = options.form ?? { fill: fillMcpProbeForm, waitForDraft: waitForMcpProbeFormDraft, expectRestored: expectMcpProbeFormRestored }
   const userId = context.leapmuxServer.adminUserId
   if (options.reloadBeforeSubmit && !userId)
     throw new Error('A reload of the probe form needs the account that saves its answers.')
@@ -93,12 +100,12 @@ export async function exerciseMcpProbeFormRoundTrip(
   await sendMessage(page, modelScript.prompt(`Call the ${MCP_FORM_SERVER_NAME} ask tool exactly once.`))
   await modelScript.waitForSteps(start + 1)
   await options.approveTool?.()
-  const form = await fillMcpProbeForm(page)
+  const form = await surface.fill(page)
   if (options.reloadBeforeSubmit && userId) {
     // The page saves the last answer through a write queue. A reload that overtakes the write drops that answer.
-    await waitForMcpProbeFormDraft(page, userId)
+    await surface.waitForDraft(page, userId)
     await page.reload()
-    await expectMcpProbeFormRestored(form)
+    await surface.expectRestored(form)
   }
   await controlActions(page).getByRole('button', { name: 'Approve', exact: true }).click()
   await modelScript.waitForSteps(start + 2)

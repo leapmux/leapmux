@@ -48,12 +48,21 @@ func TestHelperProcessReasonixCLI(*testing.T) {
 	agenttest.ServeFakeJSONRPC("GO_WANT_HELPER_PROCESS_REASONIX", func(method string) (string, bool, bool) {
 		switch method {
 		case acp.MethodInitialize:
-			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":true}}}`, false, true
+			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"audio":false,"embeddedContext":true},"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1},"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`, false, true
 		case acp.MethodSessionNew:
+			if os.Getenv("GO_REASONIX_TEST_CANONICAL_MODEL_WRITE") != "" {
+				return strings.ReplaceAll(reasonixSessionFixture, "deepseek-flash", "deepseek/deepseek-flash"), false, true
+			}
 			return reasonixSessionFixture, false, true
 		case acp.MethodSessionSetModel, acp.MethodSessionSetMode:
 			return `{}`, false, true
 		case acp.MethodSessionSetConfigOption:
+			if path := os.Getenv("GO_REASONIX_TEST_CANONICAL_MODEL_WRITE"); path != "" {
+				if err := os.WriteFile(path, []byte("unexpected model write"), 0o600); err != nil {
+					panic(err)
+				}
+				return `{"code":-32602,"message":"the model selector requires a canonical model ID"}`, true, true
+			}
 			return reasonixSessionFixture, false, true
 		case acp.MethodSessionLoad, acp.MethodSessionPrompt:
 			return `{}`, false, true
@@ -61,6 +70,23 @@ func TestHelperProcessReasonixCLI(*testing.T) {
 			return "", false, false
 		}
 	})
+}
+
+func TestStartReasonix_UsesTheNativeCanonicalModelAfterLaunch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "model-write")
+	t.Setenv("GO_REASONIX_TEST_CANONICAL_MODEL_WRITE", marker)
+	installFakeReasonixCLI(t, filepath.Join(t.TempDir(), "args.txt"))
+	provider, err := Start(t.Context(), agent.Options{
+		AgentID: "reasonix-canonical", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		Options:       map[string]string{agent.OptionIDModel: "deepseek-flash"},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	a := provider.(*Agent)
+	t.Cleanup(func() { a.Stop(); _ = a.Wait() })
+	assert.Equal(t, "deepseek/deepseek-flash", a.ModelForTest())
+	_, err = os.Stat(marker)
+	assert.ErrorIs(t, err, os.ErrNotExist, "a launch alias must not be written back through the canonical model selector")
 }
 
 func TestStartReasonix_NewSessionHandshakePassesModelFlag(t *testing.T) {
@@ -89,6 +115,8 @@ func TestStartReasonix_NewSessionHandshakePassesModelFlag(t *testing.T) {
 	assert.Equal(t, "normal", current[agent.OptionIDPermissionMode])
 	assert.Equal(t, "max", current[agent.OptionIDEffort])
 	assert.Equal(t, "ask", current["tool_approval"])
+	assert.Equal(t, map[string]any{"reasonix.io": map[string]any{"statusUpdates": map[string]any{"supported": true}}}, a.HooksForTest().ClientCapabilityMeta)
+	assert.ElementsMatch(t, []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear, agent.GoalActionPause, agent.GoalActionResume}, a.SupportedGoalActions())
 
 	// The launch flag selects the initial model.
 	recorded, err := os.ReadFile(argsFile)

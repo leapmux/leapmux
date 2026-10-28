@@ -95,3 +95,12 @@ func TestReasonixNoticeRequiresThePrefix(t *testing.T) {
 }
 
 // A compaction notice persists its native frame and classifies as a boundary.
+
+func TestReasonixMCPHealthUpdateStaysOutOfTheConversation(t *testing.T) {
+	t.Parallel()
+	a, sink := newReasonixNoticeAgent(t)
+	a.HooksForTest().ExtraMethod = a.handleExtraMethod
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_reasonix.io/session/mcpStatus_update","params":{"schemaVersion":1,"sessionId":"session-1","servers":[]}}`))
+	assert.Empty(t, sink.Messages(), "native MCP health is session metadata, not a chat row")
+	assert.Empty(t, sink.PersistedNotifications())
+}

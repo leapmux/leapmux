@@ -20,6 +20,8 @@ type Agent struct {
 	acp.Base
 	goalStatusMu       sync.Mutex
 	goalStatusRevision uint64
+	// goalMethods holds the versioned goal requests that initialize advertises. Guarded by Base.Mu.
+	goalMethods map[agent.GoalAction]string
 	// lastStatusPhase is the phase the last status update reported. Reasonix
 	// restates its WHOLE status on every change, so the same phase arrives many
 	// times per turn and only a move to a new one says anything.

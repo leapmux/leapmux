@@ -2,6 +2,7 @@ package reasonix
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -11,20 +12,57 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// SupportedGoalActions reports each operation that the advertised modes support.
-// ACP exposes no explicit operation to pause or resume an existing goal.
-// See https://github.com/esengine/DeepSeek-Reasonix/issues/10201.
+const (
+	reasonixMethodGoalPause  = "_reasonix.io/session/goal/pause"
+	reasonixMethodGoalResume = "_reasonix.io/session/goal/resume"
+)
+
+// observeReasonixCapabilities reads the goal extensions before the session opens.
+func (a *Agent) observeReasonixCapabilities(response []byte) {
+	var initialize struct {
+		Capabilities struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"agentCapabilities"`
+	}
+	methods := make(map[agent.GoalAction]string)
+	if json.Unmarshal(response, &initialize) == nil {
+		for action, method := range map[agent.GoalAction]string{
+			agent.GoalActionPause: reasonixMethodGoalPause, agent.GoalActionResume: reasonixMethodGoalResume,
+		} {
+			var capability struct {
+				SchemaVersion int `json:"schemaVersion"`
+			}
+			if json.Unmarshal(initialize.Capabilities.Meta[method], &capability) == nil && capability.SchemaVersion == 1 {
+				methods[action] = method
+			}
+		}
+	}
+	a.Mu.Lock()
+	a.goalMethods = methods
+	a.Mu.Unlock()
+}
+
+// SupportedGoalActions reports the operations that the running session advertises.
 func (a *Agent) SupportedGoalActions() []agent.GoalAction {
 	modes := a.AvailableModes()
 	if !acp.HasOption(modes, contracts.ReasonixModeNormal) {
 		return nil
 	}
+	actions := []agent.GoalAction{agent.GoalActionClear}
 	if acp.HasOption(modes, contracts.ReasonixModeGoal) {
-		return []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}
+		actions = []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}
 	}
-	return []agent.GoalAction{agent.GoalActionClear}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	for _, action := range []agent.GoalAction{agent.GoalActionPause, agent.GoalActionResume} {
+		if a.goalMethods[action] != "" {
+			actions = append(actions, action)
+		}
+	}
+	return actions
 }
 
 var _ agent.GoalWriter = (*Agent)(nil)
@@ -32,6 +70,21 @@ var _ agent.GoalWriter = (*Agent)(nil)
 func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
 	if !slices.Contains(a.SupportedGoalActions(), action) {
 		return agent.GoalOutcome{}, agent.ErrGoalControlUnsupported
+	}
+	if action == agent.GoalActionPause || action == agent.GoalActionResume {
+		a.Mu.Lock()
+		method := a.goalMethods[action]
+		pauseMethod := a.goalMethods[agent.GoalActionPause]
+		a.Mu.Unlock()
+		change := func(sessionID string) error {
+			return a.changeReasonixGoal(sessionID, method, pauseMethod)
+		}
+		if action == agent.GoalActionResume {
+			// The native resume retains the objective and counters but starts no turn.
+			// ACP rejects an empty prompt, so start its continuation after resume succeeds.
+			return agent.GoalOutcome{}, a.SendPreparedPrompt("Continue the retained goal.", nil, change)
+		}
+		return agent.GoalOutcome{}, a.WithSessionID(change)
 	}
 	if action == agent.GoalActionSet {
 		if strings.TrimSpace(objective) == "" {
@@ -55,6 +108,43 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 		return a.setReasonixGoalMode(sessionID, contracts.ReasonixModeNormal)
 	})
 	return agent.GoalOutcome{}, err
+}
+
+// changeReasonixGoal keeps the native objective and counters through each operation.
+func (a *Agent) changeReasonixGoal(sessionID, method, pauseMethod string) error {
+	if method == "" {
+		return agent.ErrGoalControlUnsupported
+	}
+	if sessionID == "" || a.IsStopped() {
+		return fmt.Errorf("the Reasonix session is unavailable")
+	}
+	params, err := json.Marshal(map[string]string{"sessionId": sessionID})
+	if err != nil {
+		return err
+	}
+	_, err = a.SendRequest(method, params, a.APITimeout())
+	if method != reasonixMethodGoalResume || pauseMethod == "" || !providerkit.HasJSONRPCErrorCode(err, -32010) {
+		return err
+	}
+	// Reasonix's failed status describes the last turn. The retained goal still runs,
+	// so its native resume refuses it. Pause that exact goal before resuming it.
+	raw, readErr := a.SendRequest(reasonixMethodSessionStatus, params, a.APITimeout())
+	if readErr != nil {
+		return errors.Join(err, readErr)
+	}
+	var status reasonixStatusUpdate
+	if decodeErr := json.Unmarshal(raw, &status); decodeErr != nil {
+		return errors.Join(err, fmt.Errorf("read Reasonix goal after resume refusal: %w", decodeErr))
+	}
+	if status.SessionID != sessionID || status.Mode != contracts.ReasonixModeGoal || status.Goal == nil ||
+		status.Goal.Status != reasonixGoalStatusFailed || strings.TrimSpace(status.Goal.Objective) == "" {
+		return err
+	}
+	if _, pauseErr := a.SendRequest(pauseMethod, params, a.APITimeout()); pauseErr != nil {
+		return pauseErr
+	}
+	_, err = a.SendRequest(method, params, a.APITimeout())
+	return err
 }
 
 // The caller holds the session lock. Do not use sendSessionRPC here because it takes that lock again.
@@ -203,17 +293,10 @@ type reasonixStatusUpdate struct {
 	Goal *reasonixGoal `json:"goal"`
 }
 
-// reasonixUsage is the subset of one Reasonix usage report the meter reads.
-//
-// `totalTokens` is INCLUSIVE of the prompt and completion halves, so the context
-// gauge reads it directly rather than adding the parts and counting twice.
+// reasonixUsage holds the cumulative cost. ACP usage_update owns the current context gauge.
 type reasonixUsage struct {
-	TotalTokens      int64    `json:"totalTokens"`
-	PromptTokens     int64    `json:"promptTokens"`
-	CompletionTokens int64    `json:"completionTokens"`
-	CacheHitTokens   int64    `json:"cacheHitTokens"`
-	CacheMissTokens  int64    `json:"cacheMissTokens"`
-	EstimatedCost    *float64 `json:"estimatedCost"`
+	EstimatedCost *float64 `json:"estimatedCost"`
+	Currency      string   `json:"currency"`
 }
 
 type reasonixGoal struct {
@@ -335,7 +418,7 @@ func (a *Agent) reportReasonixPhase(phase string) {
 	})
 }
 
-// reportReasonixUsage broadcasts the session's cumulative token and cost totals.
+// reportReasonixUsage broadcasts a cumulative cost stated in US dollars.
 //
 // Ephemeral, like every other provider's usage report: the meter reads it live
 // and the transcript holds no row for it.
@@ -347,18 +430,9 @@ func (a *Agent) reportReasonixUsage(usage *struct {
 	}
 	total := usage.Cumulative
 	info := map[string]interface{}{}
-	if total.TotalTokens > 0 || total.PromptTokens > 0 || total.CompletionTokens > 0 {
-		info[contracts.SessionInfoKeyContextUsage] = map[string]interface{}{
-			contracts.ContextUsageFieldInputTokens:              total.PromptTokens,
-			contracts.ContextUsageFieldOutputTokens:             total.CompletionTokens,
-			contracts.ContextUsageFieldCacheReadInputTokens:     total.CacheHitTokens,
-			contracts.ContextUsageFieldCacheCreationInputTokens: total.CacheMissTokens,
-			contracts.ContextUsageFieldContextTokens:            total.TotalTokens,
-		}
-	}
 	// The CUMULATIVE cost, which is a total rather than a delta: a restatement
 	// carries the same number and cannot double it.
-	if total.EstimatedCost != nil {
+	if total.EstimatedCost != nil && *total.EstimatedCost >= 0 && total.Currency == "USD" {
 		info[contracts.SessionInfoKeyTotalCostUsd] = *total.EstimatedCost
 	}
 	if len(info) > 0 {
@@ -401,6 +475,9 @@ func (a *Agent) applyReasonixGoal(goal *reasonixGoal) {
 		Snapshot: false,
 	}
 	if rt := goal.Runtime; rt != nil {
+		if rt.StopCause == "manual" && report.Status != agent.GoalStatusActive && report.Status != agent.GoalStatusDone {
+			report.Status = agent.GoalStatusPaused
+		}
 		report.Iterations = rt.TurnsUsed
 		report.TokensUsed = rt.TokensUsed
 		if rt.WorkDurationMs != nil {

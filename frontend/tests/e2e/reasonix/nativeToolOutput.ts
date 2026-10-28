@@ -1,4 +1,4 @@
-import { Buffer } from 'node:buffer'
+import { basename, isAbsolute } from 'node:path'
 import { ACP_SUPPLEMENT } from '../../../src/generated/contracts/acp-protocol'
 import { REASONIX_TOOL_RECORD } from '../../../src/generated/contracts/reasonix-protocol'
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
@@ -10,20 +10,10 @@ export interface ReasonixNativeOutput {
   excerpt: string
   text: string
   previewText: string
+  path: string
 }
 
-function nativeExcerptMatches(excerpt: string, text: string): boolean {
-  if (excerpt === text)
-    return true
-  const match = /\n…\(([1-9]\d*) more chars truncated\)$/u.exec(excerpt)
-  if (!match)
-    return false
-  const omitted = Number(match[1])
-  const prefix = excerpt.slice(0, match.index)
-  return Number.isSafeInteger(omitted) && Buffer.byteLength(text) - Buffer.byteLength(prefix) === omitted && text.startsWith(prefix)
-}
-
-/** Validate the exact native excerpt and stored native record before a Copy assertion. */
+/** Validate the complete native spill receipt and the exact stored record before a browser assertion. */
 export function reasonixNativeOutput(original: unknown, supplemental: unknown, callId: string): ReasonixNativeOutput {
   if (!callId.trim() || !isObject(original) || !acpClosedToolCall(original, callId, ['completed']))
     throw new Error('The native Reasonix output has no exact completed call.')
@@ -41,14 +31,12 @@ export function reasonixNativeOutput(original: unknown, supplemental: unknown, c
   const first = Array.isArray(content) && content.length === 1 ? content[0] : undefined
   const block = isObject(first) && first.type === 'content' ? first.content : undefined
   const excerpt = isObject(block) && block.type === 'text' ? block.text : undefined
-  const native = record[REASONIX_TOOL_RECORD.ContentField]
-  const complete = record[REASONIX_TOOL_RECORD.RawContentField]
-  const text = typeof complete === 'string' && complete !== '' ? complete : native
-  if (typeof excerpt !== 'string' || typeof native !== 'string' || typeof text !== 'string'
-    || (!nativeExcerptMatches(excerpt, native) && !nativeExcerptMatches(excerpt, text))) {
-    throw new Error('The native Reasonix output does not match its actual excerpt.')
-  }
-  if (Buffer.byteLength(text) <= Buffer.byteLength(excerpt) || !/more chars truncated\)$/u.test(excerpt))
-    throw new Error('The native Reasonix result supplied no omitted native output content.')
-  return { callId, excerpt, text, previewText: text.replace(/\n\[receipt r_[\da-z_]+\]$/u, '') }
+  const text = record[REASONIX_TOOL_RECORD.ContentField]
+  if (typeof excerpt !== 'string' || typeof text !== 'string' || excerpt !== text)
+    throw new Error('The native Reasonix output does not match its stored receipt.')
+  const match = /^\[bash output kept out of context: [1-9]\d* lines, [^\]\n]+\]\nFull output: ([^\r\n]+)\nRead a window of it with read_file \(offset\/limit\), or search it with grep\. It is not in this conversation\.\n/u.exec(excerpt)
+  const path = match?.[1]
+  if (!path || !isAbsolute(path) || basename(path) !== `${callId}.txt`)
+    throw new Error('The native Reasonix output has no exact filesystem receipt.')
+  return { callId, excerpt, text, previewText: text, path }
 }

@@ -22,6 +22,6 @@ reasonixTest('keeps actual native shell output and a failed command result', asy
     answer: 'The literal output command ended.',
   })
   expect(nativeToolResult(turn.resultRequest, callId)).toContain(`${prefix}\n${output}`)
-  await expectShellToolRows(native, [{ printedPrefix: marker, output, exitCode: 0, exactOutput: `${prefix}\n${output}` }])
+  await expectShellToolRows(native, [{ printedPrefix: marker, output, exitCode: 0, exactOutput: `${prefix}\n${output}\n` }])
   await expect(toolCallRow(native.page, callId)).not.toContainText('Error (exit 7)')
 })

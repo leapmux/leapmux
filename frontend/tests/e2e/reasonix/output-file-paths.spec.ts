@@ -1,10 +1,12 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { Buffer } from 'node:buffer'
 import { createHash, randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
@@ -16,7 +18,7 @@ import { reasonixTest } from '../reasonix-fixtures'
 import { reasonixNativeOutput } from './nativeToolOutput'
 import { bypassToolRequests } from './scenarios'
 
-reasonixTest('keeps the native result record and exact inline Copy with no output file path after reload', async ({ native }, testInfo) => {
+reasonixTest('exposes the actual native output file and keeps the exact preview after reload', async ({ native }, testInfo) => {
   await bypassToolRequests(native)
   const agent = await currentNativeAgent(native)
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
@@ -44,18 +46,24 @@ reasonixTest('keeps the native result record and exact inline Copy with no outpu
   }
   const nativeOutput = readNativeOutput(await readNativeMessageSnapshot(native, agent.id))
   expect(nativeOutput.excerpt).not.toContain(output.omittedMarker)
-  expect(nativeOutput.text).toContain(output.text)
+  const home = native.leapmuxServer.agentEnv?.HOME
+  if (!home)
+    throw new Error('The native Reasonix output proof requires its private home.')
+  assertPrivateNativePath(nativeOutput.path, home)
+  const saved = readFileSync(nativeOutput.path, 'utf8')
+  expect(saved).toContain(output.text)
   for (const value of [output.firstMarker, output.omittedMarker, output.lastMarker])
-    expect(nativeOutput.text).toContain(value)
+    expect(saved).toContain(value)
   const digest = createHash('sha256').update(nativeOutput.text).digest('hex')
-  await testInfo.attach('reasonix-native-result-reference', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId, excerpt: nativeOutput.excerpt, previewText: nativeOutput.previewText, text: nativeOutput.text, bytes: Buffer.byteLength(nativeOutput.text), sha256: digest }), contentType: 'application/json' })
+  await testInfo.attach('reasonix-native-result-reference', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId, path: nativeOutput.path, outputBytes: Buffer.byteLength(saved), outputSHA256: createHash('sha256').update(saved).digest('hex'), excerpt: nativeOutput.excerpt, previewText: nativeOutput.previewText, text: nativeOutput.text, bytes: Buffer.byteLength(nativeOutput.text), sha256: digest }), contentType: 'application/json' })
   await proveNativeToolOutputFilePaths({
     context: native,
     callId,
     previewText: nativeOutput.previewText,
-    paths: [],
+    paths: [nativeOutput.path],
     status: 'completed',
-    previewMarkers: [output.firstMarker, output.lastMarker],
+    previewMarkers: [output.firstMarker],
+    absentMarkers: [output.omittedMarker, output.lastMarker],
     prepareView: expandNativeResultView,
     workerProof: () => expectUnchangedNativeRecord(native, agent, readNativeOutput, nativeOutput),
   })

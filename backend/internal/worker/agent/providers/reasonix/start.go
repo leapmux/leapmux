@@ -45,7 +45,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// Keep the launch selection until the session reports its current model.
 				InitialModel:         model,
 				ModeChannel:          acp.ModeChannelPermissionMode,
-				ClientCapabilityMeta: map[string]any{"reasonix.io": map[string]any{"mcpInteraction": map[string]any{"supported": true, "schemaVersion": 1}}},
+				InitializeResponse:   a.observeReasonixCapabilities,
+				ClientCapabilityMeta: map[string]any{"reasonix.io": map[string]any{"statusUpdates": map[string]any{"supported": true}}},
 				// Task launches open no span. Final updates close the task registry row.
 				SubagentFromToolCall:       reasonixSubagentFromToolCall,
 				SubagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
@@ -58,7 +59,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			}
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
-			return a.ApplyPermissionModeStartup(handshake, opts, contracts.ReasonixModeNormal, model)
+			requestedModel := model
+			// The CLI already selects a new session's model. Its reply gives the canonical
+			// selector value, which can differ from the launch alias. A loaded session
+			// still needs the requested model applied after it restores its saved selection.
+			if opts.ResumeSessionID == "" && handshake.CurrentModelID != "" {
+				requestedModel = handshake.CurrentModelID
+			}
+			return a.ApplyPermissionModeStartup(handshake, opts, contracts.ReasonixModeNormal, requestedModel)
 		},
 	})
 }

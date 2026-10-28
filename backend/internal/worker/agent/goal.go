@@ -278,7 +278,8 @@ type GoalOutcome struct {
 //   - Pi writes the command of its goal extension to the process directly.
 //   - Reasonix sets its mode and submits the objective under one session lock.
 //     Normal mode clears its goal.
-//     The Agent Client Protocol (ACP) provides no Pause or Resume operation.
+//     Its advertised vendor requests pause and resume the retained goal.
+//     Resume starts a continuation prompt after the native request succeeds.
 //   - MiMo Code has a goal command on its HTTP command route. A set starts a
 //     turn whose prompt is the objective. MiMo has no Pause and no Resume.
 //   - Kiro returns its goal-setting user-message command as QueuedInput.

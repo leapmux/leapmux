@@ -10,5 +10,5 @@ reasonixTest('shows the native model failure and accepts a later valid prompt', 
   // 43 characters, so it arrives as `****`. Each word of this marker has at most
   // 12 characters, so the error keeps it.
   const message = `NATIVEERROR ${randomUUID().replaceAll('-', ' ')}`
-  await exerciseModelError(native, { queueAfterFailure: 'running', error: { status: 400, code: 'invalid_request_error', message } })
+  await exerciseModelError(native, { queueAfterFailure: 'running', attempts: 2, error: { status: 400, code: 'invalid_request_error', message } })
 })

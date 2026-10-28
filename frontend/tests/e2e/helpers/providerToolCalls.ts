@@ -1408,14 +1408,12 @@ const TOOL_VOCABULARY = {
         })),
       },
     }),
-    // A goal is the objective of a Goal-mode turn, so the model creates none. update_goal of Reasonix 1.38.7 takes
-    // `continue`, `complete` or `blocked`, and it refuses `blocked` with no reason (the captured catalog in
-    // ../reasonix/toolCatalog.fixtures.ts).
+    // A goal is the objective of a Goal-mode turn. The model's update_goal reports its disposition.
     createGoal: null,
     completeGoal: id => ({ id, name: 'update_goal', arguments: { status: 'complete' } }),
     blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', reason: requireReason('Reasonix update_goal', reason) } }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: 'use_capability', arguments: { action: 'call', capability_id: `mcp-tool:${server}/${tool}`, arguments: input } }),
-    codeExecution: null,
+    codeExecution: (id, source) => ({ id, name: 'run_script', arguments: { script: source } }),
     workflowTools: null,
   },
   [AgentProvider.ZCODE]: {
@@ -2618,20 +2616,6 @@ export function clineSpawnTeammateToolCall(id: string, agentId: string, roleProm
 /** Queue a Cline teammate run that emits native run lifecycle events. */
 export function clineRunTeammateTaskToolCall(id: string, agentId: string, task: string): MockModelToolCall {
   return { id, name: 'team_run_task', arguments: { agentId, task, runMode: 'async' } }
-}
-
-/** Read the complete installed Reasonix capability list without a page cursor. */
-export function reasonixListCapabilitiesToolCall(id: string): MockModelToolCall {
-  if (!id.trim())
-    throw new Error('The Reasonix capability list requires a nonempty call ID.')
-  return { id, name: 'use_capability', arguments: { action: 'list' } }
-}
-
-/** Read one exact installed Reasonix capability descriptor. */
-export function reasonixInspectCapabilityToolCall(id: string, capabilityId: string): MockModelToolCall {
-  if (!id.trim() || !capabilityId.trim() || capabilityId !== capabilityId.trim())
-    throw new Error('The Reasonix capability inspect requires exact nonempty call and capability IDs.')
-  return { id, name: 'use_capability', arguments: { action: 'inspect', capability_id: capabilityId } }
 }
 
 /**

@@ -2,6 +2,8 @@ package reasonix
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -186,10 +188,32 @@ func TestReasonixToolStoreReadsLegacyEventLogs(t *testing.T) {
 	assert.NotContains(t, string(records["call"]), "old")
 }
 
+func TestReasonixToolStoreReadsNativeImageBlobRecords(t *testing.T) {
+	t.Parallel()
+	image := "data:image/png;base64,iVBORw0KGgo="
+	digest := sha256.Sum256([]byte(image))
+	hash := hex.EncodeToString(digest[:])
+	path := reasonixFixtureEvents(t,
+		map[string]any{"schema_version": 1, "type": "replace", "messages": []any{map[string]any{"role": "user", "content": "Read the image"}}},
+		map[string]any{"schema_version": 3, "type": "append", "message_index": 1, "messages": []any{reasonixFixtureRecord("image result")},
+			"image_blobs": []any{map[string]any{"message": 0, "slots": []any{map[string]any{"blob": "sha256:" + hash}}}}},
+	)
+	directory := strings.TrimSuffix(path, ".jsonl") + ".blobs"
+	require.NoError(t, os.MkdirAll(directory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, hash), []byte(image), 0o600))
+	records, err := readReasonixToolRecords(t.Context(), path, map[string][]byte{"call": nil}, &reasonixEventCache{})
+	require.NoError(t, err)
+	require.Contains(t, records, "call")
+	var record map[string]any
+	require.NoError(t, json.Unmarshal(records["call"], &record))
+	assert.Equal(t, []any{image}, record["images"])
+	assert.Equal(t, "image result", record["content"])
+}
+
 func TestReasonixToolStoreRejectsInvalidEventLogs(t *testing.T) {
 	t.Parallel()
 	cases := map[string][]map[string]any{
-		"unknown schema":    {{"schema_version": 3, "type": "message"}},
+		"unknown schema":    {{"schema_version": 99, "type": "message"}},
 		"missing identity":  {{"type": "message", "msgs": []any{reasonixFixtureRecord("bad")}}},
 		"multiple messages": {{"type": "message", "id": "first", "msgs": []any{reasonixFixtureRecord("first"), reasonixFixtureRecord("second")}}},
 		"append gap":        {{"schema_version": 1, "type": "append", "message_index": 5}},

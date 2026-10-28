@@ -11,7 +11,6 @@
     "capabilityPrefixes",
     "modes",
     "configIds",
-    "methods",
     "approvalValues",
     "noticePrefixes",
     "toolRecord"
@@ -87,9 +86,6 @@
       "$ref": "#/$defs/table"
     },
     "configIds": {
-      "$ref": "#/$defs/table"
-    },
-    "methods": {
       "$ref": "#/$defs/table"
     },
     "approvalValues": {

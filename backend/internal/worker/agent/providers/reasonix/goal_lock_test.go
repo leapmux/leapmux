@@ -113,7 +113,7 @@ func TestReasonixStatusUpdateReportsUsageAndPhaseOutsideTheRevisionLock(t *testi
 
 	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{
 		"phase":"paused",
-		"usage":{"cumulative":{"totalTokens":1500,"promptTokens":1200,"completionTokens":300}}}}`))
+		"usage":{"cumulative":{"estimatedCost":0.42,"currency":"USD"}}}}`))
 
 	assert.Equal(t, 2, free, "the usage broadcast and the phase row both run with the lock free")
 }

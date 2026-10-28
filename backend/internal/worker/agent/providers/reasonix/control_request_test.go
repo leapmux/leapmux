@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -112,13 +112,13 @@ func TestReasonixControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testin
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetSessionIDForTest("test-session")
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, func(content []byte) {
-		require.True(t, a.handleExtraMethod(providerkit.ParseLine(content)))
-	}, "_reasonix.io/mcp/request_interaction")
+		a.HandleOutput(content)
+	}, contracts.MCPElicitationMethodACP)
 }
 
 func TestReasonixAnswersNativeMCPInteraction(t *testing.T) {
 	t.Parallel()
-	request := json.RawMessage(`{"jsonrpc":"2.0","id":"001","method":"_reasonix.io/mcp/request_interaction","params":{"mode":"form"}}`)
+	request := json.RawMessage(`{"jsonrpc":"2.0","id":"001","method":"elicitation/create","params":{"mode":"form"}}`)
 	response := json.RawMessage(`{"response":{"request_id":"001","response":{"action":"accept","content":{"count":0,"enabled":false}}}}`)
 	resolved := reasonixProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: request, ResponseContent: response})
 	require.False(t, resolved.Withhold)
@@ -137,7 +137,7 @@ func TestReasonixAnswersNativeMCPInteraction(t *testing.T) {
 
 func TestReasonixWithholdsInvalidMCPAnswers(t *testing.T) {
 	t.Parallel()
-	request := json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"_reasonix.io/mcp/request_interaction"}`)
+	request := json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"elicitation/create"}`)
 	for _, response := range []string{
 		`{}`,
 		`{"response":{"request_id":"other","response":{"action":"accept"}}}`,
@@ -151,7 +151,7 @@ func TestReasonixWithholdsInvalidMCPAnswers(t *testing.T) {
 
 func TestReasonixDeclineRemovesFormContent(t *testing.T) {
 	t.Parallel()
-	request := json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"_reasonix.io/mcp/request_interaction"}`)
+	request := json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"elicitation/create"}`)
 	response := json.RawMessage(`{"response":{"request_id":"7","response":{"action":"decline","content":{"count":0}}}}`)
 	resolved := reasonixProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: request, ResponseContent: response})
 	require.False(t, resolved.Withhold)

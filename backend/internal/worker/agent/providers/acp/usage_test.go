@@ -67,9 +67,11 @@ func TestACP_UsageUpdateReportsACostOnlyWhenPositive(t *testing.T) {
 		line     string
 		wantCost bool
 	}{
-		"a positive cost ships": {`{"used":10,"size":100,"cost":{"amount":0.25,"currency":"USD"}}`, true},
-		"a zero cost is absent": {`{"used":10,"size":100,"cost":{"amount":0,"currency":"USD"}}`, false},
-		"no cost block at all":  {`{"used":10,"size":100}`, false},
+		"a positive cost ships":             {`{"used":10,"size":100,"cost":{"amount":0.25,"currency":"USD"}}`, true},
+		"a zero cost is absent":             {`{"used":10,"size":100,"cost":{"amount":0,"currency":"USD"}}`, false},
+		"another currency is absent":        {`{"used":10,"size":100,"cost":{"amount":12,"currency":"CNY"}}`, false},
+		"an unspecified currency is absent": {`{"used":10,"size":100,"cost":{"amount":12}}`, false},
+		"no cost block at all":              {`{"used":10,"size":100}`, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

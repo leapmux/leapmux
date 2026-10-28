@@ -273,6 +273,7 @@ func readReasonixMessageAt(file *os.File, at reasonixMessageLocation) (json.RawM
 		Messages       []json.RawMessage            `json:"msgs"`
 		LegacyMessages []json.RawMessage            `json:"messages"`
 		Targets        map[string][]json.RawMessage `json:"targets"`
+		ImageBlobs     json.RawMessage              `json:"image_blobs"`
 	}
 	if err := json.Unmarshal(line, &event); err != nil {
 		return nil, err
@@ -287,7 +288,7 @@ func readReasonixMessageAt(file *os.File, at reasonixMessageLocation) (json.RawM
 	if at.index < 0 || at.index >= len(messages) {
 		return nil, fmt.Errorf("a Reasonix event line no longer holds message %d", at.index)
 	}
-	return messages[at.index], nil
+	return restoreReasonixRecordImages(file.Name(), messages[at.index], event.ImageBlobs, at.index), nil
 }
 
 // reasonixEventCache keeps one event log's branch graph between reads.
@@ -362,10 +363,16 @@ func (c *reasonixEventCache) applyLine(raw json.RawMessage, offset int64, length
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return err
 	}
-	if c.schema == 0 {
-		c.schema = event.Schema
+	// Native 2.x records can change schema when images or an agent composition appear.
+	// They share one replace/append history. Schema 2 uses a separate branch graph.
+	schema := event.Schema
+	if schema == 3 || schema == 4 || schema == 5 {
+		schema = 1
 	}
-	if event.Schema != c.schema {
+	if c.schema == 0 {
+		c.schema = schema
+	}
+	if schema != c.schema {
 		return fmt.Errorf("the Reasonix event log changes schema within one file")
 	}
 	at := reasonixMessageLocation{offset: offset, length: length}

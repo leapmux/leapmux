@@ -1,12 +1,19 @@
 import type { NativeContextFixtures } from '../helpers/nativeScenario'
+import { execFileSync } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
+import { elicitationFieldKey } from '../../../src/components/chat/controls/elicitationForm'
+import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { exerciseMcpProbeFormRoundTrip } from '../helpers/mcpProbeForm'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { newNativeWorkingDir } from '../helpers/nativeAgentOpen'
+import { hubSpawnEnv } from '../helpers/server'
+import { waitForStoredEntry } from '../helpers/storage'
 import { openWorkspace } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -17,11 +24,50 @@ import { nativeContext } from './scenarios'
 export async function exerciseReasonixMcpForm(fixtures: NativeContextFixtures): Promise<void> {
   const context = await nativeContext(fixtures)
   const directory = newNativeWorkingDir(context, 'reasonix-mcp-form-')
-  writeFileSync(join(directory, '.mcp.json'), JSON.stringify(mcpServersConfig(writeMcpFormServer(directory, 'form-server.mjs'))))
+  const formServer = writeMcpFormServer(directory, 'form-server.mjs')
+  writeFileSync(join(directory, '.mcp.json'), JSON.stringify(mcpServersConfig(formServer)))
   const { leapmuxServer } = context
+  const enabled = execFileSync('reasonix', ['mcp', 'enable', formServer.name], {
+    cwd: directory,
+    env: hubSpawnEnv(leapmuxServer.agentEnv),
+    encoding: 'utf8',
+  })
+  expect(enabled).toContain(`enabled MCP server ${JSON.stringify(formServer.name)} in this project`)
   await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, agentOpenOptions(context.provider, {
     optionValues: { tool_approval: 'yolo' },
   }))
   await openWorkspace(context.page, context.workspaceId)
-  await exerciseMcpProbeFormRoundTrip(context, { callId: 'mcp-form', reloadBeforeSubmit: true })
+  await exerciseMcpProbeFormRoundTrip(context, {
+    callId: 'mcp-form',
+    reloadBeforeSubmit: true,
+    // Reasonix exposes each scalar as text and each choice by its display label.
+    // Its MCP bridge restores the original integer, boolean, and enum values.
+    form: {
+      fill: async (page) => {
+        const form = page.getByTestId('elicitation-form').filter({ visible: true })
+        await expect(form).toBeVisible()
+        await form.getByLabel('Count', { exact: true }).fill('0')
+        await form.getByRole('button', { name: 'Enabled', exact: true }).click()
+        await page.getByRole('menuitemradio', { name: 'No', exact: true }).click()
+        await form.getByRole('button', { name: 'Color', exact: true }).click()
+        await page.getByRole('menuitemradio', { name: 'Blue', exact: true }).click()
+        return form
+      },
+      waitForDraft: (page, userId) => waitForStoredEntry(page, accountStorageKey(userId, PREFIX_CONTROL_STATE), reasonixMcpFormDraftSaved, 'the native Reasonix form answers must persist before reload'),
+      expectRestored: async (form) => {
+        await expect(form.getByLabel('Count', { exact: true })).toHaveValue('0')
+        await expect(form.getByRole('button', { name: 'Enabled', exact: true })).toHaveText('No')
+        await expect(form.getByRole('button', { name: 'Color', exact: true })).toHaveText('Blue')
+      },
+    },
+  })
+}
+
+/** Require the native text and display-label answers in the durable form draft. */
+export function reasonixMcpFormDraftSaved(record: unknown): boolean {
+  const choices = isObject(record) ? pickObject(record, 'choices') : null
+  return choices !== null
+    && choices[elicitationFieldKey('count')] === '0'
+    && choices[elicitationFieldKey('enabled')] === JSON.stringify('No')
+    && choices[elicitationFieldKey('color')] === JSON.stringify('Blue')
 }

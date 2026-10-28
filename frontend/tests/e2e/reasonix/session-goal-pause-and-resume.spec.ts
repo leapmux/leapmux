@@ -1,13 +1,10 @@
-import { AgentGoalAction } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
 import { reasonixTest } from '../reasonix-fixtures'
-import { exerciseReasonixGoalLifecycle } from './goalScenario'
-import { relatedNativeProof } from './scenarios'
+import { exerciseReasonixGoalErrorResume, exerciseReasonixGoalPauseResume } from './goalScenario'
 
-reasonixTest('session-goal-pause-and-resume: sets and clears a native Reasonix goal before and after cancellation', async ({ native }) => {
-  await exerciseReasonixGoalLifecycle(native)
+reasonixTest('pauses and resumes the retained native goal through its advertised requests after reload', async ({ native }) => {
+  await exerciseReasonixGoalPauseResume(native)
 })
 
-reasonixTest('proves the native session-goal-pause-and-resume limit after a real sidebar operation', async ({ native }) => {
-  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.PAUSE, AgentGoalAction.RESUME], relatedProof: () => relatedNativeProof(native) })
+reasonixTest('resumes the retained native goal through the Worker API after a model error', async ({ native }) => {
+  await exerciseReasonixGoalErrorResume(native)
 })

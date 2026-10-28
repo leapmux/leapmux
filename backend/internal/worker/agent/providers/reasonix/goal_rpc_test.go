@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -205,5 +206,189 @@ func TestReasonixGoalSetKeepsANewerNativeNotification(t *testing.T) {
 	require.NotEmpty(t, sink.Goals())
 	for _, goal := range sink.Goals() {
 		assert.Equal(t, agent.GoalStatusBlocked, goal.Status)
+	}
+}
+
+func TestReasonixGoalPauseAndResumeUseNativeRequests(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		action agent.GoalAction
+	}{{"pause", agent.GoalActionPause}, {"resume", agent.GoalActionResume}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			action := tc.action
+			a, sink, requests := reasonixGoalRPCFixture(t, nil)
+			a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1},"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`))
+			outcome, err := a.PerformGoalAction(action, "")
+			require.NoError(t, err)
+			assert.Empty(t, outcome.QueuedInput)
+			if action == agent.GoalActionResume {
+				testutil.AssertEventually(t, func() bool { return len(requests()) >= 2 }, "the native continuation prompt must reach the transport")
+			}
+			actual := requests()
+			if action == agent.GoalActionPause {
+				require.Len(t, actual, 1)
+				assert.Equal(t, reasonixMethodGoalPause, actual[0].Method)
+			} else {
+				require.Len(t, actual, 2)
+				assert.Equal(t, reasonixMethodGoalResume, actual[0].Method)
+				assert.Equal(t, acp.MethodSessionPrompt, actual[1].Method)
+				assert.Equal(t, []interface{}{map[string]interface{}{"type": "text", "text": "Continue the retained goal."}}, actual[1].Params["prompt"])
+			}
+			assert.Equal(t, map[string]interface{}{"sessionId": "session-1"}, actual[0].Params)
+			assert.Zero(t, sink.GoalClears(), "a retained goal must never be reset through mode changes")
+		})
+	}
+}
+
+func TestReasonixGoalResumeDoesNotStartATurnAfterNativeRefusal(t *testing.T) {
+	t.Parallel()
+	a, sink, requests := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32010,"message":"session has no resumable goal"}`)}
+	})
+	a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`))
+	_, err := a.PerformGoalAction(agent.GoalActionResume, "")
+	require.ErrorContains(t, err, "no resumable goal")
+	require.Len(t, requests(), 1)
+	assert.Equal(t, reasonixMethodGoalResume, requests()[0].Method)
+	assert.Zero(t, sink.GoalClears())
+	active, present := sink.LastTurnActive()
+	require.True(t, present)
+	assert.False(t, active)
+}
+
+func TestReasonixGoalResumeRefusesBusyBeforeChangingTheGoal(t *testing.T) {
+	t.Parallel()
+	a, _, requests := reasonixGoalRPCFixture(t, nil)
+	a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`))
+	a.SetPromptActiveForTest(true)
+	_, err := a.PerformGoalAction(agent.GoalActionResume, "")
+	require.ErrorIs(t, err, agent.ErrAgentBusy)
+	assert.Empty(t, requests())
+}
+
+func TestReasonixGoalPausePropagatesNativeRefusalWithoutChangingState(t *testing.T) {
+	t.Parallel()
+	a, sink, requests := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32011,"message":"session has no running goal"}`)}
+	})
+	a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1}}}}`))
+	_, err := a.PerformGoalAction(agent.GoalActionPause, "")
+	require.ErrorContains(t, err, "no running goal")
+	require.Len(t, requests(), 1)
+	assert.Empty(t, sink.Goals())
+	assert.Zero(t, sink.GoalClears())
+	assert.Empty(t, sink.TurnActives())
+}
+
+func TestReasonixGoalPauseRefusesAnAbsentSession(t *testing.T) {
+	t.Parallel()
+	a, _, requests := reasonixGoalRPCFixture(t, nil)
+	a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1}}}}`))
+	a.SetSessionIDForTest("")
+	_, err := a.PerformGoalAction(agent.GoalActionPause, "")
+	require.ErrorContains(t, err, "session is unavailable")
+	assert.Empty(t, requests())
+}
+
+func TestReasonixGoalResumeRecoversAFailedTurnWithARunningNativeGoal(t *testing.T) {
+	t.Parallel()
+	var resumes atomic.Int32
+	a, sink, requests := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		switch request.Method {
+		case reasonixMethodGoalResume:
+			if resumes.Add(1) == 1 {
+				return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32010,"message":"session has no resumable goal"}`)}
+			}
+		case reasonixMethodSessionStatus:
+			return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-1","mode":"goal","goal":{"status":"failed","objective":"Retain the native objective","runtime":{"turnsUsed":3,"tokensUsed":12345}}}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1},"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`))
+	_, err := a.PerformGoalAction(agent.GoalActionResume, "")
+	require.NoError(t, err)
+	testutil.AssertEventually(t, func() bool { return len(requests()) >= 5 }, "the recovered goal must receive its continuation prompt")
+	actual := requests()
+	require.Len(t, actual, 5)
+	assert.Equal(t, []string{reasonixMethodGoalResume, reasonixMethodSessionStatus, reasonixMethodGoalPause, reasonixMethodGoalResume, acp.MethodSessionPrompt}, []string{actual[0].Method, actual[1].Method, actual[2].Method, actual[3].Method, actual[4].Method})
+	for _, request := range actual {
+		assert.Equal(t, "session-1", request.Params["sessionId"])
+	}
+	assert.Zero(t, sink.GoalClears())
+}
+
+func TestReasonixGoalResumeRefusalDoesNotChangeAnUnrelatedState(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{
+		`null`,
+		`"invalid"`,
+		`{"sessionId":"session-1","mode":"goal","goal":{"status":"none"}}`,
+		`{"sessionId":"session-1","mode":"goal","goal":{"status":"complete","objective":"Done"}}`,
+		`{"sessionId":"session-1","mode":"goal","goal":{"status":"running","objective":"Already running"}}`,
+		`{"sessionId":"session-1","mode":"goal","goal":{"status":"failed"}}`,
+		`{"sessionId":"other","mode":"goal","goal":{"status":"failed","objective":"Another session"}}`,
+		`{"sessionId":"session-1","mode":"normal","goal":{"status":"failed","objective":"Another mode"}}`,
+	} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			a, sink, requests := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+				if request.Method == reasonixMethodSessionStatus {
+					return agenttest.RPCReply{Result: json.RawMessage(status)}
+				}
+				return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32010,"message":"session has no resumable goal"}`)}
+			})
+			a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1},"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`))
+			_, err := a.PerformGoalAction(agent.GoalActionResume, "")
+			require.ErrorContains(t, err, "no resumable goal")
+			require.Len(t, requests(), 2)
+			assert.Equal(t, reasonixMethodSessionStatus, requests()[1].Method)
+			assert.Zero(t, sink.GoalClears())
+		})
+	}
+}
+
+func TestReasonixGoalRecoveryStopsWhenANativeRequestFails(t *testing.T) {
+	t.Parallel()
+	for _, step := range []string{"status", "pause", "resume"} {
+		t.Run(step, func(t *testing.T) {
+			t.Parallel()
+			var resumes atomic.Int32
+			a, sink, requests := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+				failure := agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"native recovery failed"}`)}
+				switch request.Method {
+				case reasonixMethodGoalResume:
+					if resumes.Add(1) == 1 {
+						return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32010,"message":"session has no resumable goal"}`)}
+					}
+					if step == "resume" {
+						return failure
+					}
+				case reasonixMethodSessionStatus:
+					if step == "status" {
+						return failure
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-1","mode":"goal","goal":{"status":"failed","objective":"Retain the objective"}}`)}
+				case reasonixMethodGoalPause:
+					if step == "pause" {
+						return failure
+					}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1},"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`))
+			_, err := a.PerformGoalAction(agent.GoalActionResume, "")
+			require.ErrorContains(t, err, "native recovery failed")
+			counts := map[string]int{"status": 2, "pause": 3, "resume": 4}
+			require.Len(t, requests(), counts[step])
+			for _, request := range requests() {
+				assert.NotEqual(t, acp.MethodSessionPrompt, request.Method)
+			}
+			assert.Zero(t, sink.GoalClears())
+			active, present := sink.LastTurnActive()
+			require.True(t, present)
+			assert.False(t, active)
+		})
 	}
 }

@@ -1789,7 +1789,7 @@ func (b *Base) handleUsageUpdate(update json.RawMessage) {
 	info := map[string]interface{}{
 		contracts.SessionInfoKeyContextUsage: contextUsage,
 	}
-	if usage.Cost.Amount > 0 {
+	if usage.Cost.Amount > 0 && usage.Cost.Currency == "USD" {
 		info[contracts.SessionInfoKeyTotalCostUsd] = usage.Cost.Amount
 	}
 	b.sink.BroadcastSessionInfo(info)
