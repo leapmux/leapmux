@@ -11,7 +11,7 @@ import (
 )
 
 func confmapProvider(m map[string]interface{}) koanf.Provider {
-	return confmap.Provider(m, ".")
+	return confmap.Provider(m, Delim)
 }
 
 func fileProvider(path string) koanf.Provider {
