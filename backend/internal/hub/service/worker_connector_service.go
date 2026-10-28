@@ -111,6 +111,16 @@ func (s *WorkerConnectorService) SetMaxWorkersPerUser(n int64) {
 	s.maxWorkersPerUser.Store(n)
 }
 
+type workerRegistrationLimitError struct {
+	limit int64
+}
+
+func (e *workerRegistrationLimitError) Error() string {
+	return fmt.Sprintf(
+		"this account already has %d workers registered, which is the configured maximum "+
+			"(max_workers_per_user); deregister one first", e.limit)
+}
+
 // refuseIfAtWorkerCap fails the registration when the user already holds as many
 // Workers as max_workers_per_user allows.
 //
@@ -146,12 +156,7 @@ func (s *WorkerConnectorService) refuseIfAtWorkerCap(
 	if int64(len(page.Rows)) < limit {
 		return nil
 	}
-	slog.Warn("refusing worker registration: user is at its worker cap",
-		"user_id", owner, "limit", limit)
-	metrics.CountWorkerAdmissionRefused(metrics.WorkerStageRegister)
-	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
-		"this account already has %d workers registered, which is the configured maximum "+
-			"(max_workers_per_user); deregister one first", limit))
+	return connect.NewError(connect.CodeResourceExhausted, &workerRegistrationLimitError{limit: limit})
 }
 
 // Register handles the worker → hub registration RPC.
@@ -222,6 +227,13 @@ func (s *WorkerConnectorService) Register(
 		return nil
 	})
 	if err != nil {
+		// A transaction callback can run more than once. Publish only its final refusal.
+		var limitError *workerRegistrationLimitError
+		if errors.As(err, &limitError) {
+			slog.Warn("refusing worker registration: user is at its worker cap",
+				"user_id", registeredBy, "limit", limitError.limit)
+			metrics.CountWorkerAdmissionRefused(metrics.WorkerStageRegister)
+		}
 		return nil, err
 	}
 

@@ -251,7 +251,8 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 // this bound, N keys mint N members and the floors the worker pool promises sum
 // without limit, on the pool whose eviction costs the most.
 func TestRegister_RefusesBeyondThePerUserWorkerCap(t *testing.T) {
-	t.Parallel()
+	// Exact stage assertions read process-global counters. Keep this test
+	// sequential so other admission tests cannot increment the connect stage.
 
 	env := setupRegKeyEnvWithCfg(t, testConfig(), maxWorkersPerUser(2))
 	token := env.login(t, "admin", "admin123")
@@ -265,8 +266,11 @@ func TestRegister_RefusesBeyondThePerUserWorkerCap(t *testing.T) {
 		return err
 	}
 
+	registrationsBefore := workerAdmissionsRefused(metrics.WorkerStageRegister)
 	require.NoError(t, register(t), "the first worker must register")
 	require.NoError(t, register(t), "and so must the second, up to the cap")
+	assert.Equal(t, registrationsBefore, workerAdmissionsRefused(metrics.WorkerStageRegister),
+		"successful registrations must not count as refusals")
 
 	// One cap, two stages, one counter. The `stage` label is what an operator
 	// reads to tell "deregister something" from "an existing stream is still
@@ -282,11 +286,8 @@ func TestRegister_RefusesBeyondThePerUserWorkerCap(t *testing.T) {
 	assert.Contains(t, err.Error(), "max_workers_per_user",
 		"the operator-facing key has to be in the message, or nobody knows what to raise")
 
-	// At LEAST one more, not exactly one: the counter is process-global and
-	// every test in this binary shares it, so an exact delta would be a race
-	// with any other parallel test that trips the same cap.
-	assert.GreaterOrEqual(t, workerAdmissionsRefused(metrics.WorkerStageRegister), before+1,
-		"a refused registration must be visible from outside")
+	assert.Equal(t, before+1, workerAdmissionsRefused(metrics.WorkerStageRegister),
+		"the refusal must increment the registration stage exactly once")
 	assert.Equal(t, connectBefore, workerAdmissionsRefused(metrics.WorkerStageConnect),
 		"...under the stage that actually refused it, not the other one")
 }

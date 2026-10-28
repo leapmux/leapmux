@@ -885,6 +885,57 @@ func TestReadyChildHeadKeepsAnUnsubmittedTurnEndBeforeIdle(t *testing.T) {
 	assert.Empty(t, root.LeapMuxNotifications())
 }
 
+func TestUnservedChildHistoryAcceptsAProvedEmptyOrigin(t *testing.T) {
+	for _, mode := range []string{"none", "futureHistoryMode"} {
+		for _, head := range []string{"", "opaque-empty-head"} {
+			t.Run(fmt.Sprintf("mode=%s/head=%q", mode, head), func(t *testing.T) {
+				a, root := testAgent(t)
+				state, child := nativeHistoryChild(t, a, root)
+				a.viewWork.CloseAndWait()
+				state.viewRecovery = &viewRecovery{}
+				state.childViewRequested = true
+				var methods []string
+				a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+					methods = append(methods, method)
+					var result any
+					switch method {
+					case methodSessionRead:
+						result = map[string]any{
+							"session":    map[string]any{"sessionId": "child", "status": "notLoaded", "activeTurnId": nil},
+							"viewCursor": head,
+							"history":    map[string]any{"mode": mode, "noneReason": "projectionUnavailable", "items": nil, "snapshot": nil},
+						}
+					case methodViewPage:
+						var params map[string]any
+						require.NoError(t, json.Unmarshal(raw, &params))
+						assert.NotContains(t, params, "cursor")
+						result = map[string]any{"events": []any{}, "nextCursor": nil}
+					case methodViewSubscribe:
+						var params map[string]any
+						require.NoError(t, json.Unmarshal(raw, &params))
+						assert.Equal(t, head, params["after"])
+						a.HandleOutput(childLifecycleFrameAtSource(t, methodTurnStarted, "later-live-start", "current-turn", 1))
+						result = map[string]any{"viewCursor": "later-live-start"}
+					default:
+						t.Errorf("unexpected unserved-history method %s", method)
+						return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"unexpected unserved-history request"}`)}
+					}
+					encoded, err := json.Marshal(result)
+					require.NoError(t, err)
+					return agenttest.RPCReply{Result: encoded}
+				}})
+				a.syncView("child")
+				assert.Equal(t, []string{methodSessionRead, methodViewPage, methodViewSubscribe}, methods)
+				assert.Equal(t, childViewPrefixReady, state.childViewPrefix)
+				assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState(state.childKey))
+				assert.Equal(t, []agent.TurnState{{Active: true, Steerable: true}}, child.TurnStates())
+				assert.Empty(t, child.Messages())
+				assert.Empty(t, root.LeapMuxNotifications())
+			})
+		}
+	}
+}
+
 func TestEmptyChildViewRetainsItsObservedHeadWithoutInventingActivity(t *testing.T) {
 	for _, tc := range []struct {
 		name, head, wantError                 string

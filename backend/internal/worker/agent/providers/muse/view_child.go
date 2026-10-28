@@ -102,7 +102,6 @@ func (a *Agent) readChildViewStart(id string, state *sessionState, recovery *vie
 	if err != nil {
 		return start, err
 	}
-	emptyItemFold := start.empty
 	start.empty, start.after = false, ""
 	timeout, err := a.childViewTimeout(deadline)
 	if err != nil {
@@ -113,7 +112,28 @@ func (a *Agent) readChildViewStart(id string, state *sessionState, recovery *vie
 		return start, err
 	}
 	if len(prefix) == 0 {
-		if emptyItemFold && next == nil && start.head != nil {
+		a.dispatcher.mu.Lock()
+		a.stateMu.Lock()
+		emptyOrigin := recovery != nil && next == nil && start.head != nil && len(start.registryItems) == 0 &&
+			a.currentSessionState(id, state) && state.viewRecovery == recovery && state.nativeHead == start.nativeHead
+		if emptyOrigin {
+			// An unserved fold makes no assertion about the view. A durable
+			// buffered event at the cut does, and an empty page cannot replace it.
+			for _, raw := range recovery.buffer {
+				cursor := viewFrameCursor(raw)
+				if cursor == nil || *cursor != *start.head {
+					continue
+				}
+				anchor, err := childProjectionAnchor(raw)
+				if err != nil || anchor != nil {
+					emptyOrigin = false
+					break
+				}
+			}
+		}
+		a.stateMu.Unlock()
+		a.dispatcher.mu.Unlock()
+		if emptyOrigin {
 			start.empty, start.after = true, *start.head
 			return start, nil
 		}

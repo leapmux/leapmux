@@ -262,17 +262,14 @@ export function enqueueKvPut(row: KvRow, opts: KvWriteOptions): StorageWrite {
     kind: 'put',
     row,
     publish: opts.publish,
-    // A put that supersedes a pending DELETE REPLACES the row; it does not merge
-    // with it. The caller asked for the stored value to go, so the high-water
-    // compare must not resurrect it.
+    // A put that supersedes a pending delete replaces the row. Later puts in
+    // the same batch retain that replacement policy until the batch commits.
     //
-    // This is the only way a monotonic mark can ever be repaired. A stored value
-    // that is not a usable mark -- `Infinity`, a fraction, a number past the
-    // composition ceiling -- compares greater than every real mark, so no
-    // ordinary write can replace it and the sequence stays poisoned for the life
-    // of the profile. `persistedSeq` drops the row when it refuses to seed from
-    // it, and that delete is what lets the mark it writes next actually land.
-    monotonic: opts.monotonic === true && superseded?.kind !== 'delete',
+    // A corrupt high-water mark can exceed every replacement from a fresh
+    // sequence. A later put must not restore the comparison that would reject
+    // the reset. Once this batch commits, a new batch applies its own merge policy.
+    monotonic: opts.monotonic === true
+      && (superseded === undefined || (superseded.kind === 'put' && superseded.monotonic)),
     settles,
   }))
 }

@@ -122,13 +122,10 @@ export function createPersistedSeq(key: SyncLocalKey): () => number {
         mark = 0
         // DROP THE POISONED ROW, and do it before the write below.
         //
-        // The key merges as a high-water mark, so a stored value that is not a
-        // usable mark wins every compare against a real one: `Infinity`, a
-        // fraction and a number past MARK_LIMIT all sort above whatever this
-        // allocator writes next, so the row would keep the bad value and every
-        // later reload would land here again. Deleting it first is what makes
-        // the repair reach disk -- a put that supersedes a pending delete
-        // replaces the row instead of merging with it.
+        // The key merges as a high-water mark. A corrupt value above the reset
+        // mark, such as Infinity or a value past MARK_LIMIT, wins the next merge.
+        // Deleting it makes the reset replace the row instead of comparing
+        // against it. Coalesced allocations retain that replacement policy.
         //
         // Only this module can make that call: the store knows what a mark is,
         // but MARK_LIMIT is the composition ceiling of the id built here.
