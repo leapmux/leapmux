@@ -5,9 +5,9 @@ type: docs
 weight: 1
 ---
 
-LeapMux is a single Go binary (`leapmux`) that you run in one of four modes: `solo`, `hub`, `worker`, or `dev`. This chapter is the administrator's guide to those modes — what each one does, how to launch it, where it stores data, and how to run LeapMux under Docker or behind a reverse proxy.
+Use the `leapmux` command to run a personal workspace, a shared Hub, or a Worker that connects to a Hub. This guide covers choosing a mode, starting it, keeping its data, and making it accessible through Docker or a reverse proxy.
 
-If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo` is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends referenced here, see [Configuration](/docs/admin/configuration/).
+If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo` is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends, see [Configuration](/docs/admin/configuration/).
 
 ## Run modes at a glance
 
@@ -15,53 +15,53 @@ The modes that accept inbound connections — `solo`, `hub`, and `dev` — all d
 
 | Mode | What it runs | Default listen | Login required | Config / data location |
 |------|--------------|----------------|----------------|------------------------|
-| `solo` | Hub + Worker in one process | `127.0.0.1:4327` (loopback only), plus any address you add | Local IPC: no. TCP: first-password setup, then yes. | `~/.config/leapmux/solo/` |
+| `solo` | Hub + Worker in one process | `127.0.0.1:4327` (loopback only), plus any address you add | Desktop: no. Network: password setup, then sign-in. | `~/.config/leapmux/solo/` |
 | `hub` | Hub service only | `:4327` (all interfaces) | Yes — full authentication | `~/.config/leapmux/hub/` |
 | `worker` | Worker only (connects out to a Hub) | n/a (no inbound port) | Registers with the Hub via a registration key | `~/.config/leapmux/worker/` |
 | `dev` | Hub + Worker in one process | `:4327` (all interfaces) | Yes — admin bootstrapped via `/setup` | `~/.config/leapmux/dev/` |
 
-Each mode reads a YAML config file named after the mode inside its config directory — for example `~/.config/leapmux/hub/hub.yaml` for the Hub. The file is optional; a missing config file is silently skipped. The default data directory for each mode is the same as its config directory.
+Each mode reads a YAML config file named after the mode inside its config directory — for example `~/.config/leapmux/hub/hub.yaml` for the Hub. The file is optional; omit it if you only need defaults, flags, or environment variables. The default data directory for each mode is the same as its config directory.
 
 {{< callout type="info" >}}
-`solo` and `dev` are the same program internally. Both run a Hub and a Worker together. Solo creates one account named `solo`. Local IPC uses it without a credential. A TCP caller can only set the first password until setup succeeds. Dev binds all interfaces and uses password authentication from the start. Dev creates its first admin through the `/setup` flow.
+Choose `solo` for one account on your own machine. The desktop app needs no sign-in; browser access starts with password setup. Choose `dev` to run a Hub and Worker together for multiple users. It listens on all interfaces and asks you to create the first administrator at `/setup`.
 {{< /callout >}}
 
 {{< callout type="warning" >}}
 While the `solo` account has no password, the first TCP caller can claim it by setting that password. Other protected RPCs stay closed. If you bind solo to a non-loopback address in that state, LeapMux logs a startup warning. The app shows only the password-setup screen. See [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
+{{< /callout >}}
 
 ### Reaching a solo hub from another machine
 
 Set the `solo` account's password and add the address in **Preferences → Administration → Network access**. The Hub starts answering there at once, and again on every later start. From then on every network address asks you to sign in as `solo` — `127.0.0.1` included — while the desktop app, which reaches its Hub over a local socket, never does. [Network access](/docs/admin/configuration/#network-access) covers the panel, and [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) the rule.
 
-The sign-in that follows is an ordinary one, so the Hub's session settings apply to a solo hub as well: `session_duration_seconds` sets how long it lasts, and `secure_cookies` is what a solo hub behind a TLS-terminating proxy sets so its cookie carries the `__Host-` prefix.
+Session settings apply to solo mode when you sign in over the network. For HTTPS access, follow [Reverse proxy and public URL](#reverse-proxy-and-public-url).
 
 A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead.
-{{< /callout >}}
 
 ## Solo mode
 
-Solo mode is the single-user setup that runs with no required configuration. Hub and Worker run in the same process on loopback. A browser over TCP sets the first password before it opens the workspace. The desktop app opens through credential-free local IPC.
+Solo mode runs a personal Hub and Worker with no required configuration. By default, only your own machine can connect. Set the first password when you open it in a browser. The desktop app connects without a sign-in.
 
 ```bash
 leapmux solo
 # Then open http://127.0.0.1:4327
 ```
 
-Inside the solo data directory, the single `data_dir` is split into two subdirectories: the Hub stores its database and encryption key under `<data_dir>/hub/`, and the in-process Worker stores its state under `<data_dir>/worker/`. The Worker auto-registers itself and persists its credentials and end-to-end-encryption keypair to `<data_dir>/worker/state.json`, so your session survives restarts.
+Solo mode keeps Hub data in `<data_dir>/hub/` and Worker data in `<data_dir>/worker/`. Keep both directories when moving or backing up the installation. You do not need to register the bundled Worker separately.
 
-Solo mode accepts a subset of the Hub's flags plus the Worker flags `-encryption-mode` and `-use-login-shell`. The most important solo flags:
+Use these flags to customize solo mode:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `127.0.0.1:4327` plus the platform's local IPC URL | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) |
+| `-listen` | `127.0.0.1:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite tuning flags (`-storage-sqlite-max-conns`, `-storage-sqlite-cache-size`, `-storage-sqlite-mmap-size`), the chunked-reassembly cap (`-max-incomplete-chunked`), and `-dev-frontend`; see [Configuration](/docs/admin/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux control admin settings` instead of launch flags.
+For all supported flags and runtime settings, see [Configuration](/docs/admin/configuration/).
 
-The desktop app runs solo mode under the hood, but with no TCP port at all — it serves the Hub only over a local IPC socket (a Unix domain socket or Windows named pipe). See [Installation](/docs/getting-started/installation/) for the desktop app.
+The desktop app runs solo mode without opening a network port by default. See [Installation](/docs/getting-started/installation/) for desktop setup.
 
 ## Hub mode
 
@@ -77,13 +77,13 @@ Enable sign-up with `leapmux control admin settings set signup_enabled true`, or
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | platform default | One listen address, repeatable. A TCP address (`:4327`, `127.0.0.1:4327`) or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL (`unix:<data-dir>/hub.sock` on Unix) is added when the list names none. |
+| `-listen` | `:4327` plus a local socket address | A TCP address or local socket address. Repeat the flag to listen on multiple addresses. |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
 | `-storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
 | `-log-level` | `info` | Log level |
 | `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 
-The flags are the process's bootstrap surface only. Everything behavioral — sign-up, email verification, sessions, SMTP, timeouts, per-user limits — is an instance setting in the Hub's database, changed at runtime and without a restart:
+Set listening addresses and database connections at startup. Change account, email, session, timeout, and per-user limit settings on the running Hub with `leapmux control admin settings`:
 
 ```bash
 leapmux control admin settings set signup_enabled true
@@ -93,17 +93,17 @@ leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"
 By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
 
 {{< callout type="info" >}}
-The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
+For HTTPS access, put a reverse proxy in front of the Hub. See [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
 {{< /callout >}}
 
 ## Running Workers
 
-A Worker runs your agents and terminals and connects **out** to a Hub — it never accepts inbound connections, so it works behind a NAT or firewall with no port forwarding. A Worker is not a user account; it **registers** with the Hub using a one-time registration key minted in the Hub UI.
+Run a Worker on each machine where you want to run agents and terminals. Workers connect to the Hub without accepting inbound connections, so they need no port forwarding. Register each Worker with a one-time registration key from the Hub.
 
 On first run, point the Worker at the Hub and supply a registration key:
 
 ```bash
-leapmux worker -hub https://hub.example.com -registration-key <key>
+leapmux worker -hub https://hub.example.com -registration-key YOUR_REGISTRATION_KEY
 ```
 
 After a successful registration, the Worker saves its credentials and keypair to `<data_dir>/state.json` and reconnects automatically on every subsequent start — you do **not** pass `-registration-key` again.
@@ -121,23 +121,23 @@ After a successful registration, the Worker saves its credentials and keypair to
 
 If a Worker has no saved credentials and no key, it refuses to start, and the error tells you to pass a registration key from the Hub UI. If you pass `-registration-key` to a Worker that is already registered, it stops rather than consuming the key by accident; the error tells you to remove `-registration-key` or to wipe the local state.
 
-Minting registration keys, approving Workers, the trust-on-first-use (TOFU) pinning of Worker keys, and choosing which Worker a tab runs on are all covered in [Managing Workers](/docs/admin/managing-workers/).
+For creating registration keys, approving Workers, verifying their identities, and choosing a Worker for a tab, see [Managing Workers](/docs/admin/managing-workers/).
 
 ## Dev mode
 
-`leapmux dev` runs a Hub and Worker together like solo, but binds all interfaces and requires a real login. It is the all-features, network-reachable variant — and the one to use inside a container when you want a single-process Hub + Worker that is actually reachable from outside.
+Use `leapmux dev` to run a Hub and Worker together with multiple user accounts. It listens on all interfaces and requires sign-in. Choose this mode when you want both services in one container.
 
 ```bash
 leapmux dev -listen :4327
 ```
 
-Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until the first admin signs up through `/setup`. Until then, the log says `deferring worker auto-registration until first admin signs up via /setup`. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
+Open the Hub in your browser and complete `/setup` to create the first administrator. The bundled Worker becomes available after setup.
 
-Dev mode accepts the same flags as solo. The most important dev flags:
+Use these flags to customize dev mode:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` plus the platform's local IPC URL | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) |
+| `-listen` | `:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
 | `-log-level` | `info` | Log level |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
@@ -145,15 +145,11 @@ Dev mode accepts the same flags as solo. The most important dev flags:
 
 Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/admin/configuration/)).
 
-Dev mode enables `signup_enabled=true` by default, because it runs the full multi-user path (a stored setting overrides it). The runtime knobs are settings rather than flags — a short session for exercising the signed-out path is:
-
-```bash
-leapmux control admin settings set session_duration_seconds 300   # the 5-minute minimum
-```
+Dev mode enables sign-up by default unless you override the `signup_enabled` setting. For account and session settings, see [Configuration](/docs/admin/configuration/).
 
 ## Running under Docker
 
-Pre-built multi-arch images are published to `ghcr.io/leapmux/leapmux` and use [s6-overlay](https://github.com/just-containers/s6-overlay) as their init process. The single environment variable `LEAPMUX_MODE` selects which subcommand the container runs.
+Use the images at `ghcr.io/leapmux/leapmux` to run a Hub, a Worker, or both in one container.
 
 ### Image variants and tags
 
@@ -162,109 +158,93 @@ Pre-built multi-arch images are published to `ghcr.io/leapmux/leapmux` and use [
 | Alpine (default) | `:<version>`, `:<major>`, `:latest`, `:dev` | `ghcr.io/leapmux/leapmux:latest` |
 | Ubuntu | `:<version>-ubuntu`, `:<major>-ubuntu`, `:latest-ubuntu`, `:dev-ubuntu` | `ghcr.io/leapmux/leapmux:latest-ubuntu` |
 
-Both variants target `linux/amd64` and `linux/arm64`. Release tags (`:latest`, `:<version>`, `:<major>`) come from the release workflow; the `:dev` tag is rebuilt on every push to `main`. For production, pin a specific `:<version>` rather than tracking `:latest` or `:dev`.
+Both variants support `linux/amd64` and `linux/arm64`. Use a specific `:<version>` for a predictable deployment. The `:latest` tag follows releases, and `:dev` follows changes on `main`.
 
 ### Selecting the mode
 
-`LEAPMUX_MODE` is **required for the default command** and must be one of `hub`, `worker`, `dev`, or `solo`. If it is unset or invalid, the container exits, and the error lists the four accepted modes.
+Set `LEAPMUX_MODE` to `hub`, `worker`, `dev`, or `solo`. The container requires a valid mode to start with its default command.
 
-The default Docker command runs `leapmux-start` through s6. The script invokes `leapmux <mode> -config /data/<mode>/<mode>.yaml`, creating an empty `0600` config file if none exists. `LEAPMUX_DATA_DIR` replaces the `/data` directory when set. Directory or config-file creation failures stop startup. The script preserves an existing config file and passes no other flags. Additional settings must come from the YAML config file or from `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables (see [Configuration](/docs/admin/configuration/)).
+Configure the selected mode through `/data/<mode>/<mode>.yaml` or its supported environment variables. For example, a Hub reads `/data/hub/hub.yaml` and `LEAPMUX_HUB_*` variables. Use the YAML file for database storage settings. See [Configuration](/docs/admin/configuration/) for the supported options.
 
-When LeapMux exits, s6 shuts down the container and preserves the process's exit status. Set a Docker restart policy, such as `unless-stopped`, to restart the container. `docker stop` lets LeapMux shut down gracefully. An explicit Docker command replaces `leapmux-start` and still runs through s6.
+To use a different base directory instead of `/data`, set `LEAPMUX_DATA_DIR` and mount your persistent volume at that directory.
 
 ### Volume layout
 
-The image declares a single `/data` volume. Each mode keeps its files under `/data/<mode>/`:
+Mount a named volume or host directory at `/data` to preserve configuration, databases, encryption keys, and Worker credentials when you replace the container.
 
-| Path | Contents |
-|------|----------|
-| `/data/<mode>/<mode>.yaml` | Config file (e.g. `/data/hub/hub.yaml`) |
-| `/data/<mode>/hub/hub.db` | Hub SQLite database (when using the default SQLite backend) |
-| `/data/<mode>/hub/state.json` | Hub pid and resolved bind set (deleted on clean shutdown) |
-| `/data/<mode>/hub/encryption.key` | Hub encryption key ring |
-| `/data/<mode>/worker/state.json` | Worker registration credentials and E2EE keypair |
-| `/data/<mode>/worker/worker.db` | Worker SQLite database |
+| Mode | Configuration file | Default data directories |
+|------|--------------------|------------------|
+| `hub` | `/data/hub/hub.yaml` | `/data/hub/` |
+| `worker` | `/data/worker/worker.yaml` | `/data/worker/` |
+| `dev` | `/data/dev/dev.yaml` | `/data/dev/hub/` and `/data/dev/worker/` |
+| `solo` | `/data/solo/solo.yaml` | `/data/solo/hub/` and `/data/solo/worker/` |
 
-In a `hub` or `worker` container the mode directory is the top level, so the files sit directly at `/data/hub/…` and `/data/worker/…`. In a `dev` or `solo` container the single process runs both sides, and the Hub and Worker subdirectories nest one level deeper (`/data/dev/hub/…`, `/data/dev/worker/…`).
+The Hub's data directory contains `hub.db` when you use SQLite, and `encryption.key` for its encryption keys. The Worker's data directory contains `worker.db` and its registration credentials in `state.json`.
 
-Mount a named volume (or a host path) at `/data` so this state survives container recreation.
-
-**The `/data` volume laid out for a `hub` and a `worker`:**
-
-```text
-/data                          ← mounted volume (-v leapmux-data:/data)
-├── hub/                       ← LEAPMUX_MODE=hub
-│   ├── hub.yaml               ← config file
-│   ├── hub.db                 ← Hub SQLite database (default backend)
-│   └── encryption.key         ← Hub encryption key ring
-└── worker/                    ← LEAPMUX_MODE=worker
-    ├── worker.yaml            ← config file
-    ├── worker.db              ← Worker SQLite database
-    └── state.json             ← registration credentials + E2EE keypair
-```
-
-In a `dev` or `solo` container the same files nest under `/data/dev/` or `/data/solo/`: `dev.yaml`, `hub/hub.db`, `hub/encryption.key`, `worker/state.json`, `worker/worker.db`.
+Keep the volume even when the Hub uses an external database: its encryption keys still need persistent storage. See [Encryption & Data](/docs/admin/encryption-and-data/) for backup instructions.
 
 ### Exposing the port
 
-The image exposes port **4327**, the single TCP listen port for `hub`, `dev`, and `solo`. (`worker` makes only outbound connections, so it needs no published port.) Map it with `-p`:
+Publish port **4327** for a Hub or a `dev` container. Choose one of these examples:
 
 ```bash
-# Run as a hub (central service only)
-docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data \
+# Run a Hub with separate Workers.
+docker run -d --name leapmux-hub --restart unless-stopped \
+  -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data \
   ghcr.io/leapmux/leapmux:latest
 
-# Run as Hub + Worker together (dev mode, login required)
-docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data \
+# Run a Hub and Worker together.
+docker run -d --name leapmux-dev --restart unless-stopped \
+  -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data \
   ghcr.io/leapmux/leapmux:latest
 ```
 
+Open `http://localhost:4327` and complete `/setup` to create the first administrator. The examples publish the port on all host interfaces. For HTTPS access, follow [Reverse proxy and public URL](#reverse-proxy-and-public-url).
+
 {{< callout type="warning" >}}
-Do not run `LEAPMUX_MODE=solo` in a container expecting to reach it from outside. Solo's default listen address is `127.0.0.1:4327` (loopback only), which is not reachable from the host, and a fresh solo hub has no password on its one account. Use `dev` for a single-process Hub + Worker that binds all interfaces with a real login, or run a `hub` container plus separate `worker` containers.
+Solo mode listens on `127.0.0.1:4327` inside the container by default, so publishing its port does not make it reachable from the host. Use `dev` when you want a Hub and Worker in one container that accepts network connections and requires sign-in.
 {{< /callout >}}
 
 ### Running a Worker container
 
-The startup script passes no `--hub` or `--registration-key` flags, so a `worker` container needs those supplied another way — via the Worker YAML config at `/data/worker/worker.yaml` or via environment variables:
+Set the Hub URL and a registration key from the Hub. Workers need no published port.
 
 ```bash
-docker run -e LEAPMUX_MODE=worker \
+docker run --name leapmux-worker -e LEAPMUX_MODE=worker \
   -e LEAPMUX_WORKER_HUB=https://hub.example.com \
-  -e LEAPMUX_WORKER_REGISTRATION_KEY=<key> \
+  -e LEAPMUX_WORKER_REGISTRATION_KEY=YOUR_REGISTRATION_KEY \
   -v leapmux-worker-data:/data \
   ghcr.io/leapmux/leapmux:latest
 ```
 
-The registration key is consumed only on first registration; once the Worker's `state.json` exists you can drop `LEAPMUX_WORKER_REGISTRATION_KEY` from later runs.
+After registration, recreate the container with the same volume and without `LEAPMUX_WORKER_REGISTRATION_KEY`. A registered Worker refuses to start if you supply a registration key again. Keep its volume so it can reconnect with its saved credentials. See [Managing Workers](/docs/admin/managing-workers/) for registration and approval.
 
-### Supervision behavior
+### Restart policy
 
-The image entrypoint is s6-overlay's `/init`. Its default command starts LeapMux and shuts down the container when LeapMux exits, preserving the exit status. Docker's restart policy controls whether the container starts again. A manual `docker stop` requests graceful shutdown and suppresses an immediate restart.
+Use `--restart unless-stopped` with `docker run`, or `restart: unless-stopped` in Compose, to restart the container automatically after an exit or a Docker restart. Containers you stop manually stay stopped. Remove a Worker's initial registration key before enabling automatic restarts.
 
 ## Reverse proxy and public URL
 
-The Hub never terminates TLS on its own. To serve LeapMux over HTTPS, put a reverse proxy (nginx, Caddy, Traefik, etc.) in front of it and tell the Hub its external address:
+To serve LeapMux over HTTPS, put a reverse proxy such as nginx, Caddy, or Traefik in front of the Hub. Configure the Hub to use its public address:
 
 1. Set `public_url` to the external HTTPS URL: `leapmux control admin settings set public_url "https://hub.example.com"`.
-2. Enable secure cookies so they are `__Host-` prefixed and the derived base URL uses `https`: `leapmux control admin settings set secure_cookies true`. (This changes the cookie name, which signs every current session out — do it once, at setup.)
-3. Configure the direct proxy peer: `leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'`. Both loopback forms are listed because `proxy_pass http://localhost:4327` reaches the Hub over IPv6 on a dual-stack host, and an untrusted peer has its forwarding headers ignored with no error. Use the actual proxy address or range when the proxy runs on another host.
+2. Enable secure cookies with `leapmux control admin settings set secure_cookies true`. This signs out current sessions, so configure it during initial setup.
+3. Trust the proxy's address with `leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'`. This example trusts a proxy on the same machine over IPv4 or IPv6. Use the actual address or range for a remote proxy. The Hub ignores forwarding headers from untrusted proxies.
 4. Point each Worker's `-hub` URL at the same external `https://` address. Workers always initiate outbound connections, so they need no inbound ports of their own.
 
-All three settings are hot. A running Hub applies them within about 30 seconds, with no restart.
+The Hub applies these three settings within about 30 seconds. No restart is needed.
 
-`trusted_proxy_ranges` accepts IP addresses, CIDRs, inclusive ranges, short IPv4 ranges, and the symbolic provider tokens `cloudflare` and `cloudfront`. LeapMux prefers RFC 7239 `Forwarded`. It uses `X-Forwarded-For` and `X-Forwarded-Proto` only when `Forwarded` is absent. The Hub verifies the direct peer and walks the chain from the trusted side before it records a client IP.
+For the supported proxy address formats and forwarding headers, see [Configuration](/docs/admin/configuration/).
 
 {{< callout type="warning" >}}
-The provider tokens identify all bundled provider ranges, not your account. Restrict the origin to your distribution or use authenticated origin requests. Configure every proxy to remove client-supplied forwarding headers or append only verified values. LeapMux does not download updated provider ranges automatically.
+If you use `cloudflare` or `cloudfront` in `trusted_proxy_ranges`, those values trust the bundled ranges for the entire provider. Restrict access to your distribution or use authenticated origin requests. Configure every proxy to remove client-supplied forwarding headers or append only verified values. LeapMux does not download updated provider ranges automatically.
 {{< /callout >}}
-
-The effective forwarded protocol changes request URL metadata only. It does not enable secure cookies. Keep `secure_cookies` explicit as step 2 specifies.
 
 {{< callout type="warning" >}}
 `public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at write time. Give LeapMux its own hostname or subdomain.
 {{< /callout >}}
 
-The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For the security implications of the relay, the end-to-end-encryption boundary, and Worker TOFU pinning, see [Security & Threat Model](/docs/admin/security/).
+The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For details about encryption and Worker identity verification, see [Security & Threat Model](/docs/admin/security/).
 
 The proxy must carry **HTTP/2 to the Hub** as well. A Worker holds one bidirectional stream to the Hub, and HTTP/1.1 cannot carry it, so a Worker behind an HTTP/1.1-only proxy cannot connect and says so:
 
@@ -272,7 +252,7 @@ The proxy must carry **HTTP/2 to the Hub** as well. A Worker holds one bidirecti
 endpoint does not support cleartext HTTP/2 (h2c)
 ```
 
-Two shapes work. Terminate TLS at the proxy and let the Hub see plain HTTP/2 without encryption (`h2c`) — nginx `grpc_pass`, Caddy `transport http { versions h2c }`, Traefik `h2c://`. Or point the Worker's `-hub` URL at the Hub directly, which every co-located deployment already does. Other traffic — the Frontend, the CLI, the REST endpoints — works over HTTP/1.1, so only the Worker connection fails when the proxy drops HTTP/2.
+Configure the proxy to accept HTTPS and forward cleartext HTTP/2 (`h2c`) to the Hub. Use nginx `grpc_pass`, Caddy `transport http { versions h2c }`, or Traefik `h2c://`. Alternatively, connect the Worker directly to the Hub. Browser and command-line requests can work over HTTP/1.1 even when the Worker connection fails.
 
 ## Upgrading
 
