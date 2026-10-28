@@ -44,7 +44,7 @@ func TestCopilotNativeConnection(t *testing.T) {
 	argsFile := filepath.Join(t.TempDir(), "args")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
 		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
-		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", ArgsFile: argsFile,
+		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", ArgsFile: argsFile, ForwardArgs: true,
 	})
 	notifications := make(chan []byte, 1)
 	connection, err := startCopilotConnectionForTest(t, agent.Options{
@@ -56,6 +56,8 @@ func TestCopilotNativeConnection(t *testing.T) {
 	args, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
 	require.Contains(t, string(args), "--server --stdio")
+	require.NotContains(t, strings.Fields(string(args)), "--no-remote")
+	require.Contains(t, strings.Fields(string(args)), "--no-remote-export")
 	require.NotContains(t, string(args), "--acp")
 	require.NotContains(t, string(args), "--disable-builtin-mcps")
 	result, err := connection.SendRequest("probe.echo", json.RawMessage(`{"text":"한글"}`), time.Second)
@@ -93,6 +95,10 @@ func TestCopilotNativeConnectionRejectsAnUnknownProtocol(t *testing.T) {
 func TestHelperCopilotNativeConnection(t *testing.T) {
 	if os.Getenv("LEAPMUX_TEST_COPILOT_NATIVE") != "1" {
 		return
+	}
+	if slices.Contains(os.Args, "--no-remote") {
+		_, _ = fmt.Fprintln(os.Stderr, "error: --no-remote was removed. Use /remote off in a session; manage incoming connections in /environments.")
+		os.Exit(1)
 	}
 	reader := bufio.NewReader(os.Stdin)
 	headers := textproto.NewReader(reader)

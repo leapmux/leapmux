@@ -3,6 +3,7 @@ package copilot
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -1108,6 +1109,60 @@ func TestUnknownEphemeralEventPersists(t *testing.T) {
 	a.HandleOutput(raw)
 	require.Len(t, sink.Messages(), 1)
 	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
+}
+
+func TestNativeShellOutputIsNotAStoredRow(t *testing.T) {
+	t.Parallel()
+	for _, nativeAgentID := range []string{"", "child"} {
+		for _, stream := range []string{"stdout", "stderr", "terminal", ""} {
+			t.Run(fmt.Sprintf("agent=%q/stream=%q", nativeAgentID, stream), func(t *testing.T) {
+				a, root := newNativeCopilotForEvents(t)
+				child := &agenttest.Sink{}
+				a.children = map[string]*copilotNativeChild{"child": {nativeAgentID: "child", sink: agent.NewProviderServices(child)}}
+				data := map[string]any{"toolCallId": "shell", "sequence": 0, "text": strings.Repeat("live 출력\n", 1024)}
+				if stream != "" {
+					data["stream"] = stream
+				} else {
+					data["text"] = ""
+				}
+				a.HandleOutput(copilotVerdictFrame(t, nativeAgentID, "tool.shell_output", true, data))
+				assert.Zero(t, len(root.Messages()))
+				assert.Zero(t, len(child.Messages()))
+				future := copilotVerdictFrame(t, nativeAgentID, "tool.shell_output.future", true, data)
+				a.HandleOutput(future)
+				target, other := root, child
+				if nativeAgentID != "" {
+					target, other = child, root
+				}
+				require.Equal(t, 1, len(target.Messages()), "the known stream type must not suppress an unknown event")
+				assert.JSONEq(t, string(future), string(target.Messages()[0].Content))
+				assert.Empty(t, other.Messages())
+			})
+		}
+	}
+}
+
+func TestLateShellOutputPreservesCanonicalToolRows(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	start := nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": "shell", "toolName": contracts.CopilotToolBash, "arguments": map[string]any{"command": "run"},
+	})
+	completed := nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted, map[string]any{
+		"toolCallId": "shell", "success": true, "result": map[string]any{"content": "The command is running."},
+	})
+	a.HandleOutput(start)
+	a.HandleOutput(completed)
+	a.HandleOutput(copilotVerdictFrame(t, "", "tool.shell_output", true, map[string]any{
+		"toolCallId": "shell", "stream": "stdout", "text": "late output\n", "sequence": 1,
+	}))
+	rows := sink.Messages()
+	require.Equal(t, 2, len(rows))
+	assert.JSONEq(t, string(start), string(rows[0].Content))
+	assert.JSONEq(t, string(completed), string(rows[1].Content))
+	assert.Equal(t, "shell", rows[1].SpanID)
+	assert.True(t, rows[1].Closing)
+	assert.Empty(t, rows[1].Completion)
 }
 
 func TestChildControlFramePersistsInTheChildTranscript(t *testing.T) {

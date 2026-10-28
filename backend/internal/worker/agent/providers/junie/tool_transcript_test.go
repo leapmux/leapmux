@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -37,23 +38,26 @@ func TestJunieToolTranscriptReportsInitialAndLaterNativePaths(t *testing.T) {
 
 func TestJunieToolTranscriptPreservesHostSupplements(t *testing.T) {
 	t.Parallel()
-	fixture := newJunieOutputPathFixture(t)
-	sink := &agenttest.Sink{}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	transcript := newJunieToolTranscript(ctx, agent.NewProviderServices(sink), fixture.home, fixture.cwd)
-	transcript.UpdateSessionID(fixture.sessionID)
-	host := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"` + fixture.callID + `","status":"completed","terminals":{"` + fixture.callID + `":{"output":"host bytes","exitCode":0,"truncated":false}}}`)
-	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: fixture.original, Supplemental: host}, agent.SpanInfo{SpanID: fixture.callID, SpanType: "execute", Closing: true}))
-	transcript.WaitForSupplementsForTest()
-	messages := sink.Messages()
-	require.Len(t, messages, 1)
-	var extra map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(messages[0].SupplementalContent, &extra))
-	assert.Contains(t, extra, "outputFilePath")
-	assert.Contains(t, extra, "terminals")
-	transcript.Reset()
-	assert.Empty(t, transcript.PendingSpanIDsForTest())
+	// Virtual time prevents filesystem speed from ending the interim read budget.
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newJunieOutputPathFixture(t)
+		sink := &agenttest.Sink{}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		transcript := newJunieToolTranscript(ctx, agent.NewProviderServices(sink), fixture.home, fixture.cwd)
+		transcript.UpdateSessionID(fixture.sessionID)
+		host := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"` + fixture.callID + `","status":"completed","terminals":{"` + fixture.callID + `":{"output":"host bytes","exitCode":0,"truncated":false}}}`)
+		require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: fixture.original, Supplemental: host}, agent.SpanInfo{SpanID: fixture.callID, SpanType: "execute", Closing: true}))
+		transcript.WaitForSupplementsForTest()
+		messages := sink.Messages()
+		require.Len(t, messages, 1)
+		var extra map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(messages[0].SupplementalContent, &extra))
+		assert.Contains(t, extra, "outputFilePath")
+		assert.Contains(t, extra, "terminals")
+		transcript.Reset()
+		assert.Empty(t, transcript.PendingSpanIDsForTest())
+	})
 }
 
 type junieHoldingServices struct {
@@ -71,35 +75,37 @@ func (s *junieHoldingServices) EnrichMessage(change agent.MessageEnrichment) (bo
 
 func TestJunieToolTranscriptResetsWhileRecoveryOwnsTheOldNativeRow(t *testing.T) {
 	t.Parallel()
-	fixture := newJunieOutputPathFixture(t)
-	writeJunieOutputPathEvents(t, fixture)
-	sink := &agenttest.Sink{}
-	held := &junieHoldingServices{ProviderServices: agent.NewProviderServices(sink), entered: make(chan struct{}), release: make(chan struct{})}
-	release := sync.OnceFunc(func() { close(held.release) })
-	defer release()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	transcript := newJunieToolTranscript(ctx, held, fixture.home, fixture.cwd)
-	transcript.UpdateSessionID(fixture.sessionID)
-	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: fixture.original}, agent.SpanInfo{SpanID: fixture.callID, SpanType: "execute", Closing: true}))
-	transcript.WaitForSupplementsForTest()
-	writeJunieOutputPathEvents(t, fixture, fixture.event)
-	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"kind":"text","text":"next native frame"}`)}, agent.SpanInfo{}))
-	select {
-	case <-held.entered:
-	case <-ctx.Done():
-		t.Fatal("the native recovery did not reach the stored old row")
-	}
-	transcript.Reset()
-	release()
-	transcript.WaitForSupplementsForTest()
-	assert.Empty(t, transcript.PendingSpanIDsForTest())
-	messages := sink.Messages()
-	require.Len(t, messages, 2)
-	var supplement map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(messages[0].SupplementalContent, &supplement))
-	var receipt junieOutputFilePath
-	require.NoError(t, json.Unmarshal(supplement["outputFilePath"], &receipt))
-	assert.Equal(t, fixture.sessionID, receipt.SessionID)
-	assert.Equal(t, fixture.path, receipt.Path)
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newJunieOutputPathFixture(t)
+		writeJunieOutputPathEvents(t, fixture)
+		sink := &agenttest.Sink{}
+		held := &junieHoldingServices{ProviderServices: agent.NewProviderServices(sink), entered: make(chan struct{}), release: make(chan struct{})}
+		release := sync.OnceFunc(func() { close(held.release) })
+		defer release()
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		transcript := newJunieToolTranscript(ctx, held, fixture.home, fixture.cwd)
+		transcript.UpdateSessionID(fixture.sessionID)
+		require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: fixture.original}, agent.SpanInfo{SpanID: fixture.callID, SpanType: "execute", Closing: true}))
+		transcript.WaitForSupplementsForTest()
+		writeJunieOutputPathEvents(t, fixture, fixture.event)
+		require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"kind":"text","text":"next native frame"}`)}, agent.SpanInfo{}))
+		select {
+		case <-held.entered:
+		case <-ctx.Done():
+			t.Fatal("the native recovery did not reach the stored old row")
+		}
+		transcript.Reset()
+		release()
+		transcript.WaitForSupplementsForTest()
+		assert.Empty(t, transcript.PendingSpanIDsForTest())
+		messages := sink.Messages()
+		require.Len(t, messages, 2)
+		var supplement map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(messages[0].SupplementalContent, &supplement))
+		var receipt junieOutputFilePath
+		require.NoError(t, json.Unmarshal(supplement["outputFilePath"], &receipt))
+		assert.Equal(t, fixture.sessionID, receipt.SessionID)
+		assert.Equal(t, fixture.path, receipt.Path)
+	})
 }

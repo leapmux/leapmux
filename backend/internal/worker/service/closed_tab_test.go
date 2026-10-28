@@ -1303,21 +1303,17 @@ func TestShutdown_LiveOutputBetweenPassesDoesNotDoubleTheNotice(t *testing.T) {
 		"the notice must be appended exactly once per terminal per shutdown")
 }
 
-// TestPersistTerminalOnExit_PreservesClosedAt pins the column UpsertTerminal
-// would otherwise blank.
-//
-// UpsertTerminal's DO UPDATE assigns `closed_at = excluded.closed_at`, so a
-// params struct that leaves the field zero writes NULL. Shutdown's sweep
-// snapshots a terminal, a CloseTerminal handler still on the dispatcher
-// goroutine stamps closed_at, and the sweep's upsert then lands after it --
-// RESURRECTING a tab the user just closed, whose screen blob is now out of
-// reach of DeleteClosedTerminalsBefore.
+// TestPersistTerminalOnExit_PreservesClosedAt checks that saving an exit
+// snapshot preserves a close recorded while the manager still holds the PTY.
 func TestPersistTerminalOnExit_PreservesClosedAt(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	// The manager installs the PTY before startup checks closed_at. Finish
+	// startup before simulating a later close, or startup correctly removes it.
+	svc.TerminalStartup.WaitForInFlight()
 
 	// The close lands while the terminal is still in the manager, which is
 	// precisely the interleave: RemoveTerminal and the DB stamp are two steps.
@@ -1328,7 +1324,7 @@ func TestPersistTerminalOnExit_PreservesClosedAt(t *testing.T) {
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "the shutdown upsert must not un-close a closed terminal")
+	assert.True(t, row.ClosedAt.Valid, "saving the exit snapshot must preserve the closed state")
 }
 
 // TestShutdown_RefusesNewTabs pins the precondition Shutdown's own comment

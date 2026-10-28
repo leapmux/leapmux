@@ -10,7 +10,7 @@ import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeM
 export function reasonixChildTaskMatcher(marker: string): MockModelMatcher {
   if (marker.trim() === '')
     throw new Error('The native Reasonix child matcher requires a nonempty task marker.')
-  return { user: `^<subagent-context event="SubagentStart">[\\s\\S]*?</subagent-context>\\n[\\s\\S]*?\\n## Task\\n${escapeRegExp(marker)}(?=[:\\s]|$)` }
+  return { user: `^<subagent-context event="SubagentStart">[\\s\\S]*?</subagent-context>\\n\\n<workspace-context event="SubagentWorkspace">[\\s\\S]*?</workspace-context>\\n\\n${escapeRegExp(marker)}(?=[:\\s]|$)` }
 }
 
 /** Resolve the exact native read-only task receipt without guessing its display title. */

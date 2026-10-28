@@ -103,11 +103,7 @@ func (a *Agent) readChildViewStart(id string, state *sessionState, recovery *vie
 		return start, err
 	}
 	start.empty, start.after = false, ""
-	timeout, err := a.childViewTimeout(deadline)
-	if err != nil {
-		return start, err
-	}
-	prefix, next, err := a.readViewPage(id, nil, timeout)
+	prefix, next, err := a.readChildViewPage(id, state, recovery, nil, deadline)
 	if err != nil {
 		return start, err
 	}
@@ -151,16 +147,23 @@ func (a *Agent) readChildViewStart(id string, state *sessionState, recovery *vie
 func (a *Agent) subscribeChildView(id string, state *sessionState, after string, deadline time.Time) error {
 	ctx, finish := a.newChildProofContext(deadline)
 	defer finish()
-	return a.subscribeChildViewContext(ctx, id, state, after)
+	a.stateMu.Lock()
+	var recovery *viewRecovery
+	if state != nil {
+		recovery = state.viewRecovery
+	}
+	a.stateMu.Unlock()
+	return a.subscribeChildViewContext(ctx, id, state, recovery, after)
 }
 
-func (a *Agent) subscribeChildViewContext(ctx context.Context, id string, state *sessionState, after string) error {
+func (a *Agent) subscribeChildViewContext(ctx context.Context, id string, state *sessionState, recovery *viewRecovery, after string) error {
 	release, err := a.acquireSessionSubscriptionContext(ctx, state)
 	if err != nil {
 		return err
 	}
 	a.stateMu.Lock()
-	current := a.currentSessionState(id, state)
+	// The page and subscription must retain the same recovery owner.
+	current := a.currentSessionState(id, state) && state.viewRecovery == recovery
 	a.stateMu.Unlock()
 	if !current {
 		release()
@@ -246,7 +249,7 @@ func (a *Agent) syncChildView(id string, state *sessionState) {
 		start.nativeHead.passed = true
 	}
 	a.stateMu.Unlock()
-	err = a.subscribeChildViewContext(ctx, id, state, start.after)
+	err = a.subscribeChildViewContext(ctx, id, state, recovery, start.after)
 	if err != nil {
 		// A completed child can refuse a live subscription. Its entire stored
 		// prefix must still reach the coherent head before any row is admitted.
@@ -267,9 +270,12 @@ func (a *Agent) syncChildView(id string, state *sessionState) {
 				reached = slices.ContainsFunc(start.prefix, func(raw json.RawMessage) bool { return viewCursor(raw) == *start.head })
 			}
 			if !reached {
-				more, readErr := a.readChildViewThrough(id, &start.after, *start.head, deadline)
+				more, readErr := a.readChildViewThrough(id, state, recovery, &start.after, *start.head, deadline)
 				start.prefix = append(start.prefix, more...)
 				reached = readErr == nil && slices.ContainsFunc(more, func(raw json.RawMessage) bool { return viewCursor(raw) == *start.head })
+				if readErr != nil {
+					err = errors.Join(err, readErr)
+				}
 			}
 			if reached {
 				reconcile := func(prefix []json.RawMessage) (known, inactive bool) {
@@ -288,7 +294,7 @@ func (a *Agent) syncChildView(id string, state *sessionState) {
 				}
 				known, inactive := reconcile(start.prefix)
 				if !known {
-					prefix, readErr := a.readChildViewThrough(id, nil, *start.head, deadline)
+					prefix, readErr := a.readChildViewThrough(id, state, recovery, nil, *start.head, deadline)
 					if readErr != nil {
 						err = errors.Join(err, readErr)
 					} else {
@@ -322,18 +328,14 @@ func (a *Agent) syncChildView(id string, state *sessionState) {
 	a.acceptChildView(id, state, recovery, start)
 }
 
-func (a *Agent) readChildViewThrough(id string, after *string, head string, deadline time.Time) ([]json.RawMessage, error) {
+func (a *Agent) readChildViewThrough(id string, state *sessionState, recovery *viewRecovery, after *string, head string, deadline time.Time) ([]json.RawMessage, error) {
 	var events []json.RawMessage
 	seen := make(map[string]bool)
 	if after != nil {
 		seen[*after] = true
 	}
 	for {
-		timeout, err := a.childViewTimeout(deadline)
-		if err != nil {
-			return events, err
-		}
-		page, next, err := a.readViewPage(id, after, timeout)
+		page, next, err := a.readChildViewPage(id, state, recovery, after, deadline)
 		if err != nil {
 			return events, err
 		}

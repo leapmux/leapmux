@@ -86,6 +86,8 @@ describe('copilot provider', () => {
       COPILOT_EVENT.AssistantTurnStart,
       COPILOT_EVENT.AssistantTurnEnd,
       COPILOT_EVENT.AssistantMessageDelta,
+      // Live shell chunks never become durable conversation rows in the Worker.
+      COPILOT_EVENT.ToolShellOutput,
       COPILOT_EVENT.SubagentStarted,
       // The Worker consumes the subagent settings before storage.
       COPILOT_EVENT.SubagentConfigured,
