@@ -407,8 +407,14 @@ func TestNativeCopilotDropsFramesThatCarryNoConversation(t *testing.T) {
 	a.HandleOutput(nativeCopilotEvent(t, "", "session.usage_checkpoint", map[string]any{
 		"totalNanoAiu": 12199400000, "totalPremiumRequests": 1,
 	}))
+	// Copilot CLI 1.0.103 records the prompt state behind a mode change. The
+	// record is bookkeeping, and its content repeats the mode notice.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventInstructionUpdate, map[string]any{
+		"content":   "<mode_changed_notice>\nPlan mode is no longer active.\n</mode_changed_notice>",
+		"authority": "runtime", "lifetime": "persistent", "name": "mode-state",
+	}))
 
-	assert.Empty(t, sink.Messages(), "none of the three belongs in the transcript")
+	assert.Empty(t, sink.Messages(), "none of the four belongs in the transcript")
 }
 
 // The runtime's model-call trace and its hook plumbing describe the runtime rather
@@ -805,6 +811,25 @@ func TestCopilotNativeEvents_ProgressFramesFeedTheRunningRow(t *testing.T) {
 	assert.Contains(t, updates, agent.OutputTailProgress("call-1", "match one\nmatch two", true))
 	// Both frames are ephemeral: neither reaches the transcript.
 	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// Copilot CLI 1.0.103 streams a running shell call as `tool.shell_output` chunks,
+// one per stream and sequence. Each chunk is the same window on output as a partial
+// result, and none of them may reach the transcript: the finished row states the
+// whole output.
+func TestCopilotNativeEvents_ShellOutputChunksFeedTheRunningRow(t *testing.T) {
+	t.Parallel()
+
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+		map[string]any{"toolCallId": "call-1", "stream": "stderr", "text": "compiling\n", "sequence": 0}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+		map[string]any{"toolCallId": "call-1", "stream": "stdout", "text": "ok\n", "sequence": 1}))
+
+	updates := sink.ProgressUpdates()
+	assert.Contains(t, updates, agent.OutputTailProgress("call-1", "compiling\n", true))
+	assert.Contains(t, updates, agent.OutputTailProgress("call-1", "ok\n", true))
+	assert.Equal(t, 0, sink.MessageCount(), "a shell chunk belongs in no transcript row")
 }
 
 // The runtime interleaves the two frames, and they say different things. Once a call

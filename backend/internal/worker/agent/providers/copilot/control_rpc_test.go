@@ -22,7 +22,7 @@ import (
 func TestBypassApprovesPendingPermissionsAndKeepsOtherControls(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", Env: []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
 	sink := &agenttest.ControlSink{}
@@ -57,7 +57,7 @@ func TestBypassApprovesPendingPermissionsAndKeepsOtherControls(t *testing.T) {
 func TestFailedAutomaticApprovalDoesNotRepeatForAnotherPermission(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true, WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env: []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath, "LEAPMUX_TEST_COPILOT_CONTROL_REJECT=1"},
 	})
 	sink := &agenttest.ControlSink{}
@@ -92,7 +92,7 @@ func TestNativeCopilotControlResponseRequiresAReceipt(t *testing.T) {
 	for _, outcome := range []string{"timeout", "missing-receipt", "protocol-error"} {
 		t.Run(outcome, func(t *testing.T) {
 			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
 				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 				Env:     []string{"LEAPMUX_TEST_COPILOT_CONTROL_OUTCOME=" + outcome},
 			})
@@ -119,7 +119,7 @@ func TestNativeCopilotControlResponseRequiresAReceipt(t *testing.T) {
 
 func TestNativeCopilotRefusedControlResponseRemainsPending(t *testing.T) {
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", Env: []string{"LEAPMUX_TEST_COPILOT_CONTROL_REJECT=1"},
 	})
 	sink := &agenttest.ControlSink{}
@@ -151,7 +151,7 @@ func TestNativeCopilotRefusedControlResponseRemainsPending(t *testing.T) {
 func TestNativeCopilotControlResponseDelivery(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", Env: []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
 	sink := &agenttest.ControlSink{}
@@ -219,7 +219,7 @@ func deliverCopilotControl(t *testing.T, a *Agent, sink *agenttest.ControlSink, 
 func startCopilotForControls(t *testing.T, env ...string) (*Agent, *agenttest.ControlSink) {
 	t.Helper()
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", Env: env,
 	})
 	sink := &agenttest.ControlSink{}

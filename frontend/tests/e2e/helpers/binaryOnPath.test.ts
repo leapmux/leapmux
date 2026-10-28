@@ -1,10 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { agentSearchPath, agentSearchPathEnv, exeExtensionOnPath, findBinary, findBinaryOnPath, lookupBinary, missingBinaryReason, requireBinary, unusableBinaryReason, versionOutput } from './binaryOnPath'
+import { writeNodeLauncher } from './nodeLauncher'
 
 let directory: string
+const leakedProcesses: number[] = []
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -12,7 +14,15 @@ beforeEach(() => {
   directory = mkdtempSync(join(scratch, 'binary-on-path-test-'))
 })
 
-afterEach(() => rmSync(directory, { recursive: true, force: true }))
+afterEach(() => {
+  for (const pid of leakedProcesses.splice(0)) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    }
+    catch {}
+  }
+  rmSync(directory, { recursive: true, force: true })
+})
 
 function file(name: string, mode: number, parent: string = directory): string {
   mkdirSync(parent, { recursive: true })
@@ -383,20 +393,98 @@ describe('requireBinary', () => {
   })
 })
 
-// A script stands in for the CLI, so these cases run on Unix alone.
-describe.skipIf(process.platform === 'win32')('versionOutput', () => {
-  it('returns what the file prints on stdout for --version', () => {
+const unixOnly = it.skipIf(process.platform === 'win32')
+// Windows resolves a .cmd launcher through the command interpreter, and
+// writeNodeLauncher generates the launcher and the script that it starts.
+const windowsOnly = it.runIf(process.platform === 'win32')
+
+describe('versionOutput', () => {
+  // A script stands in for the CLI in these cases, so they run on Unix alone.
+  unixOnly('returns what the file prints on stdout for --version', () => {
     const cli = join(directory, 'agent')
     writeFileSync(cli, '#!/bin/sh\n[ "$1" = --version ] && echo "agent 1.2.3"\necho noise >&2\n')
     chmodSync(cli, 0o755)
     expect(versionOutput(cli)).toBe('agent 1.2.3\n')
   })
 
-  it('returns null for a file that fails or does not exist', () => {
+  unixOnly('returns null for a file that fails or does not exist', () => {
     const cli = join(directory, 'agent')
     writeFileSync(cli, '#!/bin/sh\nexit 3\n')
     chmodSync(cli, 0o755)
     expect(versionOutput(cli)).toBeNull()
     expect(versionOutput(join(directory, 'absent'))).toBeNull()
+  })
+
+  unixOnly('runs the probe with the environment it receives, and defaults to the process environment', () => {
+    const cli = join(directory, 'agent')
+    writeFileSync(cli, '#!/bin/sh\necho "seen:$VERSION_PROBE_ENV"\n')
+    chmodSync(cli, 0o755)
+    expect(versionOutput(cli, { VERSION_PROBE_ENV: 'from-argument' })).toBe('seen:from-argument\n')
+
+    const previous = process.env.VERSION_PROBE_ENV
+    process.env.VERSION_PROBE_ENV = 'from-process'
+    try {
+      expect(versionOutput(cli)).toBe('seen:from-process\n')
+    }
+    finally {
+      if (previous === undefined)
+        delete process.env.VERSION_PROBE_ENV
+      else
+        process.env.VERSION_PROBE_ENV = previous
+    }
+  })
+
+  // The probe runs during test discovery, when Playwright's test timeout cannot
+  // end a stuck program. Only the probe's own limit can.
+  unixOnly('returns null when the probe never exits, within its own limit', () => {
+    const cli = join(directory, 'agent')
+    writeFileSync(cli, '#!/bin/sh\nexec sleep 3600\n')
+    chmodSync(cli, 0o755)
+    const started = Date.now()
+    expect(versionOutput(cli)).toBeNull()
+    expect(Date.now() - started).toBeLessThan(20_000)
+  })
+
+  // The probe reads its capture through a fixed buffer, so a program that
+  // floods its output cannot hold the skip check with an unbounded read.
+  unixOnly('returns the bounded prefix of a flood of output', () => {
+    const cli = join(directory, 'agent')
+    writeFileSync(cli, `#!/bin/sh\nprintf 'agent 1.2.3\\n'\nprintf 'x%.0s' $(seq 1 100000)\n`)
+    chmodSync(cli, 0o755)
+
+    const output = versionOutput(cli)
+    expect(output).not.toBeNull()
+    expect(output?.length).toBeLessThanOrEqual(64 * 1024)
+    expect(output?.startsWith('agent 1.2.3\n')).toBe(true)
+  })
+
+  unixOnly('returns the version although a descendant of the probe retains its output streams', () => {
+    const pidFile = join(directory, 'child.pid')
+    const cli = join(directory, 'agent')
+    writeFileSync(cli, `#!/bin/sh\nsleep 3600 &\necho "$!" > '${pidFile}'\necho 'agent 1.2.3'\n`)
+    chmodSync(cli, 0o755)
+
+    const output = versionOutput(cli)
+    const childPID = Number(readFileSync(pidFile, 'utf8').trim())
+    leakedProcesses.push(childPID)
+    expect(output).toBe('agent 1.2.3\n')
+    let alive = true
+    try {
+      process.kill(childPID, 0)
+    }
+    catch {
+      alive = false
+    }
+    expect(alive, 'the probe must return without waiting for the descendant that holds its streams').toBe(true)
+  })
+
+  windowsOnly('runs a .cmd launcher under a path with spaces', () => {
+    const spaced = join(directory, 'dir with spaces')
+    mkdirSync(spaced, { recursive: true })
+    const script = join(spaced, 'version script.mjs')
+    writeFileSync(script, 'process.stdout.write(\'agent 1.2.3\\n\')\n')
+    const launcher = writeNodeLauncher(spaced, 'agent', { node: process.execPath, script })
+
+    expect(versionOutput(launcher)).toBe('agent 1.2.3\n')
   })
 })

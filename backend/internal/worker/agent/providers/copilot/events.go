@@ -159,6 +159,7 @@ var copilotDroppedEvents = map[string]struct{}{
 	contracts.CopilotEventSessionCustomAgentsUpdated:             {},
 	contracts.CopilotEventSessionExtensionsAttachmentsPushed:     {},
 	contracts.CopilotEventSessionMcpServersLoaded:                {},
+	contracts.CopilotEventSessionMcpServerToolsLoaded:            {},
 	contracts.CopilotEventSessionMcpServerStatusChanged:          {},
 	contracts.CopilotEventSessionMcpServerRemoved:                {},
 	contracts.CopilotEventSessionMcpServerNeedsReconnect:         {},
@@ -183,6 +184,7 @@ var copilotDroppedEvents = map[string]struct{}{
 	contracts.CopilotEventSessionWorkspaceFileChanged:            {},
 	contracts.CopilotEventSessionHandoff:                         {},
 	contracts.CopilotEventUiEphemeralQuery:                       {},
+	contracts.CopilotEventInstructionUpdate:                      {},
 	contracts.CopilotEventSamplingCompleted:                      {},
 	contracts.CopilotEventExternalToolCompleted:                  {},
 	contracts.CopilotEventCommandQueued:                          {},
@@ -405,10 +407,23 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		a.reportNativeTextProgress(sink, event)
 	case contracts.CopilotEventSessionModeChanged, contracts.CopilotEventSessionPermissionsChanged,
 		contracts.CopilotEventSessionModelChange:
+		if event.Type == contracts.CopilotEventSessionModeChanged {
+			// Copilot CLI 1.0.103 keeps the tool list of the previous mode in the
+			// next model request: a switch to Plan adds its tools, and the switch back
+			// to Agent removes none until `session.tools.initializeAndValidate`
+			// reconstructs the list. The rebuild runs after the runtime reported the
+			// mode change, so it lands whichever side switched the mode.
+			go func() {
+				if _, err := a.requestNativeSession("tools.initializeAndValidate", nil); err != nil {
+					slog.Warn("Rebuild the Copilot tool list after a mode change", "agent_id", a.AgentID(), "error", err)
+				}
+			}()
+		}
 		a.refreshNativeSettingsInBackground()
 	case contracts.CopilotEventSessionAutopilotObjectiveChanged:
 		a.refreshNativeGoalInBackground()
-	case contracts.CopilotEventToolProgress, contracts.CopilotEventToolPartialResult:
+	case contracts.CopilotEventToolProgress, contracts.CopilotEventToolPartialResult,
+		contracts.CopilotEventToolShellOutput:
 		// The only text a running call reports. It was dropped UNREAD before, so the
 		// row stayed blank for the whole call.
 		//
@@ -417,6 +432,9 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		// full, so a transcript row for one would repeat the result in pieces. The
 		// mark is set today, and a build that stopped setting it would otherwise
 		// write a row per progress tick.
+		//
+		// `tool.shell_output` is the shape Copilot CLI 1.0.103 streams a running
+		// shell call in: one chunk of `text` per stream and sequence.
 		a.reportNativeToolOutput(sink, event.Data)
 		return
 	}
@@ -434,7 +452,9 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 
 // reportNativeToolOutput carries the live text of a running call to its own row.
 //
-// partialOutput contains new tool output. progressMessage contains a runtime status sentence. Neither field is cumulative.
+// partialOutput contains new tool output, and so does the `text` of one
+// `tool.shell_output` chunk. progressMessage contains a runtime status sentence.
+// None of these fields is cumulative.
 // The runtime can interleave both fields. Once output arrives, it takes priority over status sentences.
 // Before any output arrives, the row shows the status sentence.
 //
@@ -444,9 +464,13 @@ func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.Ra
 		ToolCallID      string `json:"toolCallId"`
 		ProgressMessage string `json:"progressMessage"`
 		PartialOutput   string `json:"partialOutput"`
+		Text            string `json:"text"`
 	}
 	if err := json.Unmarshal(data, &frame); err != nil || frame.ToolCallID == "" {
 		return
+	}
+	if frame.PartialOutput == "" {
+		frame.PartialOutput = frame.Text
 	}
 	tool := a.openTools[frame.ToolCallID]
 	if frame.PartialOutput != "" {

@@ -1,6 +1,9 @@
+import type { SpawnSyncReturns } from 'node:child_process'
 import type { Dirent } from 'node:fs'
-import { execFileSync } from 'node:child_process'
-import { accessSync, constants, readdirSync, realpathSync, statSync } from 'node:fs'
+import { Buffer } from 'node:buffer'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { accessSync, closeSync, constants, mkdtempSync, openSync, readdirSync, readSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -133,20 +136,81 @@ function asSentence(text: string): string {
 }
 
 /**
- * What `<path> --version` prints on stdout, or null when the CLI does not start or
- * fails.
+ * How long one version probe may run. The probe happens during test discovery,
+ * when Playwright's test timeout cannot end a stuck program, so it carries its
+ * own limit.
+ */
+const VERSION_PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * The most version output that one probe reads. A release line is tiny, and a
+ * program that floods its capture must not hold the skip check.
+ */
+const VERSION_PROBE_OUTPUT_LIMIT = 64 * 1024
+
+/**
+ * What `<path> --version` prints on stdout, or null when the CLI does not start
+ * or fails.
  *
  * It RUNS the CLI, in the Playwright process, with the developer's own HOME. A
  * fixture calls it only for a CLI whose version command writes nothing there, and
  * only with a path from {@link lookupBinary}, so it runs the file that the worker
- * starts.
+ * starts. The `env` parameter is the environment of that run: the default is the
+ * environment of this process.
+ *
+ * A probe that never exits returns null when the timeout kills it. A probe that
+ * exits with success returns its output even while a descendant of it holds the
+ * capture: the output is complete at the exit, and the probe must not wait for a
+ * descendant that can run for the whole session.
  */
-export function versionOutput(path: string): string | null {
+export function versionOutput(path: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  // stdout goes to a file, never to a pipe. spawnSync waits for a pipe to reach
+  // EOF, and a descendant that inherits stdout keeps the pipe open after the
+  // program exits, so a pipe would make the probe wait for the descendant or for
+  // the timeout instead of reading the completed output. A file gives the probe
+  // the output as soon as the program exits.
+  const capture = mkdtempSync(join(tmpdir(), 'leapmux-version-probe-'))
+  const output = join(capture, 'stdout')
   try {
-    return execFileSync(path, ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const file = openSync(output, 'w')
+    let result: SpawnSyncReturns<Buffer>
+    try {
+      result = spawnSync(path, ['--version'], {
+        env,
+        killSignal: 'SIGKILL',
+        // Windows runs a .cmd or .bat launcher through the command interpreter,
+        // which reads an unquoted path up to its first space. Quoting the path
+        // keeps every resolved path, spaces included.
+        shell: process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(path) ? `"${path}"` : false,
+        stdio: ['ignore', file, 'ignore'],
+        timeout: VERSION_PROBE_TIMEOUT_MS,
+      })
+    }
+    finally {
+      closeSync(file)
+    }
+    if (result.error !== undefined || result.status !== 0)
+      return null
+    return readCapturedOutput(output)
   }
   catch {
     return null
+  }
+  finally {
+    rmSync(capture, { recursive: true, force: true })
+  }
+}
+
+/** What the capture file holds, from a buffer of a fixed size. */
+function readCapturedOutput(path: string): string {
+  const file = openSync(path, 'r')
+  try {
+    const buffer = Buffer.allocUnsafe(VERSION_PROBE_OUTPUT_LIMIT)
+    const length = readSync(file, buffer, 0, buffer.length, 0)
+    return buffer.toString('utf8', 0, length)
+  }
+  finally {
+    closeSync(file)
   }
 }
 

@@ -53,9 +53,16 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 		cancel()
 		return nil, err
 	}
+	// The version probe approves the runtime the server runs. Both invocations
+	// share the resolved launch and the updater pin, so they cannot pick two
+	// different programs.
+	if _, err := probeCopilotVersion(ctx, opts, launchSpec); err != nil {
+		cancel()
+		return nil, err
+	}
 	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: launchSpec, WorkingDir: opts.WorkingDir,
-		BaseArgs: []string{"--server", "--stdio", "--no-remote-export"},
+		BaseArgs: []string{"--server", "--stdio", "--sync-session=off"},
 		SetEnv:   []string{copilotAutoUpdateEnv},
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)

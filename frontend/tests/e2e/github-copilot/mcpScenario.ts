@@ -5,6 +5,7 @@ import { expect } from '@playwright/test'
 import { COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { exerciseMcpProbeFormRoundTrip } from '../helpers/mcpProbeForm'
+import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
@@ -26,7 +27,15 @@ import { COPILOT_AGENT, nativeContext } from './scenarios'
  * The file returns to its exact earlier bytes after the test.
  */
 export async function exerciseCopilotMcpForm(fixtures: NativeContextFixtures): Promise<void> {
-  await withCopilotMcpServer(fixtures, directory => writeMcpFormServer(directory, 'form-server.mjs'), async (context, server) => {
+  let receiptLog = ''
+  await withCopilotMcpServer(fixtures, (directory) => {
+    receiptLog = join(directory, 'form-mcp-receipt.json')
+    return writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
+  }, async (context, server) => {
+    // Copilot loads the registered MCP servers as the session opens. Wait for the
+    // server's own tools/list receipt, so the turn below proves that the model
+    // offers a tool the server listed rather than won a race against the load.
+    await waitForMcpToolListed(receiptLog, 'ask')
     const catalog = await sendNativeAnswer(context, 'Confirm the MCP server is available.', 'The Copilot MCP server is ready.')
     expect(nativeModelToolNames(catalog)).toContain(mcpToolCall(context.provider, 'catalog', { server: server.name, tool: 'ask', input: {} }).name)
     await exerciseMcpProbeFormRoundTrip(context, { callId: 'copilot-form', reloadBeforeSubmit: true })
