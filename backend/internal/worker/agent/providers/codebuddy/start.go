@@ -84,6 +84,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 
 	registration := Registration()
+	swarm, err := opts.Options.Bool(OptionSwarmMode)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
 	if err != nil {
 		cancel()
@@ -104,6 +109,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		"--include-partial-messages",
 		"--setting-sources", "user",
 		"--permission-mode", permissionModeFlag(opts.PermissionMode()),
+	}
+	if swarm {
+		baseArgs = append(baseArgs, "--swarm")
 	}
 	if effort != "" {
 		baseArgs = append(baseArgs, "--effort", effort)
@@ -154,6 +162,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codebuddy", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		sink:           agent.NewModelProgressResetSink(sink),
 		opts:           opts,
+		swarmMode:      swarm,
 		sessionID:      sessionID,
 		resumeState:    resumeState,
 		model:          opts.Model(),

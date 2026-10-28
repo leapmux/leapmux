@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -111,7 +112,7 @@ func TestGrokPromptEndEndsALiveCompaction(t *testing.T) {
 func TestGrokChildCompactionChangesNothing(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
-	a.AttachChildSession("child-session", "call_spawn")
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_spawn"})
 
 	a.HandleOutput(notification(t, "child-session", map[string]any{"sessionUpdate": "auto_compact_started", "percent_of_window": 81}))
 	a.HandleOutput(notification(t, "child-session", map[string]any{"sessionUpdate": "auto_compact_completed", "tokens_after": 100}))

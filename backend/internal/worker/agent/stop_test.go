@@ -121,7 +121,7 @@ func TestLiveCatalogRejectsAReplacedNonComparableRegistration(t *testing.T) {
 func TestStopTargetRefusesAnExitingProvider(t *testing.T) {
 	t.Parallel()
 	exited, release := make(chan struct{}), make(chan struct{})
-	m := agent.NewManager(testRegistry, func(string, error, bool) { close(exited); <-release })
+	m := agent.NewManager(testRegistry, func(processExit agent.ProcessExit) { close(exited); <-release })
 	_, err := m.StartAgentWith(t.Context(), agent.Options{AgentID: "exiting", WorkingDir: t.TempDir()}, agenttest.Nop(),
 		func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (agent.Agent, error) {
 			return stopTargetProvider{values: []string{"non-comparable"}}, nil

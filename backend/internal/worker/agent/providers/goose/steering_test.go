@@ -52,14 +52,16 @@ func TestGooseSessionUpdateLeavesAnUnrelatedMetaAlone(t *testing.T) {
 	assert.False(t, claimed)
 }
 
-// Goose steers only through the method that its handshake advertises, so an agent
-// with no advertised method does not claim the capability.
-func TestGooseSupportsSteeringOnlyThroughAnAdvertisedMethod(t *testing.T) {
+// Goose states its steer method in no capability list, so the hook supplies
+// the method itself and only a zero-value agent claims no capability.
+func TestGooseSteeringUsesTheNativeMethodWithoutAdvertisement(t *testing.T) {
 	t.Parallel()
 	assert.False(t, (&Agent{}).SupportsSteering())
+	assert.Equal(t, gooseSteerMethod, gooseSteeringMethod(nil))
+	assert.Equal(t, gooseSteerMethod, gooseSteeringMethod([]byte(`{"agentCapabilities":{}}`)))
 }
 
-func TestGooseAdvertisedSteeringCapability(t *testing.T) {
+func TestGooseSteeringTargetsTheActiveRun(t *testing.T) {
 	t.Parallel()
 
 	goose, requests := acptest.NewAgentForRPC(t,
@@ -77,12 +79,22 @@ func TestGooseAdvertisedSteeringCapability(t *testing.T) {
 	assert.Equal(t, "run-1", requests()[0].Params["expectedRunId"])
 }
 
-func TestGooseAdvertisedSteerMethodDetection(t *testing.T) {
+// A Goose that drops the unadvertised steer method answers -32601; the input
+// then falls back to the queue instead of failing the turn.
+func TestGooseSteerOfARemovedMethodFallsBackToTheQueue(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, gooseSteerMethod, acp.ParseAdvertisedMethod([]byte(`{"agentCapabilities":{"_meta":{"goose":{"sessionSteer":{"method":"_goose/unstable/session/steer"}}}}}`), gooseSteerNamespace, gooseSteerMethod))
-	assert.Empty(t, acp.ParseAdvertisedMethod([]byte(`{"agentCapabilities":{"_meta":{"goose":{}}}}`), gooseSteerNamespace, gooseSteerMethod))
-	assert.Empty(t, acp.ParseAdvertisedMethod([]byte(`{"description":"_goose/unstable/session/steer"}`), gooseSteerNamespace, gooseSteerMethod))
+	goose, _ := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(agent *Agent) *acp.Base { return &agent.Base },
+		func(string) agenttest.RPCReply {
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32601,"message":"method not found"}`)}
+		},
+	)
+	goose.SetSteerMethodForTest("_goose/unstable/session/steer")
+	goose.SetPromptActiveForTest(true)
+	goose.SetSteerRunIDForTest("run-1")
+	assert.ErrorIs(t, goose.SteerInput("guide", nil), agent.ErrSteeringUnsupported)
 }
 
 // A steer that reaches a turn that already ended maps to ErrNoActiveTurn.

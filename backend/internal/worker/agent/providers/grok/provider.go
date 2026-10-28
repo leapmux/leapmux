@@ -267,10 +267,8 @@ func grokFolderTrustOutcome(ctx agent.ControlResponseContext) (string, bool) {
 	}
 }
 
-// ChildCapabilities.AcceptsInterrupt is true: a subagent's tab can stop its running turn.
-// See InterruptChild in subagent.go.
-
-// ChildCapabilities states the native child operations that this provider supports.
+// ChildCapabilities permits text input and interruption from a subagent tab.
+// See SteerChildInput and InterruptChild in subagent.go.
 func (grokProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
-	return agent.ChildCapabilities{AcceptsMessages: false, AcceptsInterrupt: true}
+	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}
 }

@@ -90,7 +90,7 @@ func TestListAgents_AnActiveAgentStatesTheSessionThatItsStartupStored(t *testing
 	// The startup finishes now: the session ID reaches the row, then the process registers.
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: id, AgentSessionID: "session-1"}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: id, AgentProvider: provider, WorkingDir: t.TempDir()},
-		svc.Output.NewSink(id, provider),
+		newTestRootOutputSink(t, svc.Output, id, provider),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 			return newRunningTestAgent(), nil
 		})

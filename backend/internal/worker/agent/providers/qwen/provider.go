@@ -39,7 +39,13 @@ func (qwenProvider) Classify(content json.RawMessage) agent.NotificationClassifi
 // ValidateAttachment refuses generic binary input that Qwen turns into a
 // placeholder before the model sees its bytes.
 func (qwenProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		return providerkit.ValidateAudioAttachment(attachment, "Qwen Code audio attachment", contracts.QwenAudioMIMEMembers)
+	}
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
 		return fmt.Errorf("qwen code cannot send generic binary attachment %q", attachment.Filename)
 	}
 	return nil

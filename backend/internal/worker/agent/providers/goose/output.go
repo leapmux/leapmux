@@ -173,18 +173,18 @@ func formatGooseCount(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
-// observeGooseToolNotification reads the live notifications that are neither
-// shell output nor a log line, and reports whether it claimed the update.
+// observeGooseToolNotification reads live notifications and reports whether
+// it claimed the update. Live output changes progress, not the retained tool metadata.
 //
 // `progress` is the runtime's own sentence about a call that still runs, so it goes
 // to the SAME ephemeral tail the shell output uses: the row draws it while the call
 // runs and drops it when the result lands. Copilot's `progressMessage` takes that
 // route for the same reason. Persisting one would write a row per tick.
 //
-// `message` is an MCP log line about the running call, so it takes that tail too:
-// the row draws it while the call runs. A string `params.data` is the line, with
-// its level beside it when the level reads as a problem; any other value states
-// nothing a reader can use, so it is claimed and dropped.
+// `message` carries MCP log lines and structured child tool requests. Child
+// requests stay with the child handler. A string `params.data` is a log line,
+// with its level beside it when the level reports a problem. An unrelated
+// object supplies no readable log line, so it is claimed and dropped.
 //
 // `platform_event` is an extension announcing that something happened outside this
 // call -- an app created, a resource registered. That outlives the call, so it is a
@@ -196,6 +196,16 @@ func (a *Agent) observeGooseToolNotification(update acp.ToolCallUpdateEnvelope) 
 		return false
 	}
 	switch meta.Type {
+	case "live_output":
+		if update.ToolCallID != "" {
+			if out, ok := a.gooseToolOutput(update); ok {
+				a.Sink().ReportProgress(agent.OutputTotalProgress(update.ToolCallID, out.Total, out.TotalIsMinimum))
+				if out.Tail != "" {
+					a.Sink().ReportProgress(agent.OutputTailProgress(update.ToolCallID, out.Tail, out.TailLost))
+				}
+			}
+		}
+		return true
 	case "progress":
 		line := gooseProgressLine(meta)
 		if line == "" || update.ToolCallID == "" {
@@ -204,6 +214,9 @@ func (a *Agent) observeGooseToolNotification(update acp.ToolCallUpdateEnvelope) 
 		a.Sink().ReportProgress(agent.OutputTailProgress(update.ToolCallID, line, false))
 		return true
 	case "message":
+		if isGooseSubagentToolRequest(meta.Params.Data) {
+			return false
+		}
 		data, ok := providerkit.RawString(meta.Params.Data)
 		if !ok || data == "" || update.ToolCallID == "" {
 			return true

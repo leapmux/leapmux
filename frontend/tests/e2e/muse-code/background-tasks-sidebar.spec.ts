@@ -1,13 +1,11 @@
 /**
  * A native Muse workflow appears with its status in the Background tasks sidebar.
  *
- * Muse 1.4.4 runs its background work through the work system: a workflow item
- * carries the run and its children's fold, and a yielded bash command reports
- * `background_running` through its own result with no registry item at all. The
- * workflow row is the provider-reported background process the sidebar draws.
+ * The native workflow item reports its run and child fold. A separate subagent
+ * item supplies the child's actual session, objective and transcript link.
  */
 import { expect } from '@playwright/test'
-import { codeExecutionToolCall } from '../helpers/providerToolCalls'
+import { codeExecutionToolCall, museSubmitResultToolCall } from '../helpers/providerToolCalls'
 import { backgroundTaskRows, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { museTest } from '../muse-fixtures'
@@ -20,7 +18,7 @@ museTest('background-tasks-sidebar: a native workflow shows a live row and its f
     name: 'the sidebar child submits its result',
     when: { body: ['Workflow child completion protocol'] },
     once: true,
-    respond: { toolCalls: [{ id: 'sidebar-child-submit', name: 'submit_result', namespace: 'muse', arguments: { text: 'SIDEBARWORD', notes: null } }] },
+    respond: { toolCalls: [museSubmitResultToolCall('sidebar-child-submit', 'SIDEBARWORD')] },
   })
   const script = [
     'export default async function workflow(host) {',
@@ -42,5 +40,7 @@ museTest('background-tasks-sidebar: a native workflow shows a live row and its f
   await expect(row).toHaveAttribute('data-kind', 'workflow')
   await expectRowBecomesFinal(page, row)
   await expectSectionPersists(page)
-  await expect(backgroundTaskRows(page).filter({ hasText: /^Child /i })).toHaveCount(1)
+  const children = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: 'Reply with the single word SIDEBARWORD.' })
+  await expect(children).toHaveCount(1)
+  await expect(children).toHaveAttribute('data-child-agent-id', /\S+/)
 })

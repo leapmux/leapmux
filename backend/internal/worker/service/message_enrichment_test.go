@@ -33,7 +33,7 @@ func TestCapturedEnrichmentProviderPreparationCanReplaceItsPublisher(t *testing.
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "enrichment-preparation-owner"
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
-			sink := svc.Output.NewSink(ownerID, providerID)
+			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			sink.UpdateSessionID("original-session")
 			sink.SetTurnState(agent.TurnState{Active: true}, 1)
 			require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
@@ -51,7 +51,7 @@ func TestCapturedEnrichmentProviderPreparationCanReplaceItsPublisher(t *testing.
 					return
 				}
 				go func() {
-					replacement := svc.Output.NewSink(ownerID, providerID)
+					replacement := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 					svc.Output.NoteAgentProcessStarted(ownerID)
 					replacement.SetTurnState(agent.TurnState{Active: true}, 1)
 					close(replacementFinished)
@@ -546,7 +546,7 @@ func TestEnrichmentReadsThePairedToolUseOnce(t *testing.T) {
 func TestNotificationEnrichmentCASRejectsAConcurrentInvisibleJournalAppend(t *testing.T) {
 	t.Parallel()
 	svc, _, ownerID, _ := setupBgTaskTestWithService(t)
-	sink := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	payload := raw(t, codexStartupStatus("codex_apps", "ready", nil))
 	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: payload, IdempotencyKey: "first"})

@@ -186,11 +186,11 @@ export function composerEditor(page: Page): Locator {
   return page.locator(`${COMPOSER_SELECTOR}:visible ${COMPOSER_EDIT_NODE_SELECTOR}`)
 }
 
-/** Wait for the composer on screen, click it so that it holds the focus, and return it. */
+/** Click the composer's text block, outside the padding reserved for action buttons, and return the editor. */
 export async function focusComposer(page: Page): Promise<Locator> {
   const editor = composerEditor(page)
   await expect(editor).toBeVisible()
-  await editor.click()
+  await editor.locator(':scope > :first-child').click()
   return editor
 }
 
@@ -964,8 +964,9 @@ export async function answerElevationPrompt(page: Page, password: string, prompt
 export async function openAgentInfoCard(page: Page): Promise<Locator> {
   const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
   await expect(infoTrigger).toBeVisible()
-  await infoTrigger.click()
   const popover = page.locator('[data-testid="agent-info-popover"]')
+  if (!await popover.isVisible())
+    await infoTrigger.click()
   await expect(popover).toBeVisible()
   return popover
 }

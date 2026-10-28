@@ -5,7 +5,7 @@ import { basename, join, resolve } from 'node:path'
 import { crc32, inflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeLocator } from '~/test-support/fakeLocator'
-import { expectAttachmentOutcome, selectAttachmentFixture, sendWithAttachment, writeAttachmentFixture } from './attachments'
+import { expectAttachmentOutcome, selectAttachmentFixture, sendWithAttachment, writeAttachmentFixture, writeAudioAttachmentFixture, writeVideoAttachmentFixture } from './attachments'
 
 let runDir: string
 vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: runDir }) }))
@@ -236,5 +236,151 @@ describe('sendWithAttachment', () => {
   it('refuses an empty text before it sends anything', async () => {
     await expect(sendWithAttachment(page, '')).rejects.toThrow('An attachment send needs text')
     expect(ui.send).not.toHaveBeenCalled()
+  })
+})
+
+describe('writeAudioAttachmentFixture', () => {
+  // Reflect exercises the JavaScript boundary, including invalid format values.
+  const write = (...args: unknown[]): string => Reflect.apply(writeAudioAttachmentFixture, undefined, args)
+
+  function frameCRC(bytes: Buffer): number {
+    let crc = 0
+    for (const byte of bytes) {
+      crc ^= byte << 8
+      for (let bit = 0; bit < 8; bit++)
+        crc = ((crc << 1) ^ (crc & 0x8000 ? 0x8005 : 0)) & 0xFFFF
+    }
+    return crc
+  }
+
+  it('writes a complete FLAC stream with audio frames and valid checksums', () => {
+    const path = write('tone.flac', 'flac')
+    const bytes = readFileSync(path)
+    expect(basename(path)).toBe('tone.flac')
+    expect(bytes.toString('ascii', 0, 4)).toBe('fLaC')
+    expect(bytes[4]! & 0x7F).toBe(0)
+    expect(bytes.readUIntBE(5, 3)).toBe(34)
+    const stream = bytes.readBigUInt64BE(18)
+    expect(Number(stream >> 44n)).toBe(44100)
+    expect(Number((stream >> 41n) & 7n) + 1).toBe(1)
+    expect(Number((stream >> 36n) & 31n) + 1).toBe(16)
+    expect(Number(stream & 0xFFFFFFFFFn)).toBe(49152)
+    let offset = 4
+    for (;;) {
+      const last = (bytes[offset]! & 0x80) !== 0
+      offset += 4 + bytes.readUIntBE(offset + 1, 3)
+      expect(offset).toBeLessThan(bytes.length)
+      if (last)
+        break
+    }
+    const frames = bytes.subarray(offset)
+    expect(frames[0]).toBe(0xFF)
+    expect(frames[1]! & 0xFC).toBe(0xF8)
+    expect(frames.length).toBeGreaterThan(16)
+    expect(frameCRC(frames)).toBe(0)
+    const corrupted = Buffer.from(frames)
+    corrupted[0] = 0
+    expect(frameCRC(corrupted)).not.toBe(0)
+  })
+
+  it('chooses a matching default FLAC name and keeps writes in distinct directories', () => {
+    const first = write(undefined, 'flac')
+    const second = write('VOICE.FLAC', 'flac')
+    expect(basename(first)).toBe('voice.flac')
+    expect(basename(second)).toBe('VOICE.FLAC')
+    expect(first).not.toBe(second)
+    expect(readFileSync(first)).toEqual(readFileSync(second))
+  })
+
+  it.each([
+    ['tone.wav', 'flac'],
+    ['tone.flac', 'wav'],
+    ['nested/tone.flac', 'flac'],
+    ['', 'flac'],
+    [null, 'flac'],
+    ['tone.wav', 'aac'],
+    ['tone.wav', null],
+  ])('refuses mismatched or invalid audio names and formats: %j/%j', (name, format) => {
+    const reason = format === 'wav' || format === 'flac'
+      ? `The audio fixture requires a ${format.toUpperCase()} filename without a directory.`
+      : 'The audio fixture format must be WAV or FLAC.'
+    expect(() => write(name, format)).toThrow(reason)
+  })
+
+  it('writes a complete WAV container and its silent sample payload', () => {
+    const path = writeAudioAttachmentFixture()
+    const bytes = readFileSync(path)
+    expect(basename(path)).toBe('voice.wav')
+    expect(bytes.toString('ascii', 0, 4)).toBe('RIFF')
+    expect(bytes.readUInt32LE(4)).toBe(bytes.length - 8)
+    expect(bytes.toString('ascii', 8, 16)).toBe('WAVEfmt ')
+    expect(bytes.readUInt16LE(20)).toBe(1)
+    expect(bytes.readUInt16LE(22)).toBe(1)
+    expect(bytes.readUInt32LE(24)).toBe(8000)
+    expect(bytes.readUInt16LE(34)).toBe(16)
+    expect(bytes.toString('ascii', 36, 40)).toBe('data')
+    expect(bytes.readUInt32LE(40)).toBe(320)
+    expect(bytes.subarray(44)).toEqual(Buffer.alloc(320))
+  })
+
+  it.each(['', '..', '../escape.wav', 'voice.mp3'])('refuses an invalid WAV filename: %j', (name) => {
+    expect(() => writeAudioAttachmentFixture(name)).toThrow('WAV filename')
+  })
+})
+
+describe('writeVideoAttachmentFixture', () => {
+  function boxes(bytes: Buffer): Map<string, Buffer> {
+    const found = new Map<string, Buffer>()
+    let offset = 0
+    while (offset < bytes.length) {
+      expect(bytes.length - offset).toBeGreaterThanOrEqual(8)
+      let length = bytes.readUInt32BE(offset)
+      let header = 8
+      if (length === 1) {
+        expect(bytes.length - offset).toBeGreaterThanOrEqual(16)
+        const extended = bytes.readBigUInt64BE(offset + 8)
+        expect(extended).toBeLessThanOrEqual(BigInt(bytes.length))
+        length = Number(extended)
+        header = 16
+      }
+      else if (length === 0) {
+        length = bytes.length - offset
+      }
+      expect(length).toBeGreaterThanOrEqual(header)
+      expect(offset + length).toBeLessThanOrEqual(bytes.length)
+      const type = bytes.toString('ascii', offset + 4, offset + 8)
+      found.set(type, bytes.subarray(offset + header, offset + length))
+      offset += length
+    }
+    expect(offset).toBe(bytes.length)
+    return found
+  }
+  function requiredBox(parent: Map<string, Buffer>, type: string): Buffer {
+    const box = parent.get(type)
+    if (!box)
+      throw new Error(`The video fixture has no ${type} box.`)
+    return box
+  }
+  it('writes a complete MP4 with a video track and two encoded frames', () => {
+    const path = writeVideoAttachmentFixture()
+    expect(basename(path)).toBe('clip.mp4')
+    const root = boxes(readFileSync(path))
+    expect(requiredBox(root, 'ftyp').toString('ascii')).toContain('mp4')
+    const track = boxes(requiredBox(boxes(requiredBox(root, 'moov')), 'trak'))
+    const header = requiredBox(track, 'tkhd')
+    expect(header.readUInt32BE(header.length - 8) / 65536).toBe(16)
+    expect(header.readUInt32BE(header.length - 4) / 65536).toBe(16)
+    const media = boxes(requiredBox(track, 'mdia'))
+    expect(requiredBox(media, 'hdlr').toString('ascii', 8, 12)).toBe('vide')
+    const table = boxes(requiredBox(boxes(requiredBox(media, 'minf')), 'stbl'))
+    const sizes = requiredBox(table, 'stsz')
+    expect(sizes.readUInt32BE(8)).toBe(2)
+    const frameSizes = sizes.readUInt32BE(4) === 0 ? [sizes.readUInt32BE(12), sizes.readUInt32BE(16)] : [sizes.readUInt32BE(4), sizes.readUInt32BE(4)]
+    for (const size of frameSizes)
+      expect(size).toBeGreaterThan(0)
+    expect(frameSizes.reduce((sum, size) => sum + size, 0)).toBe(requiredBox(root, 'mdat').length)
+  })
+  it.each(['', '..', '../escape.mp4', '/absolute.mp4', 'clip.wav', 'clip.mp4/another'])('refuses an invalid video filename: %j', (name) => {
+    expect(() => writeVideoAttachmentFixture(name)).toThrow('MP4 filename')
   })
 })

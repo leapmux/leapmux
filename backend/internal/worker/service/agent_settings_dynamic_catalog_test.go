@@ -329,7 +329,7 @@ func TestUpdateAgentSettings_ModelSwitchOnARunningDynamicCatalogAgentSendsTheKep
 				live := newLiveCatalogAgent("alpha", "high")
 				_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 					AgentID: agentID, AgentProvider: p.provider, WorkingDir: t.TempDir(), Options: launch,
-				}, svc.Output.NewSink(agentID, p.provider),
+				}, newTestRootOutputSink(t, svc.Output, agentID, p.provider),
 					func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return live, nil })
 				require.NoError(t, err)
 				t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })

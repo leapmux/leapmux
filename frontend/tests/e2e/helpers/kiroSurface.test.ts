@@ -11,7 +11,7 @@ import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { decodeEventStreamMessages, EVENT_STREAM_CONTENT_TYPE } from './awsEventStream'
 import { handleKiroHttp, isKiroRequest, KIRO_DEFAULT_MOCK_MODEL, KIRO_MOCK_MODELS, KIRO_TARGET_HEADER, kiroModelCatalog, kiroOperation, kiroRequestMetadata, kiroSystemText, kiroToolUseEvents, kiroUserText } from './kiroSurface'
 import { KIRO_E2E_API_KEY, MOCK_MODEL_IDS } from './mockAgentEnvironment'
-import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from './mockModelScenario'
+import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario, removeMockModelScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 import { createModelStream } from './modelStream'
 
@@ -39,6 +39,54 @@ async function startServer(): Promise<MockModelServer> {
   servers.push(server)
   return server
 }
+
+describe('native Kiro account usage', () => {
+  async function usageServer(scenario: string) {
+    const server = await startServer()
+    await registerMockModelScenario(server.url, scenario, { steps: [] })
+    const control = new URL(`/__e2e/kiro/usage/${scenario}`, server.url)
+    const body = { subscriptionInfo: { subscriptionTitle: 'Native Probe Plan' }, nextDateReset: 1795564800, usageBreakdownList: [] }
+    const configure = () => fetch(control, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 200, body }) })
+    const read = (options: { authorization?: string, body?: string, target?: string } = {}) => fetch(server.url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': options.target ?? 'KiroControlPlaneBearerService.GetUsageLimits', 'authorization': options.authorization ?? `Bearer ${KIRO_E2E_API_KEY}` },
+      body: options.body ?? JSON.stringify({ origin: 'AI_EDITOR' }),
+    })
+    return { server, control, body, configure, read }
+  }
+
+  it('serves the native usage envelope only to the isolated account and records its origin', async () => {
+    const { control, body, configure, read } = await usageServer('kiro-usage-owner')
+    expect((await configure()).status).toBe(200)
+    expect((await read({ authorization: '' })).status).toBe(401)
+    expect((await read({ authorization: 'Bearer another-account' })).status).toBe(401)
+    const response = await read()
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(body)
+    expect(await (await fetch(control)).json()).toMatchObject({ receipts: [
+      { authorized: false, status: 401, origin: 'AI_EDITOR' },
+      { authorized: false, status: 401, origin: 'AI_EDITOR' },
+      { authorized: true, status: 200, origin: 'AI_EDITOR' },
+    ] })
+  })
+
+  it.each(['{', '{}', '{"origin":"OTHER"}', '{"origin":"AI_EDITOR","extra":true}'])('rejects the invalid native usage input %s', async (body) => {
+    const { configure, read } = await usageServer('kiro-usage-invalid')
+    expect((await configure()).status).toBe(200)
+    const response = await read({ body })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ __type: 'ValidationException' })
+  })
+
+  it('forgets a removed scenario and rejects a foreign service target', async () => {
+    const { server, control, configure, read } = await usageServer('kiro-usage-removed')
+    expect((await configure()).status).toBe(200)
+    expect((await read({ target: 'OtherService.GetUsageLimits' })).status).toBe(400)
+    await removeMockModelScenario(server.url, 'kiro-usage-removed')
+    expect((await fetch(control)).status).toBe(404)
+    expect((await read()).status).toBe(404)
+  })
+})
 
 describe('native Kiro remote catalogs', () => {
   it('returns the native cloud-configuration disabled exception in CBOR', async () => {

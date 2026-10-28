@@ -1,22 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { lastUserText, matchesRequest } from '../helpers/mockModelScript'
 import { nativeFrameSnapshot, onlyNativeMessage } from '../helpers/nativeOutputReaderCases'
+import { reasonixChildContextPack } from './childContext.fixtures'
 import { reasonixChildTaskId, reasonixChildTaskMatcher } from './childIdentity'
 
 const encoder = new TextEncoder()
 const marker = 'NATIVE_CHILD_MARKER'
 const prompt = `${marker}: reply once.\n\nLEAPMUXE2ESCENARIO:current-task`
-const actualPack = `<subagent-context event="SubagentStart">\nBefore acting, check the available skills and tools.\n</subagent-context>\n\n<workspace-context event="SubagentWorkspace">\nCurrent workspace: "/private/project"\n</workspace-context>\n\n## Task\n${prompt}\nDo not copy or reconstruct the parent session. Use only this pack plus tools.`
+const actualPack = reasonixChildContextPack(prompt)
 const nativeCall = { sessionUpdate: 'tool_call', toolCallId: 'spawn', title: 'read_only_task', rawInput: { description: 'Native display label', prompt } }
 
 describe('reasonixChildTaskMatcher', () => {
-  it('matches the captured native context prefix and exact Task marker', () => {
+  it('matches the captured native context prefix and exact task marker', () => {
     expect(matchesRequest(reasonixChildTaskMatcher(marker), { protocol: 'openai-chat-completions', userText: actualPack, systemText: '', body: {} })).toBe(true)
   })
 
   it('does not match another child, a root prompt, or a historical task copy', () => {
     const matcher = reasonixChildTaskMatcher(marker)
-    for (const userText of [actualPack.replace(marker, 'ANOTHER_CHILD'), prompt, actualPack.replace('## Task\n', '## Other\n')])
+    for (const userText of [
+      actualPack.replace(marker, 'ANOTHER_CHILD'),
+      prompt,
+      actualPack.replace('SubagentWorkspace', 'OtherWorkspace'),
+      actualPack.replace(`\n\n${prompt}`, `\n\n## Task\n${prompt}`),
+      `Quoted context:\n${actualPack}`,
+    ])
       expect(matchesRequest(matcher, { protocol: 'openai-chat-completions', userText, systemText: actualPack, body: {} })).toBe(false)
     const body = { messages: [{ role: 'user', content: actualPack }, { role: 'user', content: 'Run the next root task.' }], tools: [{ description: actualPack }] }
     expect(matchesRequest(matcher, { protocol: 'openai-chat-completions', userText: lastUserText('openai-chat-completions', body), systemText: '', body })).toBe(false)

@@ -33,15 +33,15 @@ function museSettings(options: MuseEnvironmentOptions): Record<string, unknown> 
   // The config model catalog states the routes a local endpoint serves, with the
   // context limit each compaction threshold resolves against: without a resolved
   // window the host answers session/compact with compaction_unavailable, and its
-  // model/list serves the pinned model alone. The test window sits low enough
-  // that a seeded conversation crosses the soft compaction threshold, so the
-  // native summarizer actually runs.
+  // model/list serves the pinned model alone. Ordinary turns stay below the
+  // thresholds. Compaction specs report provider usage above the soft threshold
+  // and below the hard threshold to exercise an explicit native summary.
   const catalogRow = (model_id: string, is_default: boolean) => ({
     model_id,
     display_label: model_id,
     provider_id: 'meta',
     profile_id: 'tbh',
-    context_limit: 28000,
+    context_limit: 128000,
     output_limit: 16384,
     cost: null,
     description: null,
@@ -59,9 +59,7 @@ function museSettings(options: MuseEnvironmentOptions): Record<string, unknown> 
       catalogRow(options.modelID, true),
       ...(options.alternateModelID ? [catalogRow(options.alternateModelID, false)] : []),
     ],
-    compaction_strategy: 'auto',
-    context_compaction_soft_threshold: 0.5,
-    context_compaction_hard_threshold: 0.8,
+    context_compaction: { strategy: 'summary-preserved-suffix/v1', soft_threshold: 0.5, hard_threshold: 0.8 },
     endpoint_transport: { base_url: endpoint.href.replace(/\/$/, ''), auth: 'bearer' },
     context: { foreign_personal_rules: false, foreign_personal_skills: false },
     telemetry: { enabled: false },

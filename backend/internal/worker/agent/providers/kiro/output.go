@@ -145,7 +145,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		// keeps the text before it, and the refusal frame becomes its own row.
 		if updateType == "agent_message_chunk" && len(pickRefusal(fields)) > 0 {
 			a.FlushBufferedOutput(agent.MessageCompletionComplete)
-			if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+			if err := a.persistNativeNotification(update); err != nil {
 				slog.Error("kiro persist refusal chunk", "agent_id", a.AgentID(), "error", err)
 			}
 			return true
@@ -159,6 +159,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		a.handleTurnStart()
 	case contracts.KiroKindTurnEnd:
 		a.handleTurnEnd(fieldString(fields, contracts.KiroMetaStopReason), update)
+		a.requestUsageRefresh()
 	case kiroKindTurnCompletion:
 		a.logTurnCompletion(raw)
 	case kiroKindContextUsage:
@@ -187,7 +188,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		// session_info_update case consumes silently, so this handler writes
 		// the row itself.
 		slog.Warn("kiro session info of an unknown kind", "agent_id", a.AgentID(), "kind", kind)
-		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+		if err := a.persistNativeNotification(update); err != nil {
 			slog.Error("kiro persist unknown session info", "agent_id", a.AgentID(), "kind", kind, "error", err)
 		}
 		return true
@@ -327,7 +328,11 @@ func (a *Agent) broadcastContextUsage(raw json.RawMessage) {
 		return
 	}
 	info := map[string]any{contracts.ContextUsageFieldUsagePercent: *percent}
-	if tokens := sumKiroBreakdown(categories); tokens > 0 {
+	var tokens float64
+	for _, category := range categories {
+		tokens += category.Tokens
+	}
+	if tokens > 0 {
 		info[contracts.ContextUsageFieldContextTokens] = tokens
 	}
 	if window := a.contextWindow(); window > 0 {
@@ -338,15 +343,10 @@ func (a *Agent) broadcastContextUsage(raw json.RawMessage) {
 	})
 }
 
-// sumKiroBreakdown adds the top-level token count of every category.
-func sumKiroBreakdown(categories map[string]struct {
-	Tokens float64 `json:"tokens"`
-}) float64 {
-	var total float64
-	for _, category := range categories {
-		total += category.Tokens
-	}
-	return total
+// persistNativeNotification retains one native main-session notification.
+func (a *Agent) persistNativeNotification(update json.RawMessage) error {
+	_, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()})
+	return err
 }
 
 // handleDisplayError states an error that Kiro shows its own reader: a model
@@ -391,6 +391,7 @@ func (a *Agent) handleDisplayError(raw json.RawMessage) {
 // result, or that the reader stopped, writes no failure note, so the display
 // error is the only record of the reason.
 func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
+	a.requestUsageRefresh()
 	a.stateMu.Lock()
 	held := a.turns.heldError
 	a.turns.heldError = ""
@@ -421,7 +422,7 @@ func (a *Agent) reportSummarization(kind string, raw json.RawMessage, update jso
 	case contracts.KiroKindSummarizationCompleted, contracts.KiroKindSummarizationFailed:
 		a.noteCompactionSummarized()
 		a.FlushBufferedOutput(agent.MessageCompletionComplete)
-		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+		if err := a.persistNativeNotification(update); err != nil {
 			slog.Error("kiro persist summarization end", "agent_id", a.AgentID(), "error", err)
 		}
 		providerkit.EndCompaction(a.Sink())
@@ -445,7 +446,7 @@ func (a *Agent) reportHook(raw json.RawMessage, update json.RawMessage) {
 	}
 	switch hook.Hook.Status {
 	case "failed", "canceled":
-		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+		if err := a.persistNativeNotification(update); err != nil {
 			slog.Error("kiro persist hook update", "agent_id", a.AgentID(), "error", err)
 		}
 	}

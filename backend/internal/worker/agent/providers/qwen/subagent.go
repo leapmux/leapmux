@@ -66,6 +66,9 @@ type childState struct {
 	// tails holds the transcript reader of each background subagent, by
 	// tool-call id.
 	tails map[string]*transcriptTail
+	// workflows holds the task-list poller of each workflow run, by the tool
+	// call that started it.
+	workflows map[string]*workflowPoller
 	// stopped holds, by tool-call id, each subagent that the Interrupt of its
 	// tab stopped, until Qwen reports the end of its row. Qwen's task cancel
 	// aborts the subagent's model request, and Qwen then reports the subagent
@@ -86,6 +89,8 @@ type toolInputs struct {
 type toolInput struct {
 	name     string
 	rawInput json.RawMessage
+	// A native task-list snapshot owns workflow metadata once observed.
+	workflowMetadataObserved bool
 }
 
 // remember records what one frame states about a tool call. An empty field
@@ -145,13 +150,15 @@ func (a *Agent) spawnObservation(toolCallID string, rawInput json.RawMessage, sp
 	if title == "" {
 		title = qwenAgentSpawnTitle
 	}
-	sessionID := a.CurrentSessionID()
+	owner := a.CurrentSessionID()
+	rowKey := qwenAgentRowKey(owner, toolCallID)
+	sessionID := owner
 	if !qwenNativeSessionID.MatchString(sessionID) {
 		sessionID = ""
 	}
 	return &acp.SubagentObservation{
-		RowKey:              toolCallID,
-		ChildAgentKey:       toolCallID,
+		RowKey:              rowKey,
+		ChildAgentKey:       rowKey,
 		ChildAgentSessionID: sessionID,
 		Title:               title,
 		Prompt:              input.Prompt,
@@ -177,7 +184,8 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 	case contracts.QwenToolAgent:
 		return a.spawnObservation(tc.ToolCallID, tc.RawInput, true)
 	case contracts.QwenToolWorkflow:
-		return workflowObservation(tc.ToolCallID, tc.RawInput)
+		a.startWorkflowPoller(tc.ToolCallID, tc.RawInput)
+		return workflowObservation(a.CurrentSessionID(), tc.ToolCallID, tc.RawInput)
 	default:
 		return nil
 	}
@@ -199,9 +207,16 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 		return a.spawnUpdate(tcu, known.rawInput, final)
 	case contracts.QwenToolWorkflow:
 		if !final {
-			return nil
+			if known.workflowMetadataObserved || len(tcu.RawInput) == 0 {
+				return nil
+			}
+			// The arguments arrive on a progress frame: the run's row and its
+			// group take the workflow's name from them, as a spawn's row takes
+			// its title.
+			return workflowObservation(a.CurrentSessionID(), tcu.ToolCallID, tcu.RawInput)
 		}
-		return &acp.SubagentObservation{RowKey: tcu.ToolCallID, Status: acp.FinalStatus(tcu.Status), CloseRow: true, Mode: acp.ModeCloseOnly}
+		a.stopWorkflowPoller(tcu.ToolCallID, acp.FinalStatus(tcu.Status))
+		return &acp.SubagentObservation{RegistryOnly: true, RowKey: qwenWorkflowRowKey(a.CurrentSessionID(), tcu.ToolCallID), Status: acp.FinalStatus(tcu.Status), CloseRow: true, Mode: acp.ModeCloseOnly}
 	case contracts.QwenToolRunShellCommand:
 		if final && tcu.Status == "completed" {
 			return backgroundShellObservation(tcu, known.rawInput)
@@ -266,7 +281,7 @@ func (a *Agent) spawnUpdate(tcu acp.ToolCallUpdateEnvelope, rawInput json.RawMes
 		report = acp.ToolCallText(tcu.Content)
 	}
 	return &acp.SubagentObservation{
-		RowKey:   tcu.ToolCallID,
+		RowKey:   qwenAgentRowKey(a.CurrentSessionID(), tcu.ToolCallID),
 		Status:   status,
 		CloseRow: true,
 		Mode:     acp.ModeCloseOnly,
@@ -289,7 +304,7 @@ func (a *Agent) startBackgroundTranscript(toolCallID, resultText string) {
 		slog.Warn("qwen background subagent transcript path refused", "agent_id", a.AgentID(), "tool_call_id", toolCallID, "path", match[1])
 		return
 	}
-	tail := newTranscriptTail(a, toolCallID, path)
+	tail := newTranscriptTail(a, qwenAgentRowKey(a.CurrentSessionID(), toolCallID), path)
 	a.stateMu.Lock()
 	if a.children.tails == nil {
 		a.children.tails = make(map[string]*transcriptTail)
@@ -328,10 +343,10 @@ const (
 // rowKey returns the key of the registry row that a notice concerns: the spawn
 // of a background subagent, or the id of a background command. Every other
 // kind has no row, and returns "".
-func (t qwenBackgroundTask) rowKey() string {
+func (t qwenBackgroundTask) rowKey(sessionID string) string {
 	switch {
 	case t.Kind == qwenBackgroundAgent && t.ToolUseID != "":
-		return t.ToolUseID
+		return qwenAgentRowKey(sessionID, t.ToolUseID)
 	case t.Kind == qwenBackgroundShell && t.TaskID != "":
 		return qwenShellRowPrefix + t.TaskID
 	default:
@@ -345,7 +360,7 @@ func (t qwenBackgroundTask) rowKey() string {
 // its own. A registry that cannot be read counts as no row, so the notice is
 // shown rather than lost.
 func (a *Agent) finishBackgroundTask(task qwenBackgroundTask) bool {
-	rowKey := task.rowKey()
+	rowKey := task.rowKey(a.CurrentSessionID())
 	if rowKey == "" {
 		return false
 	}
@@ -355,24 +370,26 @@ func (a *Agent) finishBackgroundTask(task qwenBackgroundTask) bool {
 		}
 		return false
 	}
+	status := qwenSubagentStatus(task.Status, bgtask.StatusSucceeded)
 	if task.Kind == qwenBackgroundAgent {
 		// The child's transcript holds its last records by now: Qwen writes each
 		// record before it reports the child as over. Read them before the row
 		// closes, so the child's tab ends with the child's last words.
 		a.stopBackgroundTranscript(task.ToolUseID, true)
-		a.FinishChildTurn(task.ToolUseID)
+		a.FinishChildTurn(rowKey)
+		status = a.closingStatus(task.ToolUseID, status)
 	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
 		RowKey:   rowKey,
-		Status:   a.closingStatus(rowKey, qwenSubagentStatus(task.Status, bgtask.StatusSucceeded)),
+		Status:   status,
 		CloseRow: true,
 		Mode:     acp.ModeCloseOnly,
 	})
 	return true
 }
 
-// closingStatus returns the status that the row of rowKey closes with, when
-// Qwen reports status for it, and takes the record of a stop for that row.
+// closingStatus takes the stop recorded for the native tool call and returns
+// the status that its registry row closes with.
 //
 // A failure after a stop that Qwen carried out is the stop. Qwen's task cancel
 // aborts the subagent's model request, and Qwen 0.24 reports the aborted
@@ -387,10 +404,10 @@ func (a *Agent) finishBackgroundTask(task qwenBackgroundTask) bool {
 // keeps its completion. A Qwen abort reports the subagent as failed, so a stop
 // upgrades that too; the record goes before the cancel (see stopChild) because
 // Qwen can report the abort before it answers the cancel.
-func (a *Agent) closingStatus(rowKey string, status bgtask.Status) bgtask.Status {
+func (a *Agent) closingStatus(toolCallID string, status bgtask.Status) bgtask.Status {
 	a.stateMu.Lock()
-	stopped := a.children.stopped[rowKey]
-	delete(a.children.stopped, rowKey)
+	stopped := a.children.stopped[toolCallID]
+	delete(a.children.stopped, toolCallID)
 	a.stateMu.Unlock()
 	if !stopped {
 		return status
@@ -481,14 +498,17 @@ func decodeQwenTasks(response json.RawMessage) ([]qwenTask, error) {
 
 var _ agent.ChildInterrupter = (*Agent)(nil)
 
-// InterruptChild stops one subagent. childKey is the registry row key: the id
-// of the tool call that spawned the subagent.
+// InterruptChild stops the subagent identified by its session-qualified
+// registry key. The native task list still identifies its spawn by raw tool ID.
 //
 // Qwen stops a subagent, in the foreground or the background, through the task
 // cancel of its session, by Qwen's own task id. No frame of a foreground spawn
 // states that id, so this reads it from Qwen's task list, by the tool call of
 // the spawn. A subagent that no longer runs needs no stop.
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
+	if childKey == "" {
+		return agent.ErrChildRouteNotReady
+	}
 	return a.WithSessionID(func(sessionID string) error {
 		response, err := a.SendRequest(qwenTaskListMethod, qwenSessionParams(sessionID), a.APITimeout())
 		if err != nil {
@@ -500,34 +520,34 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 		}
 		listed := false
 		for _, task := range tasks {
-			if task.Kind != qwenBackgroundAgent || task.ToolUseID != childKey {
+			if task.Kind != qwenBackgroundAgent || qwenAgentRowKey(sessionID, task.ToolUseID) != childKey {
 				continue
 			}
 			listed = true
 			if task.runs() {
-				return a.stopChild(sessionID, childKey, task)
+				return a.stopChild(sessionID, task.ToolUseID, task)
 			}
 		}
 		if !listed {
-			return fmt.Errorf("the Qwen task list holds no subagent of the tool call %s", childKey)
+			return fmt.Errorf("the Qwen task list holds no subagent for registry key %s", childKey)
 		}
 		return nil
 	})
 }
 
-// stopChild cancels the task of the subagent that the spawn childKey started,
-// and records the stop for the row's close (closingStatus).
+// stopChild cancels the native task of a spawning tool call and records the
+// stop for the row's close (closingStatus).
 //
 // The record comes BEFORE the cancel, because Qwen can report the aborted
 // subagent before it answers the cancel. A cancel that failed, or that found
 // the subagent over, stopped nothing, so the record goes again and Qwen's own
 // verdict stands. A row that closed between the two keeps the stop: the user
 // asked for it at the moment the subagent ended.
-func (a *Agent) stopChild(sessionID, childKey string, task qwenTask) error {
-	a.recordStop(childKey, true)
+func (a *Agent) stopChild(sessionID, toolCallID string, task qwenTask) error {
+	a.recordStop(toolCallID, true)
 	cancelled, err := a.cancelTask(sessionID, task)
 	if err != nil || !cancelled {
-		a.recordStop(childKey, false)
+		a.recordStop(toolCallID, false)
 	}
 	return err
 }
@@ -610,6 +630,11 @@ func (a *Agent) stopBackgroundTranscript(toolCallID string, drain bool) {
 
 // stopAllBackgroundTranscripts stops every reader, when the session goes.
 func (a *Agent) stopAllBackgroundTranscripts() {
+	a.stopAllWorkflowPollers()
+	a.stopAllBackgroundTails()
+}
+
+func (a *Agent) stopAllBackgroundTails() {
 	a.stateMu.Lock()
 	tails := a.children.tails
 	a.children.tails = nil
@@ -659,7 +684,7 @@ type qwenWorkflowInput struct {
 
 // workflowObservation opens the row of a workflow run. The run is one tool
 // call, and its agents report to it alone, so the row is a group of one.
-func workflowObservation(toolCallID string, rawInput json.RawMessage) *acp.SubagentObservation {
+func workflowObservation(sessionID, toolCallID string, rawInput json.RawMessage) *acp.SubagentObservation {
 	var input qwenWorkflowInput
 	_ = json.Unmarshal(rawInput, &input)
 	title := "Workflow"
@@ -669,13 +694,15 @@ func workflowObservation(toolCallID string, rawInput json.RawMessage) *acp.Subag
 			break
 		}
 	}
+	rowKey := qwenWorkflowRowKey(sessionID, toolCallID)
 	return &acp.SubagentObservation{
-		RowKey:     toolCallID,
-		Kind:       bgtask.KindWorkflow,
-		Title:      title,
-		Status:     bgtask.StatusRunning,
-		GroupKey:   toolCallID,
-		GroupLabel: title,
+		RegistryOnly: true,
+		RowKey:       rowKey,
+		Kind:         bgtask.KindWorkflow,
+		Title:        title,
+		Status:       bgtask.StatusRunning,
+		GroupKey:     rowKey,
+		GroupLabel:   title,
 	}
 }
 

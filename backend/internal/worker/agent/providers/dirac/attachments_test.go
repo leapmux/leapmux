@@ -3,6 +3,8 @@ package dirac
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -13,8 +15,8 @@ import (
 func TestPromptParamsCarriesTextBytesAndPreservesImages(t *testing.T) {
 	t.Parallel()
 	blocks := acp.BuildPromptBlocks("Read the note and picture.", []agent.ClassifiedAttachment{
-		{Filename: "note.txt", MIMEType: "text/plain", Kind: agent.AttachmentKindText, Data: []byte("unique-note-42")},
-		{Filename: "shot.png", MIMEType: "image/png", Kind: agent.AttachmentKindImage, Data: []byte{1, 2, 3}},
+		{Filename: "note.txt", MIMEType: "text/plain", Kind: contracts.AttachmentMediaKindText, Data: []byte("unique-note-42")},
+		{Filename: "shot.png", MIMEType: "image/png", Kind: contracts.AttachmentMediaKindImage, Data: []byte{1, 2, 3}},
 	})
 	params := map[string]any{"prompt": blocks}
 
@@ -30,7 +32,7 @@ func TestPromptParamsCarriesTextBytesAndPreservesImages(t *testing.T) {
 
 func TestProviderRejectsPDFAndBinaryAttachments(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindPDF, agent.AttachmentKindBinary} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary} {
 		err := diracProvider{}.ValidateAttachment(agent.ClassifiedAttachment{Filename: "file", Kind: kind})
 		require.Error(t, err)
 	}

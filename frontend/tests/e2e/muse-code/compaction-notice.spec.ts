@@ -8,15 +8,14 @@
 import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
 import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 import { museTest } from '../muse-fixtures'
-import { museCompactionSummaryStep, museSummarizerMatcher } from './compactionScenario.muse'
+import { MUSE_COMPACTION_REPORTED_INPUT_TOKENS, museCompactionSummaryStep, museSummarizerMatcher } from './compactionScenario.muse'
 
 museTest('draws and keeps the native notice after a manual compaction', async ({ native }) => {
-  // Muse counts occupancy from the provider-reported facts, so the seeds state
-  // real input counts: the context crosses the soft threshold (the manual
-  // compaction runs) and stays under the hard one (nothing compacts on its own).
+  // The seed responses report usage above the soft threshold and below the
+  // hard threshold. Manual compaction runs without an earlier automatic summary.
   await exerciseNativeCompaction(native, {
     summary: { route: 'rule', when: museSummarizerMatcher, respond: museCompactionSummaryStep() },
-    reportedInputTokens: 20000,
+    reportedInputTokens: MUSE_COMPACTION_REPORTED_INPUT_TOKENS,
   })
   await expectCompactionNoticeAfterReload(native.page)
 })

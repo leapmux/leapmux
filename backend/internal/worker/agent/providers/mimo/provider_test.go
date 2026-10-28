@@ -192,10 +192,24 @@ func TestClassify(t *testing.T) {
 func TestValidateAttachment(t *testing.T) {
 	t.Parallel()
 	provider := mimoProvider{}
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage, agent.AttachmentKindPDF} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf} {
 		assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "f"}), "kind %v", kind)
 	}
-	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "a.bin"}), "a.bin")
+	assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, Filename: "a.bin"}), "a.bin")
+}
+
+func TestMiMoAudioAttachmentPolicy(t *testing.T) {
+	t.Parallel()
+	provider := mimoProvider{}
+	for _, mime := range []string{"audio/wav", "audio/x-wav", "audio/mp3", "audio/mpeg", "audio/flac", "audio/x-flac", "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/ogg"} {
+		attachment := agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, Filename: "recording", MIMEType: mime, Data: []byte{0, 255}}
+		assert.NoError(t, provider.ValidateAttachment(attachment), mime)
+		attachment.Data = nil
+		assert.ErrorContains(t, provider.ValidateAttachment(attachment), "empty", mime)
+	}
+	for _, mime := range []string{"", "audio/aac", "audio/webm", "audio/not-real", "application/zip"} {
+		assert.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, Filename: "recording", MIMEType: mime, Data: []byte{0, 255}}), mime)
+	}
 }
 
 // The registry applies the same policy that the plugin states, so a binary

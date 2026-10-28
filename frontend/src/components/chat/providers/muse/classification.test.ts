@@ -7,6 +7,25 @@ import '~/components/chat/providers'
 import '~/components/chat/providers/testMocks'
 
 describe('classifyMuseMessage', () => {
+  it.each([
+    { method: 'item/completed', params: { sessionId: 'child', item: { itemId: 'text', revision: 1, kind: 'agentMessage', status: 'completed', text: 'Unadmitted text' } } },
+    { method: 'item/completed', params: { sessionId: 'child', item: { itemId: 'tool', revision: 1, kind: 'toolCall', status: 'completed', tool: 'bash', args: '{}' } } },
+    { method: 'turn/completed', params: { sessionId: 'child', turnId: 'turn', terminal: 'completed' } },
+    { method: 'future/event', params: { sessionId: 'child', viewCursor: 'cursor' } },
+  ])('retains refused projection evidence without rendering its native $method frame', (payload) => {
+    const original = structuredClone(payload)
+    expect(providerRow(AgentProvider.MUSE_CODE, payload, {
+      supplementalContent: { nativeViewProjectionUnavailable: { sessionId: 'child', reason: 'The Muse view could not be projected.' } },
+    })).toEqual({ kind: 'hidden' })
+    expect(payload).toEqual(original)
+  })
+
+  it.each([undefined, null, {}, { sessionId: '', reason: 'Unavailable' }, { sessionId: 'child' }, { sessionId: 'foreign', reason: 'Unavailable' }])('rejects an invalid projection-failure marker %j', (marker) => {
+    const payload = { method: 'item/completed', params: { sessionId: 'child', item: { itemId: 'text', revision: 1, kind: 'agentMessage', status: 'completed', text: 'Native text' } } }
+    expect(providerRow(AgentProvider.MUSE_CODE, payload, { supplementalContent: { nativeViewProjectionUnavailable: marker } }))
+      .toEqual({ kind: 'assistant-text', text: 'Native text' })
+  })
+
   it.each(['pending', 'inProgress', 'completed', 'cancelled'])('hides the recognized native %s list update from chat', (status) => {
     const frame = { method: 'session/todoListChanged', params: { sessionId: 'native-session', items: [{ text: 'Native task', status }] } }
     const original = structuredClone(frame)

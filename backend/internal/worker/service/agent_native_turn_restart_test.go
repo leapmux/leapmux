@@ -97,7 +97,7 @@ func prepareNativeRestartAgent(t *testing.T) (*Service, *nativeRestartProbeAgent
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: id, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY,
 		WorkingDir: workingDir, Options: mode, ResumeSessionID: "native-session-1",
-	}, svc.Output.NewSink(id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY),
+	}, newTestRootOutputSink(t, svc.Output, id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(id) })
@@ -215,7 +215,7 @@ func TestNativeTurnRestartChecksOwnershipAfterLifecycleWait(t *testing.T) {
 			case "later active":
 				sink.SetTurnState(agent.TurnState{Active: true}, 3)
 			case "process replacement":
-				svc.Output.NewSink(id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY)
+				newTestRootOutputSink(t, svc.Output, id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY)
 				svc.Output.NoteAgentProcessStarted(id)
 			case "session change":
 				sink.UpdateSessionID("native-session-2")

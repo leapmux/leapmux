@@ -73,8 +73,8 @@ func TestTrackedAgentIDsIncludesRootSinks(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	// NewSink registers the root sink in rootSinks.
-	_ = svc.Output.NewSink("root-leak", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	// NewRootSink registers the root sink in rootSinks.
+	_ = newTestRootOutputSink(t, svc.Output, "root-leak", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	assert.Contains(t, svc.Output.TrackedAgentIDs(), "root-leak",
 		"a root sink is tracked so the orphan sweep can reclaim it")
@@ -116,7 +116,8 @@ func TestCleanupChildAgentsBatchPrunesWithoutRootScan(t *testing.T) {
 
 	// Seed a root sink + per-child span trackers (the state CleanupChildAgents
 	// reaps).
-	svc.Output.NewSink("root-batch", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: "root-batch", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
+	newTestRootOutputSink(t, svc.Output, "root-batch", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	rootSink := requireRootOutputSink(t, svc.Output, "root-batch")
 	for _, childID := range []string{"child-a", "child-b", "child-c"} {
 		svc.Output.childTracker(childID)

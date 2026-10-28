@@ -5,99 +5,227 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type viewRecovery struct {
-	after  string
-	next   string
-	buffer [][]byte
+	deadline      time.Time
+	after         string
+	next          string
+	buffer        [][]byte
+	bufferedBytes int
 }
 
+// The caller holds stateMu.
+func (a *Agent) childRecoveryDeadlineLocked(recovery *viewRecovery) time.Time {
+	if recovery.deadline.IsZero() {
+		recovery.deadline = a.Clock().Now().Add(a.childProofTimeout())
+	}
+	return recovery.deadline
+}
+
+type childViewPrefixState uint8
+
+const (
+	childViewPrefixUnrequested childViewPrefixState = iota
+	childViewPrefixPending
+	childViewPrefixReady
+	childViewPrefixFailed
+)
+
 func viewCursor(raw []byte) string {
+	if cursor := viewFrameCursor(raw); cursor != nil {
+		return *cursor
+	}
+	return ""
+}
+
+func viewFrameCursor(raw []byte) *string {
 	var frame struct {
 		Params struct {
-			Cursor string `json:"viewCursor"`
+			Cursor *string `json:"viewCursor"`
 		} `json:"params"`
 	}
 	if json.Unmarshal(raw, &frame) != nil {
-		return ""
+		return nil
 	}
 	return frame.Params.Cursor
+}
+
+// syncView reads a session prefix before its buffered live overlap. Child
+// refresh and native gap recovery share one keyed, process-owned operation.
+func (a *Agent) syncView(id string) {
+	a.stateMu.Lock()
+	owned := a.sessions[id]
+	child := a.currentSessionState(id, owned) && owned.childID != ""
+	a.stateMu.Unlock()
+	if child {
+		a.syncChildView(id, owned)
+		a.projectChildView(id, owned)
+		return
+	}
+	a.dispatcher.mu.Lock()
+	a.stateMu.Lock()
+	state := a.sessions[id]
+	if !a.currentSessionState(id, state) {
+		a.stateMu.Unlock()
+		a.dispatcher.mu.Unlock()
+		return
+	}
+	recovery := state.viewRecovery
+	a.stateMu.Unlock()
+	a.dispatcher.mu.Unlock()
+	if recovery == nil {
+		return
+	}
+	a.runViewRecovery(id, state, recovery)
+}
+
+// readViewPage validates every event, including events after a requested head.
+// A nil cursor means the beginning. An explicit empty cursor remains explicit.
+func (a *Agent) readViewPage(id string, after *string, timeout time.Duration) ([]json.RawMessage, *string, error) {
+	params := map[string]any{"sessionId": id, "limit": 200, "direction": "forward"}
+	if after != nil {
+		params["cursor"] = *after
+	}
+	raw, err := a.request(methodViewPage, params, timeout, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	var page struct {
+		Events *[]json.RawMessage `json:"events"`
+		Cursor json.RawMessage    `json:"nextCursor"`
+	}
+	if json.Unmarshal(raw, &page) != nil || page.Events == nil || len(page.Cursor) == 0 {
+		return nil, nil, fmt.Errorf("the Muse view page is invalid")
+	}
+	for _, rawEvent := range *page.Events {
+		var event struct {
+			Method string `json:"method"`
+			Params struct {
+				SessionID string  `json:"sessionId"`
+				Cursor    *string `json:"viewCursor"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(rawEvent, &event) != nil || event.Method == "" || event.Params.SessionID != id || event.Params.Cursor == nil {
+			return nil, nil, fmt.Errorf("the Muse view page contains an invalid or foreign event")
+		}
+	}
+	var next *string
+	if json.Unmarshal(page.Cursor, &next) != nil {
+		return nil, nil, fmt.Errorf("the Muse view page cursor is invalid")
+	}
+	if next != nil && len(*page.Events) == 0 {
+		return nil, nil, fmt.Errorf("the Muse view page cursor did not advance")
+	}
+	if next != nil && *next != viewCursor((*page.Events)[len(*page.Events)-1]) {
+		return nil, nil, fmt.Errorf("the Muse view page cursor does not identify its last event")
+	}
+	return *page.Events, next, nil
 }
 
 // readViewPages keeps native cursors opaque and requires each page to advance.
 func (a *Agent) readViewPages(id, after, target string) ([]json.RawMessage, error) {
 	var events []json.RawMessage
-	seen := map[string]bool{after: true}
+	var cursor *string
+	seen := make(map[string]bool)
+	if after != "" {
+		cursor = &after
+		seen[after] = true
+	}
 	for {
 		if err := a.Context().Err(); err != nil {
 			return events, err
 		}
-		params := map[string]any{"sessionId": id, "limit": 200, "direction": "forward"}
-		if after != "" {
-			params["cursor"] = after
-		}
-		raw, err := a.request(methodViewPage, params, a.APITimeout(), nil)
+		page, next, err := a.readViewPage(id, cursor, a.APITimeout())
 		if err != nil {
 			return events, err
 		}
-		var page struct {
-			Events *[]json.RawMessage `json:"events"`
-			Cursor json.RawMessage    `json:"nextCursor"`
-		}
-		if json.Unmarshal(raw, &page) != nil || page.Events == nil || len(page.Cursor) == 0 {
-			return events, fmt.Errorf("the Muse view page is invalid")
-		}
-		reached := false
-		for _, rawEvent := range *page.Events {
-			var event struct {
-				Method string `json:"method"`
-				Params struct {
-					SessionID string `json:"sessionId"`
-					Cursor    string `json:"viewCursor"`
-				} `json:"params"`
-			}
-			if json.Unmarshal(rawEvent, &event) != nil || event.Method == "" || event.Params.SessionID != id || event.Params.Cursor == "" {
-				return events, fmt.Errorf("the Muse view page contains an invalid or foreign event")
-			}
-			events = append(events, slices.Clone(rawEvent))
-			if target != "" && event.Params.Cursor == target {
-				reached = true
-			}
-		}
-		if string(page.Cursor) == "null" {
+		events = append(events, page...)
+		reached := target != "" && slices.ContainsFunc(page, func(raw json.RawMessage) bool { return viewCursor(raw) == target })
+		if next == nil {
 			return events, nil
 		}
-		var next string
-		if json.Unmarshal(page.Cursor, &next) != nil || next == "" || seen[next] || len(*page.Events) == 0 {
+		if seen[*next] {
 			return events, fmt.Errorf("the Muse view page cursor did not advance")
 		}
-		seen[next] = true
-		after = next
+		seen[*next] = true
+		cursor = next
 		if reached {
 			return events, nil
 		}
 	}
 }
 
+// viewFrameKey compares native methods and parameters, while framing headers
+// remain in the original bytes. Distinct events may share an opaque cursor.
+func viewFrameKey(raw []byte) ([32]byte, bool) {
+	var event struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if json.Unmarshal(raw, &event) != nil || event.Method == "" || len(event.Params) == 0 {
+		return [32]byte{}, false
+	}
+	value, err := json.Marshal(event)
+	if err != nil {
+		return [32]byte{}, false
+	}
+	digest, err := agent.JSONCanonicalDigest(value)
+	return digest, err == nil
+}
+
 // bufferViewFrame separates the paged prefix from its live overlap.
-// The dispatcher holds dispatchMu. stateMu protects the recovery buffer.
+// The dispatcher holds dispatcher.mu. stateMu protects the recovery buffer.
 func (a *Agent) bufferViewFrame(line *providerkit.ParsedLine, state *sessionState) bool {
 	if line.Method == methodViewGap {
 		return false
 	}
 	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	if state.viewRecovery != nil {
-		state.viewRecovery.buffer = append(state.viewRecovery.buffer, slices.Clone(line.Raw))
+	if state.childID != "" && state.childViewPrefix == childViewPrefixFailed {
+		a.stateMu.Unlock()
+		writer, id, raw := a.sink, providerkit.StringField(line.Params, "sessionId"), slices.Clone(line.Raw)
+		a.deferOutputAction(func() { persistUnprojectedViewFrames(writer, id, [][]byte{raw}) })
 		return true
 	}
-	cursor := viewCursor(line.Raw)
-	if cursor != "" && state.viewTwins[cursor] {
-		delete(state.viewTwins, cursor)
+	if recovery := state.viewRecovery; recovery != nil {
+		if state.childID != "" {
+			a.childRecoveryDeadlineLocked(recovery)
+		}
+		if state.childID != "" && len(line.Raw) > maxChildProjectionBytes-recovery.bufferedBytes {
+			if state.projection == nil {
+				state.projection = newChildProjection()
+			}
+			for _, raw := range recovery.buffer {
+				state.projection.frames = append(state.projection.frames, childProjectionFrame{raw: raw})
+			}
+			recovery.buffer = nil
+			recovery.bufferedBytes = 0
+			state.viewRecovery = nil
+			a.stateMu.Unlock()
+			a.failChildProjectionLocked(providerkit.StringField(line.Params, "sessionId"), state, fmt.Errorf("the Muse child bootstrap exceeds its memory limit"), line.Raw)
+			return true
+		}
+		recovery.buffer = append(recovery.buffer, slices.Clone(line.Raw))
+		recovery.bufferedBytes += len(line.Raw)
+		a.stateMu.Unlock()
 		return true
+	}
+	defer a.stateMu.Unlock()
+	// Stored pages never replay item/delta. Only an existing overlap window
+	// requires a fingerprint of another live frame.
+	if len(state.viewOverlap) > 0 && line.Method != contracts.MuseMethodItemDelta {
+		if key, valid := viewFrameKey(line.Raw); valid {
+			if _, duplicate := state.viewOverlap[key]; duplicate {
+				delete(state.viewOverlap, key)
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -112,7 +240,7 @@ func (a *Agent) recoverView(raw []byte, state *sessionState) {
 		return
 	}
 	a.stateMu.Lock()
-	if state.retired {
+	if !a.currentSessionState(gap.SessionID, state) {
 		a.stateMu.Unlock()
 		return
 	}
@@ -122,9 +250,10 @@ func (a *Agent) recoverView(raw []byte, state *sessionState) {
 		return
 	}
 	recovery := &viewRecovery{after: gap.After, next: gap.Next}
+	state.viewOverlap = nil
 	state.viewRecovery = recovery
 	a.stateMu.Unlock()
-	go a.runViewRecovery(gap.SessionID, state, recovery)
+	a.viewWork.Run(gap.SessionID, func() { a.syncView(gap.SessionID) })
 }
 
 func (a *Agent) runViewRecovery(id string, state *sessionState, recovery *viewRecovery) {
@@ -133,7 +262,7 @@ func (a *Agent) runViewRecovery(id string, state *sessionState, recovery *viewRe
 	for {
 		a.stateMu.Lock()
 		after, target := recovery.after, recovery.next
-		retired := state.retired
+		retired := !a.currentSessionState(id, state)
 		a.stateMu.Unlock()
 		if retired {
 			break
@@ -155,15 +284,13 @@ func (a *Agent) runViewRecovery(id string, state *sessionState, recovery *viewRe
 		a.stateMu.Unlock()
 	}
 	func() {
-		a.dispatchMu.Lock()
-		defer a.dispatchMu.Unlock()
+		a.dispatcher.mu.Lock()
+		defer a.dispatcher.mu.Unlock()
 		a.stateMu.Lock()
 		buffer := recovery.buffer
 		state.viewRecovery = nil
-		retired := state.retired
-		if state.viewTwins == nil {
-			state.viewTwins = make(map[string]bool)
-		}
+		retired := !a.currentSessionState(id, state)
+		state.viewOverlap = make(map[[32]byte]struct{})
 		a.stateMu.Unlock()
 		if retired {
 			// The host retired mid-recovery. The buffered frames were still
@@ -177,31 +304,44 @@ func (a *Agent) runViewRecovery(id string, state *sessionState, recovery *viewRe
 			}
 			return
 		}
-		served := make(map[string]bool)
+		served := make(map[[32]byte]bool)
+		received := make(map[[32]byte]bool, len(buffer))
+		for _, raw := range buffer {
+			if key, valid := viewFrameKey(raw); valid {
+				received[key] = true
+			}
+		}
+		overlapped := false
 		for _, raw := range paged {
-			cursor := viewCursor(raw)
-			if served[cursor] {
+			key, valid := viewFrameKey(raw)
+			if valid && served[key] {
 				continue
 			}
-			served[cursor] = true
-			a.dispatchOutput(providerkit.ParseLine(raw))
-			a.stateMu.Lock()
-			state.viewTwins[cursor] = true
-			a.stateMu.Unlock()
+			if valid {
+				served[key] = true
+			}
+			line := providerkit.ParseLine(raw)
+			a.dispatchOutput(line)
+			if received[key] && valid {
+				overlapped = true
+			}
+			if overlapped && valid && !received[key] && !slices.Contains(museOptedOutMethods, line.Method) {
+				a.stateMu.Lock()
+				state.viewOverlap[key] = struct{}{}
+				a.stateMu.Unlock()
+			}
 		}
 		for _, raw := range buffer {
-			cursor := viewCursor(raw)
-			if served[cursor] {
-				a.stateMu.Lock()
-				delete(state.viewTwins, cursor)
-				a.stateMu.Unlock()
+			if key, valid := viewFrameKey(raw); valid && served[key] {
 				continue
 			}
 			a.dispatchOutput(providerkit.ParseLine(raw))
 		}
+
 	}()
 	if readErr != nil {
 		slog.Warn("recover the Muse view", "session", id, "error", readErr)
 	}
+	a.drainDeferredOutputActions()
 	a.drainControls()
 }

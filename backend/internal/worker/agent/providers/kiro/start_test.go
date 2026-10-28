@@ -48,6 +48,8 @@ const (
 	kiroFakeEnginePIDFile = "KIRO_FAKE_ENGINE_PID_FILE"
 	kiroFakeEngineEnv     = "KIRO_FAKE_DETACHED_ENGINE"
 	kiroFakeEngineAddress = "KIRO_FAKE_ENGINE_ADDRESS"
+	kiroFakeUsageReplies  = "KIRO_FAKE_USAGE_REPLIES"
+	kiroFakeHoldUsage     = "KIRO_FAKE_HOLD_USAGE"
 )
 
 // kiroFakeGoalRunID is the goal run that the fake's store holds.
@@ -174,6 +176,15 @@ func TestHelperProcessKiroCLI(*testing.T) {
 	// mock-sonnet has an effort, and a model write starts it on the model's
 	// default.
 	effort := ""
+	var usageReplies []json.RawMessage
+	if encoded := os.Getenv(kiroFakeUsageReplies); encoded != "" {
+		if json.Unmarshal([]byte(encoded), &usageReplies) != nil || len(usageReplies) == 0 {
+			os.Exit(7)
+		}
+	}
+	usageReads := 0
+	sessionsOpened := 0
+	var heldUsage []json.RawMessage
 	for scanner.Scan() {
 		_, _ = log.Write(append(append([]byte(nil), scanner.Bytes()...), '\n'))
 		var req struct {
@@ -189,6 +200,21 @@ func TestHelperProcessKiroCLI(*testing.T) {
 		}
 		var result any = map[string]any{}
 		switch req.Method {
+		case kiroAccountUsageMethod:
+			usageReads++
+			if os.Getenv(kiroFakeHoldUsage) != "" {
+				heldUsage = append(heldUsage, append(json.RawMessage(nil), req.ID...))
+				continue
+			}
+			result = map[string]any{"success": false, "message": "No mocked account quota."}
+			if len(usageReplies) > 0 {
+				result = usageReplies[min(usageReads-1, len(usageReplies)-1)]
+			}
+		case "leapmux/test/release_usage":
+			for _, id := range heldUsage {
+				_, _ = fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"result":{"success":true,"data":{"usageBreakdowns":[]}}}`+"\n", id)
+			}
+			heldUsage = nil
 		case acp.MethodSessionPrompt:
 			if message := os.Getenv(kiroFakePromptErrorEnv); message != "" {
 				failFakePrompt(writer, req.ID, message)
@@ -202,7 +228,14 @@ func TestHelperProcessKiroCLI(*testing.T) {
 			result = json.RawMessage(kiroInitializeFixture)
 		case acp.MethodSessionNew, acp.MethodSessionLoad:
 			effort = ""
-			result = kiroFakeSession(model)
+			session := kiroFakeSession(model)
+			if req.Method == acp.MethodSessionNew {
+				sessionsOpened++
+				if sessionsOpened > 1 {
+					session["sessionId"] = fmt.Sprintf("%s-%d", kiroFakeSessionID, sessionsOpened)
+				}
+			}
+			result = session
 		case acp.MethodSessionSetConfigOption:
 			switch req.Params.ConfigID {
 			case "model":

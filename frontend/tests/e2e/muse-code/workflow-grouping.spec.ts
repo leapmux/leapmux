@@ -6,9 +6,11 @@
  * the workflow item's fold, and the Worker draws one grouped row for each.
  */
 import { expect } from '@playwright/test'
-import { codeExecutionToolCall } from '../helpers/providerToolCalls'
+import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { currentNativeAgent } from '../helpers/nativeScenario'
+import { codeExecutionToolCall, museSubmitResultToolCall } from '../helpers/providerToolCalls'
 import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { museTest } from '../muse-fixtures'
 
@@ -33,7 +35,7 @@ function workflowScript(first: string, second: string): string {
   ].join('\n')
 }
 
-museTest('groups the child runs of one native workflow under its heading', async ({ native }) => {
+museTest('groups the child runs of one native workflow under its heading', async ({ native }, testInfo) => {
   const { page, modelScript } = native
   const first = modelScript.prompt(wordTask('GROUP_ONE'))
   const second = modelScript.prompt(wordTask('GROUP_TWO'))
@@ -42,33 +44,56 @@ museTest('groups the child runs of one native workflow under its heading', async
       name: 'the first workflow child submits its word',
       when: { body: ['Workflow child completion protocol', 'GROUP_ONE'] },
       once: true,
-      respond: { toolCalls: [{ id: 'grouping-child-one-submit', name: 'submit_result', namespace: 'muse', arguments: { text: 'GROUP_ONE', notes: null } }] },
+      respond: { toolCalls: [museSubmitResultToolCall('grouping-child-one-submit', 'GROUP_ONE')] },
     },
     {
       name: 'the second workflow child submits its word',
       when: { body: ['Workflow child completion protocol', 'GROUP_TWO'] },
       once: true,
-      respond: { toolCalls: [{ id: 'grouping-child-two-submit', name: 'submit_result', namespace: 'muse', arguments: { text: 'GROUP_TWO', notes: null } }] },
+      respond: { toolCalls: [museSubmitResultToolCall('grouping-child-two-submit', 'GROUP_TWO')] },
     },
   )
+  const parentAnswer = `The native workflow completed under ${WORKFLOW_NAME}.`
   const start = await modelScript.queue(
     { toolCalls: [codeExecutionToolCall(native.provider, 'muse-grouping-workflow', workflowScript(first, second))] },
-    { text: `The native workflow completed under ${WORKFLOW_NAME}.` },
+    { text: parentAnswer },
   )
   await sendMessage(page, modelScript.prompt('Run the native grouping workflow and report its result.'))
   await modelScript.waitForSteps(start + 2)
+  await expect(assistantBubbles(page).filter({ hasText: parentAnswer })).toHaveCount(1)
+  const agent = await currentNativeAgent(native)
+  const snapshot = await readNativeMessageSnapshot(native, agent.id)
+  const messages = snapshot.messages.map(message => ({
+    seq: message.seq,
+    source: message.source,
+    agentSessionId: message.agentSessionId,
+    spanId: message.spanId,
+    original: nativeMessageBody(message),
+    supplemental: nativeMessageSupplement(message),
+  }))
+  await testInfo.attach('native-message-snapshot', {
+    body: JSON.stringify({ agent, snapshot: { ...snapshot, messages } }, (_key, value: unknown) => {
+      if (typeof value === 'bigint')
+        return value.toString()
+      if (value instanceof Uint8Array)
+        return new TextDecoder().decode(value)
+      return value
+    }, 2),
+    contentType: 'application/json',
+  })
   await waitForAgentIdle(page)
   await expandBackgroundTasksSection(page)
 
   const rows = backgroundTaskRows(page)
   const workflow = rows.filter({ hasText: 'Native code' }).first()
   await expect(workflow).toHaveAttribute('data-kind', 'workflow')
-  const children = rows.filter({ hasText: /^Child /i })
+  const children = rows.filter({ hasText: /Reply with the single word GROUP_(?:ONE|TWO)/ })
   await expect(children).toHaveCount(2)
   await expectRowBecomesFinal(page, children.nth(0))
   await expectRowBecomesFinal(page, children.nth(1))
   await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /Native code/)
-  // A fold child owns no session of its own, so its row opens no child transcript.
-  await expect(children.nth(0)).toHaveAttribute('data-child-agent-id', '')
-  await expect(children.nth(1)).toHaveAttribute('data-child-agent-id', '')
+  await expect(children.nth(0)).toHaveAttribute('data-kind', 'subagent')
+  await expect(children.nth(1)).toHaveAttribute('data-kind', 'subagent')
+  await expect(children.nth(0)).toHaveAttribute('data-child-agent-id', /\S+/)
+  await expect(children.nth(1)).toHaveAttribute('data-child-agent-id', /\S+/)
 })

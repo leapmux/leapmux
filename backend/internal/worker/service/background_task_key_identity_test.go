@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -90,6 +91,44 @@ func TestLookupChildIdentityAnswersNativeBytesForStoredSpellings(t *testing.T) {
 			require.NoError(t, lookupErr)
 			assert.False(t, found)
 			assert.Empty(t, absent.AgentID)
+		})
+	}
+}
+
+func TestLookupChildIdentityKeepsStorageFailureDistinctFromAnAbsentChild(t *testing.T) {
+	for _, absent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "read failure", true: "absent child"}[absent], func(t *testing.T) {
+			t.Parallel()
+			const rootID = "child-identity-read-failure"
+			const nativeKey = " native-child-key "
+			svc, sink := setupRootSink(t, rootID)
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: nativeKey, Title: "Native child"})
+			require.NoError(t, err)
+			row := storedRow(t, svc, rootID, bgtask.NormalizeRowKey(nativeKey))
+			identity, err := bgtask.ParseRowIdentity(row.RowKey)
+			require.NoError(t, err)
+			if absent {
+				_, err = svc.DB.ExecContext(t.Context(), "DELETE FROM agents WHERE id = ?", childID)
+				require.NoError(t, err)
+				resolved, found, err := sink.LookupChildIdentity(identity)
+				require.NoError(t, err)
+				assert.False(t, found)
+				assert.Empty(t, resolved.AgentID)
+				return
+			}
+			store := &failedOutputSourceStore{DBTX: svc.DB, agentID: childID}
+			svc.Output.queries = db.New(store)
+			resolved, found, err := sink.LookupChildIdentity(identity)
+			require.True(t, store.failed.Load(), "the fault must occur after the registry resolves its stored child")
+			assert.ErrorContains(t, err, "missing_output_source_column", "an unreadable stored child must not become an ordinary registry miss")
+			assert.NotErrorIs(t, err, sql.ErrNoRows)
+			assert.False(t, found)
+			assert.Empty(t, resolved.AgentID)
+			resolved, found, err = sink.LookupChildIdentity(identity)
+			require.NoError(t, err)
+			require.True(t, found)
+			assert.Equal(t, childID, resolved.AgentID)
+			assert.Equal(t, nativeKey, resolved.ProviderChildKey)
 		})
 	}
 }

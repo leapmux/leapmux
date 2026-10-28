@@ -27,9 +27,24 @@ func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
 	return modes
 }
 
-// gooseStaticOptionGroups holds Goose's static permission-mode group. The
-// factory registration and Start both read this one value.
-var gooseStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPermissionMode, fallbackGooseCLIModes())
+// OptionNativeCommands is the Native Commands axis. On withholds the host
+// terminal from the initialize handshake, so Goose runs each command itself
+// and saves long output to a file it reports. Off, the default, routes
+// commands to the LeapMux terminal.
+const OptionNativeCommands = "nativeCommands"
+
+const nativeCommandsRestartNote = "Changing this setting restarts the agent and stops any active turn."
+
+// gooseNativeCommandsGroup lists the two Native Commands values.
+var gooseNativeCommandsGroup = agent.SelectGroup(OptionNativeCommands, "Native Commands", agent.OptionOrderProviderSecond, "false", []agent.OptionDef{
+	{Id: "false", Name: "LeapMux Terminal", Description: nativeCommandsRestartNote + " Run commands in the LeapMux terminal, with no output files.", Default: true},
+	{Id: "true", Name: "Agent Itself", Description: nativeCommandsRestartNote + " Let Goose run each command itself and save long output to files it reports."},
+})
+
+// gooseStaticOptionGroups holds Goose's static permission-mode and
+// Native Commands groups. The factory registration and Start both read the
+// mode list from this one value.
+var gooseStaticOptionGroups = append(acp.StaticSecondaryGroup(acp.ModeChannelPermissionMode, fallbackGooseCLIModes()), gooseNativeCommandsGroup)
 
 // gooseLocator finds the Goose CLI on the user's PATH.
 var gooseLocator = launch.Binaries("goose")
@@ -47,7 +62,7 @@ func Registration() agent.Registration {
 		DefaultModels: nil,
 		// model + permissionMode (static group) + Goose's server-driven config options.
 		OptionGroups:        gooseStaticOptionGroups,
-		AdditionalOptionIDs: []string{contracts.GooseConfigThinkingEffort, ConfigProvider},
+		AdditionalOptionIDs: []string{contracts.GooseConfigThinkingEffort, ConfigProvider, OptionNativeCommands},
 		PermissionDefaults: agent.PermissionDefaults{
 			// Both halves are Smart Approve. The fallback must NOT be Goose's own `auto`,
 			// which is the mode its bypass shortcut selects: a resumed session with no stored

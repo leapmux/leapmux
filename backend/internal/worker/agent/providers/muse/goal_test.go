@@ -290,10 +290,10 @@ func TestMuseGoalObserversReleaseDispatchBeforeNestedNativeOutput(t *testing.T) 
 			observer := &museGoalObserverSink{ProviderServices: a.sink}
 			observer.observe = func() {
 				calls++
-				if !assert.True(t, a.dispatchMu.TryLock(), "the native goal observer retains the dispatch mutex") {
+				if !assert.True(t, a.dispatcher.mu.TryLock(), "the native goal observer retains the dispatch mutex") {
 					return
 				}
-				a.dispatchMu.Unlock()
+				a.dispatcher.mu.Unlock()
 				if !assert.True(t, a.stateMu.TryLock(), "the native goal observer retains the state mutex") {
 					return
 				}
@@ -350,15 +350,56 @@ func TestMuseGoalWriterRefusesAfterContextReplacement(t *testing.T) {
 func TestMuseGoalWriterSurvivesLaterTurnsInTheSameSession(t *testing.T) {
 	t.Parallel()
 	a, sink := goalTestAgent(t)
+	changed := false
+	observer := &museGoalObserverSink{ProviderServices: a.sink, observe: func() {
+		sink.SetTurnState(agent.TurnState{Active: true}, 1)
+		sink.SetTurnState(agent.TurnState{}, 2)
+		sink.SetTurnState(agent.TurnState{Active: true}, 3)
+		changed = true
+	}}
+	a.sink = observer
+	a.sessions["session"].sink = observer
 	feed(t, a, methodSessionGoalChanged, goalEventParams("session", map[string]any{"objective": "The same-session goal", "status": "active"}))
-	// Ordinary later turns in the same native session change no authority
-	// fact; the deferred write still lands.
-	a.Mu.Lock()
-	a.TurnToolUses++
-	a.Mu.Unlock()
-	for _, action := range a.takeDeferredGoalActions() {
-		action()
-	}
+	assert.True(t, changed, "a real turn-scope replacement must occur after the native observation")
 	require.Len(t, sink.Goals(), 1)
 	assert.Equal(t, "The same-session goal", sink.Goals()[0].Objective)
+}
+
+func TestMuseGoalObserversKeepNativeArrivalOrderDuringGoalReentry(t *testing.T) {
+	for _, clear := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new goal", true: "clear"}[clear], func(t *testing.T) {
+			a, sink := goalTestAgent(t)
+			entered := false
+			observer := &museGoalObserverSink{ProviderServices: a.sink, observe: func() {
+				if entered {
+					return
+				}
+				entered = true
+				var goal any = map[string]any{"objective": "Newer native goal", "status": "active"}
+				if clear {
+					goal = nil
+				}
+				params := goalEventParams("session", goal)
+				params["viewCursor"] = "newer-goal-cursor"
+				params["sourceRange"] = nativeSourceRange{Stream: nativeStream{Kind: "session", ID: "session"}, First: nativePosition{ID: "newer-goal-record", Sequence: 2}, Last: nativePosition{ID: "newer-goal-record", Sequence: 2}}
+				feed(t, a, methodSessionGoalChanged, params)
+			}}
+			a.sink = observer
+			a.sessions["session"].sink = observer
+			feed(t, a, methodSessionGoalChanged, goalEventParams("session", map[string]any{"objective": "Earlier native goal", "status": "active"}))
+			require.True(t, entered)
+			if clear {
+				before := len(sink.Goals())
+				sink.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusDone)
+				assert.Len(t, sink.Goals(), before, "a newer clear must leave no goal for a later status update")
+				assert.Equal(t, 1, sink.GoalClears())
+			} else {
+				goals := sink.Goals()
+				require.Len(t, goals, 2)
+				assert.Equal(t, "Earlier native goal", goals[0].Objective)
+				assert.Equal(t, "Newer native goal", goals[1].Objective)
+			}
+			assert.Empty(t, a.dispatcher.actions)
+		})
+	}
 }

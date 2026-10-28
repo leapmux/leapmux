@@ -112,6 +112,10 @@ func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interfac
 		a.Mu.Unlock()
 		return nil, agent.ErrAgentBusy
 	}
+	if err := a.validateCodexAudioInputLocked(input, settings.model); err != nil {
+		a.Mu.Unlock()
+		return nil, err
+	}
 	pending := newCodexTurnStart(threadID, input, settings)
 	pending.settingRevisions = maps.Clone(a.settingRevisions)
 	pending.retry = retry
@@ -236,6 +240,11 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 		a.Mu.Unlock()
 		a.turnDispatchMu.Unlock()
 		return 0, agent.ErrNoActiveTurn
+	}
+	if err := a.validateCodexAudioInputLocked(input, a.mainTurn.model); err != nil {
+		a.Mu.Unlock()
+		a.turnDispatchMu.Unlock()
+		return 0, err
 	}
 	if trackEcho {
 		ticket = a.steerLedger.Add(clientID)

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mimo-protocol.schema.json",
   "title": "MiMo Code wire vocabulary",
-  "description": "Each table maps PascalCase identifiers to protocol values. Go constants and TypeScript keys derive from those identifiers. Every table requires at least one value. An empty table supplies no dispatch case and prevents the generator from checking coverage.",
+  "description": "Each table maps PascalCase identifiers to protocol values. Go constants and TypeScript keys derive from those identifiers. Every table requires at least one value. An empty table supplies no dispatch case and prevents the generator from checking coverage. Subset arrays select keys from their parent contract tables.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,7 +23,8 @@
     "options",
     "permissionPolicies",
     "permissionReplies",
-    "controlFields"
+    "controlFields",
+    "audioMimeTypes"
   ],
   "$defs": {
     "table": {
@@ -190,6 +191,15 @@
     },
     "controlFields": {
       "$ref": "#/$defs/table"
+    },
+    "audioMimeTypes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
     }
   }
 }

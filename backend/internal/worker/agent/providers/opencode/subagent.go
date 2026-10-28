@@ -171,22 +171,29 @@ var errOpenCodeSubagentIdle = errors.New("the subagent finished, so it takes no 
 
 // openCodeChildSession is the session of one running subagent.
 type openCodeChildSession struct {
-	id string
+	id            string
+	rootSessionID string
+	// modelID is confirmed by this child's load response, independently of the root.
+	modelID string
 	// loaded is true once the agent loaded the session, so it streams the
 	// session's updates and takes a prompt for it.
 	loaded bool
+}
+
+func (child *openCodeChildSession) target(rowKey string) acp.ChildSessionTarget {
+	return acp.ChildSessionTarget{RootSessionID: child.rootSessionID, SessionID: child.id, RowKey: rowKey}
 }
 
 // observeTaskPart follows the child session of a running task call of the
 // current session. The task tool states that session before the child's first
 // request, and only the daemon's event stream states it: the ACP stream of the
 // parent carries no metadata of a running call.
-func (b *FamilyBase) observeTaskPart(part openCodeTaskPart) {
+func (b *FamilyBase) observeTaskPart(rootSessionID string, part openCodeTaskPart) {
 	if part.Type != openCodePartTypeTool || part.Tool != openCodeTaskTool || part.CallID == "" ||
 		part.State.Status != openCodeToolStatusRunning || part.State.Metadata.SessionID == "" {
 		return
 	}
-	b.followChildSession(part.CallID, part.State.Metadata.SessionID)
+	b.followChildSession(rootSessionID, part.CallID, part.State.Metadata.SessionID)
 }
 
 // followChildSession routes the updates of the child session of callID to the
@@ -194,28 +201,45 @@ func (b *FamilyBase) observeTaskPart(part openCodeTaskPart) {
 // streams only a session that it serves, so the subagent's own messages and
 // tool calls reach LeapMux through the load alone. The load replays what the
 // session already holds, so output from before the load is not lost.
-func (b *FamilyBase) followChildSession(callID, childSessionID string) {
+func (b *FamilyBase) followChildSession(rootSessionID, callID, childSessionID string) {
+	if rootSessionID == "" || !b.IsCurrentSession(rootSessionID) {
+		return
+	}
 	b.childSessionsMu.Lock()
-	if _, known := b.childSessions[callID]; known {
+	if child := b.childSessions[callID]; child != nil && child.rootSessionID == rootSessionID {
 		b.childSessionsMu.Unlock()
 		return
 	}
 	if b.childSessions == nil {
 		b.childSessions = make(map[string]*openCodeChildSession)
 	}
-	child := &openCodeChildSession{id: childSessionID}
+	child := &openCodeChildSession{id: childSessionID, rootSessionID: rootSessionID}
 	b.childSessions[callID] = child
 	b.childSessionsMu.Unlock()
-	b.AttachChildSession(childSessionID, callID)
 	// The daemon reader must not wait for the agent's answer.
 	go func() {
-		if err := b.LoadChildSession(childSessionID); err != nil {
+		modelID, err := b.LoadChildSession(child.target(callID))
+		if err != nil {
+			if errors.Is(err, agent.ErrChildRouteNotReady) {
+				b.childSessionsMu.Lock()
+				if b.childSessions[callID] == child {
+					delete(b.childSessions, callID)
+				}
+				b.childSessionsMu.Unlock()
+				return
+			}
 			slog.Warn("load the OpenCode subagent session", "agent_id", b.AgentID(), "call_id", callID, "session_id", childSessionID, "error", err)
 			return
 		}
-		b.childSessionsMu.Lock()
-		child.loaded = true
-		b.childSessionsMu.Unlock()
+		_ = b.WithSessionID(func(currentRoot string) error {
+			b.childSessionsMu.Lock()
+			if currentRoot == rootSessionID && b.childSessions[callID] == child {
+				child.modelID = modelID
+				child.loaded = true
+			}
+			b.childSessionsMu.Unlock()
+			return nil
+		})
 	}()
 }
 
@@ -230,13 +254,22 @@ func (b *FamilyBase) forgetChildSession(callID string) {
 // runningChildSession returns the session of the running subagent of the task
 // call childKey, and whether the agent loaded it yet.
 func (b *FamilyBase) runningChildSession(childKey string) (sessionID string, loaded, running bool) {
+	target, loaded, running := b.childSessionTarget(childKey)
+	return target.SessionID, loaded, running
+}
+
+func (b *FamilyBase) childSessionTarget(childKey string) (acp.ChildSessionTarget, bool, bool) {
+	rootSessionID := b.CurrentSessionID()
+	if rootSessionID == "" || b.IsStopped() {
+		return acp.ChildSessionTarget{}, false, false
+	}
 	b.childSessionsMu.Lock()
 	defer b.childSessionsMu.Unlock()
 	child, running := b.childSessions[childKey]
-	if !running {
-		return "", false, false
+	if !running || child.rootSessionID != rootSessionID {
+		return acp.ChildSessionTarget{}, false, false
 	}
-	return child.id, child.loaded, true
+	return child.target(childKey), child.loaded, true
 }
 
 // SendChildInput refuses a message as the start of a turn. A running subagent
@@ -255,15 +288,16 @@ func (b *FamilyBase) SendChildInput(childKey, _ string, _ []*leapmuxv1.Attachmen
 // agent restored when it loaded the session. The queue writes the message into
 // the subagent's transcript, so this writes no row of its own.
 func (b *FamilyBase) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	sessionID, loaded, running := b.runningChildSession(childKey)
+	target, loaded, running := b.childSessionTarget(childKey)
 	if !running {
 		return agent.ErrNoActiveTurn
 	}
 	if !loaded {
 		return agent.ErrChildRouteNotReady
 	}
-	return b.SendChildPromptDetached(sessionID, content, attachments, func(_ json.RawMessage, err error) {
-		b.reportChildSteerFailure(sessionID, err)
+	owner, _ := b.SessionOwner(target.SessionID)
+	return b.SendChildPromptDetached(target, content, attachments, func(_ json.RawMessage, err error) {
+		b.reportChildSteerFailure(target, owner, err)
 	})
 }
 
@@ -276,18 +310,28 @@ func (b *FamilyBase) ActiveChildTurnState(childKey string) agent.TurnState {
 
 // reportChildSteerFailure tells the reader, in the subagent's transcript, when
 // the agent refused a steer. A stopped agent states nothing, as for the root.
-func (b *FamilyBase) reportChildSteerFailure(sessionID string, err error) {
+func (b *FamilyBase) reportChildSteerFailure(target acp.ChildSessionTarget, originalOwner agent.ProviderServices, err error) {
 	if err == nil || b.IsStopped() {
 		return
 	}
-	slog.Error("acp subagent steer failed", "agent_id", b.AgentID(), "provider", b.ProviderName(), "session_id", sessionID, "error", err)
-	owner, found := b.SessionOwner(sessionID)
-	if !found {
-		owner = b.Sink()
-	}
-	owner.PersistLeapMuxNotification(map[string]interface{}{
-		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-		contracts.NotificationFieldError: fmt.Sprintf("steer failed: %v", err),
+	_ = b.WithSessionID(func(rootSessionID string) error {
+		owner := originalOwner
+		if rootSessionID == target.RootSessionID {
+			var found bool
+			owner, found = b.SessionOwner(target.SessionID)
+			if !found {
+				owner = b.Sink()
+			}
+		}
+		if owner == nil {
+			return nil
+		}
+		slog.Error("acp subagent steer failed", "agent_id", b.AgentID(), "provider", b.ProviderName(), "session_id", target.SessionID, "error", err)
+		owner.PersistLeapMuxNotification(map[string]interface{}{
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: fmt.Sprintf("steer failed: %v", err),
+		})
+		return nil
 	})
 }
 
@@ -301,31 +345,33 @@ func (b *FamilyBase) reportChildSteerFailure(sessionID string, err error) {
 // sessions that the child started. The parent reads the failed task result and
 // goes on with its turn.
 func (b *FamilyBase) InterruptChild(childKey string, _ agent.StopContext) error {
-	sessionID := b.CurrentSessionID()
-	if sessionID == "" {
-		return agent.ErrChildRouteNotReady
-	}
-	ctx, cancel := context.WithTimeout(b.Context(), openCodeQuestionTimeout)
-	defer cancel()
-	part, found, err := b.Questions.findTaskPart(ctx, sessionID, childKey)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("the OpenCode session holds no task call %s", childKey)
-	}
-	switch part.State.Status {
-	case openCodeToolStatusCompleted, openCodeToolStatusError:
-		// The child ended before the stop arrived, so nothing remains to stop.
-		return nil
-	case openCodeToolStatusRunning:
-		if child := part.State.Metadata.SessionID; child != "" {
-			return b.stopChild(ctx, childKey, child)
+	expectedRoot := b.CurrentSessionID()
+	return b.WithSessionID(func(sessionID string) error {
+		if sessionID == "" || sessionID != expectedRoot || b.IsStopped() {
+			return agent.ErrChildRouteNotReady
 		}
-	}
-	// A pending call, or a running call that has not created its child
-	// session yet. A later click finds the session.
-	return agent.ErrChildRouteNotReady
+		ctx, cancel := context.WithTimeout(b.Context(), openCodeQuestionTimeout)
+		defer cancel()
+		part, found, err := b.Questions.findTaskPart(ctx, sessionID, childKey)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("the OpenCode session holds no task call %s", childKey)
+		}
+		switch part.State.Status {
+		case openCodeToolStatusCompleted, openCodeToolStatusError:
+			// The child ended before the stop arrived, so nothing remains to stop.
+			return nil
+		case openCodeToolStatusRunning:
+			if child := part.State.Metadata.SessionID; child != "" {
+				return b.stopChild(ctx, childKey, child)
+			}
+		}
+		// A pending call, or a running call that has not created its child
+		// session yet. A later click finds the session.
+		return agent.ErrChildRouteNotReady
+	})
 }
 
 // stopChild cancels the child session of the task call childKey, and records
@@ -346,6 +392,7 @@ func (b *FamilyBase) stopChild(ctx context.Context, childKey, childSessionID str
 // recordChildStop records or forgets the user's stop of the subagent that the
 // task call callID started.
 func (b *FamilyBase) recordChildStop(callID string, stopped bool) {
+	rootSessionID := b.CurrentSessionID()
 	b.childStopMu.Lock()
 	defer b.childStopMu.Unlock()
 	if !stopped {
@@ -353,19 +400,20 @@ func (b *FamilyBase) recordChildStop(callID string, stopped bool) {
 		return
 	}
 	if b.stoppedChildren == nil {
-		b.stoppedChildren = make(map[string]struct{})
+		b.stoppedChildren = make(map[string]string)
 	}
-	b.stoppedChildren[callID] = struct{}{}
+	b.stoppedChildren[callID] = rootSessionID
 }
 
 // takeChildStop reports whether the user stopped the subagent of callID, and
 // forgets the stop.
 func (b *FamilyBase) takeChildStop(callID string) bool {
+	rootSessionID := b.CurrentSessionID()
 	b.childStopMu.Lock()
 	defer b.childStopMu.Unlock()
-	_, stopped := b.stoppedChildren[callID]
+	owner, stopped := b.stoppedChildren[callID]
 	delete(b.stoppedChildren, callID)
-	return stopped
+	return stopped && owner == rootSessionID
 }
 
 // subagentFromToolCallUpdate reads a tool update as SubagentFromToolCallUpdate

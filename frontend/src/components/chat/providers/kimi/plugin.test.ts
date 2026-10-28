@@ -40,7 +40,7 @@ describe('kimi plugin', () => {
   // The worker's `ValidateAttachment` states the same rule: text and images, no PDF
   // and no binary file.
   it('advertises text and image attachments only', () => {
-    expect(plugin.configuration?.attachments).toStrictEqual({ text: true, image: true, pdf: false, binary: false })
+    expect(plugin.configuration?.attachments).toStrictEqual({ text: true, image: true, pdf: false, audio: false, binary: false })
   })
 
   it('carries plan mode on the permission-mode axis', () => {

@@ -31,6 +31,7 @@ const lettaPlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: false,
+      audio: false,
       binary: false,
     },
     // Letta's permission mode is `runtime_start.mode`. The status bar draws its

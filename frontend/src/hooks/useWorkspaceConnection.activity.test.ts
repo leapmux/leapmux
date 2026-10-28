@@ -109,7 +109,7 @@ function mountConnection() {
     replay: WatchReplayMode.LATEST,
     cursorSeq: 0n,
     replayId: 1n,
-  })])
+  })], new Map([['a1', 'a1']]))
   return {
     dispose,
     activity,

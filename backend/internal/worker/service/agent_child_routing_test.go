@@ -51,7 +51,7 @@ func setupChildAgentTest(t *testing.T) (*Service, *channel.Dispatcher, string, s
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	// EnsureChildAgent creates the child row + registry row in one idempotent
 	// call; the returned id is the virtual child agent id.
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
@@ -226,7 +226,7 @@ func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 	svc, d, childID, _ := setupChildAgentTest(t)
 
 	// Seed a task on the ROOT so a leak would be observable on the child.
-	require.NoError(t, svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).
+	require.NoError(t, newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).
 		UpsertBackgroundTask(bgtask.Upsert{
 			RowKey: "rtask", Kind: bgtask.KindShell, Title: "r", Status: bgtask.StatusRunning,
 		}))
@@ -283,7 +283,7 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 			AgentID:    rootID,
 			WorkingDir: t.TempDir(),
 			HomeDir:    t.TempDir(),
-		}, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), agenttest.NonSteerable(claudetest.StartEcho))
+		}, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), agenttest.NonSteerable(claudetest.StartEcho))
 		require.NoError(t, err)
 		defer svc.Agents.StopAgent(rootID)
 
@@ -317,7 +317,7 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 			AgentID:    rootID,
 			WorkingDir: t.TempDir(),
 			HomeDir:    t.TempDir(),
-		}, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
+		}, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 		require.NoError(t, err)
 		defer svc.Agents.StopAgent(rootID)
 
@@ -447,7 +447,7 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 	}{
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, false, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, true, true},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, false, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, true, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, false, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, true, false},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, false, true},
@@ -460,7 +460,7 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID: rootID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: tc.provider,
 			}))
-			childID, err := svc.Output.NewSink(rootID, tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
+			childID, err := newTestRootOutputSink(t, svc.Output, rootID, tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
 			require.NoError(t, err)
 
 			rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
@@ -495,7 +495,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	// is observable. setupChildAgentTest already inserted the spawn row via
 	// EnsureChildAgent; assert it is present and active, then add a second
 	// running shell row to exercise a non-subagent active row too.
-	require.NoError(t, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).
+	require.NoError(t, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).
 		UpsertBackgroundTask(bgtask.Upsert{
 			RowKey: "bg-shell-1", Kind: bgtask.KindShell, Title: "bg shell",
 			Status: bgtask.StatusRunning,
@@ -573,7 +573,7 @@ func TestCloseAgentReportsDescendantTabsToTheCaller(t *testing.T) {
 	svc, d, childID, rootID := setupChildAgentTest(t)
 
 	// A grandchild, so the answer is the whole subtree rather than one level.
-	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	childSink := requireRootOutputSink(t, svc.Output, rootID).ChildSink(childID)
 	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
 	require.NoError(t, err)
 	require.NotEmpty(t, grandchildID)
@@ -604,7 +604,7 @@ func TestInspectLastTabCloseReportsTheSubtreeSoAClientCanOrderIt(t *testing.T) {
 	t.Parallel()
 
 	svc, d, childID, rootID := setupChildAgentTest(t)
-	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	childSink := requireRootOutputSink(t, svc.Output, rootID).ChildSink(childID)
 	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
 	require.NoError(t, err)
 
@@ -650,8 +650,8 @@ func TestInspectLastTabCloseReportsNoSubtreeForANonAgentTab(t *testing.T) {
 func TestCloseAgentOnChildStillReportsItsOwnDescendants(t *testing.T) {
 	t.Parallel()
 
-	svc, d, childID, _ := setupChildAgentTest(t)
-	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	svc, d, childID, rootID := setupChildAgentTest(t)
+	childSink := requireRootOutputSink(t, svc.Output, rootID).ChildSink(childID)
 	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
 	require.NoError(t, err)
 

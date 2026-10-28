@@ -410,7 +410,7 @@ type followUpBase struct {
 	stoppedAt   []bool
 }
 
-func (f *followUpBase) take(stopped bool) (string, []*leapmuxv1.Attachment, bool) {
+func (f *followUpBase) take(_ string, stopped bool) (string, []*leapmuxv1.Attachment, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stoppedAt = append(f.stoppedAt, stopped)
@@ -473,7 +473,7 @@ func TestFollowUpPrompt_AStoppedAgentStartsAndReportsNothing(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	b.hooks.FollowUpPrompt = func(bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
+	b.hooks.FollowUpPrompt = func(string, bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
 	require.True(t, b.BeginAgentTurn())
 	b.SetStoppedForTest(true)
 
@@ -495,7 +495,7 @@ func (brokenStdin) Close() error              { return nil }
 func TestFollowUpPrompt_AFailedSendEndsTheTurnAndStatesTheFailure(t *testing.T) {
 	t.Parallel()
 	b, sink := newACPTurnBase(t, brokenStdin{})
-	b.hooks.FollowUpPrompt = func(bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
+	b.hooks.FollowUpPrompt = func(string, bool) (string, []*leapmuxv1.Attachment, bool) { return "lost", nil, true }
 	require.True(t, b.BeginAgentTurn())
 
 	b.EndAgentTurn(json.RawMessage(agentTurnEndFrame))
@@ -561,7 +561,7 @@ func TestAgentTurn_EndDoesNotWaitForTheFollowUpWrite(t *testing.T) {
 	pipeReader, pipeWriter := io.Pipe() // An agent that reads no stdin now.
 	t.Cleanup(func() { _ = pipeReader.Close() })
 	b, _ := newACPTurnBase(t, pipeWriter)
-	b.hooks.FollowUpPrompt = func(bool) (string, []*leapmuxv1.Attachment, bool) {
+	b.hooks.FollowUpPrompt = func(string, bool) (string, []*leapmuxv1.Attachment, bool) {
 		return "typed during the turn", nil, true
 	}
 	require.True(t, b.BeginAgentTurn())
@@ -936,8 +936,8 @@ func TestPromptParams_TheHookAdjustsTheFollowUpPrompt(t *testing.T) {
 
 // A follow-up prompt belongs to the session whose turn ended, and to a running
 // agent. When a context clear replaced that session first, or the agent
-// stopped, the prompt starts nowhere: the turn ends, and the reader learns that
-// the message never reached the agent.
+// stopped, the prompt starts nowhere. A replaced session keeps its own turn;
+// a stopped current session ends the turn and reports the unsent message.
 func TestFollowUpPrompt_AStaleTargetStartsNoPrompt(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -959,6 +959,11 @@ func TestFollowUpPrompt_AStaleTargetStartsNoPrompt(t *testing.T) {
 			b.sendFollowUpPrompt(tc.sessionID, "lost", nil)
 
 			assert.Empty(t, out.String(), "no prompt reaches the agent")
+			if !tc.stopped {
+				assert.True(t, b.PromptActive())
+				assert.Empty(t, sink.LeapMuxNotifications())
+				return
+			}
 			assert.False(t, b.PromptActive())
 			notifications := sink.LeapMuxNotifications()
 			require.Len(t, notifications, 1)
@@ -976,7 +981,7 @@ func TestACPTurnOutput_ASecondBoundaryChangesNothing(t *testing.T) {
 	var output acpTurnOutput
 	output.appendAssistant("prompt text", "")
 	output.rememberIncompleteTool("prompt-tool", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"prompt-tool"`)},
-		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","status":"pending"}`))
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","status":"pending"}`), nil)
 	output.completeTool("done-tool")
 
 	output.turnMu.Lock()
@@ -987,7 +992,7 @@ func TestACPTurnOutput_ASecondBoundaryChangesNothing(t *testing.T) {
 
 	output.appendAssistant("agent text", "")
 	output.rememberIncompleteTool("agent-tool", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"agent-tool"`)},
-		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"agent-tool","status":"pending"}`))
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"agent-tool","status":"pending"}`), nil)
 	output.turnMu.Lock()
 	prefix = output.markPromptBoundaryLocked()
 	output.turnMu.Unlock()
@@ -1024,4 +1029,13 @@ func TestAgentTurn_AFailedPromptOfADiscardingAgentWritesNoRow(t *testing.T) {
 	testutil.RequireEventually(t, func() bool { return b.AgentTurnActive() })
 
 	assert.Empty(t, closingRows(sink, "prompt-tool"))
+}
+
+func TestStaleContinuationFailurePreservesTheReplacementPrompt(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+	b.promptActive = true
+	b.sendFollowUpPrompt("retired-session", "old input", nil)
+	assert.True(t, b.PromptActive(), "the replacement prompt must remain active")
+	assert.Zero(t, sink.NotificationCount(), "a retired turn must not report an error in the replacement session")
 }

@@ -1,12 +1,11 @@
 import type { ProviderConfigurationCapability } from '../capabilities'
-import { MIMO_DEFAULT_MODE, MIMO_MODE } from '~/generated/contracts/mimo-protocol'
+import { MIMO_AUDIO_MIME, MIMO_DEFAULT_MODE, MIMO_MODE } from '~/generated/contracts/mimo-protocol'
 
 /** The complete MiMo configuration channel, separate from registration. */
 export const mimoConfiguration: ProviderConfigurationCapability = {
-  // Text is inlined into the prompt, and an image or a PDF travels as a file part
-  // that MiMo hands to the model. A file of another type would reach the model's API
-  // unconverted, so LeapMux refuses it, as the worker's ValidateAttachment does.
-  attachments: { text: true, image: true, pdf: true, binary: false },
+  // Media travels as file parts. Audio also requires the native model's audio
+  // capability, which the worker checks before it writes the prompt.
+  attachments: { text: true, image: true, pdf: true, audio: [...MIMO_AUDIO_MIME], binary: false },
   // MiMo's primary agents -- build, plan and any the configuration adds -- ride the
   // permission-mode axis, so plan mode and its toggle work as for every provider.
   triggerModeGroupKey: 'permissionMode',

@@ -19,6 +19,20 @@ func TestJSONAbsentOrNull(t *testing.T) {
 	}
 }
 
+func TestJSONCanonicalDigestKeepsNumbersExactAndObjectOrderIndependent(t *testing.T) {
+	t.Parallel()
+	first, err := JSONCanonicalDigest(json.RawMessage(`{"nested":{"b":9007199254740993,"a":[0,"x"]}}`))
+	require.NoError(t, err)
+	same, err := JSONCanonicalDigest(json.RawMessage(`{"nested":{"a":[0,"x"],"b":9007199254740993}}`))
+	require.NoError(t, err)
+	assert.Equal(t, first, same)
+	other, err := JSONCanonicalDigest(json.RawMessage(`{"nested":{"b":9007199254740992,"a":[0,"x"]}}`))
+	require.NoError(t, err)
+	assert.NotEqual(t, first, other)
+	_, err = JSONCanonicalDigest(json.RawMessage(`{"broken":`))
+	require.Error(t, err)
+}
+
 // canonicalJSON is what makes the stored supplement's byte compare a true test of
 // sameness: two producers of one value must store one set of bytes.
 func TestCanonicalJSONSortsEveryObjectItReaches(t *testing.T) {

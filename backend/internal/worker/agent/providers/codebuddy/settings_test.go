@@ -2,6 +2,7 @@ package codebuddy
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -31,6 +33,85 @@ func TestCodebuddyThinkingGroup(t *testing.T) {
 	}
 	assert.Equal(t, []string{"auto", "false", "true"}, choices)
 	assert.Equal(t, "auto", a.SettingsSnapshot().SurfacedOptions["thinking"])
+}
+
+func TestCodebuddySwarmGroupDefaultsToOff(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	for _, group := range []*leapmuxv1.AvailableOptionGroup{
+		optionids.GroupByID(Registration().OptionGroups, "swarmMode"),
+		optionids.GroupByID(a.OptionGroups(), "swarmMode"),
+	} {
+		require.NotNil(t, group)
+		assert.Equal(t, "false", group.DefaultValue)
+		assert.True(t, group.Mutable)
+		require.Len(t, group.Options, 2)
+		assert.Equal(t, "false", group.Options[0].Id)
+		assert.Equal(t, "true", group.Options[1].Id)
+	}
+	assert.Equal(t, "false", a.SettingsSnapshot().ConfirmedOptions()["swarmMode"])
+}
+
+func TestCodebuddySwarmChangeRestartsBeforeOtherNativeWrites(t *testing.T) {
+	t.Parallel()
+	a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{"mode":"plan"}`))
+	before := a.SettingsSnapshot().ConfirmedOptions()
+	result := a.UpdateSettings(map[string]string{"swarmMode": "true", "permissionMode": "plan"})
+	assert.False(t, result.AppliedLive)
+	assert.Empty(t, peer.String())
+	assert.Equal(t, before, a.SettingsSnapshot().ConfirmedOptions())
+}
+
+func TestCodebuddySwarmInvalidValuesPreserveTheProcessSettings(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"yes", "1", "-1", "TRUE", " false "} {
+		a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{"mode":"plan"}`))
+		before := a.SettingsSnapshot().ConfirmedOptions()
+		result := a.UpdateSettings(map[string]string{"swarmMode": value, "permissionMode": "plan"})
+		assert.True(t, result.AppliedLive)
+		assert.Empty(t, peer.String())
+		assert.Equal(t, before, result.ConfirmedOptions())
+	}
+}
+
+func TestCodebuddySwarmSnapshotsAndNoOpEdits(t *testing.T) {
+	t.Parallel()
+	for _, current := range []bool{false, true} {
+		for _, requested := range []string{"", strconv.FormatBool(current)} {
+			a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{}`))
+			a.swarmMode = current
+			a.opts.Options = map[string]string{"swarmMode": strconv.FormatBool(!current)}
+			group := optionids.GroupByID(a.OptionGroups(), "swarmMode")
+			require.NotNil(t, group)
+			assert.Equal(t, strconv.FormatBool(current), group.CurrentValue)
+			assert.Equal(t, "false", group.DefaultValue)
+			result := a.UpdateSettings(map[string]string{"swarmMode": requested})
+			assert.True(t, result.AppliedLive)
+			assert.Equal(t, strconv.FormatBool(current), result.ConfirmedOptions()["swarmMode"])
+			assert.Empty(t, peer.String())
+		}
+	}
+	assert.Equal(t, "false", codebuddySwarmGroup.CurrentValue, "the live group cannot mutate its template")
+}
+
+func TestCodebuddySwarmOffRequiresRestartAndInvalidCompanionsRejectTheBatch(t *testing.T) {
+	t.Parallel()
+	a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{}`))
+	a.swarmMode = true
+	result := a.UpdateSettings(map[string]string{"swarmMode": "false"})
+	assert.False(t, result.AppliedLive)
+	assert.Equal(t, "true", a.SettingsSnapshot().ConfirmedOptions()["swarmMode"])
+	assert.Empty(t, peer.String())
+	for _, options := range []map[string]string{
+		{"swarmMode": "false", "thinking": "invalid"},
+		{"swarmMode": "false", "outputStyle": "unknown"},
+	} {
+		before := a.SettingsSnapshot().ConfirmedOptions()
+		result := a.UpdateSettings(options)
+		assert.True(t, result.AppliedLive)
+		assert.Equal(t, before, a.SettingsSnapshot().ConfirmedOptions())
+		assert.Empty(t, peer.String())
+	}
 }
 
 func TestCodebuddyThinkingUsesNativeConfiguration(t *testing.T) {

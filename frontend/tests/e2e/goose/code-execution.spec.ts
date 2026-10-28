@@ -4,9 +4,7 @@ import { gooseTest } from '../goose-fixtures'
 import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
-import { expandNativeResultView } from '../helpers/nativeResultView'
 import { getGlobalState } from '../helpers/server'
-import { toolCallRow } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 gooseTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -17,10 +15,7 @@ gooseTest('runs native code and retains computed output and script errors after 
     await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(context, {
       catalogProof: (request) => {
-        nativeCodeExecutionSchema(request, 'execute_typescript', { code: 'string' })
-      },
-      prepareResultView: async (callId) => {
-        await expandNativeResultView(toolCallRow(page, callId))
+        nativeCodeExecutionSchema(request, 'execute_javascript', { code: 'string' })
       },
       scripts: marker => [
         { label: 'output', source: `async function run() { return ${JSON.stringify(marker)} + (40 + 2); }`, expected: `${marker}42`, failed: false },

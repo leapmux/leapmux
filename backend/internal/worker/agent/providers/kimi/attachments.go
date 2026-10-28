@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -39,7 +41,7 @@ func buildKimiContent(content string, attachments []*leapmuxv1.Attachment, takes
 	total := 0
 	var blocks []string
 	for _, attachment := range classified {
-		if err := providerkit.RejectPDFAndBinaryAttachment(kimiAttachmentLabel, attachment); err != nil {
+		if err := providerkit.ValidateTextAndImageAttachment(kimiAttachmentLabel, attachment); err != nil {
 			return nil, err
 		}
 		total += len(attachment.Data)
@@ -47,9 +49,9 @@ func buildKimiContent(content string, attachments []*leapmuxv1.Attachment, takes
 			return nil, fmt.Errorf("the attachments exceed the %d MB that one Kimi Code prompt takes", kimiMaxAttachmentBytes/(1024*1024))
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			blocks = append(blocks, providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			if !takesImages {
 				return nil, fmt.Errorf("the current Kimi Code model does not take images: %s", attachment.Filename)
 			}
@@ -61,8 +63,8 @@ func buildKimiContent(content string, attachments []*leapmuxv1.Attachment, takes
 					"data":       base64.StdEncoding.EncodeToString(attachment.Data),
 				},
 			})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
-			// RejectPDFAndBinaryAttachment refused both above.
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
+			// Validation refused the unsupported kinds above.
 		}
 	}
 	if len(blocks) > 0 {

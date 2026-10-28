@@ -8,7 +8,7 @@ import { createGeminiClassifier } from './classification'
 import './plugin'
 
 describe('createGeminiClassifier', () => {
-  const base = createACPProvider({ defaultPermissionMode: GEMINI_MODE.Default }).transcript
+  const base = createACPProvider({ attachments: { text: true, image: true, pdf: true, audio: true, binary: true }, defaultPermissionMode: GEMINI_MODE.Default }).transcript
   const classify = createGeminiClassifier(base)
 
   it.each([

@@ -1,6 +1,6 @@
 import type { ProviderPlugin } from '../capabilities'
 import { buildPlanMode } from '~/components/chat/settingsGroups'
-import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
+import { CODEX_AUDIO_MIME, CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyCodexMessage } from './classification'
@@ -41,6 +41,7 @@ const codexPlugin: ProviderPlugin = {
       text: true,
       image: true,
       pdf: false,
+      audio: [...CODEX_AUDIO_MIME],
       binary: false,
     },
     planMode: buildPlanMode(CODEX_OPTION.CollaborationMode, 'plan', CODEX_OPTION_DEFAULT.CollaborationMode),

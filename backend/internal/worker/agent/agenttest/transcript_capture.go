@@ -43,7 +43,11 @@ func (sink *Sink) CaptureMessage(content agent.MessageContent, _ agent.SpanInfo)
 }
 
 func (owner *testTranscriptOwner) currentLocked() bool {
-	return owner.sink.transcriptScope == owner.key.scope && owner.sink.sessionFact == owner.key.session && owner.key.sessionID == owner.key.session.id
+	return owner.sink.transcriptScope == owner.key.scope && owner.currentSessionLocked()
+}
+
+func (owner *testTranscriptOwner) currentSessionLocked() bool {
+	return owner.key.session != nil && owner.sink.sessionFact == owner.key.session && owner.key.sessionID == owner.key.session.id
 }
 
 func (owner *testTranscriptOwner) Owner() agent.TranscriptOwner { return owner }
@@ -114,17 +118,25 @@ type sinkGoalWriter struct {
 }
 
 func (writer *sinkGoalWriter) UpsertGoal(update agent.GoalUpdate) error {
-	if !writer.owner.IsCurrent() {
-		return errors.New("the captured goal write's publication expired")
-	}
-	writer.root.UpsertGoal(update)
-	return nil
+	return writer.apply(&update)
 }
 
 func (writer *sinkGoalWriter) ClearGoal() error {
-	if !writer.owner.IsCurrent() {
+	return writer.apply(nil)
+}
+
+func (writer *sinkGoalWriter) apply(update *agent.GoalUpdate) error {
+	writer.root.mu.Lock()
+	defer writer.root.mu.Unlock()
+	// Goals retain session authority across ordinary turn-scope changes.
+	// Check and apply under the same mutex, as the worker's mutation lease does.
+	if writer.owner.sink != writer.root || !writer.owner.currentSessionLocked() {
 		return errors.New("the captured goal write's publication expired")
 	}
-	writer.root.ClearGoal(false)
+	if update == nil {
+		writer.root.clearGoalLocked(false)
+	} else {
+		writer.root.upsertGoalLocked(*update)
+	}
 	return nil
 }

@@ -122,6 +122,9 @@ func (clineProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 // ValidateAttachment accepts text and images. See attachments.go for what Cline
 // refuses. The browser plugin's attachment policy states the same rule.
 func (clineProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
 	return validateAttachment(attachment)
 }
 

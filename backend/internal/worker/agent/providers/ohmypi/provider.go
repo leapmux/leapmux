@@ -24,7 +24,7 @@ func (ompProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 // ValidateAttachment accepts text and images. omp's prompt carries text and
 // `images`, and it has no field for a PDF or another binary file.
 func (ompProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("Oh My Pi", attachment)
+	return providerkit.ValidateTextAndImageAttachment("Oh My Pi", attachment)
 }
 
 // ResolveResumeHandle accepts a session file path or a session ID.

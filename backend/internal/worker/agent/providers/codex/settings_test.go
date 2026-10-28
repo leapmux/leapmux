@@ -422,7 +422,11 @@ func TestCodexQueryAvailableModelsDoesNotInjectAccountDefault(t *testing.T) {
 
 	models := a.queryAvailableModels(time.Second)
 
-	require.Len(t, models, 1)
+	require.Len(t, models, 2)
+	assert.True(t, models[1].Hidden)
+	group := agent.ModelOptionGroup(models, models[0].Id, nil)
+	require.NotNil(t, group)
+	require.Len(t, group.Options, 1)
 	assert.Equal(t, "gpt-5.6-sol", models[0].Id)
 	assert.Equal(t, "GPT-5.6-Sol", models[0].DisplayName)
 	assert.True(t, models[0].IsDefault)

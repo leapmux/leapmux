@@ -35,10 +35,10 @@ func (qoderProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 
 // ValidateAttachment permits only the content blocks Qoder's stream input reads.
 func (qoderProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if err := providerkit.RejectPDFAndBinaryAttachment("Qoder CLI", attachment); err != nil {
+	if err := providerkit.ValidateTextAndImageAttachment("Qoder CLI", attachment); err != nil {
 		return err
 	}
-	if attachment.Kind == agent.AttachmentKindImage && len(attachment.Data) == 0 {
+	if attachment.Kind == contracts.AttachmentMediaKindImage && len(attachment.Data) == 0 {
 		return fmt.Errorf("qoder CLI does not support an empty image attachment: %s", attachment.Filename)
 	}
 	return nil

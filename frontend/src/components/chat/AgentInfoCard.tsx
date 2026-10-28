@@ -8,10 +8,9 @@ import { AgentProviderIcon, agentProviderLabel } from '~/components/common/Agent
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeBranchRowLabel, WorkingTreeIcon } from '~/components/common/WorkingTree'
-import { RATE_LIMIT_STATUS } from '~/generated/contracts/session-info'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
-import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, rateLimitPopoverLabel, rateLimitStatusLabel } from '~/lib/rateLimitUtils'
+import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, rateLimitPopoverLabel, rateLimitSummaryParts } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
@@ -332,33 +331,26 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
             // `rateLimitPopoverLabel` reads the table with `Object.hasOwn`, so a wire
             // value that spells an `Object.prototype` member falls through to the generic
             // heading instead of rendering that function's source.
-            const typeLabel = rateLimitPopoverLabel(info.rateLimitType)
-              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
+            const typeLabel = info.label?.trim() || (rateLimitPopoverLabel(info.rateLimitType)
+              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit'))
 
-            const status = info.status
-            const exceeded = !!status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning
             const resetsAt = getResetsAt(info)
+            const statusParts = rateLimitSummaryParts(info)
 
-            const statusParts: string[] = []
-            const statusLabel = rateLimitStatusLabel(status)
-            if (statusLabel)
-              statusParts.push(statusLabel)
-            if (typeof info.utilization === 'number' && !exceeded)
-              statusParts.push(`${Math.round(info.utilization * 100)}% used`)
-            if (info.isUsingOverage)
-              statusParts.push('overage')
-
-            const countdown = typeof resetsAt === 'number' ? formatCountdown(resetsAt) : null
+            const countdown = createMemo(() => {
+              void now()
+              return typeof resetsAt === 'number' ? formatCountdown(resetsAt) : null
+            })
 
             return (
               <div class={styles.infoRow}>
                 <span class={styles.infoLabel}>{typeLabel}</span>
                 <span class={styles.infoValueText}>
                   {statusParts.length > 0 ? statusParts.join(', ') : 'Unknown'}
-                  <Show when={countdown}>
+                  <Show when={countdown()}>
                     {', '}
                     <Tooltip {...(typeof resetsAt === 'number' ? { text: formatResetTimestamp(resetsAt) } : {})}>
-                      <span>{`resets in ${countdown}`}</span>
+                      <span>{`resets in ${countdown()}`}</span>
                     </Tooltip>
                   </Show>
                 </span>

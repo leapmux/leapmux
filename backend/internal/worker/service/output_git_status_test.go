@@ -86,7 +86,7 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 	mock := &agentEventCapturingWriter{channelID: "ch-1"}
 	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
-	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	sink := requireRootOutputSink(t, svc.Output, "agent-1")
 	return sink, mock
 }

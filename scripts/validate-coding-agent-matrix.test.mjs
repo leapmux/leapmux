@@ -158,6 +158,44 @@ describe('validateCodingAgentMatrix', () => {
   })
 
   describe('support states and notes', () => {
+    it('describes native Muse child sessions in the provider note', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const provider = checklist.providerGroups.flat().find(provider => provider.id === 'muse-code')
+      expect(provider.userNote).toContain('Muse Code 1.4.13')
+      expect(provider.userNote).toContain('its own session')
+      expect(provider.userNote).toContain('four approval modes')
+      expect(provider.userNote).toContain('allowAll')
+      expect(provider.userNote).toContain('no assisted preset')
+    })
+
+    it('describes the shared workflow row and native Muse child session', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['workflow-grouping']['muse-code']
+      expect(cell.userNote).toContain('matching native subagent')
+      expect(cell.userNote).toContain('its own session')
+      expect(cell.detailNote).toContain('childId, attempt')
+      expect(cell.detailNote).toContain('subagentId')
+      expect(cell.detailNote).toContain('childSessionId')
+    })
+
+    it('describes the five offered CodeBuddy permission modes', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells.mode['codebuddy-code']
+      expect(cell.userNote).toContain('five')
+      expect(cell.userNote).toContain('Auto')
+      expect(cell.detailNote).toContain('auto')
+      expect(cell.userNote).toContain('does not offer Don\'t Ask')
+    })
+
+    it('distinguishes native CodeBuddy questions from editor requests', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cell = checklist.cells['editor-requests']['codebuddy-code']
+      expect(cell).toMatchObject({ support: 'agent-limit', audit: 'unsupported' })
+      expect(cell.detailNote).toContain('AskUserQuestion')
+      expect(cell.detailNote).toContain('can_use_tool')
+      expect(cell.detailNote).toContain('updatedInput')
+      expect(cell.detailNote).toContain('independent multiline editor request')
+    })
     const hiddenFeature = { id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and answers.', showInMatrix: false }
 
     it('accepts a limited published cell that holds both notes', () => {
@@ -424,48 +462,572 @@ describe('validateCodingAgentMatrix', () => {
       })
     })
 
-    it('records native Agent Teams support for Cline', () => {
+    it.each([
+      [
+        'records native Agent Teams support for Cline',
+        'swarm-mode',
+        'cline',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/cline/swarm-mode.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native plan approval support for Reasonix',
+        'plan-approval-banner',
+        'reasonix',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/reasonix/plan-approval-banner.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native token progress support for Qoder CLI',
+        'generation-progress',
+        'qoder-cli',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qoder-cli/generation-progress.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native Kilo Swarm support for Kilo',
+        'swarm-mode',
+        'kilo',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/kilo/swarm-mode.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native plan usage support for Kilo',
+        'rate-limit-state',
+        'kilo',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/kilo/rate-limit-state.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records the native Smart permissions shortcut for CodeBuddy Code',
+        'smart-permissions-shortcut',
+        'codebuddy-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/codebuddy-code/smart-permissions-shortcut.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records the Auto review Smart permissions shortcut for DeepSeek Harness',
+        'smart-permissions-shortcut',
+        'deepseek-harness',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/deepseek-harness/smart-permissions-shortcut.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records the CodeBuddy Code MCP form refusal as an agent limit',
+        'mcp-input-request',
+        'codebuddy-code',
+        {
+          support: 'agent-limit',
+          audit: 'unsupported',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/codebuddy-code/mcp-input-request.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native workflow grouping for Claude Code',
+        'workflow-grouping',
+        'claude-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/claude-code/workflow-grouping.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native workflow grouping for Qwen Code',
+        'workflow-grouping',
+        'qwen-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qwen-code/workflow-grouping.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records the native output style for Qwen Code',
+        'output-style',
+        'qwen-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qwen-code/output-style.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records the native restriction on Copilot factories and dynamic workflows',
+        'workflow-grouping',
+        'github-copilot',
+        {
+          support: 'agent-limit',
+          audit: 'unsupported',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/github-copilot/workflow-grouping.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native account usage and calendar reset dates for Kiro',
+        'rate-limit-state',
+        'kiro',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/kiro/rate-limit-state.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native Word and Excel attachments for Kiro',
+        'other-binary-attachments',
+        'kiro',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/kiro/other-binary-attachments.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native audio attachments for Codex',
+        'audio-attachments',
+        'codex',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/codex/audio-attachments.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native messages to a running Grok Build subagent',
+        'send-to-a-subagent',
+        'grok-build',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/grok-build/send-to-a-subagent.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native Swarm mode for CodeBuddy Code',
+        'swarm-mode',
+        'codebuddy-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/codebuddy-code/swarm-mode.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native mid-turn steering for Junie',
+        'steer-mid-turn',
+        'junie',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/junie/steer-mid-turn.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native Operate orchestration for Codewhale',
+        'swarm-mode',
+        'codewhale',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/codewhale/swarm-mode.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native output file paths for Fast Agent',
+        'output-file-paths',
+        'fast-agent',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/fast-agent/output-file-paths.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native output file paths for Goose',
+        'output-file-paths',
+        'goose',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/goose/output-file-paths.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native mid-turn steering for Goose',
+        'steer-mid-turn',
+        'goose',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/goose/steer-mid-turn.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records the headless output style refusal of Factory Droid as an agent limit',
+        'output-style',
+        'factory-droid',
+        {
+          support: 'agent-limit',
+          audit: 'unsupported',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/factory-droid/output-style.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native workflow grouping for ZCode',
+        'workflow-grouping',
+        'zcode',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/zcode/workflow-grouping.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records hosted hook trust for ZCode',
+        'workspace-trust',
+        'zcode',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/zcode/workspace-trust.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native PDF attachment support for ZCode',
+        'pdf-attachments',
+        'zcode',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/zcode/pdf-attachments.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records background subagent interrupt support for ZCode',
+        'interrupt-a-subagent',
+        'zcode',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/zcode/interrupt-a-subagent.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records typed MCP form support for ZCode',
+        'mcp-input-request',
+        'zcode',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/zcode/mcp-input-request.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native steering support for ZCode',
+        'steer-mid-turn',
+        'zcode',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/zcode/steer-mid-turn.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records plan usage support for Kimi Code',
+        'rate-limit-state',
+        'kimi-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/kimi-code/rate-limit-state.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records hosted workspace trust support for Kimi Code',
+        'workspace-trust',
+        'kimi-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/kimi-code/workspace-trust.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records hosted workspace trust support for GitHub Copilot',
+        'workspace-trust',
+        'github-copilot',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/github-copilot/workspace-trust.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native Fleet support for GitHub Copilot',
+        'swarm-mode',
+        'github-copilot',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/github-copilot/swarm-mode.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native PDF attachment support for GitHub Copilot',
+        'pdf-attachments',
+        'github-copilot',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/github-copilot/pdf-attachments.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native subagent interrupt support for Qoder CLI',
+        'interrupt-a-subagent',
+        'qoder-cli',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qoder-cli/interrupt-a-subagent.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native account quota support for Qoder CLI',
+        'rate-limit-state',
+        'qoder-cli',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qoder-cli/rate-limit-state.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native output style support for Qoder CLI',
+        'output-style',
+        'qoder-cli',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qoder-cli/output-style.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native extended thinking support for Qoder CLI',
+        'extended-thinking',
+        'qoder-cli',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qoder-cli/extended-thinking.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native Bypass permissions support for Qoder CLI',
+        'bypass-permissions-shortcut',
+        'qoder-cli',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/qoder-cli/bypass-permissions-shortcut.spec.ts',
+        },
+        [],
+      ],
+      [
+        'records native Muse subagent-transcript-tab support',
+        'subagent-transcript-tab',
+        'muse-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/muse-code/subagent-transcript-tab.spec.ts',
+        },
+        ['Muse 1.4.13', 'view/page'],
+      ],
+      [
+        'records native Muse subagent-live-transcript support',
+        'subagent-live-transcript',
+        'muse-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/muse-code/subagent-live-transcript.spec.ts',
+        },
+        ['Muse 1.4.13', 'view/subscribe'],
+      ],
+      [
+        'records native Muse send-to-a-subagent support',
+        'send-to-a-subagent',
+        'muse-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/muse-code/send-to-a-subagent.spec.ts',
+        },
+        ['Muse 1.4.13', 'subagent/sendMessage', 'subagent_state_ineligible', 'subagent/readResult', 'paused input queue'],
+      ],
+      [
+        'records native Muse interrupt-a-subagent support',
+        'interrupt-a-subagent',
+        'muse-code',
+        {
+          support: 'supported',
+          audit: 'source-verified',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/muse-code/interrupt-a-subagent.spec.ts',
+        },
+        ['Muse 1.4.13', 'subagent/interrupt'],
+      ],
+    ])('%s', (_title, feature, provider, expected, detailContains) => {
       const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['swarm-mode'].cline).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/cline/swarm-mode.spec.ts',
-      })
-    })
-
-    it('records native plan approval support for Reasonix', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['plan-approval-banner'].reasonix).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/reasonix/plan-approval-banner.spec.ts',
-      })
-    })
-
-    it('records native token progress support for Qoder CLI', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['generation-progress']['qoder-cli']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/qoder-cli/generation-progress.spec.ts',
-      })
-    })
-
-    it('records native Kilo Swarm support for Kilo', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['swarm-mode'].kilo).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/kilo/swarm-mode.spec.ts',
-      })
+      const cell = checklist.cells[feature]?.[provider]
+      expect(cell).toMatchObject(expected)
+      for (const fragment of detailContains)
+        expect(cell.detailNote).toContain(fragment)
     })
 
     it('records native subagent live transcript and send support for OpenCode and Kilo', () => {
@@ -481,17 +1043,6 @@ describe('validateCodingAgentMatrix', () => {
           })
         }
       }
-    })
-
-    it('records native plan usage support for Kilo', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['rate-limit-state'].kilo).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/kilo/rate-limit-state.spec.ts',
-      })
     })
 
     it('records native Bypass permissions support for OpenCode and Kilo', () => {
@@ -520,158 +1071,81 @@ describe('validateCodingAgentMatrix', () => {
       }
     })
 
-    it('records the native Smart permissions shortcut for CodeBuddy Code', () => {
+    it.each([
+      ['claude-code', 'agent-limit', 'Messages API'],
+      ['codex', 'supported', 'input_audio.audio_url'],
+      ['cursor', 'agent-limit', 'audit-8D7OZV'],
+      ['github-copilot', 'agent-limit', 'copilot-audit-1.log'],
+      ['kilo', 'supported', 'capabilities.input.audio'],
+      ['opencode', 'supported', 'capabilities.input.audio'],
+      ['goose', 'agent-limit', 'convert_acp_prompt_to_message'],
+      ['pi', 'agent-limit', 'pi-6wxxro'],
+      ['reasonix', 'agent-limit', 'FlattenPrompt'],
+      ['zcode', 'agent-limit', 'zcode-PbCD0M'],
+      ['codewhale', 'agent-limit', 'magic-format'],
+      ['kimi-code', 'agent-limit', 'ReadMediaFile'],
+      ['mimo-code', 'supported', 'capabilities.input.audio'],
+      ['qwen-code', 'supported', 'run-rUPUPT'],
+      ['oh-my-pi', 'agent-limit', 'pi-6wxxro'],
+      ['grok-build', 'agent-limit', '-32602'],
+      ['kiro', 'agent-limit', 'audit-8D7OZV'],
+      ['amp', 'agent-limit', 'message.content.1'],
+      ['cline', 'agent-limit', 'Cannot read binary file into context'],
+      ['codebuddy-code', 'supported', 'file.file_data'],
+      ['junie', 'agent-limit', 'audit-8D7OZV'],
+      ['letta-code', 'agent-limit', 'letta-lR905P'],
+      ['dirac', 'agent-limit', 'audit-l1x00T'],
+      ['qoder-cli', 'agent-limit', 'stream-aHFbCW'],
+      ['factory-droid', 'agent-limit', 'params.files.0'],
+      ['fast-agent', 'supported', '/model switch'],
+      ['command-code', 'agent-limit', '-32602'],
+      ['deepseek-harness', 'agent-limit', 'gateway/input-invalid'],
+      ['gemini-cli', 'supported', 'audit-zeZZxP'],
+      ['muse-code', 'agent-limit', 'UUIDv7'],
+    ])('records native audio attachment evidence for %s', (provider, support, evidence) => {
       const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['smart-permissions-shortcut']['codebuddy-code']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
+      const cell = checklist.cells['audio-attachments']?.[provider]
+      expect(cell).toMatchObject({
+        support,
+        audit: support === 'supported' ? 'source-verified' : 'unsupported',
         verified: true,
-        spec: 'frontend/tests/e2e/codebuddy-code/smart-permissions-shortcut.spec.ts',
+        testStatus: 'passed',
+        spec: `frontend/tests/e2e/${provider}/audio-attachments.spec.ts`,
       })
+      expect(cell?.detailNote).toContain(evidence)
+      expect(cell?.userNote.length).toBeGreaterThan(0)
     })
 
-    it('records the Auto review Smart permissions shortcut for DeepSeek Harness', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['smart-permissions-shortcut']['deepseek-harness']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/deepseek-harness/smart-permissions-shortcut.spec.ts',
-      })
+    it('publishes audio apart from other binary attachments for every provider', () => {
+      const { checklist, features } = readCodingAgentMatrix()
+      const audio = features.features.find(feature => feature.id === 'audio-attachments')
+      expect(audio).toMatchObject({ label: 'Audio attachments', showInMatrix: true, group: 'attachments' })
+      expect(audio?.description).toContain('A text transcript alone does not count')
+      expect(features.features.find(feature => feature.id === 'other-binary-attachments')?.description)
+        .toContain('other than an image, PDF or audio recording')
+      const providerIDs = checklist.providerGroups.flat().map(provider => provider.id)
+      expect(Object.keys(checklist.cells['audio-attachments'] ?? {})).toEqual(providerIDs)
+      expect(features.features.filter(feature => feature.group === 'attachments').map(feature => feature.id))
+        .toEqual(['text-attachments', 'image-attachments', 'pdf-attachments', 'audio-attachments', 'other-binary-attachments'])
     })
 
-    it('records the CodeBuddy Code MCP form refusal as an agent limit', () => {
+    it('records the native Codex refusal of non-audio binary input', () => {
       const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['mcp-input-request']['codebuddy-code']).toMatchObject({
-        support: 'agent-limit',
-        audit: 'unsupported',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/codebuddy-code/mcp-input-request.spec.ts',
-      })
+      const cell = checklist.cells['other-binary-attachments'].codex
+      expect(cell).toMatchObject({ support: 'agent-limit', audit: 'unsupported', verified: true, testStatus: 'passed', spec: 'frontend/tests/e2e/codex/other-binary-attachments.spec.ts' })
+      expect(cell.detailNote).toContain('0.164.0')
+      expect(cell.detailNote).toContain('-32600')
+      expect(cell.detailNote).toContain('run-CtskPt')
+      expect(cell.userNote).not.toContain('LeapMux does not send it yet')
     })
 
-    it('records native workflow grouping for ZCode', () => {
+    it('records an independent native Gemini video attachment proof', () => {
       const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['workflow-grouping'].zcode).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/zcode/workflow-grouping.spec.ts',
-      })
-    })
-
-    it('records hosted hook trust for ZCode', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['workspace-trust'].zcode).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/zcode/workspace-trust.spec.ts',
-      })
-    })
-
-    it('records native PDF attachment support for ZCode', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['pdf-attachments'].zcode).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/zcode/pdf-attachments.spec.ts',
-      })
-    })
-
-    it('records background subagent interrupt support for ZCode', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['interrupt-a-subagent'].zcode).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/zcode/interrupt-a-subagent.spec.ts',
-      })
-    })
-
-    it('records typed MCP form support for ZCode', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['mcp-input-request'].zcode).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/zcode/mcp-input-request.spec.ts',
-      })
-    })
-
-    it('records native steering support for ZCode', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['steer-mid-turn'].zcode).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/zcode/steer-mid-turn.spec.ts',
-      })
-    })
-
-    it('records plan usage support for Kimi Code', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['rate-limit-state']['kimi-code']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/kimi-code/rate-limit-state.spec.ts',
-      })
-    })
-
-    it('records hosted workspace trust support for Kimi Code', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['workspace-trust']['kimi-code']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/kimi-code/workspace-trust.spec.ts',
-      })
-    })
-
-    it('records hosted workspace trust support for GitHub Copilot', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['workspace-trust']['github-copilot']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/github-copilot/workspace-trust.spec.ts',
-      })
-    })
-
-    it('records native Fleet support for GitHub Copilot', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['swarm-mode']['github-copilot']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/github-copilot/swarm-mode.spec.ts',
-      })
-    })
-
-    it('records native PDF attachment support for GitHub Copilot', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['pdf-attachments']['github-copilot']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/github-copilot/pdf-attachments.spec.ts',
-      })
+      const cell = checklist.cells['other-binary-attachments']['gemini-cli']
+      expect(cell).toMatchObject({ support: 'supported', audit: 'source-verified', verified: true, testStatus: 'passed' })
+      expect(cell.detailNote).toContain('MP4')
+      expect(cell.detailNote).toContain('0.65.0')
+      expect(cell.userNote).toContain('video')
     })
 
     it('records native subagent send and interrupt support for GitHub Copilot', () => {
@@ -685,61 +1159,6 @@ describe('validateCodingAgentMatrix', () => {
           spec: `frontend/tests/e2e/github-copilot/${feature}.spec.ts`,
         })
       }
-    })
-
-    it('records native subagent interrupt support for Qoder CLI', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['interrupt-a-subagent']['qoder-cli']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/qoder-cli/interrupt-a-subagent.spec.ts',
-      })
-    })
-
-    it('records native account quota support for Qoder CLI', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['rate-limit-state']['qoder-cli']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/qoder-cli/rate-limit-state.spec.ts',
-      })
-    })
-
-    it('records native output style support for Qoder CLI', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['output-style']['qoder-cli']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/qoder-cli/output-style.spec.ts',
-      })
-    })
-
-    it('records native extended thinking support for Qoder CLI', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['extended-thinking']['qoder-cli']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/qoder-cli/extended-thinking.spec.ts',
-      })
-    })
-
-    it('records native Bypass permissions support for Qoder CLI', () => {
-      const { checklist } = readCodingAgentMatrix()
-      expect(checklist.cells['bypass-permissions-shortcut']['qoder-cli']).toMatchObject({
-        support: 'supported',
-        audit: 'source-verified',
-        testStatus: 'passed',
-        verified: true,
-        spec: 'frontend/tests/e2e/qoder-cli/bypass-permissions-shortcut.spec.ts',
-      })
     })
 
     it('records the audited support totals and the native question and compaction corrections', () => {
@@ -772,7 +1191,7 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1156, 'agent-limit': 419, 'leapmux-limit': 15 })
+      expect(counts).toEqual({ 'supported': 1180, 'agent-limit': 440, 'leapmux-limit': 0 })
       expect(checklist.cells['agent-questions']['codebuddy-code']).toMatchObject({
         support: 'supported',
         audit: 'source-verified',
@@ -1006,6 +1425,7 @@ describe('validateCodingAgentMatrix', () => {
       ['attachments', 'text-attachments'],
       ['attachments', 'image-attachments'],
       ['attachments', 'pdf-attachments'],
+      ['attachments', 'audio-attachments'],
       ['attachments', 'other-binary-attachments'],
       ['conversation', 'thinking-in-the-transcript'],
       ['conversation', 'steer-mid-turn'],

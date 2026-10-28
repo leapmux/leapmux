@@ -51,6 +51,7 @@ import {
   interruptButton,
   isMaybeVisible,
   offeredSettingsOptions,
+  openAgentInfoCard,
   openAppAs,
   openTerminalViaUI,
   openWorkspace,
@@ -791,29 +792,37 @@ describe('resumeQueueAfterFailure', () => {
   })
 })
 
+function focusableComposer(log: string[]): PlaywrightLocator {
+  return assertingLocator('editor', log, () => true, {
+    click: async () => {
+      throw new Error('The editor center is reserved for action buttons.')
+    },
+    locator: (selector: string) => {
+      expect(selector).toBe(':scope > :first-child')
+      return opaqueHandle<PlaywrightLocator>({ click: async () => {
+        log.push('editor:text-click')
+      } })
+    },
+  })
+}
+
 describe('focusComposer', () => {
-  it('waits for the visible composer, clicks it once, and returns it', async () => {
+  it('clicks the text block without clicking the padding reserved for actions', async () => {
     const log: string[] = []
-    const click = vi.fn(async () => {
-      log.push('editor:click')
-    })
-    const editor = assertingLocator('editor', log, () => true, { click })
+    const editor = focusableComposer(log)
     const page = opaqueHandle<Page>({ locator: (selector: string) => {
       expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
       return editor
     } })
     expect(await focusComposer(page)).toBe(editor)
-    expect(log).toEqual(['editor:to.be.visible', 'editor:click'])
+    expect(log).toEqual(['editor:to.be.visible', 'editor:text-click'])
   })
 })
 
 describe('toggleModeWithShortcut', () => {
   function modePage(chip: string) {
     const log: string[] = []
-    const click = async () => {
-      log.push('editor:click')
-    }
-    const editor = assertingLocator('editor', log, () => true, { click })
+    const editor = focusableComposer(log)
     const spinner = assertingLocator('spinner', log, expression => expression !== 'to.be.visible')
     const chips = opaqueHandle<PlaywrightLocator>({ filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
       const hasText = String(options?.hasText)
@@ -837,7 +846,7 @@ describe('toggleModeWithShortcut', () => {
   it('focuses the composer before the press, waits for the settings, and requires the chip', async () => {
     const { page, log } = modePage('Plan')
     await toggleModeWithShortcut(page, 'Plan')
-    expect(log).toEqual(['editor:to.be.visible', 'editor:click', 'press Shift+Tab', 'spinner:to.be.visible', 'chip Plan:to.have.count=0'])
+    expect(log).toEqual(['editor:to.be.visible', 'editor:text-click', 'press Shift+Tab', 'spinner:to.be.visible', 'chip Plan:to.have.count=0'])
   })
 
   it('fails when the press selects another chip', async () => {
@@ -1193,9 +1202,7 @@ describe('answerPlanReview', () => {
 describe('enterControlFeedback', () => {
   it('focuses the visible composer and types the reason into it', async () => {
     const log: string[] = []
-    const editor = assertingLocator('editor', log, () => true, { click: async () => {
-      log.push('editor:click')
-    } })
+    const editor = focusableComposer(log)
     const page = opaqueHandle<Page>({
       locator: (selector: string) => {
         expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
@@ -1206,7 +1213,7 @@ describe('enterControlFeedback', () => {
       } }),
     })
     await enterControlFeedback(page, 'Keep the spec read-only.')
-    expect(log).toEqual(['editor:to.be.visible', 'editor:click', 'type:Keep the spec read-only.'])
+    expect(log).toEqual(['editor:to.be.visible', 'editor:text-click', 'type:Keep the spec read-only.'])
   })
 
   it.each(['', '  \n'])('refuses the reason %j before it touches the page', async (reason) => {
@@ -1757,5 +1764,28 @@ describe('answerElevationPrompt', () => {
     const { root, log } = fakeTree((_expression, path) => path !== prompt)
     await expect(answerElevationPrompt(root, 'secret')).rejects.toThrow('the hub asks the session to prove a factor')
     expect(log).toEqual([`to.be.visible ${prompt}`])
+  })
+})
+
+describe('openAgentInfoCard', () => {
+  it.each([false, true])('keeps the card open across repeated calls when initially open=%s', async (initiallyOpen) => {
+    let open = initiallyOpen
+    let clicks = 0
+    const trigger = fakeLocator(() => true, { click: async () => {
+      open = !open
+      clicks++
+    } })
+    const popover = fakeLocator(check => check.expression === 'to.be.visible' ? open : true, { isVisible: async () => open })
+    const page = { locator: (selector: string) => {
+      if (selector === '[data-testid="agent-info-trigger"]')
+        return trigger
+      if (selector === '[data-testid="agent-info-popover"]')
+        return popover
+      throw new Error(`Unexpected agent info selector: ${selector}`)
+    } } as unknown as Page
+    expect(await openAgentInfoCard(page)).toBe(popover)
+    expect(await openAgentInfoCard(page)).toBe(popover)
+    expect(open).toBe(true)
+    expect(clicks).toBe(initiallyOpen ? 0 : 1)
   })
 })

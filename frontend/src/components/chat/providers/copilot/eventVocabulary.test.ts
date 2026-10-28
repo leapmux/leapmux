@@ -55,7 +55,7 @@ const STRUCTURAL: Record<string, string> = {
 
 describe('copilot event vocabulary', () => {
   it('reads the whole table the contract holds', () => {
-    // 111 named types plus the six prefix families the contract covers by rule.
+    // Preserve the original minimum vocabulary and the six shared prefix families.
     expect(Object.keys(COPILOT_EVENT).length).toBeGreaterThanOrEqual(111)
     expect(Object.keys(COPILOT_EVENT_PREFIX).length).toBe(6)
   })

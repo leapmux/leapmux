@@ -15,6 +15,144 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSink_CapturedMessagesRetainTheirHistoricalPublication(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"message", "turn end"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			sink := &Sink{}
+			sink.UpdateSessionID("original")
+			captured := agent.CaptureTranscript(sink, agent.MessageContent{Original: []byte(`{"native":"original"}`)}, agent.SpanInfo{})
+			sink.UpdateSessionID("replacement")
+			if kind == "message" {
+				require.NoError(t, captured.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+			} else {
+				require.NoError(t, captured.PersistTurnEnd())
+			}
+			rows := sink.Messages()
+			require.Len(t, rows, 1)
+			assert.Equal(t, "original", rows[0].AgentSessionID)
+			assert.True(t, rows[0].TranscriptOnly)
+			assert.Equal(t, kind == "turn end", rows[0].TurnEnd)
+		})
+	}
+}
+
+func TestSink_FailedAttemptsRemainObservableButCannotBeReadOrEnrichedAsStoredRows(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{PersistErr: assert.AnError}
+	sink.UpdateSessionID("session")
+	raw := []byte(`{"native":"failed"}`)
+	require.ErrorIs(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{SpanID: "tool"}), assert.AnError)
+	sink.PersistErr = nil
+	for _, read := range []func() (*agent.StoredMessage, error){
+		func() (*agent.StoredMessage, error) { return sink.ReadToolRequest("tool") },
+		func() (*agent.StoredMessage, error) { return sink.ReadToolResult("tool") },
+		func() (*agent.StoredMessage, error) { return sink.ReadToolResultForSession("tool", "session") },
+		func() (*agent.StoredMessage, error) { return sink.ReadToolResultBySeq(1) },
+	} {
+		row, err := read()
+		require.NoError(t, err)
+		assert.Nil(t, row)
+	}
+	changed, err := sink.EnrichMessage(agent.MessageEnrichment{Seq: 1, SpanID: "tool", OriginalContent: raw, SupplementalContent: []byte(`{"result":"wrong"}`)})
+	require.NoError(t, err)
+	assert.False(t, changed)
+	rows := sink.Messages()
+	require.Len(t, rows, 1, "failed attempts stay available for test diagnostics")
+	assert.Empty(t, rows[0].SupplementalContent)
+}
+
+func TestSink_StoredReadersAndEnrichmentSkipFailedAttemptsOnBothSides(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	sink.UpdateSessionID("session")
+	write := func(raw string, failure error) {
+		t.Helper()
+		sink.PersistErr = failure
+		err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(raw)}, agent.SpanInfo{SpanID: "tool"})
+		if failure != nil {
+			require.ErrorIs(t, err, failure)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+	write(`{"native":"failed opener"}`, assert.AnError)
+	write(`{"native":"committed opener"}`, nil)
+	write(`{"native":"committed result"}`, nil)
+	write(`{"native":"failed later result"}`, assert.AnError)
+	sink.PersistErr = nil
+	request, err := sink.ReadToolRequest("tool")
+	require.NoError(t, err)
+	require.NotNil(t, request)
+	assert.Equal(t, int64(2), request.Seq)
+	for _, read := range []func() (*agent.StoredMessage, error){
+		func() (*agent.StoredMessage, error) { return sink.ReadToolResult("tool") },
+		func() (*agent.StoredMessage, error) { return sink.ReadToolResultForSession("tool", "session") },
+	} {
+		row, err := read()
+		require.NoError(t, err)
+		require.NotNil(t, row)
+		assert.Equal(t, int64(3), row.Seq)
+		assert.JSONEq(t, `{"native":"committed result"}`, string(row.Content.Original))
+	}
+	failed, err := sink.ReadToolResultBySeq(4)
+	require.NoError(t, err)
+	assert.Nil(t, failed)
+	changed, err := sink.EnrichMessage(agent.MessageEnrichment{SpanID: "tool", OriginalContent: []byte(`{"native":"committed result"}`), SupplementalContent: []byte(`{"result":"accepted"}`)})
+	require.NoError(t, err)
+	assert.True(t, changed)
+	rows := sink.Messages()
+	require.Len(t, rows, 4)
+	assert.JSONEq(t, `{"result":"accepted"}`, string(rows[2].SupplementalContent))
+	assert.Empty(t, rows[3].SupplementalContent)
+}
+
+func TestSink_InitialPromptUsesCommittedChildEmptiness(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"failed message", "native notification", "reduced native notification", "worker notification", "failed worker notification"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			root := &Sink{}
+			child := root.Child("child")
+			switch scenario {
+			case "failed message":
+				child.PersistErr = assert.AnError
+				require.ErrorIs(t, child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"native":"failed"}`)}, agent.SpanInfo{}), assert.AnError)
+			case "native notification", "reduced native notification":
+				child.SuppressNotificationBroadcast = scenario == "reduced native notification"
+				_, err := child.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"native":"notice"}`)})
+				require.NoError(t, err)
+			case "worker notification", "failed worker notification":
+				if scenario == "failed worker notification" {
+					child.PersistErr = assert.AnError
+				}
+				_, err := child.PersistWorkerNotification(agent.MessageContent{Original: []byte(`{"type":"agent_status","text":"notice"}`)})
+				if scenario == "failed worker notification" {
+					require.ErrorIs(t, err, assert.AnError)
+				} else {
+					require.NoError(t, err)
+				}
+			}
+			child.PersistErr = nil
+			require.NoError(t, root.PersistChildPrompt("child", "The opening assignment."))
+			require.NoError(t, root.PersistChildPrompt("child", "A repeated different assignment."))
+			var prompts []Message
+			for _, row := range child.Messages() {
+				if row.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+					prompts = append(prompts, row)
+				}
+			}
+			if scenario == "failed message" || scenario == "failed worker notification" {
+				require.Len(t, prompts, 1)
+				assert.JSONEq(t, `{"content":"The opening assignment."}`, string(prompts[0].Content))
+			} else {
+				assert.Empty(t, prompts)
+			}
+		})
+	}
+}
+
 func TestSink_SteerEchoReportsRecordEachCallInOrder(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
@@ -588,7 +726,25 @@ func TestSink_FailedNativeWritesDoNotClaimTheMessageKey(t *testing.T) {
 		require.ErrorIs(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{}`), IdempotencyKey: "native-record"}, agent.SpanInfo{}), failure)
 	}
 	assert.Empty(t, sink.messageKeys)
-	assert.Len(t, sink.Messages(), 2, "the fake records both failed attempts")
+	failed := sink.Messages()
+	require.Len(t, failed, 2, "the fake records both failed attempts")
+	for _, attempt := range failed {
+		assert.False(t, attempt.Stored())
+	}
+	sink.PersistErr = nil
+	for range 2 {
+		require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{}`), IdempotencyKey: "native-record"}, agent.SpanInfo{}))
+	}
+	rows := sink.Messages()
+	require.Len(t, rows, 3, "only the first successful retry records another attempt")
+	for index, row := range rows {
+		assert.Equal(t, index == 2, row.Stored())
+		assert.Equal(t, []byte(`{}`), row.Content)
+	}
+	assert.Len(t, sink.messageKeys, 1)
+	for _, attempt := range failed {
+		assert.False(t, attempt.Stored(), "a returned failed snapshot cannot become committed after recovery")
+	}
 }
 
 func TestSink_KeyedTurnEndReplayKeepsOneRecordAndLifecycleEvent(t *testing.T) {
@@ -617,6 +773,29 @@ func TestSink_FailedTurnEndReturnsTheStoreFailureWithoutClaimingItsKey(t *testin
 	assert.Empty(t, sink.messageKeys)
 	assert.Empty(t, sink.turnEndKeys)
 	assert.Empty(t, sink.TurnLifecycle(), "a failed turn end cannot publish a lifecycle event")
+	failed := sink.Messages()
+	require.Len(t, failed, 2)
+	for _, attempt := range failed {
+		assert.True(t, attempt.TurnEnd, "the attempted operation remains observable even when refused")
+		assert.False(t, attempt.Stored())
+	}
+	sink.PersistErr = nil
+	for range 2 {
+		require.NoError(t, sink.PersistTurnEnd(content, agent.SpanInfo{}))
+	}
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	for index, row := range rows {
+		assert.True(t, row.TurnEnd)
+		assert.Equal(t, index == 2, row.Stored())
+		assert.Equal(t, content.Original, row.Content)
+	}
+	assert.Len(t, sink.messageKeys, 1)
+	assert.Len(t, sink.turnEndKeys, 1)
+	assert.Equal(t, []string{"turn_end"}, sink.TurnLifecycle())
+	for _, attempt := range failed {
+		assert.False(t, attempt.Stored())
+	}
 }
 
 func TestSink_ConcurrentTurnEndReplayPublishesOneLifecycleEvent(t *testing.T) {

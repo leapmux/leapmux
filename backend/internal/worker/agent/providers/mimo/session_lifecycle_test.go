@@ -559,42 +559,111 @@ func TestClearContextCreationFailureKeepsPendingCompactionTurn(t *testing.T) {
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1)
 }
 
-func TestClearContextAbortsAnOrdinaryPromptStillBeingSent(t *testing.T) {
+func TestClearContextDrainsOrdinaryPromptBeforeAbort(t *testing.T) {
 	t.Parallel()
-	a, _, server := newSinkTestAgent(t)
-	entered, release := make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	releasePrompt := func() { releaseOnce.Do(func() { close(release) }) }
+	checkClearDrainsPrompt(t, false, false)
+}
+
+func TestClearContextDrainsChildPromptBeforeAbort(t *testing.T) {
+	t.Parallel()
+	checkClearDrainsPrompt(t, true, false)
+}
+
+func TestClearContextKeepsOldSessionWhenPromptDeliveryRemainsUncertain(t *testing.T) {
+	t.Parallel()
+	checkClearDrainsPrompt(t, true, true)
+}
+
+func checkClearDrainsPrompt(t *testing.T, child, uncertain bool) {
+	t.Helper()
+	a, sink, server := newSinkTestAgent(t)
+	if child {
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		a.Mu.Lock()
+		a.turnActive = false
+		a.Mu.Unlock()
+	}
+	entered, release, applied, creating := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	releasePrompt := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(releasePrompt)
-	server.handle("POST /session/ses_test/prompt_async", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+	server.handle("POST /session", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		close(creating)
+		writeJSON(w, http.StatusOK, `{"id":"ses_created","directory":"/work","title":"New session"}`)
+	})
+	server.handle("POST /session/"+testSessionID+"/prompt_async", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
 		close(entered)
-		select {
-		case <-release:
-		case <-r.Context().Done():
+		// The server deliberately ignores client cancellation. Only this release
+		// establishes that the request reached its native admission step.
+		<-release
+		close(applied)
+		if uncertain {
+			connection, _, err := w.(http.Hijacker).Hijack()
+			if assert.NoError(t, err) {
+				_ = connection.Close()
+			}
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-
-	result := make(chan error, 1)
-	go func() { result <- a.SendInput("old session input", nil) }()
+	server.handle("POST /session/"+testSessionID+"/abort", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		select {
+		case <-applied:
+		default:
+			t.Error("the native abort preceded the admitted prompt")
+		}
+		writeJSON(w, http.StatusOK, `true`)
+	})
+	input := make(chan error, 1)
+	go func() {
+		if child {
+			input <- a.SteerChildInput(spawnSpanID, "old child input", nil)
+		} else {
+			input <- a.SendInput("old session input", nil)
+		}
+	}()
+	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-entered:
-	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("the old prompt did not reach MiMo")
+	case <-ctx.Done():
+		t.Fatal("the prompt did not reach MiMo")
 	}
-
-	sessionID, err := a.ClearContext()
-	require.NoError(t, err)
-	assert.Equal(t, "ses_created", sessionID)
-	assert.Len(t, server.requestsTo("POST /session/ses_test/abort"), 1, "the old pending prompt needs a native abort")
+	cleared := make(chan error, 1)
+	go func() { _, err := a.ClearContext(); cleared <- err }()
+	select {
+	case <-creating:
+	case <-ctx.Done():
+		t.Fatal("the replacement session request did not start")
+	}
+	assert.Empty(t, server.requestsTo("POST /session/"+testSessionID+"/abort"))
 	releasePrompt()
 	select {
-	case <-result:
-	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("the old prompt did not answer")
+	case err := <-input:
+		if uncertain {
+			require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		} else {
+			require.NoError(t, err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the prompt did not settle")
 	}
-	require.NoError(t, a.SendInput("new session input", nil))
-	assert.Len(t, server.requestsTo("POST /session/ses_created/prompt_async"), 1)
+	select {
+	case err := <-cleared:
+		if uncertain {
+			require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+			assert.Equal(t, testSessionID, a.sessionID)
+			assert.False(t, a.sessionSwitching)
+			assert.Empty(t, sink.GoalClearSnapshots())
+			assert.Empty(t, server.requestsTo("POST /session/"+testSessionID+"/abort"))
+			assert.True(t, a.ActiveChildTurnState(spawnSpanID).Steerable)
+		} else {
+			require.NoError(t, err)
+			assert.Equal(t, "ses_created", a.sessionID)
+			assert.Len(t, server.requestsTo("POST /session/"+testSessionID+"/abort"), 1)
+		}
+	case <-ctx.Done():
+		t.Fatal("the context clear did not settle")
+	}
 }
 
 func TestClearContextThatCannotCreateASessionKeepsTheOldOne(t *testing.T) {
@@ -953,7 +1022,7 @@ func TestManualCompactionFollowupRefusalKeepsTheReadyState(t *testing.T) {
 	assert.Empty(t, sink.TurnActives(), "a refused prompt starts no turn")
 }
 
-func TestManualCompactionFollowupSessionReplacementAbortsOldAndKeepsNewSend(t *testing.T) {
+func TestManualCompactionFollowupSessionReplacementDrainsOldAndKeepsNewSend(t *testing.T) {
 	t.Parallel()
 	a, _, server := newSinkTestAgent(t)
 	oldEntered, oldRelease := make(chan struct{}), make(chan struct{})
@@ -963,6 +1032,11 @@ func TestManualCompactionFollowupSessionReplacementAbortsOldAndKeepsNewSend(t *t
 	releaseNew := func() { newOnce.Do(func() { close(newRelease) }) }
 	t.Cleanup(releaseOld)
 	t.Cleanup(releaseNew)
+	creating := make(chan struct{})
+	server.handle("POST /session", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		close(creating)
+		writeJSON(w, http.StatusOK, `{"id":"ses_created","directory":"/work","title":"New session"}`)
+	})
 	server.handle("POST /session/ses_test/prompt_async", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		close(oldEntered)
 		select {
@@ -989,9 +1063,22 @@ func TestManualCompactionFollowupSessionReplacementAbortsOldAndKeepsNewSend(t *t
 		t.Fatal("the old prompt did not reach MiMo")
 	}
 
-	sessionID, err := a.ClearContext()
-	require.NoError(t, err)
-	assert.Equal(t, "ses_created", sessionID)
+	cleared := make(chan error, 1)
+	go func() { _, err := a.ClearContext(); cleared <- err }()
+	select {
+	case <-creating:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the replacement session request did not start")
+	}
+	assert.Empty(t, server.requestsTo("POST /session/ses_test/abort"))
+	releaseOld()
+	select {
+	case err := <-cleared:
+		require.NoError(t, err)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the context clear did not settle")
+	}
+	assert.Equal(t, "ses_created", a.sessionID)
 	assert.Len(t, server.requestsTo("POST /session/ses_test/abort"), 1, "the old pending prompt needs a native abort")
 
 	a.Mu.Lock()
@@ -1005,15 +1092,15 @@ func TestManualCompactionFollowupSessionReplacementAbortsOldAndKeepsNewSend(t *t
 		t.Fatal("the new prompt did not reach MiMo")
 	}
 
-	releaseOld()
 	select {
-	case <-oldResult:
+	case err := <-oldResult:
+		require.NoError(t, err)
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the old prompt did not answer")
 	}
 	a.Mu.Lock()
 	assert.True(t, a.manualCompactionReady)
-	assert.True(t, a.manualFollowupSending, "the old reply cannot clear the new session's send")
+	assert.True(t, a.manualFollowupSending, "the new follow-up stays pending until its own acknowledgment")
 	a.Mu.Unlock()
 
 	releaseNew()

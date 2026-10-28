@@ -7,12 +7,14 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -442,7 +444,10 @@ func TestManagerExitHandlerReceivesTheExitStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			exits := make(chan error, 1)
-			m := agent.NewManager(testRegistry, func(_ string, err error, _ bool) { exits <- err })
+			m := agent.NewManager(testRegistry, func(processExit agent.ProcessExit) {
+				err := processExit.Err
+				exits <- err
+			})
 			_, err := m.StartAgentWith(t.Context(), agent.Options{AgentID: "exited", WorkingDir: t.TempDir()}, agenttest.Nop(),
 				func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 					return &exitedStub{err: tc.waitErr}, nil
@@ -472,7 +477,9 @@ func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 	type exitView struct{ hasAgent, alive bool }
 	m := agent.NewManager(testRegistry, nil)
 	viewDuringExit := make(chan exitView, 1)
-	m.SetOnExit(func(agentID string, _ error, _ bool) {
+	m.SetOnExit(func(processExit agent.ProcessExit) {
+		agentID := processExit.AgentID
+
 		viewDuringExit <- exitView{hasAgent: m.HasAgent(agentID), alive: m.AgentAlive(agentID)}
 	})
 	provider := &blockingStub{waitCh: make(chan struct{})}
@@ -505,7 +512,7 @@ func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 	exited := make(chan struct{})
-	m.SetOnExit(func(string, error, bool) { close(exited) })
+	m.SetOnExit(func(processExit agent.ProcessExit) { close(exited) })
 
 	// Provider A blocks in Wait until released; it is registered with a cache entry.
 	old := &blockingStub{
@@ -568,7 +575,7 @@ func TestManager_StopAndWaitWaitsForOnExit(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 	onExitStarted := make(chan struct{})
 	releaseOnExit := make(chan struct{})
-	m.SetOnExit(func(string, error, bool) {
+	m.SetOnExit(func(processExit agent.ProcessExit) {
 		close(onExitStarted)
 		<-releaseOnExit // hold onExit open so the test can observe stopAndWait still blocked
 	})
@@ -993,4 +1000,179 @@ func catalogRegistry() *agent.Registry {
 	staticCatalog := testRegistration(staticCatalogProvider)
 	staticCatalog.DefaultModels = []*agent.ModelInfo{{Id: "auto"}, {Id: "gpt-5"}}
 	return agenttest.MustNewRegistry(modelDependent, staticCatalog, testRegistration(dynamicModelProvider))
+}
+
+// exitOutputProbe exercises physical output capture through the real Manager and decorators.
+type exitOutputProbe struct {
+	agenttest.Sink
+	captures atomic.Int64
+	runs     atomic.Int64
+}
+
+func (probe *exitOutputProbe) CaptureBackgroundTaskExit(bool) func() error {
+	probe.captures.Add(1)
+	return func() error { probe.runs.Add(1); return nil }
+}
+
+func TestManagerExitRetainsTheOriginalPhysicalOutput(t *testing.T) {
+	t.Parallel()
+	original, replacement := &exitOutputProbe{}, &exitOutputProbe{}
+	output := agent.NewModelProgressResetSink(agent.NewProviderServices(original))
+	replacementOutput := agent.NewModelProgressResetSink(agent.NewProviderServices(replacement))
+	exits := make(chan agent.ProcessExit, 1)
+	var manager *agent.Manager
+	manager = agent.NewManager(testRegistry, func(exit agent.ProcessExit) {
+		assert.True(t, manager.HasAgent(exit.AgentID), "the exit callback retains the registered slot without holding the manager mutex")
+		operation := exit.Output.CaptureBackgroundTaskExit(exit.Stopped)
+		require.NotNil(t, operation)
+		require.NoError(t, operation())
+		exits <- exit
+	})
+	wait := make(chan struct{})
+	release := sync.OnceFunc(func() { close(wait) })
+	t.Cleanup(func() { release(); manager.StopAndWaitAgent("physical-output") })
+	_, err := manager.StartAgentWith(t.Context(), agent.Options{AgentID: "physical-output", WorkingDir: t.TempDir()}, output,
+		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+			return &blockingStub{waitCh: wait}, nil
+		})
+	require.NoError(t, err)
+	assert.NotSame(t, agent.OutputQueueFor(output), agent.OutputQueueFor(replacementOutput))
+	release()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case exit := <-exits:
+		assert.Equal(t, "physical-output", exit.AgentID)
+		assert.NoError(t, exit.Err)
+		assert.Same(t, original.OutputQueue(), exit.Output.OutputQueue())
+	case <-ctx.Done():
+		t.Fatal("the original process did not publish its captured output owner")
+	}
+	assert.Equal(t, int64(1), original.captures.Load())
+	assert.Equal(t, int64(1), original.runs.Load())
+	assert.Zero(t, replacement.captures.Load())
+	assert.Zero(t, replacement.runs.Load())
+}
+
+type ownedStartFailureProbe struct {
+	agenttest.Sink
+	cleaned     atomic.Bool
+	unavailable atomic.Bool
+	captures    atomic.Int64
+	runs        atomic.Int64
+	premature   atomic.Bool
+	manager     *agent.Manager
+}
+
+func (probe *ownedStartFailureProbe) CaptureBackgroundTaskStartFailure() func() error {
+	probe.captures.Add(1)
+	if !probe.cleaned.Load() {
+		probe.premature.Store(true)
+	}
+	return func() error {
+		if probe.manager != nil {
+			probe.manager.HasAgent("owned-start-failure")
+		}
+		probe.runs.Add(1)
+		if probe.unavailable.Load() {
+			return assert.AnError
+		}
+		return nil
+	}
+}
+
+func TestManagerOwnedStartFailureRetainsOnlyItsOutput(t *testing.T) {
+	t.Parallel()
+	probe := &ownedStartFailureProbe{}
+	probe.unavailable.Store(true)
+	output := agent.NewModelProgressResetSink(agent.NewProviderServices(probe))
+	var normalExits atomic.Int64
+	manager := agent.NewManager(testRegistry, func(agent.ProcessExit) { normalExits.Add(1) })
+	probe.manager = manager
+	unlock := manager.LockAgent("owned-start-failure")
+	defer unlock()
+	queue := agent.OutputQueueFor(output)
+	var emitted atomic.Int64
+	failure := errors.New("the owned handshake failed after cleanup")
+	_, err := manager.StartAgentWith(t.Context(), agent.Options{AgentID: "owned-start-failure", WorkingDir: t.TempDir()}, output,
+		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+			defer probe.cleaned.Store(true)
+			queue.Append(agent.OutputWrite{Label: "accepted native registry write", Run: func() error { emitted.Add(1); return nil }})
+			return nil, failure
+		})
+	require.ErrorIs(t, err, failure)
+	assert.Zero(t, normalExits.Load(), "an unregistered failed attempt has no ordinary process exit")
+	require.Equal(t, int64(1), probe.captures.Load())
+	assert.False(t, probe.premature.Load(), "the StartFunc must finish its cleanup before failure capture")
+	assert.Equal(t, int64(1), emitted.Load(), "accepted output precedes its owned failure effect")
+	require.True(t, queue.HasPending())
+	probe.unavailable.Store(false)
+	require.NoError(t, queue.Flush())
+	assert.False(t, queue.HasPending())
+	assert.Equal(t, int64(1), emitted.Load(), "failure retry does not replay the accepted registry write")
+	assert.Equal(t, int64(2), probe.runs.Load())
+	assert.False(t, manager.HasAgent("owned-start-failure"))
+}
+
+func TestManagerOwnedStartFailureSkipsUninvokedStarts(t *testing.T) {
+	for _, scenario := range []string{"duplicate", "canceled foreground", "canceled startup slot"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			manager := agent.NewManager(testRegistry, nil)
+			probe := &ownedStartFailureProbe{}
+			output := agent.NewProviderServices(probe)
+			var invoked atomic.Int64
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			start := func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (agent.Agent, error) {
+				invoked.Add(1)
+				probe.cleaned.Store(true)
+				return nil, ctx.Err()
+			}
+			opts := agent.Options{AgentID: "rejected-start", WorkingDir: t.TempDir()}
+			if scenario == "duplicate" {
+				_, err := manager.StartAgentWith(t.Context(), opts, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+					return newLivingAgent(), nil
+				})
+				require.NoError(t, err)
+				t.Cleanup(func() { manager.StopAndWaitAgent(opts.AgentID) })
+			}
+			if scenario == "canceled startup slot" {
+				manager.SetStartupConcurrency(1)
+				entered, release := make(chan struct{}), make(chan struct{})
+				releaseOnce := sync.OnceFunc(func() { close(release) })
+				completed := make(chan error, 1)
+				go func() {
+					_, err := manager.StartBackgroundAgentWithForTest(t.Context(), agent.Options{AgentID: "occupied-start", WorkingDir: t.TempDir()}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+						close(entered)
+						<-release
+						return newLivingAgent(), nil
+					})
+					completed <- err
+				}()
+				t.Cleanup(func() { releaseOnce(); <-completed; manager.StopAndWaitAgent("occupied-start") })
+				wait := testutil.DeadlineContext(t)
+				select {
+				case <-entered:
+				case <-wait.Done():
+					t.Fatal("the first start did not occupy its slot")
+				}
+				cancel()
+				_, err := manager.StartBackgroundAgentWithForTest(ctx, opts, output, start)
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				if scenario == "canceled foreground" {
+					cancel()
+				}
+				_, err := manager.StartAgentWith(ctx, opts, output, start)
+				if scenario == "canceled foreground" {
+					require.ErrorIs(t, err, context.Canceled)
+				} else {
+					require.ErrorContains(t, err, "agent already running for agent rejected-start")
+				}
+			}
+			assert.Zero(t, invoked.Load())
+			assert.Zero(t, probe.captures.Load(), "preflight refusal owns no failed native attempt")
+			assert.False(t, agent.OutputQueueFor(output).HasPending())
+		})
+	}
 }

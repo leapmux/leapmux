@@ -190,7 +190,7 @@ func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Att
 	}
 	parts := []map[string]any{{"type": "text", "text": content}}
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if attachment.Kind != agent.AttachmentKindImage {
+		if attachment.Kind != contracts.AttachmentMediaKindImage {
 			return fmt.Errorf("DeepSeek Harness child input accepts text and images")
 		}
 		parts = append(parts, map[string]any{"type": "image", "mediaType": attachment.MIMEType, "data": base64.StdEncoding.EncodeToString(attachment.Data), "name": attachment.Filename})

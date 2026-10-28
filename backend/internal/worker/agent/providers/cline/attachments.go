@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -33,14 +35,14 @@ const maxTextAttachmentBytes = 20 * 1000 * 1024
 // PDF as a file path: https://github.com/leapmux/leapmux/issues/537.
 func validateAttachment(attachment agent.ClassifiedAttachment) error {
 	switch attachment.Kind {
-	case agent.AttachmentKindText:
+	case contracts.AttachmentMediaKindText:
 		if len(attachment.Data) > maxTextAttachmentBytes {
 			return fmt.Errorf("the text file %s is larger than the %d bytes that Cline reads", attachment.Filename, maxTextAttachmentBytes)
 		}
 		return nil
-	case agent.AttachmentKindImage:
+	case contracts.AttachmentMediaKindImage:
 		return nil
-	case agent.AttachmentKindPDF:
+	case contracts.AttachmentMediaKindPdf:
 		return fmt.Errorf("the attachment %s is a PDF, which Cline does not read", attachment.Filename)
 	default:
 		return fmt.Errorf("the attachment %s is a binary file, which Cline does not read", attachment.Filename)
@@ -92,12 +94,12 @@ func (a *Agent) buildInput(content string, attachments []*leapmuxv1.Attachment) 
 	var texts []agent.ClassifiedAttachment
 	for _, attachment := range classified {
 		switch attachment.Kind {
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			in.userImages = append(in.userImages, providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data))
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			texts = append(texts, attachment)
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
-			// validateAttachment refused both kinds above.
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
+			// validateAttachment refused these kinds above.
 		}
 	}
 	if len(texts) > 0 {

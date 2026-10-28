@@ -256,7 +256,7 @@
         "detailNote": "LeapMux uses installed Gemini CLI 0.62.0 ACP with exact native JSONL recovery. Native child UUIDs belong to the proven root session. Gemini supplies no direct nesting link or child input/cancel route."
       },
       {
-        "userNote": "LeapMux drives Muse Code 1.4.4 over its Muse Session Protocol (MSP). Children run inside workflow scripts (host.agent with submit_result) and carry no session of their own; the four approval modes include the bypass preset (allowAll) and no assisted preset.",
+        "userNote": "LeapMux drives Muse Code 1.4.13 over the Muse Session Protocol (MSP). Workflow folds create grouped rows. A matching native subagent supplies its own session, transcript, and controls. The four approval modes include the bypass preset (allowAll); no assisted preset exists.",
         "detailNote": "LeapMux uses the native MSP stdio host (muse serve). The private settings declare a config model catalog (context limits included) so the native model switch and the /compact summarizer both resolve under a local endpoint; a live MCP server in the shared settings would block the asynchronous compaction path, so the MCP spec registers its server per agent.",
         "url": "https://muse.meta.ai/",
         "label": "Muse Code",
@@ -1082,6 +1082,278 @@
         "verified": true
       }
     },
+    "audio-attachments": {
+      "claude-code": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Claude Code 2.1.310 blindly forwards unknown audio/document blocks in stream-VjAWLx; acceptance by a permissive mock is not valid native audio input. The official Messages API and SDK union have no audio input block, while document sources are PDF or plain text. Native voice capture produces a transcript. Sources:\n- https://platform.claude.com/docs/en/api/messages/create\n- https://platform.claude.com/docs/en/build-with-claude/files\n- https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/messages/messages.ts.\n\nBrowser refusal of a valid WAV passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/claude-code/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "codex": {
+        "support": "supported",
+        "userNote": "Use WAV, MP3, M4A, WebM or Ogg files with a model that declares audio input.",
+        "detailNote": "Codex 0.164.0 accepts native audio data-URI input and forwards it as Responses input_audio.audio_url. model/list inputModalities is the capability authority; unknown or non-audio models retain the input without a native prompt. Root, steering, retry and faster-model paths use the model check. The provider and browser share eleven MIME types for five native formats. Prompted audio, attachment-only audio, unsupported-model refusal and reload are proven in e2e-zIFQ8l (complete 121-case Codex directory). Native audio probes: .tmp/codex-audio-probe/. Other non-audio binary input remains a separate upstream limit.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/codex/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "cursor": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Three native ACP input forms with a valid on-disk WAV produce no typed audio in the private Cursor service request. Only prompt text and resource placeholders reach the model. Native audit-8D7OZV in .tmp/audio-native-probe/acp-audit-1.log has zero unexpected requests. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/cursor/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "github-copilot": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Copilot 1.0.87 drops the valid-WAV blob before Chat Completions and Responses requests, including a model explicitly declaring audio and WAV support. .tmp/audio-native-probe/copilot-audit-1.log and its three receipt.json artifacts show completed native calls without original audio bytes. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/github-copilot/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "kilo": {
+        "support": "supported",
+        "userNote": "Use WAV, MP3, AAC, Ogg, FLAC or WebM with a Google model that accepts audio.",
+        "detailNote": "Kilo 7.8.17 forwards embedded ACP audio resources through its Google adapter with unchanged bytes. The worker reads the same daemon /provider catalog and requires the selected model capabilities.input.audio plus api.npm=@ai-sdk/google. Root and loaded child models are checked separately; unknown models and incompatible adapters retain input before native prompt writes. Native WAV/catalog proof audit-3x5tPW, valid 16,007-byte FLAC audit-91EWmt, and direct mock proof audit-uGzOhS are in .tmp/audio-native-probe/. Seven MIME types are shared with the browser. Complete audio cases passed with zero retries in e2e-RMGJzS and e2e-YzFi9y, including model-switch retry of the same recording.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/kilo/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "opencode": {
+        "support": "supported",
+        "userNote": "Use WAV, MP3, AAC, Ogg, FLAC or WebM with a Google model that accepts audio.",
+        "detailNote": "OpenCode 1.19.4 forwards embedded ACP audio resources through its Google adapter with unchanged bytes. The worker validates the exact root or loaded child model against the same daemon /provider catalog, requiring capabilities.input.audio and api.npm=@ai-sdk/google. Unknown metadata and incompatible adapters fail before original bytes reach a native prompt. Native WAV/catalog proof audit-zP4JbO, valid 16,007-byte FLAC audit-HZ0TiO and direct mock proof audit-lm7m0e are in .tmp/audio-native-probe/. The extra native request is the scripted title-system rule. Seven MIME types are shared with the browser. Both complete audio cases passed zero retries in e2e-RMGJzS and e2e-YzFi9y, including same-session model-switch retry.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/opencode/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "goose": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Goose 1.56.0 advertises audio=false and convert_acp_prompt_to_message drops both Audio and blob media. Native probes show no typed audio through the available ACP forms (run-DVnSls, acp-typed-bytes.log). This is a native conversion limit, not a decision based only on its advertised flag. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/goose/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "pi": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Pi native RPC ignores audio and generic attachment fields and forwards no audio bytes; user content permits text and images. pi-6wxxro in .tmp/audio-native-probe/pi-audit-1.log completes with zero unexpected requests. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/pi/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "reasonix": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Reasonix FlattenPrompt explicitly keeps text/text resources and ignores Audio and blob resources. All three native forms carry no typed audio in audit-8D7OZV, zero unexpected requests; protocol.go documents the accepted-but-ignored audio wire variant. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/reasonix/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "zcode": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "ZCode accepts audio and generic-file WAV envelopes but strips both before the actual current-user Chat request, even when the private model declares supportsAudio=true. zcode-PbCD0M in .tmp/audio-native-probe/zcode-audit-2.log shows one completed plain-text model request per form and zero unexpected requests. The valid native turn-completed event was observed. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/zcode/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "codewhale": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Codewhale 0.10.1 ignores extra HTTP audio/attachment fields. Supplying a WAV in its images array fails image magic-format validation. Native codewhale-1QNdYu in .tmp/audio-native-probe/codewhale-audit-2.log has zero unexpected requests and no typed audio. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/codewhale/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "kimi-code": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Kimi Code 2.3.1 REST rejects audio and audio_url with native code 40001. A WAV file attachment becomes a path notice. An actual ReadMediaFile call refuses it because that tool supports image/video, not WAV. kimi-dzaL7A in .tmp/audio-native-probe/kimi-audit-4.log records two scripted file turns with zero unexpected requests. Core audio_url types do not establish an exposed CLI route. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/kimi-code/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "mimo-code": {
+        "support": "supported",
+        "userNote": "Use WAV, MP3, M4A, Ogg or FLAC with a model that accepts audio.",
+        "detailNote": "MiMo Code 0.1.15 sends audio as native file parts with their MIME type and data URL, then forwards original bytes as Chat input_audio. The live /config/providers capabilities.input.audio controls root, steering and child writes for the exact serialized model. Unsupported models retain the recording before HTTP writes. Ten shared MIME types cover the native formats. Native WAV mimo-AqnnVG, valid FLAC mimo-xwe4Nw and global alias mimo-alias-hDcj87 establish the route and capability behavior. Complete 86-case directory e2e-y2ym8R passed zero retries; 735 provider race tests and 354 affected frontend tests plus 10 configuration tests passed. Both audio cases also passed after shared-proof changes in e2e-RMGJzS and e2e-YzFi9y.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/mimo-code/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "qwen-code": {
+        "support": "supported",
+        "userNote": "Use WAV, MP3, M4A, Ogg or FLAC with audio enabled for the selected Qwen model. Audio sent during a turn waits for the next turn.",
+        "detailNote": "Qwen Code native Audio blocks reach Chat input_audio with unchanged bytes when that model declares generationConfig.modalities.audio. The ordinary voice bridge substitutes a transcript, so LeapMux checks the exact session-confirmed model against qwen/status/workspace/providers catalog modalities before converting the embedded resource into native Audio. The workspace current field is not session authority: run-rUPUPT proves it stays on the default while the session uses the alternate. Native WAV run-DVnSls and valid FLAC run-6RMfBZ preserve bytes. Audio steering remains in the worker queue for a validated ordinary prompt because the native drain runs on the response reader. Twelve MIME types cover native formats. All 83 directory cases passed zero retries in e2e-GG2clw; three audio cases passed after shared changes in e2e-RMGJzS and e2e-YzFi9y. Logs: .tmp/qwen-audio-*.log.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/qwen-code/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "oh-my-pi": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Oh My Pi 18.12.6 RPC ignores audio and generic attachment fields. Its exposed user content permits text/images; no original audio reaches the native model request. pi-6wxxro in .tmp/audio-native-probe/pi-audit-1.log has zero unexpected requests. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/oh-my-pi/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "grok-build": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Grok Build 1.0.70 rejects direct ACP Audio with -32602. Resource and file-link forms produce text context without typed audio, matching prompt_parser.rs. Native audit-8D7OZV has zero unexpected requests. All probes use the private E2E mock; no live Grok model request was made. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/grok-build/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "kiro": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Kiro 2.24.0 exposes no audio input route through its installed v3 ACP bridge. Audio, blob-resource and file-link forms send no typed audio through the mocked AWS service in audit-8D7OZV, zero unexpected requests. Office/PDF support is separate. Probes and browser tests use only the private mock. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/kiro/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "amp": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Amp rejects native stdin audio and document blocks at message.content.1 before any model call. stream-VjAWLx in .tmp/audio-native-probe/stream-audit-1.log records zero model requests. Browser refusal of a valid WAV passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/amp/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "cline": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Cline ignores its native hub userAudio field. userFiles with a valid WAV reports Cannot read binary file into context and carries no audio bytes in the completed model request. Source sdk/packages/core/src/runtime/host/local/user-files.ts rejects NUL bytes. cline-audio-1792970585016 in .tmp/audio-native-probe/cline-audit-1.log has two requests and zero unexpected requests. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/cline/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "codebuddy-code": {
+        "support": "supported",
+        "userNote": "Audio files are verified through the native OpenAI-compatible model route, with or without a text prompt.",
+        "detailNote": "CodeBuddy Code 2.175.0 accepts native document/base64 audio and forwards Chat file.file_data with the audio MIME type and original bytes. Prompted and attachment-only WAV probes in .tmp/codebuddy-audio-probe/run-KXA467/ prove typed byte delivery. The browser composer exposes a distinct audio capability instead of relying on arbitrary binary acceptance. All 87 CodeBuddy directory cases passed with zero retries in e2e-tdEIBG, including both audio variants and reload persistence.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/codebuddy-code/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "junie": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Junie 3419.7 advertises audio=false; all three native ACP audio forms send no typed audio in audit-8D7OZV, zero unexpected requests. Native probes and browser proof use only the private E2E mock. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/junie/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "letta-code": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Letta Code 0.34.23 App Server accepts audio/file envelopes but omits both recordings from actual completed model turns. letta-lR905P in .tmp/audio-native-probe/letta-audit-4.log has one request per form and zero unexpected requests. The driver observed input_accepted and actual completion; earlier uncorrelated driver timeouts are not evidence. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/letta-code/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "dirac": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Dirac 0.5.23 turns embedded blob resources into UTF-8 file text and drops the other audio forms. Textified binary does not deliver audio. All three forms carry no typed audio in audit-l1x00T, zero unexpected requests, with an actual valid respond tool answer (.tmp/audio-native-probe/acp-audit-2.log). The earlier invalid plain-answer run is excluded. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/dirac/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "qoder-cli": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Qoder initialized native stream drops audio and document/audio-wav blocks from the completed current-user model request. stream-aHFbCW in .tmp/audio-native-probe/letta-qoder-3.log records one completed request per form and zero unexpected requests. The earlier uninitialized stream is excluded. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/qoder-cli/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "factory-droid": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Factory Droid 0.249.0 rejects a WAV files entry with native -32602 at params.files.0. rpc-oCk2z9 in .tmp/audio-native-probe/rpc-audit-1.log has zero model requests. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/factory-droid/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "fast-agent": {
+        "support": "supported",
+        "userNote": "Use WAV, MP3, AAC, Ogg, FLAC or WebM with a Google model. Native Commands still requires Bypass Permissions.",
+        "detailNote": "Fast Agent 0.10.47 forwards embedded audio resources through Google as original inline media. Direct ACP Audio disappears, and its OpenAI resource route produces a placeholder. LeapMux queries the running agent with the local /model command, which makes no model request, before sending audio. It validates a unique Google provider/model report and successful end_turn, caps internal text at 32 KiB and suppresses only that query output. Every other update retains the existing native command archive extraction. Native runtime /model switch is covered, so launch-model guesses are insufficient. Native WAV run-DVnSls, FLAC run-yED58g, status run-vOnehb and switch run-hKJQme are in .tmp/audio-native-probe/. Seven shared MIME types are allowed. All 84 directory cases passed zero retries in e2e-t459du; three complete audio cases passed in e2e-ZupDOv and after shared changes in e2e-RMGJzS/e2e-YzFi9y. Native Commands remains independent and requires explicit Bypass.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/fast-agent/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "command-code": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Command Code turn/start rejects audio and file variants with native -32602; its validator accepts text/base64 image. rpc-oCk2z9 in .tmp/audio-native-probe/rpc-audit-1.log has zero model requests. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/command-code/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "deepseek-harness": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "DeepSeek Harness native Web session rejects audio/input_audio prompt parts with gateway/input-invalid after valid private authentication and session creation, before any model call. dsh-VhHbvM in .tmp/audio-native-probe/dsh-audit-1.log is the valid-session proof. Native prompt/SDK model content has no audio input variant; generic binary upload/read is a separate feature. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/deepseek-harness/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "gemini-cli": {
+        "support": "supported",
+        "userNote": "Audio files can be attached with or without a text prompt. WAV and FLAC are verified.",
+        "detailNote": "Gemini CLI 0.65.0 advertises audio and forwards embedded WAV and FLAC resources as Google inline media with exact original bytes. Native audit-zeZZxP uses absent source filenames, so filesystem lookup cannot hide discarded blobs; each format makes one model request and zero unexpected requests (.tmp/audio-native-probe/gemini-media-1.log). The complete audio spec proves WAV/FLAC with prompts and attachment-only, filename persistence after reload, and the original single-WAV-declaration assertion. It passed zero retries in e2e-YzFi9y. MP4 video has a separate other-binary proof.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/gemini-cli/audio-attachments.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "Audio file attachments are not supported by this agent.",
+        "detailNote": "Muse native MSP rejects audio and file prompt variants with -32602; the input union lists text,image,skill,video,mention. rpc-nrvRaY in .tmp/audio-native-probe/muse-audit-2.log uses a valid UUIDv7 session and records zero model requests. Earlier invalid-session refusals are excluded. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "spec": "frontend/tests/e2e/muse-code/audio-attachments.spec.ts",
+        "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      }
+    },
     "other-binary-attachments": {
       "claude-code": {
         "support": "agent-limit",
@@ -1093,9 +1365,9 @@
         "verified": true
       },
       "codex": {
-        "support": "leapmux-limit",
-        "userNote": "Codex 0.160.0 accepts audio on models that list audio input, and LeapMux does not send it yet. Codex has no input type for any other binary file, so LeapMux refuses every binary file.",
-        "detailNote": "Codex accepts text and image input blocks. Its LeapMux provider rejects other binary bytes because its native input has no general binary representation. See providers/codex/provider.go.\n\nClassified as a LeapMux limit, because the native protocol carries part of the feature. The Codex 0.160.0 UserInput type carries audio as a data URI or as a local path (wav, mp3, m4a, webm and ogg). It has no general binary entry (https://raw.githubusercontent.com/openai/codex/rust-v0.160.0/codex-rs/protocol/src/user_input.rs, fetched 2026-10-05). Audio needs a model whose input modalities include audio. LeapMux refuses every non-image binary file, so it refuses audio. The spec asserts the refusal of a generic binary file, which Codex cannot carry, so the audit value stays unsupported.\n\nThe native audio input path is not integrated. See https://github.com/leapmux/leapmux/issues/498.",
+        "support": "agent-limit",
+        "userNote": "Codex has no native input type for other binary files. Audio recordings have their own feature row.",
+        "detailNote": "Codex 0.164.0 has no general non-audio binary user-input representation. Native app-server initialize/model-list/thread-start succeeds with an audio-capable private model, then turn/start refuses file, input_file and localFile with -32600 and unknown variant. The accepted native kinds are text, image, localImage, audio, localAudio, skill and mention. All three schema refusals make zero model requests and zero unexpected requests (.tmp/codex-audio-probe/non-audio-binary-1.log, run-CtskPt). The complete generic-binary spec retains the refusal of actual arbitrary bytes. Audio delivery is implemented and verified in the separate audio-attachments cell.\n\nNative acceptance: all 121 Codex directory cases passed with zero retries in e2e-5JdgwJ. All 3500 script tests, JSON validation for 54 features/1620 cells, and 1573 affected provider race tests passed in .tmp/audio-publication-after-2.log. Native schema refusal is independent of the separately supported audio route.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
         "spec": "frontend/tests/e2e/codex/other-binary-attachments.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -1228,11 +1500,11 @@
         "verified": true
       },
       "kiro": {
-        "support": "leapmux-limit",
-        "userNote": "Kiro reads Word and Excel files, but drops other binary files, such as an archive. LeapMux refuses every binary file and does not send Word or Excel files yet.",
-        "detailNote": "The current Kiro attachment path refuses arbitrary binary bytes. It does not convert a filename into usable binary input.\n\nClassified as a LeapMux limit with medium confidence: KAS 0.66.8 (Kiro CLI 2.24.0) accepts a resource blob only for application/pdf, text/csv, text/html, text/plain, text/markdown, msword, docx, vnd.ms-excel, and xlsx, and drops every other blob without a message. LeapMux classifies Word and Excel files as binary and refuses them in kiroProvider.ValidateAttachment. The spec uses a generic .bin file, which Kiro drops, so the unsupported verdict holds (checked 2026-10-05).\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/511.",
+        "support": "supported",
+        "userNote": "Kiro reads Word and Excel documents. Its native conversation keeps at most five distinct documents.",
+        "detailNote": "Kiro 2.24.0 accepts DOC, DOCX, XLS and XLSX document blobs. Installed v3 MIME and header validation confirms all four formats; native mock round trips prove exact DOCX and XLSX bytes with prompts and updated bytes without prompts (.tmp/kiro-office-probe/drive-2.log and drive-relative.log, five requests each, zero unexpected). Kiro strips filename extensions and deduplicates document names across conversation history. LeapMux prefixes native document labels with the full MIME/payload SHA-256 digest, while retaining original filenames in chat. The same identity repair preserves updated PDF bytes. Arbitrary archives and audio remain refused. Focused browser acceptance: e2e-QlMLXm, both cases passed with zero retries. Native acceptance: all 77 Kiro cases passed with zero retries in e2e-VwbjD8; 359 Kiro race tests and 332 focused frontend tests passed. Backend lint, frontend typecheck/lint, JSON validation and contract generation passed. The matrix before-proof failed the new Kiro assertion; after promotion it passes, with only the separate unpublished Codex audio assertion still failing.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/511.",
         "spec": "frontend/tests/e2e/kiro/other-binary-attachments.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -1328,8 +1600,8 @@
       },
       "gemini-cli": {
         "support": "supported",
-        "userNote": "Gemini CLI accepts audio input, such as a WAV file. LeapMux does not verify other binary file types.",
-        "detailNote": "The positive case uses a valid PCM WAV. Installed ACP advertises audio input. The browser spec requires audio/wav and exact decoded native bytes. This does not claim opaque .bin acceptance.",
+        "userNote": "Verified with MP4 video files.",
+        "detailNote": "Gemini CLI 0.65.0 forwards a complete MP4 video resource as Google inlineData with video/mp4 and the exact original bytes. Native audit-zeZZxP uses an absent source filename, so filesystem fallback cannot hide discarded blobs (.tmp/audio-native-probe/gemini-media-1.log). The portable 882-byte fixture contains two encoded 16-by-16 video frames and a complete media payload; AVFoundation decodes both frames. The browser spec verifies the MIME declaration once, original bytes and filename persistence after reload. Complete video spec passed with zero retries in e2e-YzFi9y. All 72 Gemini directory cases passed with zero retries in e2e-HHqPIa. Audio is covered by its own feature row. This proof makes no claim about opaque .bin acceptance.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
         "spec": "frontend/tests/e2e/gemini-cli/other-binary-attachments.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -2860,11 +3132,11 @@
         "verified": true
       },
       "kiro": {
-        "support": "leapmux-limit",
-        "userNote": "Kiro can report your plan, usage, and billing-cycle reset date when a client asks. LeapMux does not ask yet, so Agent info shows no quota. LeapMux shows only a notice when the model service is busy.",
-        "detailNote": "Kiro shows a rate-limit notice row (\"The model service is busy\"), not rate-limit state.\n\nClassified as a LeapMux limit with medium confidence: handleGetUsage in KAS 0.66.8 returns planName, billingCycleReset, and usageBreakdowns with used, limit, and percentage for each resource. The request needs the account login, so it was not run (checked 2026-10-05). The busy notice comes from _kiro/error/rate_limit. Open issue kirodotdev/Kiro#7752 (2026-04-23) asks for a machine-readable usage output, so confirm with a live account that the request returns data before the cell is published as a LeapMux limit.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/513.",
+        "support": "supported",
+        "userNote": "Agent info shows Kiro’s plan usage and billing-cycle reset date. The quota refreshes after each turn.",
+        "detailNote": "Kiro CLI 2.24.0 exposes _kiro/account/getUsage. The installed v3 engine reports a plan name, recurring usage breakdowns and a calendar billing-cycle reset date through its native account service. .tmp/kiro-native-probe/usage.log proves the complete RPC and native GetUsageLimits request. LeapMux reads account usage off the protocol reader after startup and turns, coalesces refresh requests and joins the reader at process exit. Utilization uses exact used/limit values rather than Kiro’s rounded percentage. Optional neutral labels and resets_on preserve the native plan/resource and calendar date without inventing a reset instant. Failed or malformed reads preserve the last state; a successful empty or unlimited result clears it. Bonus and add-on expiry dates are not recurring quota resets. The model-service busy notice remains separate. Focused browser acceptance: both cases passed with zero retries in e2e-pulnMo. 366 Kiro race tests and 250 affected frontend tests passed. Native acceptance: all 78 Kiro cases passed with zero retries in e2e-RnZomU (78 passed results, zero skipped/unexpected/flaky); backend lint and cross-platform vet passed. The final script run has 3457 passes and only the separate unpublished Codex audio assertion fails.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/513.",
         "spec": "frontend/tests/e2e/kiro/rate-limit-state.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -6152,8 +6424,8 @@
       },
       "codebuddy-code": {
         "support": "supported",
-        "userNote": "CodeBuddy Code has six permission modes. LeapMux offers the four that the agent advertises at startup: Default, Accept Edits, Plan, and Bypass Permissions. It does not offer Auto and Don't Ask.",
-        "detailNote": "CodeBuddy Code offers six modes. Startup advertises these four:\n- **Default**\n- **Accept Edits**\n- **Plan**\n- **Bypass Permissions**\n\nThe CodeBuddy 2.160.0 set_permission_mode handler accepts default, acceptEdits, plan, bypassPermissions, dontAsk, and auto, while get_available_modes lists four.",
+        "userNote": "CodeBuddy Code has six native permission modes. LeapMux offers five, including Auto. CodeBuddy advertises four at startup. LeapMux does not offer Don't Ask.",
+        "detailNote": "CodeBuddy Code offers six native modes. Startup advertises four:\n- **Default** (`default`)\n- **Accept Edits** (`acceptEdits`)\n- **Plan** (`plan`)\n- **Bypass Permissions** (`bypassPermissions`)\n\nThe CodeBuddy 2.160.0 set_permission_mode handler accepts these modes plus auto and dontAsk. LeapMux also offers Auto. LeapMux does not offer Don't Ask.",
         "spec": "frontend/tests/e2e/codebuddy-code/mode.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7601,11 +7873,11 @@
         "verified": true
       },
       "muse-code": {
-        "support": "agent-limit",
-        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
-        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Muse 1.4.13-R6996.1 supplies childSessionId and subagentId on native workflow child items. Native mock run-ZqV08v reads completed child history through session/read and view/page; run-kvgUgw also reads its 51-record stored log through log/streams and log/page after a fresh live subscription refuses the unloaded child. LeapMux links the actual native session, replays ordered stored/live history, preserves raw tool evidence and keeps worker-owned user rows single. Browser e2e-LTZCK8 proves the actual child tab, native progress/tool output, owned session and spans, and reload. Fresh-process native resume probe resume-ZGvySh restores the actual child metadata and delivers its followup in one mock request with zero unexpected. The worker-restart browser case retains the same native child and message identities, delivers a new child note, and preserves one user/answer row after reload. Parent history is not replayed. Native acceptance: Native CLI mock probes recorded under .tmp/muse-current-probe/. Final Muse race package: 1002 passed in .tmp/final-focused-repairs-2.log. Complete Muse directory: 84 passed, zero retries/skips/flaky/unexpected, all 54 files match discovery in e2e-LTZCK8 (.tmp/broad-validation-audio-04.log); the combined three-provider report has 255 first-attempt passes. Native actor/session identities, original bytes and worker-owned user rows remain verified.",
         "spec": "frontend/tests/e2e/muse-code/subagent-transcript-tab.spec.ts",
-        "audit": "covered-negative",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -7873,11 +8145,11 @@
         "verified": true
       },
       "muse-code": {
-        "support": "agent-limit",
-        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
-        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Muse 1.4.13-R6996.1 native mock run-LvwUdF holds a real child after shell stdout: view/subscribe succeeds, the stored view has progress before completion, and nine later child notifications include another command and the turn end (five model requests, zero unexpected). LeapMux buffers live overlap while replaying history. Native e2e-NK5cgb exposes an early empty stored page despite live head3; the regression-first adapter keeps the initial prefix pending and coalesces a new read on real child events. Browser e2e-LTZCK8 proves output before release, later output and finality in the actual child tab. Native e2e-ydVvIk also proves a partial stored page containing only branch cursor1 after live head3. LeapMux waits for the exact observed head in the stored prefix, retains initial history across view gaps, and never treats buffered live overlap as proof of earlier history. Native acceptance: Native CLI mock probes recorded under .tmp/muse-current-probe/. Final Muse race package: 1002 passed in .tmp/final-focused-repairs-2.log. Complete Muse directory: 84 passed, zero retries/skips/flaky/unexpected, all 54 files match discovery in e2e-LTZCK8 (.tmp/broad-validation-audio-04.log); the combined three-provider report has 255 first-attempt passes. Native actor/session identities, original bytes and worker-owned user rows remain verified.",
         "spec": "frontend/tests/e2e/muse-code/subagent-live-transcript.spec.ts",
-        "audit": "covered-negative",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -8019,11 +8291,11 @@
         "verified": true
       },
       "grok-build": {
-        "support": "leapmux-limit",
-        "userNote": "Grok Build accepts a message for a running subagent only when its `active_agent_messages` feature is on, and the feature is off by default. LeapMux does not use it yet, so the subagent tab is read-only. See the [Grok Build subagent guide](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md).",
-        "detailNote": "The child transcript exists, but the current provider bridge exposes no direct input route for that child. Its composer is read-only.\n\nClassified as a LeapMux limit with medium confidence: the Grok Build 1.0.45 source defines x.ai/subagent/message, which queues or steers literal text to an owned child. The docs describe the send_subagent_message tool as off by default (GROK_ACTIVE_AGENT_MESSAGES or the features table). Without the flag the method answers method_not_found. Reclassify as an agent limit if the maintainers count an off-by-default flag as not offered (checked 2026-10-05).\n\nSources fetched on 2026-10-05:\n- <https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md>: The guide says the send_subagent_message tool is off by default and is enabled with GROK_ACTIVE_AGENT_MESSAGES or the features table; the root session can send a follow-up to a subagent it owns.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/517.",
+        "support": "supported",
+        "userNote": "Send text with Steer while the subagent runs. Subagent attachments are not supported.",
+        "detailNote": "Verified with Grok Build 1.0.70 through the isolated E2E mock only. LeapMux pins the user-approved GROK_ACTIVE_AGENT_MESSAGES=1 feature before initialization. The native subagent_spawned update supplies an opaque agentAddress, distinct from the child session UUID. The adapter retains that owned address and sends one literal text block to _x.ai/subagent/message with the current parent session and queue=false. A native accepted reply needs a nonempty messageId. Refusals preserve the queued input, and uncertain admission remains uncertain instead of authorizing a repeated send. Missing routes, an empty root session and a stopped process send no request. Context clear and child completion remove old address routes. The native engine adds its own cross-agent provenance prefix to model context; LeapMux preserves it.\n\nNative evidence: .tmp/grok-child-probe/drive-2.log, run-CNuTQg, six scripted model requests and zero unexpected requests. The first probe proves that a child UUID is refused. The live successful child request contains the exact message and both segments of a real held command. All 292 Grok Go race tests pass. The complete child-message spec passes with zero retries in e2e-042juE, including one stored child input and answer after reload, no parent transcript contamination and a completed native child row. Native acceptance: all 77 cases in the complete Grok Build directory passed with zero retries in e2e-GvGlff, including the separate audio refusal spec. All 292 Grok Go race tests passed. Backend lint and frontend typecheck/lint passed. The before-proof failed exactly the new Grok assertion plus the separately pending Codex audio assertion; all other 3432 script tests passed.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/517.",
         "spec": "frontend/tests/e2e/grok-build/send-to-a-subagent.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8145,11 +8417,11 @@
         "verified": true
       },
       "muse-code": {
-        "support": "agent-limit",
-        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
-        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
+        "support": "supported",
+        "userNote": "Completed-child input requires a trusted workspace. Muse can reject a human follow-up after the parent gives a completed child another task.",
+        "detailNote": "Muse 1.4.13-R6996.1 exports subagent/sendMessage for active children and subagent/followupTask for completed children. Native mocks run-ys21bG and run-lpwkCg prove the exact human note in the next child model request, not only admission. run-5ts9WZ repeats completed followup with real shell work and text (five requests, zero unexpected). The matching untrusted run-2OcL5M refuses followup with subagent_state_ineligible; completed-child input requires workspace trust. LeapMux preserves the selected trust policy and native command UUID on uncertain retries. Browser e2e-LTZCK8 proves active input under native trust, completed input with explicit agent trust, child responses, one human row after reload and no parent user-row contamination. Native acceptance: Native CLI mock probes recorded under .tmp/muse-current-probe/. Final Muse race package: 1002 passed in .tmp/final-focused-repairs-2.log. Complete Muse directory: 84 passed, zero retries/skips/flaky/unexpected, all 54 files match discovery in e2e-LTZCK8 (.tmp/broad-validation-audio-04.log); the combined three-provider report has 255 first-attempt passes. Native actor/session identities, original bytes and worker-owned user rows remain verified. Muse can still reject the public subagent/followupTask command with subagent_state_ineligible after a model-driven parent follow-up. An isolated native check with result.drained:true returns the same refusal before and after an accepted subagent/readResult. LeapMux retains that exact failed input and its native reason in the paused input queue.",
         "spec": "frontend/tests/e2e/muse-code/send-to-a-subagent.spec.ts",
-        "audit": "covered-negative",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -8417,11 +8689,11 @@
         "verified": true
       },
       "muse-code": {
-        "support": "agent-limit",
-        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
-        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Muse 1.4.13-R6996.1 exports subagent/interrupt for the actual parent session and opaque subagentId. Native mock run-LbvU2J admits the command and records a cancelled workflow child (four model requests, zero unexpected). Its persistent subagent item remains inProgress/resultReady with result.errorKind=generated_child_cancelled; LeapMux uses that native task outcome and shares one canonical row with the workflow fold. Browser e2e-LTZCK8 interrupts only the selected child, requires its stopped row and idle transcript, proves the parent accepts another real turn, and keeps the stopped outcome after reload. Native acceptance: Native CLI mock probes recorded under .tmp/muse-current-probe/. Final Muse race package: 1002 passed in .tmp/final-focused-repairs-2.log. Complete Muse directory: 84 passed, zero retries/skips/flaky/unexpected, all 54 files match discovery in e2e-LTZCK8 (.tmp/broad-validation-audio-04.log); the combined three-provider report has 255 first-attempt passes. Native actor/session identities, original bytes and worker-owned user rows remain verified.",
         "spec": "frontend/tests/e2e/muse-code/interrupt-a-subagent.spec.ts",
-        "audit": "covered-negative",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -8482,11 +8754,11 @@
         "verified": true
       },
       "goose": {
-        "support": "leapmux-limit",
-        "userNote": "Goose 1.53.0 has an unstable steer request ([issue](https://github.com/aaif-goose/goose/issues/10310)), but it does not advertise the request. LeapMux uses only steer requests that the agent advertises, so it holds new input until the turn ends.",
-        "detailNote": "Cursor's protocol exposes no steer method. The installed Goose ACP handshake advertises no steer method, so LeapMux offers Preempt. Reasonix steers only when its CLI advertises a steer method. Qwen Code takes a steer at its next tool gap.\n\nClassified as a LeapMux limit: Goose 1.53.0 implements on_steer_session for _goose/unstable/session/steer, but agent_capabilities_meta lists only recipeParameterScopes and localInference, so the LeapMux hook that reads agentCapabilities._meta.goose.sessionSteer.method never finds a method (source read 2026-10-05). A comment in the LeapMux Goose output code records a live probe that Goose accepted a steer and answered with queuedSteer. Whether LeapMux should use an unadvertised unstable request is a maintainer decision.\n\nSources fetched on 2026-10-05:\n- <https://github.com/aaif-goose/goose/issues/10310> (closed): The issue states that Goose implements the custom steer method _goose/unstable/session/steer and proposes the standard cancel-then-prompt flow instead.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/519.",
+        "support": "supported",
+        "userNote": "A message you send while the turn runs reaches the turn immediately, through Goose's own steering request.",
+        "detailNote": "Goose 1.56.0 advertises no steer request (a live initialize reply holds no steer mention), but `_goose/unstable/session/steer` works and was proven by earlier live probes (activeRunId on turn open, queuedSteer acknowledging delivery). User decision 2026-10-25: LeapMux sends the unadvertised request. The provider supplies the method itself (`gooseAdvertisedSteerMethod`), and a Goose that drops it answers -32601, which maps to steering-unsupported so the input falls back to the queue instead of failing. Native acceptance: all 74 Goose browser cases passed with zero retries in e2e-AHUK0W; .tmp/goose-directory-acceptance.log EXIT 0 (Goose and Claude race tests, matrix scripts, and full Goose directory)",
         "spec": "frontend/tests/e2e/goose/steer-mid-turn.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8608,11 +8880,11 @@
         "verified": true
       },
       "junie": {
-        "support": "leapmux-limit",
-        "userNote": "Junie can take a steered message inside the running turn. [Junie describes it as steering the agent mid-task](https://junie.jetbrains.com/). LeapMux does not use that route yet. It sends the message as a prompt that Junie starts after the current turn.",
-        "detailNote": "LeapMux steers by queueing a follow-up prompt, which starts the next turn rather than inserting into the running one.\n\nClassified as a LeapMux limit with medium confidence: the Junie 26.9.22 jar defines SteeringMethod with the wire name _session/steering. Its SteeringRequest holds sessionId, prompt, and _meta. Its SteeringResponse outcome is injected or startedNewTurn. installSteeringHandler registers the method, and the initialize result sets _meta.steering.supported true. LeapMux SteerInput sends a plain session/prompt, which the spec shows starts the next turn. Junie therefore has a native steer method. Not tested live (checked 2026-10-05).\n\nSources fetched on 2026-10-05:\n- <https://junie.jetbrains.com/>: The Junie home page lists 'Steer the agent mid-task. Change direction without starting over.' as a feature of Junie, in the section that covers the CLI and the IDE plugin.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/519.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Verified with Junie 3419.7. LeapMux sends _session/steering with sessionId and prompt blocks. The installed SteeringHandler delegates to JunieAgentSession.steer, whose response distinguishes injected from startedNewTurn. The existing adapter tracks a new native turn through lastRequestComplete and keeps injected input inside the active turn. Native bytecode evidence: .tmp/junie-steering-probe/{handler,agent-support,agent-session}.txt. The complete steering spec passed both cases with zero retries in e2e-L3etvh: a steer during a text stream starts its own turn; a steer while a real shell command runs reaches the next request with output written before and after the steer, leaves one result divider, persists once after reload and permits the next ordinary turn. All requests use the isolated E2E mock. Native acceptance: all 79 cases in the complete Junie directory passed with zero retries in e2e-SznWZ5. All 154 Junie Go race tests passed. Frontend type checking and lint passed. The script before-proof failed exactly the new Junie assertion plus the separately pending Codex audio assertion; all other 3430 script tests passed.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/519.",
         "spec": "frontend/tests/e2e/junie/steer-mid-turn.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8700,11 +8972,11 @@
     },
     "workflow-grouping": {
       "claude-code": {
-        "support": "leapmux-limit",
-        "userNote": "Claude Code reports progress for each agent of a Workflow run, but LeapMux does not use it yet. The Background tasks sidebar shows the run as one row.",
-        "detailNote": "Codewhale and Qwen send one self-grouped workflow row but no separate child or stage row. One row does not group work.\n\nClassified as a LeapMux limit: the Claude Code 2.1.289 bundle emits task_progress frames with a workflow_progress list of workflow_phase and workflow_agent entries (index, state, label, phaseTitle), through the same emitter as task_started. LeapMux reads task_started, task_progress and task_notification, but it ignores workflow_progress. The CLI sends the per-agent progress, and LeapMux does not read it. No live capture exists, because no test uses a real model account, so this rests on the bundle.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.",
+        "support": "supported",
+        "userNote": "The Background tasks sidebar shows each agent of a Workflow run as its own row, grouped under the workflow's name with the run itself.",
+        "detailNote": "Claude Code 2.1.310 reports each agent of a Workflow run in task_progress.workflow_progress: a full snapshot per frame, with a stable index per agent, a label, a state (start, progress, done, error), prompt and result previews, and an error message. The Worker draws one Subagent row per workflow_agent entry under the run's workflow:<name> group (workflow.go); the agent's settled state ends its row, and the run's task_notification ends every unsettled agent row with the run's own outcome. A workflow agent owns no transcript, so its row links no child agent. Native probes: .tmp/claude-wf/frames-clwf.jsonl (one child: start -> done with resultPreview) and frames-clwf2.jsonl (two children, stable indexes). Native acceptance: all 137 Claude Code browser cases passed with zero retries in e2e-LozHgc (the two workflow-grouping cases first passed in e2e-TITfkL); 575 package tests including the nine new workflow tests.",
         "spec": "frontend/tests/e2e/claude-code/workflow-grouping.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8727,9 +8999,9 @@
         "verified": true
       },
       "github-copilot": {
-        "support": "leapmux-limit",
-        "userNote": "A Copilot extension can define a workflow (a factory) that starts subagents. Copilot tags each subagent with the run ID, but LeapMux does not use it yet, so the Background tasks sidebar does not group them.",
-        "detailNote": "GitHub Copilot reports native child tasks without workflow group keys on this LeapMux path. The Background tasks sidebar cannot place those children under a workflow heading.\n\nClassified as a LeapMux limit, with low confidence: the Copilot 1.0.87 SDK documents Agent Factories as extension-authored, session-scoped workflows that coordinate subagents. The subagent.started event carries factoryRunId, and the runtime reports factory_completed notifications. LeapMux hides the factory. events as experiments and reads no factoryRunId. A plain task subagent has no factoryRunId, which matches the first paragraph. No factory is registered in the E2E setup, so no live capture exists.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.",
+        "support": "agent-limit",
+        "userNote": "Copilot 1.0.87 restricts its native factories and dynamic workflows. Both APIs refuse the tested session.",
+        "detailNote": "Native Copilot 1.0.87 evidence supersedes the earlier missing-tool-only audit. The installed native addon’s featureFlagsMetadata identifies agent_factories as availability=staff (.tmp/copilot-workflow/feature-metadata.log). A real native session opens with extensions and experimental mode, but session.factory.run returns JSON-RPC -32601 with agent_factories_unavailable, and session.workflow.run returns -32601 with dynamic_workflows_unavailable (.tmp/copilot-workflow/factory-1.log). Requesting the exact lowercase agent_factories:true flag together with EXTENSIONS does not change either refusal (factory-staff-1.log). Both direct probes use the E2E mock and make zero model requests or unexpected requests. The prior real-account metadata probes also found no factory/workflow tools; they made no model turn. These facts establish a native restriction for the tested non-staff session, not a claim about every possible account. The browser spec still creates two real native children, proves the absent workflow catalog and retains their ordinary ungrouped rows after reload. A factoryRunId in an unreachable staff feature does not establish public workflow availability. Native acceptance: all 85 Copilot browser cases passed with zero retries in e2e-qPUb1T (85 passed results, zero skipped/unexpected/flaky), including the workflow catalog/children proof and the separate new audio refusal. Corrected matrix before/after proofs are matrix-before-2.log and matrix-after-2.log. Final scripts: 3458 pass, only the separate unpublished Codex audio assertion fails. Real-tree JSON validation passes.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.",
         "spec": "frontend/tests/e2e/github-copilot/workflow-grouping.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -8817,11 +9089,11 @@
         "verified": true
       },
       "qwen-code": {
-        "support": "leapmux-limit",
-        "userNote": "LeapMux shows a Qwen Code workflow as one row. Qwen Code reports the steps of a workflow only when a client asks for its task status, and LeapMux does not ask yet.",
-        "detailNote": "Claude Code runs a Workflow child but sends LeapMux only the top-level workflow task row. Codewhale and Qwen send one self-grouped workflow row but no separate child or stage row. One row does not group work.\n\nClassified as a LeapMux limit with medium confidence: qwen/status/session/tasks with includeWorkflows:true returns each workflow run with phaseVisits, currentPhase, and dispatches (label, status, subagentId) in Qwen Code 0.24.7. LeapMux calls the method only to find a subagent for interrupt and never asks for workflows. The streamed session updates carry one workflow tool call and no child rows. Not tested against a live Qwen Code (checked 2026-10-05).\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.",
+        "support": "supported",
+        "userNote": "The Background tasks sidebar shows each agent of a workflow run as its own row, grouped under the workflow's name with the run itself.",
+        "detailNote": "Qwen Code 0.26.0 reports a workflow run's agents only through the task list: `qwen/status/session/tasks` with `includeWorkflows: true` states each run (id, toolUseId, label, status, currentPhase) and one entry per dispatch (stable id, label, prompt, status queued/running/completed/failed/cancelled). The Worker polls the list while a workflow row is open (`workflow.go`) and draws one Subagent row per dispatch under the run row's group; a settled dispatch closes its row, the run's final tool-call frame triggers one last read (the list keeps settled runs) and ends every unsettled dispatch row with the run's own outcome. A workflow agent owns no transcript, so its row links no child agent. Native probes: .tmp/qwen-wf-probe/tasks-final.json (two dispatches completed), tasks-t02.json (live list). Native acceptance: all 80 Qwen Code browser cases passed with zero retries in e2e-CYzc9h; 173 package tests including the seven new workflow tests.",
         "spec": "frontend/tests/e2e/qwen-code/workflow-grouping.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8962,8 +9234,8 @@
       },
       "muse-code": {
         "support": "supported",
-        "userNote": "Children run inside the workflow item fold, keyed by childId with no session of their own; the Worker draws one grouped row per fold child.",
-        "detailNote": "Children run inside the workflow item fold, keyed by childId with no session of their own; the Worker draws one grouped row per fold child.",
+        "userNote": "Workflow folds create one grouped row per child. A matching native subagent supplies its own session, transcript, and controls on that row.",
+        "detailNote": "LeapMux reads the workflow children fold by (childId, attempt). A native subagent whose subagentId matches childId supplies childSessionId, its transcript, and its controls on the same grouped row.",
         "spec": "frontend/tests/e2e/muse-code/workflow-grouping.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -12119,7 +12391,7 @@
       "codebuddy-code": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "Classified as an agent limit: the control requests that CodeBuddy 2.160.0 sends to a stream-JSON client are can_use_tool, elicitation_create, hook_callback, and mcp_message, and none asks for an editor text. LeapMux supports no native question route for CodeBuddy (see agent-questions), so the integration has tool approvals and no questions.",
+        "detailNote": "CodeBuddy 2.160.0 sends can_use_tool, elicitation_create, hook_callback, and mcp_message control requests. AskUserQuestion uses can_use_tool, and LeapMux returns selected or typed answers through updatedInput. These questions do not provide an independent multiline editor request, so editor requests remain an agent limit.",
         "spec": "frontend/tests/e2e/codebuddy-code/editor-requests.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -12580,11 +12852,11 @@
         "testStatus": "passed"
       },
       "codewhale": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "This integration exposes no independent swarm-mode option. Native child tools or workflow grouping do not supply a swarm-mode setting.\n\nClassified as a LeapMux limit with low confidence: `PATCH /v1/threads/{id}` of CodeWhale 0.10.0 accepts the mode `operate` (its fleet operation), and LeapMux offers no control for it. Whether the fleet mode counts as a swarm mode is a judgment call for the maintainers (research and contract checked 2026-10-05).\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/523.",
+        "detailNote": "Codewhale 0.10.1 (fead51eeea0f) exposes its native Operate orchestration through the existing Mode setting, alongside Agent and Plan. PATCH /v1/threads/{id} with mode=operate selects the native thread mode. The next native turn receives the runtime operate_contract, which directs substantive requests through goals, workflows and parallel agent workers until verified completion. The tool catalog remains the same; the mode changes native orchestration instructions rather than inventing another tool set. LeapMux uses one native mode value and keeps the existing permission posture and Plan restrictions. The selection survives browser reload. The HTTP API retains an earlier Operate contract in history after a later mode change and emits no interactive CLI mode-notice event. The proof therefore reads the current native thread record, verifies its thread/workspace owner, and checks the actual runtime-provenance contract on Operate requests. Native evidence: .tmp/codewhale-operate-probe/drive-short-home.log (run-htQOl4), drive-roundtrip.log (run-6wRXP0) and drive-native-thread.log (run-wiJqPF). The round trip Agent to Operate to Agent made one scripted model request per turn, with zero unexpected requests. Native acceptance (2026-10-26): e2e-I3tARA passed all 80 Codewhale browser cases with zero retries. The positive setting proof covers Agent by default, Operate, reload and return to Agent. The existing Plan restrictions and successful Agent commands also pass. The Codewhale package passed 617 tests under the race detector, and all 37 native-mode reader tests passed. Frontend typecheck/lint and backend lint passed. Evidence: .tmp/codewhale-directory-acceptance-1.log, codewhale-operate-backend.log and codewhale-operate-browser-2.log. The matrix assertion failed before promotion in codewhale-matrix-before.log and passes after promotion in codewhale-directory-acceptance-1.log.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/523.",
         "spec": "frontend/tests/e2e/codewhale/swarm-mode.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -12661,11 +12933,11 @@
         "testStatus": "passed"
       },
       "codebuddy-code": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "The current LeapMux native setting groups offer no separate swarm mode setting. A model variant or native TUI/slash command does not satisfy this feature.\n\nClassified as a LeapMux limit with low confidence: the CLI help of CodeBuddy 2.160.0 describes --swarm as swarm mode in which teammates run as independent processes. It is not proven that the flag works in headless stream-JSON mode.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/523.",
+        "detailNote": "Verified with CodeBuddy Code 2.175.0. LeapMux offers Swarm Mode with the native Off default. On launches the unmodified headless stream-JSON CLI with --swarm; changing the option restarts the agent. Invalid boolean settings fail before native writes or restart. A named background Agent runs as a real teammate with its own session. Its untagged system/init frame cannot replace the pinned parent session, model or permissions. The adapter recognizes native Agent, Bash, PowerShell and Workflow task types as well as the existing local_* types, preserving the child identity across the spawn acknowledgment and native task ID. Native evidence: .tmp/cb-swarm-probe/frames-swarm-cbteam.jsonl, drive-stream-2.log and native-task-excerpts.txt. The complete Swarm and audio spec files pass with zero retries in e2e-u0vNZW. The Swarm proof checks actual launch argv, Off-to-On restart, a real teammate, native TaskOutput state and child answer, parent metadata, reload and a usable later turn. The installed SDK keeps idle teammate completions and automatic parent replies in its own journal until the next user prompt flushes task events; the proof reads TaskOutput rather than inventing a completion signal. Native acceptance: all 87 cases in the complete CodeBuddy Code directory passed with zero retries in e2e-tdEIBG. All 505 CodeBuddy Go race tests and all 589 tool-vocabulary Vitest tests passed. Backend lint and frontend typecheck/lint passed. The matrix before-proof failed exactly the new Swarm assertion plus the separately pending Codex audio assertion; all other 3431 script tests passed.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/523.",
         "spec": "frontend/tests/e2e/codebuddy-code/swarm-mode.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -13967,11 +14239,11 @@
         "testStatus": "passed"
       },
       "qwen-code": {
-        "support": "leapmux-limit",
+        "support": "supported",
         "userNote": "",
-        "detailNote": "LeapMux exposes no native response-style setting for this provider.\n\nClassified as a LeapMux limit with medium confidence: Qwen Code 0.24.7 defines /output-style with supportedModes interactive, non_interactive, and acp, and an --output-style launch flag. The built-in styles are Concise, Proactive, Explanatory, and Learning. LeapMux exposes no response-style setting. Not tested live (checked 2026-10-05).\n\nThe native ACP output-style command has no LeapMux setting. See https://github.com/leapmux/leapmux/issues/508.",
+        "detailNote": "Qwen Code 0.26.0 offers no request that changes a running session's output style: `session/set_config_option` handles mode, model and reasoning_effort alone, and the /output-style command works in the interactive UI only. The launch flag `--output-style <name>` applies in ACP mode: each of the four built-in styles (Concise, Proactive, Explanatory, Learning) appends its `# Output Style: <name>` section to the model system prompt, and an unknown name falls back to the default style with a warning (live probes .tmp/qwen-style-probe/drive-*.log). The Worker states the flag at launch (`qwenOutputStyleArgs`), serves the Output Style group (Auto + the four styles) as a local option group, and applies a change through a restart. Native acceptance: the output-style case passed in its first run (17.8s, e2e run of .tmp/qwen-style-probe/e2e.log); all 80 Qwen Code browser cases passed with zero retries in e2e-bQJjBL; 177 package tests including the three new output-style tests.",
         "spec": "frontend/tests/e2e/qwen-code/output-style.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -14066,9 +14338,9 @@
         "testStatus": "passed"
       },
       "factory-droid": {
-        "support": "leapmux-limit",
+        "support": "agent-limit",
         "userNote": "",
-        "detailNote": "The current LeapMux native setting groups offer no separate output style setting. A model variant or native TUI/slash command does not satisfy this feature.\n\nClassified as a LeapMux limit with low confidence: Droid 0.233.0 selects an output style through the outputStyle setting in the settings file that LeapMux writes at launch. The session protocol has no style field, so a change needs a restart (installed binary strings checked 2026-10-05).\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/526.",
+        "detailNote": "Droid 0.249.0 has output styles (the built-in Default and Concise, plus custom styles), but only its own interactive UI can select one: the selector writes a per-session snapshot (setOutputStyleSessionSnapshot) that no protocol request reaches. The stream-jsonrpc session protocol that `droid exec` exposes states no output-style axis: droid.update_session_settings takes modelId, reasoningEffort, autonomyMode, interactionMode, autonomyLevel, specModeModelId, specModeReasoningEffort, missionSettings, tags and compaction fields alone, and the resolved settings of droid.initialize_session hold no outputStyle key. Live probes against the E2E mock (.tmp/droid-style-probe/drive-*.log) placed outputStyle at the root, under sessionDefaultSettings, under general.sessionDefaultSettings, in the user settings file, and with the invalid value no-such-style: no request gained the `# Output style: Concise` section, and the invalid value raised no diagnostic. The 0.233.0-era settings-file route that the earlier note described no longer exists.",
         "spec": "frontend/tests/e2e/factory-droid/output-style.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -14232,7 +14504,7 @@
       "goose": {
         "support": "supported",
         "userNote": "Needs Goose's Code Mode extension, which is off by default. The model then runs TypeScript code, and the code can call other Goose tools. Tested with Goose 1.52.0.",
-        "detailNote": "Goose 1.52.0 supplies execute_typescript through its native code_execution platform extension. Scripts define run() and can call registered extension tools.",
+        "detailNote": "Goose 1.56.0 supplies execute_javascript (renamed from execute_typescript in 1.52.0) through its native code_execution platform extension. Scripts define run() and can call registered extension tools.",
         "spec": "frontend/tests/e2e/goose/code-execution.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -14520,11 +14792,11 @@
         "testStatus": "passed"
       },
       "fast-agent": {
-        "support": "leapmux-limit",
-        "userNote": "Fast Agent saves long command output to a file only when it runs commands itself. LeapMux lets Fast Agent use the LeapMux terminal instead, so Fast Agent states no file path.",
-        "detailNote": "The selected ACP client-terminal route exposes terminal IDs and retained inline output. A terminal ID is not a filesystem path. LeapMux keeps the original preview and reads no output file.\n\nClassified as a LeapMux limit with low confidence. Fast Agent 0.10.42 retains complete truncated shell output in a private temporary file. It includes the path in the truncation notice, on its local shell runtime only (upstream source checked 2026-10-05). The docs say the ACP client terminal is the default route. On that route the output has a terminal ID and a byte limit, and no path. No run of the local shell route was done.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/527.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Fast Agent 0.10.47 retains native bash and process results in its root-session history. Native Commands defaults to Off, which keeps the ACP host terminal. Enabling Native Commands withholds that capability and selects Fast Agent's local shell, which saves long output and states its filesystem path. Native Commands requires Bypass Permissions because the local shell does not request ACP approval. Changing either launch setting restarts the process and stops an active turn. LeapMux recovers root tool records at turn end with their original native arguments, results, timestamps and call IDs. It uses separate archive identities because live ACP calls use unrelated UUIDs. It preserves the native preview and structured exit status, displays the stated output paths before the preview, and keeps Copy on that preview. The adapter reads native history metadata; it does not read retained output files. The native provider owns file retention. Native probes: .tmp/fastagent-output-probe/drive-bash.log and drive-permissions-allow.log; root histories in run-hsFd4z and run-hUsm39. Cancellation evidence: interrupt.log and interrupt-kfndtB. Native acceptance (2026-10-26): e2e-PCcPKM passed all 81 Fast Agent browser cases with zero retries. The positive output-path file covers native exit 0, exit 7 and interruption, original retained-file bytes, preview preservation, Copy, reload and the next turn. The complete Fast Agent package passed 113 tests under the race detector, and 735 affected Vitest cases passed. Frontend typecheck and lint and backend lint passed. Evidence: .tmp/fastagent-directory-acceptance-3.log. The matrix assertion failed before promotion in .tmp/fastagent-matrix-before.log and passed afterward in .tmp/fastagent-matrix-after.log.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/527.",
         "spec": "frontend/tests/e2e/fast-agent/output-file-paths.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -14538,11 +14810,11 @@
         "testStatus": "passed"
       },
       "goose": {
-        "support": "leapmux-limit",
-        "userNote": "Goose saves long shell output to a file and reports the path, but only when Goose runs the command itself. LeapMux gives Goose a terminal for commands, so Goose reports no path.",
-        "detailNote": "Selected native shell result preserves the retained native inline output. Current captured route supplies no filesystem output pointer. LeapMux keeps the original preview and reads no output file.\n\nClassified as a LeapMux limit: the Goose 1.53.0 developer shell tool writes output above 2000 lines or 50000 bytes to a file and returns 'Full output saved to <path>', but acp_shell sends the command to the client terminal when the client advertises the terminal capability, and that route saves no file (source read 2026-10-05). The route that LeapMux selects decides the result. The E2E spec proves only the client terminal route.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/527.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Goose 1.56.0 saves truncated native shell output and states each saved path. The Native Commands setting chooses the agent runtime instead of the ACP host terminal and applies through a restart; the default keeps the LeapMux terminal. The Goose plugin reads only complete native shell truncation notices and preserves the original tail preview. Native mock capture: .tmp/goose-native-output-capture.json (e2e-54noCX); browser acceptance of both default-terminal and native-command cases: e2e-hxgtjU, zero retries, with original file contents, Copy and reload proofs. Native acceptance: all 74 Goose browser cases passed with zero retries in e2e-AHUK0W; .tmp/goose-directory-acceptance.log EXIT 0 (Goose and Claude race tests, matrix scripts, and full Goose directory)",
         "spec": "frontend/tests/e2e/goose/output-file-paths.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },

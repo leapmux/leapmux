@@ -103,8 +103,9 @@ export default defineConfig({
           // Correct that difference before proposing a switch from jsdom.
           environment: 'jsdom',
           exclude: [...NODE_TEST_FILES, ...TIMEZONE_TEST_FILES],
-          // Dexie reads IDBKeyRange during import. Install it before the storage setup.
-          setupFiles: ['./vitest.idbKeyRange.ts', './vitest.setup.ts'],
+          // Install IDBKeyRange before Dexie and the file's broadcast bus before storage.
+          setupFiles: ['./vitest.idbKeyRange.ts', './vitest.broadcastChannel.ts', './vitest.setup.ts'],
+          sequence: { setupFiles: 'list' },
         },
       },
     ],

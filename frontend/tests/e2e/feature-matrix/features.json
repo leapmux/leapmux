@@ -57,9 +57,16 @@
       "group": "attachments"
     },
     {
+      "id": "audio-attachments",
+      "label": "Audio attachments",
+      "description": "The agent can use an attached audio recording as audio, with its original bytes and media type. A text transcript alone does not count.",
+      "showInMatrix": true,
+      "group": "attachments"
+    },
+    {
       "id": "other-binary-attachments",
       "label": "Other binary attachments",
-      "description": "The agent can use the bytes of an attached binary file other than an image or PDF. A filename or placeholder does not count.",
+      "description": "The agent can use the bytes of an attached binary file other than an image, PDF or audio recording. A filename or placeholder does not count.",
       "showInMatrix": true,
       "group": "attachments"
     },

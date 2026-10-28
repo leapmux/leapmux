@@ -76,7 +76,7 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-review', 'enum-owner', 2, 'review', 'session', 1)",
 		"INSERT INTO auto_review_approval_payloads (delivery_id, message_id) VALUES ('enum-review', 'enum-message')",
 		"INSERT INTO agent_todos (agent_id, row_key, seq, content, status) VALUES ('enum-owner', 'enum-todo', 1, 'todo', 1)",
-		"INSERT INTO agent_background_tasks (owner_agent_id, row_key, seq, kind, status) VALUES ('enum-owner', 'enum-task', 1, 1, 1)",
+		"INSERT INTO agent_background_tasks (owner_agent_id, output_generation, row_key, seq, kind, status) VALUES ('enum-owner', 0, 'enum-task', 1, 1, 1)",
 	} {
 		_, err := store.ExecContext(t.Context(), statement)
 		require.NoError(t, err)

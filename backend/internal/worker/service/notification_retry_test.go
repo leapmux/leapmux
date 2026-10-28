@@ -40,7 +40,7 @@ func TestRetryResolutionRevalidatesAfterProviderReentry(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 				ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID,
 			}))
-			sink := svc.Output.NewSink(agentID, providerID)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, providerID)
 			persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
 			resolve := func() { sink.PersistLeapMuxNotification(map[string]interface{}{"type": "api_retry_resolved"}) }
 			provider.reenter = func() {
@@ -49,7 +49,7 @@ func TestRetryResolutionRevalidatesAfterProviderReentry(t *testing.T) {
 					assert.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 						agent.MessageContent{Original: []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`)}, agent.SpanInfo{}))
 				case "replace sink":
-					svc.Output.NewSink(agentID, providerID)
+					newTestRootOutputSink(t, svc.Output, agentID, providerID)
 				case "notice":
 					sink.PersistLeapMuxNotification(map[string]interface{}{"type": "agent_status", "message": "separate notice"})
 				case "resolve":

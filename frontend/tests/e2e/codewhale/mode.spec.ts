@@ -13,8 +13,8 @@ codewhaleTest.describe('Codewhale settings', () => {
     void authenticatedCodewhaleWorkspace
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Agent')
-    await expectSettingsOptionsOffered(page, 'codewhale_mode', ['agent', 'plan'])
-    // The status bar draws one mode chip, the agent or plan mode of Codewhale, so the posture reads from its group.
+    await expectSettingsOptionsOffered(page, 'codewhale_mode', ['agent', 'plan', 'operate'])
+    // The status bar draws Codewhale's mode. The permission posture reads from its group.
     await expectSettingsOptionChosen(page, 'permissionMode-ask')
 
     const planNotice = await chooseNativeModeWithNotice(native, {

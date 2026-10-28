@@ -75,3 +75,125 @@ func TestSessionNotificationMetadataUsesTheOuterCurrentSessionMeta(t *testing.T)
 	b.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":""}}}}`))
 	assert.Equal(t, 1, calls, "another session and absent metadata must not invoke the hook")
 }
+
+func TestProviderNotificationsKeepRawByteOwnershipAndTheirResolvedSource(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	b.beginSessionUpdates()
+	raw := json.RawMessage(`{"native":"original"}`)
+	var received []string
+	resolveCalls := 0
+	require.True(t, b.RouteSessionNotification(SessionNotification{
+		Raw: raw,
+		ResolveSession: func(json.RawMessage) (string, bool) {
+			resolveCalls++
+			return b.CurrentSessionID(), true
+		},
+		Dispatch: func(_ string, frame json.RawMessage) { received = append(received, string(frame)) },
+	}))
+	copy(raw, `{"native":"mutated!"}`)
+	b.finishSessionUpdates()
+	assert.Equal(t, []string{`{"native":"original"}`}, received)
+	assert.Equal(t, 1, resolveCalls)
+
+	b.beginSessionUpdates()
+	require.True(t, b.RouteSessionNotification(SessionNotification{
+		Raw: json.RawMessage(`{"native":"outgoing"}`),
+		ResolveSession: func(json.RawMessage) (string, bool) {
+			resolveCalls++
+			return b.CurrentSessionID(), true
+		},
+		Dispatch: func(_ string, frame json.RawMessage) { received = append(received, string(frame)) },
+	}))
+	b.SetSessionIDForTest("replacement-root")
+	b.finishSessionUpdates()
+	assert.Equal(t, []string{`{"native":"original"}`}, received, "a resolved notification cannot acquire the replacement owner")
+	assert.Equal(t, 2, resolveCalls, "a resolved source is never queried again")
+}
+
+func TestProviderAndStandardNotificationsReplayInReceivedOrder(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	var order []string
+	b.hooks.SessionUpdateHandler = func(_ string, _ agent.ProviderServices, raw json.RawMessage) bool {
+		order = append(order, string(raw))
+		return true
+	}
+	b.beginSessionUpdates()
+	first := `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"first"}}`
+	last := `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"last"}}`
+	b.handleACPSessionUpdate(sessionUpdate(t, "session-1", first))
+	require.True(t, b.RouteSessionNotification(SessionNotification{
+		Raw:            json.RawMessage(`native between`),
+		ResolveSession: func(json.RawMessage) (string, bool) { return "session-1", true },
+		Dispatch:       func(_ string, raw json.RawMessage) { order = append(order, string(raw)) },
+	}))
+	b.handleACPSessionUpdate(sessionUpdate(t, "session-1", last))
+	assert.Empty(t, order)
+	b.finishSessionUpdates()
+	assert.Equal(t, []string{first, "native between", last}, order)
+}
+
+func TestProviderNotificationCanResolveAfterAnEarlierBufferedAnnouncement(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	var order []string
+	announced := false
+	b.beginSessionUpdates()
+	require.True(t, b.RouteSessionNotification(SessionNotification{
+		Raw:            json.RawMessage(`announcement`),
+		ResolveSession: func(json.RawMessage) (string, bool) { return "replacement-root", true },
+		Dispatch: func(_ string, raw json.RawMessage) {
+			announced = true
+			order = append(order, string(raw))
+		},
+	}))
+	require.True(t, b.RouteSessionNotification(SessionNotification{
+		Raw:            json.RawMessage(`dependent event`),
+		ResolveSession: func(json.RawMessage) (string, bool) { return "replacement-root", announced },
+		Dispatch:       func(_ string, raw json.RawMessage) { order = append(order, string(raw)) },
+	}))
+	b.sessionUpdates.mu.Lock()
+	b.flushPreviousSessionUpdates()
+	b.sessionUpdates.mu.Unlock()
+	assert.Empty(t, order)
+	b.SetSessionIDForTest("replacement-root")
+	b.finishSessionUpdates()
+	assert.Equal(t, []string{"announcement", "dependent event"}, order)
+}
+
+func TestProviderNotificationsRejectIncompleteHandlersAndUnknownOwners(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	called := false
+	dispatch := func(string, json.RawMessage) { called = true }
+	assert.False(t, b.RouteSessionNotification(SessionNotification{Dispatch: dispatch}))
+	assert.False(t, b.RouteSessionNotification(SessionNotification{ResolveSession: func(json.RawMessage) (string, bool) { return "session-1", true }}))
+	b.beginSessionUpdates()
+	assert.True(t, b.RouteSessionNotification(SessionNotification{
+		Raw:            json.RawMessage(`unowned`),
+		ResolveSession: func(json.RawMessage) (string, bool) { return "", false },
+		Dispatch:       dispatch,
+	}))
+	b.finishSessionUpdates()
+	assert.False(t, called)
+	assert.Empty(t, b.sessionUpdates.pending)
+}
+
+func TestBufferedChildNotificationCannotAcquireAReassignedRoot(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	require.True(t, b.AttachChildSession(ChildSessionTarget{RootSessionID: "session-1", SessionID: "child", RowKey: "old-row"}))
+	called := false
+	b.beginSessionUpdates()
+	require.True(t, b.RouteSessionNotification(SessionNotification{
+		Raw:            json.RawMessage(`old child`),
+		ResolveSession: func(json.RawMessage) (string, bool) { return "child", true },
+		Dispatch:       func(string, json.RawMessage) { called = true },
+	}))
+	b.SetSessionIDForTest("replacement-root")
+	require.False(t, b.ServesSession("child"))
+	require.True(t, b.AttachChildSession(ChildSessionTarget{RootSessionID: "replacement-root", SessionID: "child", RowKey: "new-row"}))
+	b.finishSessionUpdates()
+	assert.False(t, called)
+}

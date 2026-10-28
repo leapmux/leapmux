@@ -57,7 +57,7 @@ func setupTodoTestForProvider(t *testing.T, provider leapmuxv1.AgentProvider) (a
 		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 	}))
-	sink := svc.Output.NewSink("agent-1", provider)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", provider)
 	// The seed query returns NEWEST first (it feeds a capped cache, which must
 	// keep the newest rows). Reverse here so assertions read the persisted rows
 	// in ascending seq order, which is the order the cache exposes them in.
@@ -186,7 +186,7 @@ func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
-	sink := svc.Output.NewSink("agent-z", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-z", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 
 	body := marshalJSON(t, map[string]any{
 		"type": "tool.updated",
@@ -491,7 +491,7 @@ func TestOutputTodos_TaskUpdatePersistsItsPostUpdateSnapshotAtomically(t *testin
 		ID: "agent-snapshot", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("agent-snapshot", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-snapshot", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Run tests","activeForm":"Running tests","description":"Full suite"}}]}}`)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
@@ -532,7 +532,7 @@ func TestOutputTodos_TaskUpdateMessageFailureDoesNotMutateTodo(t *testing.T) {
 		ID: "agent-message-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("agent-message-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-message-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Keep pending"}}]}}`)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
 	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Keep pending"}}}`)
@@ -560,7 +560,7 @@ func TestOutputTodos_TaskUpdateRegistryFailureKeepsSnapshottedMessage(t *testing
 		ID: "agent-registry-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("agent-registry-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-registry-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Saved transcript"}}]}}`)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
 	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Saved transcript"}}}`)
@@ -1080,7 +1080,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 		return rows
 	}
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	// Seed MaxTodos rows via TaskList snapshot, oldest marked completed
 	// so eviction has a target.
 	tasks := make([]any, todoevents.MaxTodos)
@@ -1151,7 +1151,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 	// starts empty and is re-seeded from the persisted rows on next
 	// touch.
 	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil, svc.Clock)
-	sink2 := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink2 := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// First TaskCreate after the restart. With the seed bug, nextSeq
 	// would be `len(rows)+1` = an existing seq, colliding with the
@@ -1489,7 +1489,7 @@ func TestPairedToolUseLookup_ReadsTheToolUseHalfOfTheSpan(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	body := marshalJSON(t, map[string]any{"type": "assistant", "note": "the use half"})
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{
 		SpanID: "span-1", SpanType: "TaskCreate",
@@ -1528,7 +1528,7 @@ func TestPairedToolUseLookup_MemoizesTheMiss(t *testing.T) {
 	read := svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
 	require.Nil(t, read())
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: marshalJSON(t, map[string]any{"type": "assistant"})}, agent.SpanInfo{SpanID: "span-1"}))
 	assert.Nil(t, read(), "the answer is fixed for the message being extracted")

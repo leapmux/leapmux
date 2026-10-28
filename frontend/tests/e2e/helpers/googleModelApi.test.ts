@@ -49,6 +49,39 @@ function streamRows(text: string): Record<string, unknown>[] {
 }
 
 describe('Google model API', () => {
+  it.each(['generateContent', 'streamGenerateContent', 'countTokens'])('accepts the native Google v1 %s route with the same private authorization', async (operation) => {
+    const id = `google-v1-${operation}`
+    const server = await scenario(id, { steps: operation === 'countTokens' ? [] : [{ text: 'Accepted Google v1.' }] })
+    const path = `/v1/models/gemini-2.5-pro:${operation}`
+    const response = await fetch(`${server.url}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': MODEL_KEY },
+      body: JSON.stringify(body(id)),
+    })
+    expect(response.status).toBe(200)
+    if (operation === 'countTokens') {
+      expect(await response.json()).toMatchObject({ totalTokens: expect.any(Number) })
+    }
+    else if (operation === 'streamGenerateContent') {
+      const parts = streamRows(await response.text()).flatMap(row => (row.candidates as { content: { parts: { text?: string }[] } }[]).flatMap(candidate => candidate.content.parts))
+      expect(parts.map(part => part.text ?? '').join('')).toBe('Accepted Google v1.')
+    }
+    else {
+      expect(await response.json()).toMatchObject({ candidates: [{ content: { parts: [{ text: 'Accepted Google v1.' }] } }] })
+    }
+    const status = await readScenarioStatus(server.url, id)
+    expect(status.unexpectedRequests).toHaveLength(0)
+    expect(status.requests).toHaveLength(operation === 'countTokens' ? 0 : 1)
+    if (operation !== 'countTokens')
+      expect(status.requests[0]).toMatchObject({ protocol: 'google-generative-language', path })
+  })
+
+  it.each(['/v2/models/gemini:generateContent', '/v1betax/models/gemini:generateContent', '/v1/models/gemini:unknown', '/prefix/v1/models/gemini:generateContent'])('keeps an unsupported Google path outside the mock route: %s', async (path) => {
+    const server = await scenario('google-invalid-version', { steps: [] })
+    const response = await fetch(`${server.url}${path}`, { method: 'POST', headers: { 'x-goog-api-key': MODEL_KEY }, body: '{}' })
+    expect(response.status).toBe(404)
+  })
+
   it.each(['refusal', 'max_tokens'] as const)('refuses the unsupported stop reason %s before it sends a stream', async (stopReason) => {
     const server = await scenario('google-stop', { steps: [{ text: 'Answer', stopReason }] })
     const response = await generate(server, 'google-stop')

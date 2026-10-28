@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "kiro-protocol.schema.json",
   "title": "Kiro CLI extension vocabulary",
-  "description": "Each table maps PascalCase identifiers to protocol values. Go constants and TypeScript keys derive from those identifiers. Every table requires at least one value. An empty table supplies no dispatch case and prevents the generator from checking coverage.",
+  "description": "String tables map PascalCase identifiers to protocol values. Subset arrays select keys from a registered parent table. Go and TypeScript derive the same constants and membership. Every table requires at least one value.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,7 +18,8 @@
     "scopedPermissionOptions",
     "consentScopes",
     "userInputActions",
-    "configIds"
+    "configIds",
+    "binaryMimeTypes"
   ],
   "$defs": {
     "table": {
@@ -165,6 +166,12 @@
     },
     "userInputActions": {
       "$ref": "#/$defs/table"
+    },
+    "binaryMimeTypes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
     },
     "configIds": {
       "$ref": "#/$defs/table"

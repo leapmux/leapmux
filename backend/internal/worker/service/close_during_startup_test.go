@@ -93,10 +93,12 @@ func TestAgentResumeCloseBeforeRegistrationStopsLateProcess(t *testing.T) {
 	release := func() { releaseOnce.Do(func() { close(releaseStart) }) }
 	defer release()
 	svc.startBackgroundAgentFn = func(startCtx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
-		close(startEntered)
-		<-releaseStart
 		return svc.Agents.StartAgentWith(startCtx, opts, sink,
 			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+				// The native start is already owned when close cancels its context.
+				// Returning late models a handshake that finishes despite that cancellation.
+				close(startEntered)
+				<-releaseStart
 				return late, nil
 			})
 	}
@@ -222,10 +224,12 @@ func TestCatchUpReplayDoesNotReportALateProcessOfAClosedTab(t *testing.T) {
 	startEntered := make(chan struct{})
 	releaseStart := make(chan struct{})
 	svc.startBackgroundAgentFn = func(startCtx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
-		close(startEntered)
-		<-releaseStart
 		return svc.Agents.StartAgentWith(startCtx, opts, sink,
 			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+				// The native start is already owned when close cancels its context.
+				// Returning late models a handshake that finishes despite that cancellation.
+				close(startEntered)
+				<-releaseStart
 				return late, nil
 			})
 	}
@@ -317,7 +321,7 @@ func TestSinkStatusIsNotActiveWhileACloseIsInProgress(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "agent-sink-close"
 	seedOpenAgent(t, svc, agentID, true)
-	svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	sink := requireRootOutputSink(t, svc.Output, agentID)
 
 	row := requireAgentRow(t, svc, agentID)

@@ -273,17 +273,17 @@ func TestLatestOpenToolWithoutInput_FlagsTheInputlessCall(t *testing.T) {
 	var out acpTurnOutput
 	out.rememberIncompleteTool("with-input", map[string]json.RawMessage{
 		"rawInput": json.RawMessage(`{"path":"a"}`),
-	}, []byte(`{}`))
+	}, []byte(`{}`), nil)
 	assert.Equal(t, "", out.latestOpenToolWithoutInput(), "a call that states its input is not the one the fs request enriches")
 
 	out.rememberIncompleteTool("without-input", map[string]json.RawMessage{
 		"kind": json.RawMessage(`"read"`),
-	}, []byte(`{}`))
+	}, []byte(`{}`), nil)
 	assert.Equal(t, "without-input", out.latestOpenToolWithoutInput())
 
 	out.rememberIncompleteTool("later-without-input", map[string]json.RawMessage{
 		"rawInput": json.RawMessage(`{}`),
-	}, []byte(`{}`))
+	}, []byte(`{}`), nil)
 	assert.Equal(t, "later-without-input", out.latestOpenToolWithoutInput(),
 		"an empty object states no input, and the most recently opened call wins")
 }

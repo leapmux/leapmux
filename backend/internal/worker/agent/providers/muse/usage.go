@@ -55,9 +55,24 @@ type nativeTokenUsage struct {
 	} `json:"cumulative"`
 }
 
-// The caller holds stateMu. Child sessions keep their own current state.
+// The caller holds stateMu. Every child must reach the current root through
+// current, unretired parents. Malformed ancestry never supplies a live owner.
 func (a *Agent) currentSessionState(id string, state *sessionState) bool {
-	return state != nil && !state.retired && a.sessions[id] == state && (id == a.sessionID || state.childID != "")
+	seen := make(map[string]bool)
+	for {
+		if id == "" || state == nil || state.retired || a.sessions[id] != state || seen[id] {
+			return false
+		}
+		if id == a.sessionID {
+			return true
+		}
+		if state.childID == "" {
+			return false
+		}
+		seen[id] = true
+		id = state.parentSessionID
+		state = a.sessions[id]
+	}
 }
 
 func (state *sessionState) normalizedContextUsage() map[string]any {

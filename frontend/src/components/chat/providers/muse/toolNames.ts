@@ -26,7 +26,6 @@ export const MUSE_TOOL = {
   RequestUserInput: 'request_user_input',
   SubagentSpawn: 'subagent_spawn',
   SubagentStatus: 'subagent_status',
-  SubagentSendMessage: 'subagent_send_message',
   SubagentWait: 'subagent_wait',
   SubagentReadResult: 'subagent_read_result',
   SubagentCancel: 'subagent_cancel',
@@ -34,4 +33,5 @@ export const MUSE_TOOL = {
   SnoozeReminder: 'snooze_reminder',
   WriteTodos: 'write_todos',
   Workflow: 'workflow',
+  SubmitResult: 'submit_result',
 } as const

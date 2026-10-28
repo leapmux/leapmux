@@ -29,7 +29,7 @@ func TestToolRequestLookupSeparatesProviderSessions(t *testing.T) {
 	request, err = sink.ReadToolRequest(span.SpanID)
 	require.NoError(t, err)
 	require.Equal(t, newRequest, request.Content.Original)
-	reloaded := sink.h.NewSink(sink.agentID, sink.agentProvider)
+	reloaded := newTestRootOutputSink(t, sink.h, sink.agentID, sink.agentProvider)
 	request, err = reloaded.ReadToolRequest(span.SpanID)
 	require.NoError(t, err)
 	require.Equal(t, newRequest, request.Content.Original)

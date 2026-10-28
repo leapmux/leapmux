@@ -53,15 +53,9 @@ func ReadRegularFile(root RegularFileRoot, path string, limit int64) (data []byt
 	if !sameRegularFileSnapshot(checked, opened) || opened.Size() > limit {
 		return nil, errors.New("the archive file changed before it opened")
 	}
-	data, err = io.ReadAll(io.LimitReader(file, limit+1))
+	data, err = readSizedArchiveBytes(file, opened.Size())
 	if err != nil {
 		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("the archive file exceeds %d bytes", limit)
-	}
-	if int64(len(data)) != opened.Size() {
-		return nil, errors.New("the archive file did not supply its complete checked bytes")
 	}
 	after, err := file.Stat()
 	if err != nil {
@@ -78,6 +72,24 @@ func ReadRegularFile(root RegularFileRoot, path string, limit int64) (data []byt
 		return nil, errors.New("the archive path changed during the read")
 	}
 	return data, nil
+}
+
+// Read the checked size plus one sentinel byte. Growth and truncation both fail
+// before the caller checks the file and path identities again.
+func readSizedArchiveBytes(reader io.Reader, size int64) ([]byte, error) {
+	maxInt := int64(^uint(0) >> 1)
+	if size < 0 || size >= maxInt {
+		return nil, errors.New("the checked archive file size is invalid")
+	}
+	data := make([]byte, int(size)+1)
+	count, err := io.ReadFull(reader, data)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+	if int64(count) != size {
+		return nil, errors.New("the archive file did not supply its complete checked bytes")
+	}
+	return data[:count:count], nil
 }
 
 // Compare the same inode and the metadata that describes its complete content.

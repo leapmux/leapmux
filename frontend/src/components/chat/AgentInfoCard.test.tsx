@@ -157,6 +157,53 @@ describe('agent info card rate-limit rows', () => {
     return <div>{infoHoverCardContent()}</div>
   }
 
+  it('refreshes an open rate-limit countdown and removes it after the reset', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-27T00:00:00Z'))
+    let unmount = () => {}
+    try {
+      const resetsAt = Math.floor(Date.now() / 1000) + 120
+      const info: AgentSessionInfo = {
+        rateLimits: {
+          five_hour: {
+            rateLimitType: 'five_hour',
+            status: 'allowed',
+            resetsAt,
+          },
+        },
+      }
+      const rendered = render(() => (
+        <InfoCardWithInfo
+          agent={agent(AgentProvider.CODEX, 's')}
+          agentSessionInfo={info}
+        />
+      ))
+      unmount = rendered.unmount
+
+      expect(rendered.container).toHaveTextContent('Allowed, resets in 0:02')
+
+      vi.advanceTimersByTime(60_000)
+      expect(rendered.container).toHaveTextContent('Allowed, resets in 0:01')
+      expect(rendered.container).not.toHaveTextContent('resets in 0:02')
+
+      vi.advanceTimersByTime(60_000)
+      expect(rendered.container).toHaveTextContent('Allowed')
+      expect(rendered.container).not.toHaveTextContent('resets in')
+    }
+    finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows a native plan label and calendar reset without an invented countdown', () => {
+    const rateLimits = { credit: { label: 'Native Probe Plan — Credits', resetsOn: '2026-11-25', utilization: 0.255, status: 'allowed' } }
+    const { container } = render(() => <InfoCardWithInfo agent={agent(AgentProvider.KIRO, 's')} agentSessionInfo={{ rateLimits }} />)
+    expect(container).toHaveTextContent('Native Probe Plan — Credits')
+    expect(container).toHaveTextContent('Allowed, 26% used, resets on 2026-11-25')
+    expect(container).not.toHaveTextContent('resets in')
+  })
+
   it('renders a warning tier with label, utilization, and countdown', () => {
     const { container } = render(() => (
       <InfoCardWithInfo

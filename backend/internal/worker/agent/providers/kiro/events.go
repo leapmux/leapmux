@@ -52,8 +52,10 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 	case kiroWorkflowRunStartMethod, kiroWorkflowNodeStartMethod, kiroWorkflowNodeCompleteMethod,
 		kiroWorkflowNodePausedMethod, kiroWorkflowLoopIterationMethod, kiroWorkflowPausedMethod,
 		kiroWorkflowRunCompleteMethod:
-		a.handleWorkflowNotification(line.Method, line.Params)
-		return true
+		if line.HasID() {
+			return false
+		}
+		return a.routeWorkflowNotification(line)
 	case kiroSessionNotifyMethod:
 		a.handleSessionNotify(line.Params)
 		return true

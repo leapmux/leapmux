@@ -16,6 +16,100 @@ func logRecord(id, kind, message string, sequence int, extra string) json.RawMes
 	return json.RawMessage(`{"id":"` + id + `","sequence":` + jsonNumber(sequence) + `,"stream":{"kind":"session","id":"session"},"payload":{"kind":"run","run_id":"turn","event":{"kind":"` + kind + `","` + message + `":"batch",` + extra + `}}}`)
 }
 func jsonNumber(value int) string { raw, _ := json.Marshal(value); return string(raw) }
+
+// Muse 1.4.13 retains ephemeral task deltas as positions without event content.
+func omittedTaskRecord(id string, sequence int) json.RawMessage {
+	return json.RawMessage(`{"retained_marker":"omitted_live_only","schema_version":1,"stream":{"kind":"session","id":"session"},"position":{"id":"` + id + `","sequence":` + jsonNumber(sequence) + `},"omitted_record":{"record_type":"status","durability":"ephemeral","payload_type":"runtime.session","payload_schema_version":1,"payload_kind":"task","omission_class":"task_tool_delta_v1"}}`)
+}
+
+func TestNativeLogPreservesOmittedPositionsWithoutUsingThemAsResults(t *testing.T) {
+	t.Parallel()
+	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
+	marker := omittedTaskRecord("omitted", 2)
+	result := logRecord("result", "tool_result_batch_committed", "batch_id", 3, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
+	log := newNativeLog("session")
+	for _, raw := range []json.RawMessage{origin, marker, result, marker} {
+		require.NoError(t, log.add(raw))
+	}
+	assert.Equal(t, "omitted", log.sequences[2])
+	assert.Equal(t, marker, log.records["omitted"].raw)
+	item := resultItem("item", "call", "origin")
+	association := log.match(item, []itemParams{item})
+	require.Empty(t, association.reason)
+	require.Len(t, association.records, 2)
+	assert.Equal(t, origin, association.records[0])
+	assert.Equal(t, result, association.records[1])
+	item.SourceRange.First = nativePosition{ID: "omitted", Sequence: 2}
+	association = log.match(item, []itemParams{item})
+	assert.Empty(t, association.records, "a retained marker carries no tool evidence")
+	assert.NotEmpty(t, association.reason)
+}
+
+func TestNativeLogRejectsMalformedOmissionMarkers(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{
+		"missing discriminator", "null discriminator", "unknown discriminator", "wrong schema", "missing position", "empty ID", "zero sequence", "negative sequence", "fractional sequence", "overflowing sequence", "foreign stream", "foreign session", "missing metadata", "missing record type", "durable omission", "missing payload type", "zero payload schema", "missing payload kind", "missing omission class", "envelope ID", "envelope sequence", "event payload",
+	} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			var marker map[string]any
+			require.NoError(t, json.Unmarshal(omittedTaskRecord("omitted", 2), &marker))
+			position := marker["position"].(map[string]any)
+			stream := marker["stream"].(map[string]any)
+			omitted := marker["omitted_record"].(map[string]any)
+			switch change {
+			case "missing discriminator":
+				delete(marker, "retained_marker")
+			case "null discriminator":
+				marker["retained_marker"] = nil
+			case "unknown discriminator":
+				marker["retained_marker"] = "future"
+			case "wrong schema":
+				marker["schema_version"] = 2
+			case "missing position":
+				delete(marker, "position")
+			case "empty ID":
+				position["id"] = ""
+			case "zero sequence":
+				position["sequence"] = 0
+			case "negative sequence":
+				position["sequence"] = -1
+			case "fractional sequence":
+				position["sequence"] = 1.5
+			case "overflowing sequence":
+				position["sequence"] = 1e40
+			case "foreign stream":
+				stream["kind"] = "session.live"
+			case "foreign session":
+				stream["id"] = "foreign"
+			case "missing metadata":
+				delete(marker, "omitted_record")
+			case "missing record type":
+				delete(omitted, "record_type")
+			case "durable omission":
+				omitted["durability"] = "durable"
+			case "missing payload type":
+				delete(omitted, "payload_type")
+			case "zero payload schema":
+				omitted["payload_schema_version"] = 0
+			case "missing payload kind":
+				delete(omitted, "payload_kind")
+			case "missing omission class":
+				delete(omitted, "omission_class")
+			case "envelope ID":
+				marker["id"] = "competing"
+			case "envelope sequence":
+				marker["sequence"] = 2
+			case "event payload":
+				marker["payload"] = map[string]any{"kind": "run", "run_id": "turn"}
+			}
+			raw, err := json.Marshal(marker)
+			require.NoError(t, err)
+			_, err = decodeNativeRecord(raw, "session")
+			require.Error(t, err)
+		})
+	}
+}
 func TestNativeLogMatchesAnExactOriginAndResultBatch(t *testing.T) {
 	t.Parallel()
 	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)

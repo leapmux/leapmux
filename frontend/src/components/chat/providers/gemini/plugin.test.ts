@@ -9,7 +9,7 @@ import { input } from '../testUtils'
 import './plugin'
 
 describe('gemini provider', () => {
-  describeACPProviderBasics(AgentProvider.GEMINI_CLI, { text: true, image: true, pdf: true, binary: true })
+  describeACPProviderBasics(AgentProvider.GEMINI_CLI, { text: true, image: true, pdf: true, audio: true, binary: true })
 
   it('exposes native modes and a bypass permission preset', () => {
     const plugin = providerFor(AgentProvider.GEMINI_CLI)

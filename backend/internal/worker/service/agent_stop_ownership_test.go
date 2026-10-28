@@ -56,7 +56,7 @@ func stopOwnershipFixture(t *testing.T) (*Service, *channel.Dispatcher, agent.Pr
 	}))
 	provider := &heldStopAgent{calls: make(chan heldStopCall, 2)}
 	svc.Agents.PutAgentForTest("agent-1", provider)
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted("agent-1")
 	sink.SetTurnState(agent.TurnState{Active: true}, 1)
 	return svc, dispatcher, sink, provider
@@ -235,7 +235,7 @@ func TestInterruptAgentResultKeepsTheReplacementProcessControl(t *testing.T) {
 			svc.Output.ClearPendingControlRequests("agent-1")
 			replacement := &heldStopAgent{calls: make(chan heldStopCall, 1)}
 			svc.Agents.PutAgentForTest("agent-1", replacement)
-			newSink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			newSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			svc.Output.NoteAgentProcessStarted("agent-1")
 			newSink.SetTurnState(agent.TurnState{Active: true}, 1)
 			publishStopControl(t, newSink, "replacement-control")
@@ -296,7 +296,7 @@ func TestEscalationDoesNotShareAnOldTurnResultWithANewTurn(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
 	svc.Agents.PutAgentForTest("agent-1", &heldStopAgent{calls: make(chan heldStopCall, 1)})
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted("agent-1")
 	sink.SetTurnState(agent.TurnState{Active: true}, 1)
 	target, err := svc.Agents.CaptureStopTarget("agent-1")

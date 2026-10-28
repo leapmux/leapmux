@@ -3,6 +3,8 @@ package providerkit
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -65,9 +67,85 @@ func TestBuildInlineTextAttachmentBlock(t *testing.T) {
 				Filename: tc.filename,
 				MIMEType: tc.mimeType,
 				Data:     tc.data,
-				Kind:     agent.AttachmentKindText,
+				Kind:     contracts.AttachmentMediaKindText,
 			})
 			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestValidateAudioAttachments(t *testing.T) {
+	t.Parallel()
+	audio := func(name string) agent.ClassifiedAttachment {
+		return agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, Filename: name, MIMEType: "audio/wav", Data: []byte{0, 255, 1}}
+	}
+	for name, attachments := range map[string][]agent.ClassifiedAttachment{
+		"empty":     nil,
+		"non audio": {{Kind: contracts.AttachmentMediaKindImage, Filename: "image"}},
+		"mixed":     {audio("first"), {Kind: contracts.AttachmentMediaKindText, Filename: "text"}, audio("second")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var validated []string
+			found, err := ValidateAudioAttachments(attachments, func(attachment agent.ClassifiedAttachment) error {
+				validated = append(validated, attachment.Filename)
+				assert.Equal(t, []byte{0, 255, 1}, attachment.Data)
+				return nil
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, name == "mixed", found)
+			if name == "mixed" {
+				assert.Equal(t, []string{"first", "second"}, validated)
+			} else {
+				assert.Empty(t, validated)
+			}
+		})
+	}
+	t.Run("stops at the first provider refusal", func(t *testing.T) {
+		var names []string
+		found, err := ValidateAudioAttachments([]agent.ClassifiedAttachment{audio("first"), audio("second"), audio("third")}, func(attachment agent.ClassifiedAttachment) error {
+			names = append(names, attachment.Filename)
+			if attachment.Filename == "second" {
+				return assert.AnError
+			}
+			return nil
+		})
+		assert.True(t, found)
+		assert.ErrorIs(t, err, assert.AnError)
+		assert.Equal(t, []string{"first", "second"}, names)
+	})
+	t.Run("requires an explicit provider validator", func(t *testing.T) {
+		found, err := ValidateAudioAttachments([]agent.ClassifiedAttachment{audio("first")}, nil)
+		assert.False(t, found)
+		assert.Error(t, err)
+	})
+}
+
+func TestValidateAudioAttachment(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		mime    string
+		allowed []string
+		valid   bool
+	}{
+		{name: "accepted bytes", data: []byte{0, 255}, mime: "audio/wav", allowed: []string{"audio/ogg", "audio/wav"}, valid: true},
+		{name: "absent bytes", mime: "audio/wav", allowed: []string{"audio/wav"}},
+		{name: "empty bytes", data: []byte{}, mime: "audio/wav", allowed: []string{"audio/wav"}},
+		{name: "unsupported media type", data: []byte{0}, mime: "audio/flac", allowed: []string{"audio/wav"}},
+		{name: "absent media type", data: []byte{0}, allowed: []string{"audio/wav"}},
+		{name: "absent policy", data: []byte{0}, mime: "audio/wav"},
+		{name: "empty policy", data: []byte{0}, mime: "audio/wav", allowed: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateAudioAttachment(agent.ClassifiedAttachment{Filename: "voice.wav", MIMEType: tc.mime, Data: tc.data}, "Test Agent audio attachment", tc.allowed)
+			if tc.valid {
+				assert.NoError(t, err)
+			} else {
+				assert.EqualError(t, err, `cannot send Test Agent audio attachment "voice.wav" with media type `+tc.mime)
+			}
 		})
 	}
 }

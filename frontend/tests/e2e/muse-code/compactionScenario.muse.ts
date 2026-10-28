@@ -9,6 +9,9 @@ import { MANUAL_COMPACTION_SUMMARY } from '../helpers/manualCompaction'
 /** The system text that identifies every summarizer request. */
 export const MUSE_SUMMARIZER_SYSTEM = 'Compact context for a coding agent'
 
+/** Native-probed provider usage between the private model's soft and hard thresholds. */
+export const MUSE_COMPACTION_REPORTED_INPUT_TOKENS = 70000
+
 /**
  * The matcher that recognizes a native Muse summarizer request: its instruction
  * arrives as a developer row, which the joined system text of the generic

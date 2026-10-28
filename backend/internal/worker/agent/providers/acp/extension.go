@@ -28,6 +28,9 @@ type PromptEnding struct {
 //
 // A zero hook keeps the base behavior that the hook controls.
 type Hooks struct {
+	// OpenRootTranscript allocates an immutable root output target under turnMu.
+	OpenRootTranscript func(RootTranscriptStart, agent.ProviderServices) RootTranscript
+
 	// WithBypassPermission invokes the claim while the provider's settings lock
 	// confirms Bypass. The claim never waits for delivery or calls the sink.
 	WithBypassPermission func(claim func())
@@ -225,6 +228,9 @@ type Hooks struct {
 	// Wait calls it after Process.Wait and before it ends the turn and child
 	// conversations. A provider must not send another request to the exited process.
 	BeforeWaitCleanup func()
+	// AfterWaitCleanup closes provider factories after the base admits its final
+	// root and child writes. Retained queue writes keep their original ownership.
+	AfterWaitCleanup func()
 	// ChildUpdateRoute reads the registry row key of the subagent that one
 	// update of the main session belongs to, from the update type and its
 	// `_meta`. It returns "" for an update of the main session. Qwen Code tags
@@ -271,7 +277,7 @@ type Hooks struct {
 	// then starts no new turn whatever the answer, and the provider decides what
 	// becomes of the input -- Qwen Code drops it and says so in the transcript,
 	// because the reader stopped the turn that the input was for.
-	FollowUpPrompt func(stopped bool) (content string, attachments []*leapmuxv1.Attachment, ok bool)
+	FollowUpPrompt func(sessionID string, stopped bool) (content string, attachments []*leapmuxv1.Attachment, ok bool)
 	// PromptPrepared runs after admission and before any per-request preparation or native write.
 	// It also runs for a continuation prompt. No turn or state mutex is held.
 	PromptPrepared func()
@@ -292,9 +298,13 @@ type Hooks struct {
 	// when the host offers none, sets it: Gemini CLI then creates a new file,
 	// which it cannot do through the host.
 	DisableHostFileSystem bool
-	// PromptParams adjusts the params of each session/prompt before the base
-	// sends it, the follow-up prompt included. Grok Build states the prompt id
-	// there, so it can tell its own prompts from the turns the agent starts.
+	// PreparePrompt validates or converts blocks for the explicit target session.
+	// It receives read-only classified attachments and their mutable prompt blocks.
+	// It runs for root and child prompts under sessionMu, before any native write.
+	// It must not acquire sessionMu or wait on work that needs that mutex.
+	PreparePrompt func(sessionID string, attachments []agent.ClassifiedAttachment, prompt []map[string]any) error
+	// PromptParams adjusts the root params before the base sends them, including
+	// follow-up prompts. Grok Build uses it to identify its own prompts.
 	PromptParams func(params map[string]any)
 	// SessionParams adjusts the params of a session/new, a session/load or a
 	// session/resume request before the base sends it. A provider adds its own
@@ -365,6 +375,14 @@ func (b *Base) SetSteerRunID(runID string) {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	b.steerRunID = runID
+}
+
+// CurrentModel reads the model confirmed by the session's native settings.
+// A model-dependent prompt must read it inside PreparePrompt.
+func (b *Base) CurrentModel() string {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.model
 }
 
 // SetCurrentModel records model as the current model, after a provider wrote it

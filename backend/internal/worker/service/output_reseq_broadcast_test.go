@@ -74,7 +74,7 @@ func TestNotificationReseqBroadcast_CarriesPreviousSeq(t *testing.T) {
 	mock := &agentMessageCapturingWriter{channelID: "ch-1"}
 	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
 	second, err := json.Marshal(map[string]any{"type": "interrupted"})
@@ -118,7 +118,7 @@ func TestNotificationReseqBroadcast_CarriesMarkType(t *testing.T) {
 	mock := &agentMessageCapturingWriter{channelID: "ch-1"}
 	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
 	second, err := json.Marshal(map[string]any{"type": "interrupted"})

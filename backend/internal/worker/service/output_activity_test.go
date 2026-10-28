@@ -899,7 +899,7 @@ func setupActivityRegistryTest(t *testing.T) (*Service, agent.ProviderServices, 
 	// is about what the registry says. The real check reads the agent manager,
 	// which holds no subprocess in a test.
 	svc.Output.processRunning = func(string) bool { return true }
-	return svc, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), rootID, childID
+	return svc, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), rootID, childID
 }
 
 // unspentToolCount reads the count waiting for an agent's next settle. The

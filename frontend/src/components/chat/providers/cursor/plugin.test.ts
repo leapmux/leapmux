@@ -14,7 +14,7 @@ describe('cursor provider', () => {
 
   // Cursor keeps the standard ACP text/image behavior and interrupts. It drops
   // embedded blob content, so PDF and binary attachments must be refused.
-  describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: false, binary: false })
+  describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: false, audio: false, binary: false })
 
   it('maps plan mode to agent/plan values', () => {
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')

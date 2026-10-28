@@ -35,18 +35,20 @@ func (s *agentOutputSink) ReadToolResultBySeq(seq int64) (*agent.StoredMessage, 
 	return storedSpanMessage(s.agentID, row.SpanID, "result", row, err)
 }
 
-func (s *agentOutputSink) restoreMessageSession() {
+// restoreMessageSession reports read failures to the constructor, which logs after unlocking.
+func (s *agentOutputSink) restoreMessageSession() error {
 	if s.h.queries == nil {
-		return
+		return nil
 	}
 	row, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Warn("Read the provider session for the transcript", "agent_id", s.agentID, "error", err)
-		}
-		return
+		return err
 	}
 	s.messageSession = &nativeSessionFact{id: row.AgentSessionID}
+	return nil
 }
 
 func (s *agentOutputSink) currentMessageSessionID() string {

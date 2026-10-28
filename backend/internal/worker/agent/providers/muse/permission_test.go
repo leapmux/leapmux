@@ -191,7 +191,7 @@ func TestRootBypassKeepsChildRequirementsManual(t *testing.T) {
 	a, _ := testAgent(t)
 	sink := &agenttest.ControlSink{}
 	a.sink = agent.NewProviderServices(sink)
-	a.sessions["child"] = &sessionState{childID: "child-agent", sink: a.sink}
+	a.sessions["child"] = &sessionState{childID: "child-agent", parentSessionID: "session", sink: a.sink}
 	a.settings[agent.OptionIDPermissionMode] = contracts.MuseApprovalModeAllowAll
 	var request map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(nativePermissionRequest(t, "child-approval", 0), &request))
@@ -203,7 +203,9 @@ func TestRootBypassKeepsChildRequirementsManual(t *testing.T) {
 	request["params"] = encoded
 	encoded, err = json.Marshal(request)
 	require.NoError(t, err)
+	encoded = provedChildFrame(t, a, a.sessions["child"], encoded)
 	a.HandleOutput(encoded)
+	a.viewWork.CloseAndWait()
 	assert.Equal(t, 1, sink.PublishedControlCount())
 	assert.True(t, a.approvalWork.Idle())
 	assert.Empty(t, sink.CanceledControls())

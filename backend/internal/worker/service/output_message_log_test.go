@@ -21,7 +21,7 @@ func TestMessageTodoFailureLogsReleaseTheMutationBeforeCallbacks(t *testing.T) {
 			provider := mutationLogTodoProvider{Provider: testRegistry.Plugin(providerID)}
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
-			services := svc.Output.NewSink(agentID, providerID)
+			services := newTestRootOutputSink(t, svc.Output, agentID, providerID)
 			services.UpdateSessionID("original-native-session")
 			sink := requireRootOutputSink(t, svc.Output, agentID)
 			_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_message_todo BEFORE INSERT ON agent_todos
@@ -60,7 +60,7 @@ WHEN NEW.agent_id = 'message-log-owner' BEGIN SELECT RAISE(ABORT, 'to-do insert 
 					return
 				}
 				mutation.Unlock()
-				svc.Output.NewSink(agentID, providerID)
+				newTestRootOutputSink(t, svc.Output, agentID, providerID)
 				replacement = requireRootOutputSink(t, svc.Output, agentID)
 			}}))
 			defer slog.SetDefault(previousLogger)

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,7 +28,7 @@ func TestPDFValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := (droidProvider{}).ValidateAttachment(agent.ClassifiedAttachment{
-				Kind: agent.AttachmentKindPDF, Filename: "sample.pdf", MIMEType: "application/pdf", Data: bytes.Repeat([]byte{'x'}, tc.size),
+				Kind: contracts.AttachmentMediaKindPdf, Filename: "sample.pdf", MIMEType: "application/pdf", Data: bytes.Repeat([]byte{'x'}, tc.size),
 			})
 			if tc.err != "" {
 				require.ErrorContains(t, err, tc.err)
@@ -37,10 +39,10 @@ func TestPDFValidation(t *testing.T) {
 		})
 	}
 	require.ErrorContains(t, (droidProvider{}).ValidateAttachment(agent.ClassifiedAttachment{
-		Kind: agent.AttachmentKindBinary, Filename: "archive.bin", MIMEType: "application/octet-stream", Data: []byte{0, 255},
+		Kind: contracts.AttachmentMediaKindBinary, Filename: "archive.bin", MIMEType: "application/octet-stream", Data: []byte{0, 255},
 	}), "binary attachments")
 	require.ErrorContains(t, (droidProvider{}).ValidateAttachment(agent.ClassifiedAttachment{
-		Kind: agent.AttachmentKindImage, Filename: "empty.png", MIMEType: "image/png",
+		Kind: contracts.AttachmentMediaKindImage, Filename: "empty.png", MIMEType: "image/png",
 	}), "empty image")
 }
 

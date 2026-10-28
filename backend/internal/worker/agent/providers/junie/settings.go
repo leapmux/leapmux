@@ -46,9 +46,5 @@ func (a *Agent) runningEffort() string {
 // decorated wire ID; proxy models already carry one. The local model keeps the
 // caller's canonical ID.
 func (a *Agent) setJunieModel(model string) error {
-	if err := a.SetModelViaConfigOption(junieModelIDForWire(model)); err != nil {
-		return err
-	}
-	a.SetCurrentModel(model)
-	return nil
+	return a.SetModelViaConfigOption(junieModelIDForWire(model), model)
 }

@@ -71,7 +71,7 @@ func startAutoReviewAgentWithSink(t *testing.T, svc *Service, approver *autoRevi
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: id, AgentSessionID: "thread-1"}))
-	sink := svc.Output.NewSink(id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	approver.nativeRestartProbeAgent = newNativeRestartProbeAgent(id)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: id, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, WorkingDir: t.TempDir(),

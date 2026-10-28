@@ -68,7 +68,7 @@ func (reasonixProvider) ListStoredSessions(ctx context.Context, q agent.StoredSe
 // everything but text up front. A shared handoff of a PDF as a file path:
 // https://github.com/leapmux/leapmux/issues/537.
 func (reasonixProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind != agent.AttachmentKindText {
+	if attachment.Kind != contracts.AttachmentMediaKindText {
 		return fmt.Errorf("reasonix only supports text attachments: %s", attachment.Filename)
 	}
 	return nil

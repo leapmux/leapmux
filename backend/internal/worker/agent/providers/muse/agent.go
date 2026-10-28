@@ -1,12 +1,15 @@
 package muse
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -17,24 +20,24 @@ import (
 // Agent owns one native host and the root and child sessions that the host serves.
 type Agent struct {
 	*connection
-	sink       agent.ProviderServices
-	opts       agent.Options
-	sendMu     sync.Mutex
-	dispatchMu sync.Mutex
-	// deferredGoalActions holds goal writes queued under dispatchMu that run
-	// after dispatch releases. See handleOutput.
-	deferredGoalActions []func()
-	finalizeMu          sync.Mutex
-	stateMu             sync.Mutex
-	controlMu           sync.Mutex
-	controlQueue        []*controlRecord
-	controlDraining     bool
-	approvalWork        providerkit.CoalescingWork
-	sessionID           string
-	settings            optionmap.Map
-	models              []*agent.ModelInfo
-	sessions            map[string]*sessionState
-	uncertainInput      *museUncertainInput // sendMu protects the pending native command identity.
+	sink                   agent.ProviderServices
+	opts                   agent.Options
+	sendMu                 sync.Mutex
+	dispatcher             *outputDispatcher
+	stateMu                sync.Mutex
+	controlMu              sync.Mutex
+	controlQueue           []*controlRecord
+	controlDraining        bool
+	approvalWork           providerkit.CoalescingWork
+	viewWork               providerkit.CoalescingWork
+	logRecoveryWork        providerkit.CoalescingWork
+	subscriptionWork       providerkit.CoalescingWork
+	sessionID              string
+	settings               optionmap.Map
+	models                 []*agent.ModelInfo
+	sessions               map[string]*sessionState
+	uncertainInput         *museUncertainInput           // sendMu protects the pending native command identity.
+	uncertainChildCommands map[string]museUncertainInput // sendMu protects child command identities.
 }
 
 type museUncertainInput struct {
@@ -43,44 +46,123 @@ type museUncertainInput struct {
 	commandID string
 }
 
+// A native completion can precede transcript projection. The observed state
+// retains its turn ownership until the immutable finalization is captured.
+type turnCompletionState uint8
+
+const (
+	turnCompletionUnobserved turnCompletionState = iota
+	turnCompletionObserved
+	turnCompletionCaptured
+)
+
 type sessionState struct {
-	controls        map[string]controlState
-	sink            agent.ProviderServices
-	turnID          string
-	items           map[string]*itemState
-	itemIndex       *nativeItemIndex
-	completed       map[string]bool
-	log             *nativeLog
-	toolUses        int32
-	generation      providerkit.GenerationBuffer
-	retry           providerkit.RetryResolution
-	retryItems      map[string]bool
-	retryNotices    []agent.CapturedTranscript
-	compactionLive  map[string]bool
-	childKey        string
-	childID         string
-	parentSessionID string
-	subagentID      string
-	retired         bool
-	finalizations   []*turnFinalization
-	nextItemOrder   uint64
-	viewRecovery    *viewRecovery
-	viewTwins       map[string]bool
-	contextUsage    *nativeContextUsage
-	tokenUsage      *nativeTokenUsage
+	subscriptionLock     chan struct{}
+	controls             map[string]controlState
+	sink                 agent.ProviderServices
+	turnID               string
+	items                map[string]*itemState
+	itemIndex            *nativeItemIndex
+	completed            map[string]turnCompletionState
+	log                  *nativeLog
+	toolUses             int32
+	generation           providerkit.GenerationBuffer
+	retry                providerkit.RetryResolution
+	retryItems           map[string]bool
+	retryNotices         []agent.CapturedTranscript
+	compactionLive       map[string]bool
+	childKey             string
+	childID              string
+	parentSessionID      string
+	subagentID           string
+	retired              bool
+	finalizations        []*turnFinalization
+	nextItemOrder        uint64
+	viewRecovery         *viewRecovery
+	viewOverlap          map[[32]byte]struct{}
+	childViewRequested   bool
+	childViewPrefix      childViewPrefixState
+	acceptedViewCursor   *string
+	projection           *childProjection
+	openingPrompt        *childOpeningPrompt
+	nativeTurn           childNativeTurnState
+	nativeHead           *childNativeHead
+	settledChildControls map[string]*childControlSettlement
+	contextUsage         *nativeContextUsage
+	tokenUsage           *nativeTokenUsage
+}
+
+// acquireSessionSubscription serializes registration and cleanup for one session.
+// The channel wait also ends when the owning native process stops.
+func (a *Agent) acquireSessionSubscription(state *sessionState) (func(), error) {
+	return a.acquireSessionSubscriptionContext(a.Context(), state)
+}
+
+func (a *Agent) acquireSessionSubscriptionContext(ctx context.Context, state *sessionState) (func(), error) {
+	if state == nil {
+		return nil, agent.ErrChildRouteNotReady
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	a.stateMu.Lock()
+	if state.subscriptionLock == nil {
+		state.subscriptionLock = make(chan struct{}, 1)
+	}
+	slot := state.subscriptionLock
+	a.stateMu.Unlock()
+	select {
+	case slot <- struct{}{}:
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	case <-a.Context().Done():
+		return nil, a.Context().Err()
+	}
+	if err := ctx.Err(); err != nil {
+		<-slot
+		return nil, err
+	}
+	if err := a.Context().Err(); err != nil {
+		<-slot
+		return nil, err
+	}
+	var once sync.Once
+	return func() { once.Do(func() { <-slot }) }, nil
 }
 
 type itemState struct {
-	params              itemParams
-	raw                 []byte
-	opened              bool
-	persistedRevision   int64
-	deltas              map[string]string
-	cursors             map[string]bool
-	order               uint64
-	generationScopes    []string
-	lastGenerationField string
-	generationPart      uint64
+	params        itemParams
+	raw           []byte
+	nativeItemRaw json.RawMessage
+	registry      *registryPublication
+	opened        bool
+	// retainedRevision includes writes that the shared queue owns for retry.
+	retainedRevision     int64
+	retainedWriteReceipt *agent.TranscriptWriteReceipt
+	retainedPublication  *nativeToolPublication
+	deltas               map[string]string
+	cursors              map[string]bool
+	order                uint64
+	generationScopes     []string
+	lastGenerationField  string
+	generationPart       uint64
+}
+
+// nativeObject returns the unchanged item object from its stored native source.
+// A metadata-only item retains that object until a genuine frame arrives.
+func (item *itemState) nativeObject() json.RawMessage {
+	if len(item.nativeItemRaw) > 0 {
+		return item.nativeItemRaw
+	}
+	var frame struct {
+		Params struct {
+			Item json.RawMessage `json:"item"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(item.raw, &frame) != nil {
+		return nil
+	}
+	return frame.Params.Item
 }
 
 type inputPart struct {
@@ -103,12 +185,12 @@ func inputParts(text string, attachments []*leapmuxv1.Attachment) ([]inputPart, 
 			return nil, err
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			attachmentText := providerkit.BuildInlineTextAttachmentBlock(attachment)
 			parts = append(parts, inputPart{Type: "text", Text: &attachmentText})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
 			return nil, fmt.Errorf("the Muse MSP input does not accept %s attachments", attachment.Kind)
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			parts = append(parts, inputPart{Type: "image", MediaType: attachment.MIMEType, Base64Data: base64.StdEncoding.EncodeToString(attachment.Data)})
 		}
 	}
@@ -208,10 +290,16 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 func (a *Agent) HandleOutput(raw []byte) { a.handleOutput(providerkit.ParseLine(raw)) }
 func (a *Agent) Stop() {
 	_ = a.close()
+	a.subscriptionWork.CloseAndWait()
+	a.logRecoveryWork.CloseAndWait()
+	a.viewWork.CloseAndWait()
 	a.retireHost(a.ProcessExitCompletion())
 }
 func (a *Agent) Wait() error {
 	err := a.wait()
+	a.subscriptionWork.CloseAndWait()
+	a.logRecoveryWork.CloseAndWait()
+	a.viewWork.CloseAndWait()
 	a.retireHost(a.ProcessExitCompletion())
 	return err
 }

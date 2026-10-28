@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "muse_parent_input_conformance.schema.json",
+  "title": "Native Muse parent-input conformance records",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "cases"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "parentSessionId",
+          "childSessionId",
+          "subagentId",
+          "runId",
+          "initialObjective",
+          "expectedBody",
+          "original",
+          "answer",
+          "records",
+          "parentRecords",
+          "childRecords"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parentSessionId": {
+            "type": "string"
+          },
+          "childSessionId": {
+            "type": "string"
+          },
+          "subagentId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "initialObjective": {
+            "type": "string"
+          },
+          "expectedBody": {
+            "type": "string"
+          },
+          "original": {
+            "type": "object"
+          },
+          "answer": {
+            "type": "object"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "parentRecords": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "childRecords": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  }
+}

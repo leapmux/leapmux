@@ -390,6 +390,23 @@ describe('the write queue', () => {
     expect(localStorageGet(KEY_CHANNEL_RELAY_SEQ)).toBe(1)
   })
 
+  it.each([false, true])('keeps a reset through later sequence writes when the batch is split=%s', async (splitBatch) => {
+    localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.POSITIVE_INFINITY)
+    await flushStorageWrites()
+
+    const removed = localStorageRemove(KEY_CHANNEL_RELAY_SEQ)
+    const first = localStorageSet(KEY_CHANNEL_RELAY_SEQ, 1)
+    if (splitBatch)
+      await Promise.resolve()
+    const second = localStorageSet(KEY_CHANNEL_RELAY_SEQ, 2)
+    const third = localStorageSet(KEY_CHANNEL_RELAY_SEQ, 3)
+    await expect(Promise.all([removed.durable, first.durable, second.durable, third.durable])).resolves.toEqual([true, true, true, true])
+    await flushStorageWrites()
+
+    expect(localStorageGet(KEY_CHANNEL_RELAY_SEQ)).toBe(3)
+    expect(await readKvRow('leapmux:channel-relay-seq')).toMatchObject({ v: 3 })
+  })
+
   it('lets a larger monotonic mark through', async () => {
     localStorageSet(KEY_CHANNEL_RELAY_SEQ, 10)
     await flushStorageWrites()

@@ -17,6 +17,31 @@ function request(operation: 'complete' | 'progress' = 'complete', feedback = '<f
 }
 
 describe('diracAttachmentRequest', () => {
+  it.each([1, 2])('keeps an attachment-only native user row with %i images after a completed response', (count) => {
+    const input = request()
+    const row = input.body.messages[2]!
+    row.content = Array.from({ length: count }, (_, index) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,ORIGINAL_BYTES_${index}` } }))
+    const original = structuredClone(input)
+    const result = diracAttachmentRequest(input)
+    expect(result.body).toEqual({ messages: [original.body.messages[2]] })
+    expect((result.body as { messages: unknown[] }).messages[0]).toBe(row)
+    expect(input).toEqual(original)
+    expect(result.path).toBe(input.path)
+  })
+
+  it.each([
+    { content: [] },
+    { content: [{ type: 'image_url' }] },
+    { content: [{ type: 'image_url', image_url: { url: '' } }] },
+    { content: [{ type: 'image_url', image_url: { url: ' ' } }] },
+    { content: [{ type: 'audio', data: 'not a native image' }] },
+  ])('rejects a malformed attachment-only user row: $content', ({ content }) => {
+    const input = request()
+    const row = { role: 'user', content }
+    const altered = { ...input, body: { messages: [...input.body.messages.slice(0, 2), row] } }
+    expect(() => diracAttachmentRequest(altered)).toThrow('native user feedback envelope')
+  })
+
   it('keeps the actual next user row and its image without changing the native receipt', () => {
     const input = request()
     const original = structuredClone(input)

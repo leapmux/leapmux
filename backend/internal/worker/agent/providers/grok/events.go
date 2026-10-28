@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -92,12 +93,13 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 		contracts.GrokMethodFolderTrust:
 		return a.publishGrokControlRequest(line)
 	case contracts.GrokMethodSessionNotification, grokSessionUpdateMethod,
-		grokTaskBackgroundedMethod, grokTaskCompletedMethod:
-		a.handleSessionNotification(line)
-		return true
-	case grokQueueChangedMethod:
-		a.handleQueueChanged(line.Params)
-		return true
+		grokTaskBackgroundedMethod, grokTaskCompletedMethod, grokQueueChangedMethod:
+		if line.HasID() {
+			return false
+		}
+		return a.RouteSessionNotification(acp.SessionNotification{
+			Raw: line.Raw, ResolveSession: a.notificationSession, Dispatch: a.dispatchSessionNotification,
+		})
 	case grokMethodMcpElicitComplete:
 		a.completeURLElicitation(line.Params)
 		return true
@@ -114,6 +116,31 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 		return true
 	}
 	return false
+}
+
+func (a *Agent) notificationSession(raw json.RawMessage) (string, bool) {
+	var frame struct {
+		Params struct {
+			SessionID string `json:"sessionId"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &frame) != nil {
+		return "", false
+	}
+	if frame.Params.SessionID != "" {
+		return frame.Params.SessionID, true
+	}
+	root := a.CurrentSessionID()
+	return root, root != ""
+}
+
+func (a *Agent) dispatchSessionNotification(sessionID string, raw json.RawMessage) {
+	line := providerkit.ParseLine(raw)
+	if line.Method == grokQueueChangedMethod {
+		a.handleQueueChanged(line.Params)
+		return
+	}
+	a.handleSessionNotification(sessionID, line)
 }
 
 // completeURLElicitation accepts the URL elicitation flow that Grok's own
@@ -135,11 +162,14 @@ func (a *Agent) completeURLElicitation(params json.RawMessage) {
 }
 
 // handleSessionNotification dispatches one Grok session notification.
-func (a *Agent) handleSessionNotification(line *providerkit.ParsedLine) {
+func (a *Agent) handleSessionNotification(sessionID string, line *providerkit.ParsedLine) {
 	var notification grokNotification
 	if err := json.Unmarshal(line.Params, &notification); err != nil {
 		slog.Warn("grok session notification unmarshal failed", "agent_id", a.AgentID(), "method", line.Method, "error", err)
 		return
+	}
+	if notification.SessionID == "" {
+		notification.SessionID = sessionID
 	}
 	var header struct {
 		SessionUpdate string `json:"sessionUpdate"`
@@ -165,7 +195,9 @@ func (a *Agent) handleSessionNotification(line *providerkit.ParsedLine) {
 	case grokUpdatePendingInteraction:
 		a.handlePendingInteraction(notification.SessionID, notification.Update)
 	case grokUpdateSubagentSpawned:
-		a.handleSubagentSpawned(notification.Update)
+		if root, served := a.SessionRoot(notification.SessionID); served {
+			a.handleSubagentSpawned(root, notification.Update)
+		}
 	case grokUpdateSubagentFinished:
 		a.handleSubagentFinished(notification.Update)
 	case grokUpdateWorkflowUpdated:

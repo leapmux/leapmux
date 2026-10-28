@@ -57,6 +57,19 @@ func TestBuildMiMoCatalog(t *testing.T) {
 		"only a visible primary agent runs a prompt")
 }
 
+func TestBuildMiMoCatalogReadsNativeAudioCapabilitiesIncludingHiddenModels(t *testing.T) {
+	t.Parallel()
+	var providers mimoConfigProviders
+	require.NoError(t, json.Unmarshal([]byte(`{"providers":[{"id":"mock","models":{"audio":{"id":"audio","capabilities":{"input":{"audio":true}}},"text":{"id":"text","capabilities":{"input":{"audio":false}}},"unknown":{"id":"unknown"},"old":{"id":"old","status":"deprecated","capabilities":{"input":{"audio":true}}}}}]}`), &providers))
+	catalog := buildMiMoCatalog(providers, mimoConfig{}, nil)
+	for id, supported := range map[string]bool{"audio": true, "text": false, "unknown": false, "old": true} {
+		model := agent.FindAvailableModel(catalog.models, "mock/"+id)
+		require.NotNil(t, model)
+		assert.Equal(t, supported, model.SupportsAudioInput, id)
+		assert.Equal(t, id == "old", model.Hidden, id)
+	}
+}
+
 // A catalog id is `<provider>/<model>`, so a provider or a model that states
 // no id cannot have one. A model that states no id of its own takes its key in
 // the reply's object.

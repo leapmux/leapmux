@@ -35,11 +35,10 @@ const acpStaleSessionRequestError = -32602
 // not close yet. A context clear closes what it holds, because no later update
 // of the outgoing session reaches the base.
 //
-// It is a copy of what the registry states, and it stays safe for that reason:
-// the data flows one way (each write goes to the registry first), and a missed
-// entry costs one row that the clear leaves running, which is the state before
-// this copy existed. It has its own lock, because the reader goroutine opens
-// rows while a worker goroutine clears the context.
+// It records accepted registry intent. Registry-only batches enter the output
+// queue before this inventory changes, so retirement closes follow their writes.
+// Ordinary child observations record their successful synchronous writes.
+// It has its own lock because the reader opens rows while another goroutine clears the context.
 type acpOpenRows struct {
 	mu   sync.Mutex
 	keys map[string]struct{}
@@ -244,15 +243,15 @@ func (b *Base) sendSessionCancel(sessionID string) error {
 //   - The provider's own RetireSession hook runs last, for an agent that
 //     offers another route to that work.
 func (b *Base) retireSession(sessionID string) {
+	defer b.FlushRegistryObservations()
 	for _, rowKey := range b.openRows.takeAll() {
 		if b.childIdentityRefused(rowKey) {
 			continue
 		}
 		b.finishChildConversation(rowKey, bgtask.StatusStopped)
-		if err := b.sink.CloseBackgroundTask(rowKey, bgtask.StatusStopped); err != nil {
+		if err := b.main().closeRegistryRow(rowKey, bgtask.StatusStopped); err != nil {
 			slog.Warn("acp close a row of a retired session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "row_key", rowKey, "error", err)
 		}
-		b.cleanupChildAgent(rowKey)
 		b.forgetChild(rowKey)
 	}
 	// A registry-restored child also ends with the session unless identity validation refused it.

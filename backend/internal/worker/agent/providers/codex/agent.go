@@ -164,6 +164,7 @@ type Agent struct {
 // codexMainTurn owns one main turn's identity and retry state. Agent.Mu protects it.
 // A retry keeps its own input copy and completion channel after this record ends.
 type codexMainTurn struct {
+	model               string
 	id                  string
 	input               []map[string]interface{}
 	agentMessageStarted bool
@@ -568,7 +569,10 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	if err != nil {
 		return err
 	}
-	input := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	if err != nil {
+		return err
+	}
 	pending, err := a.dispatchInputForSession(expected, input)
 	if pending != nil {
 		a.PublishTurnActive()
@@ -680,8 +684,11 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	// Retry acceptance must wait until every earlier steer resolves.
 	a.mainTurn.steers++
 	a.Mu.Unlock()
-	input := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
-	ticket, err := a.sendTurnSteer(threadID, turnID, input, trackEcho)
+	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	var ticket providerkit.SteerTicket
+	if err == nil {
+		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho)
+	}
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
 	a.retryOfferMu.Lock()
@@ -736,30 +743,39 @@ func (a *Agent) turnInputRetainedLocked(turnID string) bool {
 }
 
 // buildCodexInputBlocks converts text + classified attachments into Codex's
-// input format. Images use data URI format; text attachments are inlined.
-func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachment) []map[string]interface{} {
+// input format. Images and audio use data URIs; text attachments are inlined.
+func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachment) ([]map[string]interface{}, error) {
+	for _, attachment := range classified {
+		if err := (codexProvider{}).ValidateAttachment(attachment); err != nil {
+			return nil, err
+		}
+	}
 	var input []map[string]interface{}
 	if content != "" {
 		input = append(input, map[string]interface{}{"type": "text", "text": content})
 	}
 	for _, attachment := range classified {
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			input = append(input, map[string]interface{}{
 				"type": "text",
 				"text": providerkit.BuildInlineTextAttachmentBlock(attachment),
 			})
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			input = append(input, map[string]interface{}{
 				"type": "image",
 				"url":  providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),
 			})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
-			// Codex's input items have no representation for either, so the
-			// attachment is omitted from the turn rather than sent as junk text.
+		case contracts.AttachmentMediaKindAudio:
+			input = append(input, map[string]interface{}{
+				"type": "audio",
+				"url":  providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),
+			})
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary:
+			// Validation above refuses kinds with no native input representation.
 		}
 	}
-	return input
+	return input, nil
 }
 
 // turnSettings is the snapshot of agent state that every later turn uses. turn/start

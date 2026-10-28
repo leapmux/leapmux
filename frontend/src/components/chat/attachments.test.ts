@@ -1,6 +1,6 @@
 import type { FileAttachment } from './attachments'
 import type { AttachmentCapabilities } from './providers/registry'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MAX_AGENT_INPUT_ITEM_BYTES } from '~/generated/contracts/agent-input'
 import {
   buildAcceptAttribute,
@@ -24,17 +24,44 @@ const claudeCapabilities: AttachmentCapabilities = {
   text: true,
   image: true,
   pdf: true,
+  audio: false,
   binary: false,
 }
 
-const codexCapabilities: AttachmentCapabilities = {
+const textAndImageCapabilities: AttachmentCapabilities = {
   text: true,
   image: true,
   pdf: false,
+  audio: false,
   binary: false,
 }
 
 describe('inferAttachmentDetails', () => {
+  it('does not decode known media or binary data as text', () => {
+    const decode = vi.spyOn(TextDecoder.prototype, 'decode')
+    try {
+      const bytes = new TextEncoder().encode('Media bytes without a NUL byte.')
+      for (const [filename, mime] of [['voice.wav', 'audio/wav'], ['image.png', 'image/png'], ['document.pdf', 'application/pdf'], ['archive.zip', 'application/zip']] as const) {
+        inferAttachmentDetails(filename, mime, bytes)
+      }
+      expect(decode).not.toHaveBeenCalled()
+    }
+    finally {
+      decode.mockRestore()
+    }
+  })
+  it.each([
+    ['native.doc', 'application/msword'],
+    ['native.DOCX', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['native.xls', 'application/vnd.ms-excel'],
+    ['native.XLSX', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ])('infers the Office type of %s without treating its bytes as text', (filename, expectedMime) => {
+    for (const given of ['', 'application/octet-stream']) {
+      for (const data of [new Uint8Array(), new TextEncoder().encode('Office bytes'), new Uint8Array([0xFF, 0])])
+        expect(inferAttachmentDetails(filename, given, data)).toEqual({ kind: 'binary', mimeType: expectedMime })
+    }
+  })
+
   it('accepts image types', () => {
     expect(inferAttachmentDetails('test.png', 'image/png', new Uint8Array([137, 80, 78, 71]))).toEqual({
       kind: 'image',
@@ -84,14 +111,14 @@ describe('isImageMimeType', () => {
 })
 
 describe('attachment support', () => {
-  it('allows text across Claude and Codex', () => {
+  it('allows text across the declared attachment policies', () => {
     expect(isAttachmentSupported('text', claudeCapabilities)).toBe(true)
-    expect(isAttachmentSupported('text', codexCapabilities)).toBe(true)
+    expect(isAttachmentSupported('text', textAndImageCapabilities)).toBe(true)
   })
 
-  it('rejects pdf and binary for Codex', () => {
-    expect(isAttachmentSupported('pdf', codexCapabilities)).toBe(false)
-    expect(isAttachmentSupported('binary', codexCapabilities)).toBe(false)
+  it('rejects pdf and binary for a text and image policy', () => {
+    expect(isAttachmentSupported('pdf', textAndImageCapabilities)).toBe(false)
+    expect(isAttachmentSupported('binary', textAndImageCapabilities)).toBe(false)
   })
 
   it('builds provider-specific rejection copy', () => {
@@ -102,7 +129,7 @@ describe('attachment support', () => {
 
 describe('buildAcceptAttribute', () => {
   it('includes text extensions for non-binary providers', () => {
-    const accept = buildAcceptAttribute(codexCapabilities)!
+    const accept = buildAcceptAttribute(textAndImageCapabilities)!
     expect(accept).toContain('.css')
     expect(accept).toContain('.csv')
     expect(accept).toContain('image/png')
@@ -110,7 +137,7 @@ describe('buildAcceptAttribute', () => {
   })
 
   it('omits accept when provider supports arbitrary binary attachments', () => {
-    expect(buildAcceptAttribute({ text: true, image: true, pdf: true, binary: true })).toBeUndefined()
+    expect(buildAcceptAttribute({ text: true, image: true, pdf: true, audio: false, binary: true })).toBeUndefined()
   })
 })
 
@@ -293,5 +320,122 @@ describe('collectDroppedAttachmentFiles', () => {
 
     expect(result.sizeLimitHit).toBe(true)
     expect(result.files.map(file => file.filename)).toEqual(['big/first.txt'])
+  })
+
+  it('keeps readable files before and after an unreadable directory entry', async () => {
+    const first = createFileEntry('project/a.txt', new File(['first'], 'a.txt'))
+    const broken = {
+      ...createFileEntry('project/b.txt', new File([], 'b.txt')),
+      file: (_resolve: (file: File) => void, reject: (error: DOMException) => void) => reject(new DOMException('Unavailable', 'NotReadableError')),
+    }
+    const last = createFileEntry('project/c.txt', new File(['last'], 'c.txt'))
+    const transfer = mockDataTransfer([{ webkitGetAsEntry: () => createDirectoryEntry('project', [first, broken, last]) }])
+    const result = await collectDroppedAttachmentFiles(transfer)
+    expect(result.files.map(file => file.filename)).toEqual(['project/a.txt', 'project/c.txt'])
+    expect(result).toMatchObject({ sizeLimitHit: false, failures: [{ path: 'project/b.txt' }] })
+  })
+
+  it('keeps entries from earlier batches when directory enumeration fails', async () => {
+    const first = createFileEntry('project/a.txt', new File(['first'], 'a.txt'))
+    let batches = 0
+    const directory = {
+      ...createDirectoryEntry('project', []),
+      createReader: () => ({
+        readEntries: (resolve: (entries: unknown[]) => void, reject: (error: DOMException) => void) => {
+          if (batches++ === 0)
+            resolve([first])
+          else
+            reject(new DOMException('Unavailable', 'NotReadableError'))
+        },
+      }),
+    }
+    const result = await collectDroppedAttachmentFiles(mockDataTransfer([{ webkitGetAsEntry: () => directory }]))
+    expect(result.files.map(file => file.filename)).toEqual(['project/a.txt'])
+    expect(result).toMatchObject({ sizeLimitHit: false, failures: [{ path: 'project' }] })
+  })
+
+  it('keeps other dropped entries when one entry lookup fails', async () => {
+    const first = createFileEntry('first.txt', new File(['first'], 'first.txt'))
+    const last = createFileEntry('last.txt', new File(['last'], 'last.txt'))
+    const transfer = mockDataTransfer([
+      { webkitGetAsEntry: () => first },
+      { webkitGetAsEntry: () => { throw new DOMException('Unavailable', 'NotReadableError') } },
+      { webkitGetAsEntry: () => last },
+    ])
+    const result = await collectDroppedAttachmentFiles(transfer)
+    expect(result.files.map(file => file.filename)).toEqual(['first.txt', 'last.txt'])
+    expect(result).toMatchObject({ failures: [{}] })
+  })
+})
+
+describe('native audio MIME inference', () => {
+  it.each([
+    ['tone.flac', 'audio/flac'],
+    ['tone.AAC', 'audio/aac'],
+  ])('infers %s as audio for empty, text-like and binary bytes', (filename, mimeType) => {
+    for (const supplied of ['', 'application/octet-stream']) {
+      for (const data of [new Uint8Array(), new TextEncoder().encode('audio bytes'), new Uint8Array([0xFF, 0])])
+        expect(inferAttachmentDetails(filename, supplied, data)).toEqual({ kind: 'audio', mimeType })
+    }
+    expect(inferAttachmentDetails(filename, 'text/plain', new TextEncoder().encode('explicit text'))).toEqual({ kind: 'text', mimeType: 'text/plain' })
+  })
+
+  it.each([
+    ['sample.wav', 'audio/wav'],
+    ['sample.MP3', 'audio/mpeg'],
+    ['sample.m4a', 'audio/mp4'],
+    ['sample.webm', 'audio/webm'],
+    ['sample.ogg', 'audio/ogg'],
+  ])('keeps %s audio when its bytes are valid UTF-8 and MIME is absent', (filename, mimeType) => {
+    expect(inferAttachmentDetails(filename, '', new Uint8Array([0, 1, 2]))).toEqual({ kind: 'audio', mimeType })
+    expect(inferAttachmentDetails(filename, 'application/octet-stream', new Uint8Array([0, 1, 2]))).toEqual({ kind: 'audio', mimeType })
+  })
+})
+
+describe('restricted audio attachments', () => {
+  const capabilities: AttachmentCapabilities = { text: true, image: false, pdf: false, audio: ['audio/wav'], binary: false }
+
+  it('allows only the declared audio MIME types', () => {
+    expect(isAttachmentSupported('audio', capabilities, 'audio/wav')).toBe(true)
+    expect(isAttachmentSupported('audio', capabilities, ' AUDIO/WAV ')).toBe(true)
+    expect(isAttachmentSupported('audio', capabilities, 'audio/flac')).toBe(false)
+    expect(isAttachmentSupported('audio', capabilities)).toBe(false)
+    expect(isAttachmentSupported('audio', { ...capabilities, audio: [] }, 'audio/wav')).toBe(false)
+    expect(isAttachmentSupported('audio', { ...capabilities, audio: true }, 'audio/flac')).toBe(true)
+    expect(isAttachmentSupported('audio', { ...capabilities, audio: false, binary: true }, 'audio/wav')).toBe(false)
+    expect(isAttachmentSupported('audio', undefined, 'audio/wav')).toBe(false)
+  })
+
+  it('lists restricted MIME types without allowing arbitrary binaries', () => {
+    const accepted = buildAcceptAttribute(capabilities)?.split(',')
+    expect(accepted).toContain('audio/wav')
+    expect(accepted).toContain('.txt')
+    expect(accepted).not.toContain('.wav')
+    expect(accepted).not.toContain('application/zip')
+    expect(buildAcceptAttribute({ ...capabilities, binary: true })).toBeUndefined()
+    expect(describeUnsupportedAttachment('audio', 'Codex', capabilities)).toBe('Codex does not support this audio file type')
+  })
+
+  it('keeps a restricted binary policy independent from audio', () => {
+    const restricted = { ...capabilities, audio: false, binary: ['application/zip'] }
+    expect(isAttachmentSupported('binary', restricted, 'application/zip')).toBe(true)
+    expect(isAttachmentSupported('binary', restricted, 'application/octet-stream')).toBe(false)
+    expect(isAttachmentSupported('audio', restricted, 'audio/wav')).toBe(false)
+  })
+})
+
+describe('native file MIME inference', () => {
+  it('keeps a recognized image binary type when MIME is absent', () => {
+    expect(inferAttachmentDetails('image.png', '', new Uint8Array([137, 80, 78, 71]))).toEqual({ kind: 'image', mimeType: 'image/png' })
+  })
+
+  it('keeps a recognized PDF type when MIME is generic and bytes are valid UTF-8', () => {
+    expect(inferAttachmentDetails('notes.pdf', 'application/octet-stream', new TextEncoder().encode('%PDF-1.4'))).toEqual({ kind: 'pdf', mimeType: 'application/pdf' })
+  })
+})
+
+describe('independent audio attachment kind', () => {
+  it('classifies audio independently from arbitrary binary data', () => {
+    expect(inferAttachmentDetails('voice.wav', 'audio/wav', new Uint8Array([0, 1]))).toEqual({ kind: 'audio', mimeType: 'audio/wav' })
   })
 })

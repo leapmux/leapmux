@@ -190,7 +190,7 @@ export async function exerciseRestoredNativeOption(context: ManagedNativeScenari
  * A menu keeps the options that it shows until it closes.
  * Wait again after the prepare step, because a setting that the step changes can restart the agent.
  */
-async function prepareOnLiveCatalog(page: Page, prepare: (() => Promise<void>) | undefined): Promise<void> {
+export async function prepareOnLiveCatalog(page: Page, prepare: (() => Promise<void>) | undefined): Promise<void> {
   await waitForNativeSettingsHydrated(page)
   if (prepare === undefined)
     return

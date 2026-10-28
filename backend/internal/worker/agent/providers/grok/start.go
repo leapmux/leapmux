@@ -26,6 +26,10 @@ const grokFolderTrustCapability = "x.ai/folderTrust"
 // flag.
 const grokDisableAutoUpdaterEnv = "GROK_DISABLE_AUTOUPDATER=1"
 
+// The child message route and its opaque addresses require this native feature.
+// Pin it before initialization so each advertised child send has native support.
+const grokActiveAgentMessagesEnv = "GROK_ACTIVE_AGENT_MESSAGES=1"
+
 // Start starts a Grok Build ACP agent process and performs the handshake.
 //
 // `--no-leader` keeps the process to itself. Without it, a user config.toml
@@ -37,7 +41,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Registration:  Registration(),
 		ProviderName:  "grok",
 		BaseArgs:      []string{"agent", "--no-leader", "stdio"},
-		PinnedEnv:     []string{grokDisableAutoUpdaterEnv},
+		PinnedEnv:     []string{grokDisableAutoUpdaterEnv, grokActiveAgentMessagesEnv},
 		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },

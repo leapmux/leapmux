@@ -203,7 +203,10 @@ func (zcodeProvider) ReportsDefaultModelSentinel() bool { return false }
 // Agent.SendInput, which is the only place that knows the model -- see
 // attachments.go.
 func (zcodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
 		return fmt.Errorf("zcode does not support binary attachments: %s", attachment.Filename)
 	}
 	return nil

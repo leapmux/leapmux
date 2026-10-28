@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -43,6 +45,46 @@ func TestOptionGroupsStateEveryAxis(t *testing.T) {
 	}
 	assert.Equal(t, want, map[string]string(options))
 	assert.Equal(t, want, map[string]string(a.SettingsSnapshot().SurfacedOptions))
+}
+
+func TestOperateModeIsOffered(t *testing.T) {
+	t.Parallel()
+	a, _ := settledAgent(t, nil)
+	for _, groups := range [][]*leapmuxv1.AvailableOptionGroup{Registration().OptionGroups, a.OptionGroups()} {
+		group := optionids.GroupByID(groups, contracts.CodewhaleOptionMode)
+		require.NotNil(t, group)
+		var ids []string
+		for _, choice := range group.Options {
+			ids = append(ids, choice.Id)
+		}
+		assert.Equal(t, []string{"agent", "plan", "operate"}, ids)
+		assert.Equal(t, "agent", group.DefaultValue)
+	}
+}
+
+func TestOperateModeIsAppliedAndRestored(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	a, _ := settledAgent(t, rt)
+	for index, mode := range []string{"operate", "plan", "agent"} {
+		rt.respondJSON(http.MethodPatch, threadRoute, http.StatusOK, threadRecord{ID: testThreadID, Model: "deepseek-flash", Mode: mode, PermissionPosture: "ask"})
+		result := a.UpdateSettings(optionmap.Map{contracts.CodewhaleOptionMode: mode})
+		require.Len(t, rt.requestsTo(http.MethodPatch, threadRoute), index+1)
+		assert.Equal(t, map[string]any{"mode": mode}, rt.lastBody(t, http.MethodPatch, threadRoute))
+		assert.Equal(t, mode, result.ConfirmedOptions()[contracts.CodewhaleOptionMode])
+		assert.Equal(t, mode, agent.CurrentOptions(a.OptionGroups())[contracts.CodewhaleOptionMode])
+	}
+}
+
+func TestOperateModeNativeRefusalKeepsTheCurrentMode(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	rt.respondStatus(http.MethodPatch, threadRoute, http.StatusBadRequest, "mode refused")
+	a, _ := settledAgent(t, rt)
+	result := a.UpdateSettings(optionmap.Map{contracts.CodewhaleOptionMode: "operate"})
+	require.Len(t, rt.requestsTo(http.MethodPatch, threadRoute), 1)
+	assert.Equal(t, "agent", result.SurfacedOptions[contracts.CodewhaleOptionMode])
+	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[contracts.CodewhaleOptionMode].State)
 }
 
 func TestOutputStyleSettingsRequireRestart(t *testing.T) {
@@ -145,7 +187,7 @@ func TestUpdateSettingsIgnoresAValueNoAxisOffers(t *testing.T) {
 	rt := newFakeRuntime(t)
 	a, _ := settledAgent(t, rt)
 	result := a.UpdateSettings(optionmap.Map{
-		contracts.CodewhaleOptionMode: "operate",
+		contracts.CodewhaleOptionMode: "unknown-mode",
 		agent.OptionIDPermissionMode:  "yolo",
 		"an_unknown_axis":             "x",
 		agent.OptionIDModel:           "",

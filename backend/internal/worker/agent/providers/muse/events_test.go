@@ -53,7 +53,7 @@ func TestMuseRetiredSessionEventsDoNotChangeReplacementState(t *testing.T) {
 			a.sessions["session"].retired = true
 			a.sessionID = "replacement"
 			a.sessions["replacement"] = &sessionState{
-				sink: a.sink, items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("replacement"),
+				sink: a.sink, items: make(map[string]*itemState), completed: make(map[string]turnCompletionState), log: newNativeLog("replacement"),
 			}
 			goal := agent.GoalUpdate{Objective: "The replacement objective", Status: agent.GoalStatusActive}
 			sink.UpsertGoal(goal)
@@ -86,7 +86,7 @@ func TestMuseChildGoalEventsDoNotChangeTheRootGoal(t *testing.T) {
 			sink.UpsertGoal(before)
 			a.sessions["child-session"] = &sessionState{
 				sink: a.sink, childID: "native-child", childKey: "native-key", parentSessionID: "session",
-				items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("child-session"),
+				items: make(map[string]*itemState), completed: make(map[string]turnCompletionState), log: newNativeLog("child-session"),
 			}
 			feed(t, a, methodSessionGoalChanged, goalEventParams("child-session", scenario.goal))
 			assert.Equal(t, []agent.GoalUpdate{before}, sink.Goals())

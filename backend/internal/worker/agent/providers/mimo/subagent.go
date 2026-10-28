@@ -650,17 +650,25 @@ var errSubagentIdle = errors.New("MiMo reports no turn that a message starts on 
 func (a *Agent) actorForRowKey(rowKey string) (mimoActor, string, bool) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
+	actor := a.actorForRowKeyLocked(rowKey)
+	if actor == nil {
+		return mimoActor{}, "", false
+	}
+	return *actor, a.sessionID, true
+}
+
+func (a *Agent) actorForRowKeyLocked(rowKey string) *mimoActor {
 	if actorID, ok := a.spawnActors[rowKey]; ok {
 		if actor := a.actors[actorID]; actor != nil {
-			return *actor, a.sessionID, true
+			return actor
 		}
 	}
 	for _, actor := range a.actors {
 		if actor.rowKey == rowKey {
-			return *actor, a.sessionID, true
+			return actor
 		}
 	}
-	return mimoActor{}, "", false
+	return nil
 }
 
 // SendChildInput takes the message that the queue dispatches to a subagent, and
@@ -714,11 +722,17 @@ func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv
 
 // sendChildInputBuilt separates prompt construction from the captured delivery target.
 func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([]mimoPromptPart, error)) error {
-	actor, sessionID, ok := a.actorForRowKey(childKey)
-	if !ok {
+	a.Mu.Lock()
+	actor, sessionID := a.actorForRowKeyLocked(childKey), a.sessionID
+	running := actor != nil && actor.running
+	a.Mu.Unlock()
+	if actor == nil {
 		return fmt.Errorf("MiMo holds no subagent for %q in this session", childKey)
 	}
-	if !actor.running {
+	if sessionID == "" {
+		return fmt.Errorf("agent has no MiMo session")
+	}
+	if !running {
 		if steer {
 			return agent.ErrNoActiveTurn
 		}
@@ -736,14 +750,30 @@ func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	request := a.promptRequestLocked(parts, actor.id)
-	a.Mu.Unlock()
-	if sessionID == "" {
-		return fmt.Errorf("agent has no MiMo session")
+	if a.sessionID != sessionID || a.actorForRowKeyLocked(childKey) != actor || sessionID == "" {
+		a.Mu.Unlock()
+		return agent.ErrChildRouteNotReady
 	}
+	if a.sessionSwitching {
+		a.Mu.Unlock()
+		return agent.ErrAgentBusy
+	}
+	if !actor.running {
+		a.Mu.Unlock()
+		return agent.ErrNoActiveTurn
+	}
+	request, err := a.promptRequestLocked(parts, actor.id)
+	if err != nil {
+		a.Mu.Unlock()
+		return err
+	}
+	send := a.admitInputLocked(sessionID)
+	a.Mu.Unlock()
 	// The queue writes the message into the child transcript when it accepts the
 	// delivery, so this call writes no row of its own.
-	if err := a.rpc.promptAsync(a.Context(), sessionID, request); err != nil {
+	err = a.rpc.promptAsync(a.Context(), sessionID, request)
+	a.finishInput(sessionID, send, err)
+	if err != nil {
 		return classifyDeliveryError("subagent message", err)
 	}
 	return nil

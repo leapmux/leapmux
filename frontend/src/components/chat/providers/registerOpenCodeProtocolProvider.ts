@@ -1,7 +1,7 @@
 import type { ProviderTranscriptCapability } from './capabilities'
 import type { OpenCodeFamilyVocabulary } from './opencode/extractors/toolCall'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { OPENCODE_AUDIO_MIME, OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { registerACPProvider } from './acp/registerACPProvider'
 import { openCodeControlResponseSummary } from './opencode/controlResponse'
 import { openCodeExtractControl } from './opencode/extractControl'
@@ -50,7 +50,7 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     extractControl: openCodeExtractControl,
     planValue: PLAN_PRIMARY_AGENT,
     permissionPresets: openCodePermissionPresets,
-    attachments: { text: true, image: true, pdf: true, binary: false },
+    attachments: { text: true, image: true, pdf: true, audio: [...OPENCODE_AUDIO_MIME], binary: false },
     // This registration supplies the same question handling for both providers.
     // The backend's questionRequestContext hook also supplies one family implementation.
     controlResponseDisplay: openCodeControlResponseSummary,

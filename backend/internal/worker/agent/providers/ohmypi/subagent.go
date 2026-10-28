@@ -53,7 +53,7 @@ func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmux
 func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
 	// Native child input carries a message string only, unlike the root prompt's image array.
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if attachment.Kind != agent.AttachmentKindText {
+		if attachment.Kind != contracts.AttachmentMediaKindText {
 			return fmt.Errorf("the Oh My Pi child message supports text attachments only")
 		}
 	}

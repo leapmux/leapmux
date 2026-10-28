@@ -24,6 +24,8 @@ type ModelInfo struct {
 	SupportedEfforts []*EffortInfo
 	Description      string
 	ContextWindow    int64
+	// SupportsAudioInput states whether the model accepts attached audio.
+	SupportsAudioInput bool
 	// Hidden keeps a catalog entry available for capability resolution (effort
 	// tiers, context window) while excluding it from the model picker. Used for
 	// models the live CLI no longer offers but that a session might still run.
@@ -72,7 +74,7 @@ func (m *ModelInfo) equal(o *ModelInfo) bool {
 	}
 	return m.Id == o.Id && m.DisplayName == o.DisplayName && m.IsDefault == o.IsDefault &&
 		m.DefaultEffort == o.DefaultEffort && m.Description == o.Description &&
-		m.ContextWindow == o.ContextWindow && m.Hidden == o.Hidden &&
+		m.ContextWindow == o.ContextWindow && m.Hidden == o.Hidden && m.SupportsAudioInput == o.SupportsAudioInput &&
 		slices.EqualFunc(m.SupportedEfforts, o.SupportedEfforts, (*EffortInfo).equal)
 }
 

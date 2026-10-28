@@ -1,7 +1,9 @@
 /** Attachment types, cache, and helpers for the agent editor panel. */
 
 import type { AttachmentCapabilities } from './providers/registry'
+import type { AttachmentKind } from '~/generated/contracts/attachment-media'
 import { MAX_AGENT_INPUT_ITEM_BYTES } from '~/generated/contracts/agent-input'
+import { ATTACHMENT_MEDIA_AUDIO_MIME, ATTACHMENT_MEDIA_DOCUMENT_MIME, ATTACHMENT_MEDIA_IMAGE_MIME, ATTACHMENT_MEDIA_KIND } from '~/generated/contracts/attachment-media'
 import { randomUUID } from '~/lib/idGenerator'
 import { extname } from '~/lib/paths'
 import { queueEditDraftKeyPrefix } from './composer/draftIdentity'
@@ -21,8 +23,6 @@ export interface PendingAttachmentFile {
   file: File
   filename?: string
 }
-
-export type AttachmentKind = 'text' | 'image' | 'pdf' | 'binary'
 
 export interface AttachmentDetails {
   kind: AttachmentKind
@@ -70,12 +70,7 @@ interface FileSystemDirectoryReader {
   ) => void
 }
 
-const SUPPORTED_IMAGE_MIME_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-])
+const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>(Object.values(ATTACHMENT_MEDIA_IMAGE_MIME))
 
 const GENERIC_BINARY_MIME_TYPES = new Set([
   '',
@@ -135,6 +130,26 @@ const TEXT_MIME_BY_EXTENSION = new Map<string, string>([
   ['svg', 'image/svg+xml'],
 ])
 
+const BINARY_MIME_BY_EXTENSION = new Map<string, string>([
+  ['png', ATTACHMENT_MEDIA_IMAGE_MIME.Png],
+  ['jpg', ATTACHMENT_MEDIA_IMAGE_MIME.Jpeg],
+  ['jpeg', ATTACHMENT_MEDIA_IMAGE_MIME.Jpeg],
+  ['gif', ATTACHMENT_MEDIA_IMAGE_MIME.Gif],
+  ['webp', ATTACHMENT_MEDIA_IMAGE_MIME.Webp],
+  ['pdf', ATTACHMENT_MEDIA_DOCUMENT_MIME.Pdf],
+  ['doc', ATTACHMENT_MEDIA_DOCUMENT_MIME.Doc],
+  ['docx', ATTACHMENT_MEDIA_DOCUMENT_MIME.Docx],
+  ['xls', ATTACHMENT_MEDIA_DOCUMENT_MIME.Xls],
+  ['xlsx', ATTACHMENT_MEDIA_DOCUMENT_MIME.Xlsx],
+  ['wav', ATTACHMENT_MEDIA_AUDIO_MIME.Wav],
+  ['mp3', ATTACHMENT_MEDIA_AUDIO_MIME.Mpeg],
+  ['m4a', ATTACHMENT_MEDIA_AUDIO_MIME.Mp4],
+  ['webm', ATTACHMENT_MEDIA_AUDIO_MIME.Webm],
+  ['ogg', ATTACHMENT_MEDIA_AUDIO_MIME.Ogg],
+  ['flac', ATTACHMENT_MEDIA_AUDIO_MIME.Flac],
+  ['aac', ATTACHMENT_MEDIA_AUDIO_MIME.Aac],
+])
+
 const TEXT_FILE_EXTENSIONS = Array.from(TEXT_MIME_BY_EXTENSION.keys(), ext => `.${ext}`)
 
 const TEXTUAL_MIME_PREFIXES = ['text/']
@@ -151,7 +166,7 @@ const TEXTUAL_MIME_EXACT = new Set([
 export function buildAcceptAttribute(capabilities: AttachmentCapabilities | undefined): string | undefined {
   if (!capabilities)
     return undefined
-  if (capabilities.binary)
+  if (capabilities.binary === true)
     return undefined
 
   const accepted = new Set<string>()
@@ -164,7 +179,18 @@ export function buildAcceptAttribute(capabilities: AttachmentCapabilities | unde
       accepted.add(mime)
   }
   if (capabilities.pdf)
-    accepted.add('application/pdf')
+    accepted.add(ATTACHMENT_MEDIA_DOCUMENT_MIME.Pdf)
+  if (capabilities.audio === true) {
+    accepted.add('audio/*')
+  }
+  else if (typeof capabilities.audio !== 'boolean') {
+    for (const mime of capabilities.audio)
+      accepted.add(mime)
+  }
+  if (typeof capabilities.binary !== 'boolean') {
+    for (const mime of capabilities.binary)
+      accepted.add(mime)
+  }
 
   return accepted.size > 0 ? [...accepted].join(',') : undefined
 }
@@ -179,7 +205,7 @@ function inferredMimeTypeFromFilename(filename: string): string {
     return 'text/plain'
   if (lower === '.gitignore' || lower === '.editorconfig' || lower === '.env')
     return 'text/plain'
-  return TEXT_MIME_BY_EXTENSION.get(extname(filename)) ?? ''
+  return TEXT_MIME_BY_EXTENSION.get(extname(filename)) ?? BINARY_MIME_BY_EXTENSION.get(extname(filename)) ?? ''
 }
 
 function isTextualMimeType(mime: string): boolean {
@@ -203,46 +229,61 @@ function isUtf8Text(data: Uint8Array): boolean {
 export function inferAttachmentDetails(filename: string, mimeType: string, data: Uint8Array): AttachmentDetails {
   const normalizedMime = normalizeMimeType(mimeType)
   const inferredMime = inferredMimeTypeFromFilename(filename)
-  const utf8 = isUtf8Text(data)
+  let utf8: boolean | undefined
+  const isTextData = () => utf8 ??= isUtf8Text(data)
   const effectiveMime = !GENERIC_BINARY_MIME_TYPES.has(normalizedMime)
     ? normalizedMime
-    : (inferredMime || (utf8 ? 'text/plain' : 'application/octet-stream'))
+    : (inferredMime || (isTextData() ? 'text/plain' : 'application/octet-stream'))
 
   if (SUPPORTED_IMAGE_MIME_TYPES.has(effectiveMime))
-    return { kind: 'image', mimeType: effectiveMime }
+    return { kind: ATTACHMENT_MEDIA_KIND.Image, mimeType: effectiveMime }
 
-  if (effectiveMime === 'application/pdf')
-    return { kind: 'pdf', mimeType: effectiveMime }
+  if (effectiveMime === ATTACHMENT_MEDIA_DOCUMENT_MIME.Pdf)
+    return { kind: ATTACHMENT_MEDIA_KIND.Pdf, mimeType: effectiveMime }
 
-  if (isTextualMimeType(effectiveMime) && utf8)
-    return { kind: 'text', mimeType: effectiveMime }
+  if (effectiveMime.startsWith('audio/'))
+    return { kind: ATTACHMENT_MEDIA_KIND.Audio, mimeType: effectiveMime }
 
-  if (GENERIC_BINARY_MIME_TYPES.has(normalizedMime) && utf8)
-    return { kind: 'text', mimeType: inferredMime || 'text/plain' }
+  if (isTextualMimeType(effectiveMime) && isTextData())
+    return { kind: ATTACHMENT_MEDIA_KIND.Text, mimeType: effectiveMime }
 
-  return { kind: 'binary', mimeType: effectiveMime || 'application/octet-stream' }
+  if (GENERIC_BINARY_MIME_TYPES.has(normalizedMime) && (!inferredMime || isTextualMimeType(inferredMime)) && isTextData())
+    return { kind: ATTACHMENT_MEDIA_KIND.Text, mimeType: inferredMime || 'text/plain' }
+
+  return { kind: ATTACHMENT_MEDIA_KIND.Binary, mimeType: effectiveMime || 'application/octet-stream' }
 }
 
-export function isAttachmentSupported(kind: AttachmentKind, capabilities: AttachmentCapabilities | undefined): boolean {
+function acceptsMediaType(policy: boolean | readonly string[], mimeType: string | undefined): boolean {
+  return typeof policy === 'boolean' ? policy : policy.includes(normalizeMimeType(mimeType ?? ''))
+}
+
+export function isAttachmentSupported(kind: AttachmentKind, capabilities: AttachmentCapabilities | undefined, mimeType?: string): boolean {
   if (!capabilities)
-    return true
+    return kind !== ATTACHMENT_MEDIA_KIND.Audio
   switch (kind) {
-    case 'text': return capabilities.text
-    case 'image': return capabilities.image
-    case 'pdf': return capabilities.pdf
-    case 'binary': return capabilities.binary
+    case ATTACHMENT_MEDIA_KIND.Text: return capabilities.text
+    case ATTACHMENT_MEDIA_KIND.Image: return capabilities.image
+    case ATTACHMENT_MEDIA_KIND.Pdf: return capabilities.pdf
+    case ATTACHMENT_MEDIA_KIND.Audio: return acceptsMediaType(capabilities.audio, mimeType)
+    case ATTACHMENT_MEDIA_KIND.Binary: return acceptsMediaType(capabilities.binary, mimeType)
   }
 }
 
-export function describeUnsupportedAttachment(kind: AttachmentKind, providerLabel: string): string {
+export function describeUnsupportedAttachment(kind: AttachmentKind, providerLabel: string, capabilities?: AttachmentCapabilities): string {
   switch (kind) {
-    case 'pdf':
+    case ATTACHMENT_MEDIA_KIND.Pdf:
       return `${providerLabel} does not support PDF attachments`
-    case 'binary':
-      return `${providerLabel} does not support binary attachments`
-    case 'image':
+    case ATTACHMENT_MEDIA_KIND.Audio:
+      return capabilities && typeof capabilities.audio !== 'boolean'
+        ? `${providerLabel} does not support this audio file type`
+        : `${providerLabel} does not support audio attachments`
+    case ATTACHMENT_MEDIA_KIND.Binary:
+      return capabilities && typeof capabilities.binary !== 'boolean'
+        ? `${providerLabel} does not support this binary file type`
+        : `${providerLabel} does not support binary attachments`
+    case ATTACHMENT_MEDIA_KIND.Image:
       return `${providerLabel} does not support image attachments`
-    case 'text':
+    case ATTACHMENT_MEDIA_KIND.Text:
       return `${providerLabel} does not support text attachments`
   }
 }
@@ -261,15 +302,21 @@ async function fileFromEntry(entry: FileSystemFileEntry): Promise<File> {
   })
 }
 
-async function readAllDirectoryEntries(entry: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+async function readAllDirectoryEntries(entry: FileSystemDirectoryEntry): Promise<{ entries: FileSystemEntry[], failed: boolean }> {
   const reader = entry.createReader()
   const entries: FileSystemEntry[] = []
   while (true) {
-    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
-      reader.readEntries(resolve, reject)
-    })
+    let batch: FileSystemEntry[]
+    try {
+      batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+        reader.readEntries(resolve, reject)
+      })
+    }
+    catch {
+      return { entries, failed: true }
+    }
     if (batch.length === 0)
-      return entries
+      return { entries, failed: false }
     entries.push(...batch)
   }
 }
@@ -278,65 +325,85 @@ function sortedEntries(entries: FileSystemEntry[]): FileSystemEntry[] {
   return entries.toSorted((a, b) => a.name.localeCompare(b.name))
 }
 
-async function collectFilesFromEntry(
-  entry: FileSystemEntry,
-  currentSizeRef: { value: number },
-  results: PendingAttachmentFile[],
-): Promise<boolean> {
-  if (entry.isFile) {
-    const file = await fileFromEntry(entry as FileSystemFileEntry)
-    if (currentSizeRef.value + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
-      return true
-    currentSizeRef.value += file.size
-    results.push({
-      file,
-      filename: entry.fullPath.replace(LEADING_SLASHES, ''),
-    })
-    return false
+interface AttachmentReadFailure {
+  path?: string
+}
+
+interface DroppedFileCollection {
+  files: PendingAttachmentFile[]
+  size: number
+  failures: AttachmentReadFailure[]
+}
+
+async function collectFilesFromEntry(entry: FileSystemEntry, collection: DroppedFileCollection): Promise<boolean> {
+  const path = entry.fullPath.replace(LEADING_SLASHES, '') || entry.name
+  try {
+    if (entry.isFile) {
+      const file = await fileFromEntry(entry as FileSystemFileEntry)
+      if (collection.size + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
+        return true
+      collection.size += file.size
+      collection.files.push({ file, filename: path })
+      return false
+    }
+    if (!entry.isDirectory)
+      return false
+
+    const { entries, failed } = await readAllDirectoryEntries(entry as FileSystemDirectoryEntry)
+    if (failed)
+      collection.failures.push({ path })
+    for (const childEntry of sortedEntries(entries)) {
+      if (await collectFilesFromEntry(childEntry, collection))
+        return true
+    }
   }
-
-  if (!entry.isDirectory)
-    return false
-
-  const childEntries = sortedEntries(await readAllDirectoryEntries(entry as FileSystemDirectoryEntry))
-  for (const childEntry of childEntries) {
-    if (await collectFilesFromEntry(childEntry, currentSizeRef, results))
-      return true
+  catch {
+    collection.failures.push({ path })
   }
   return false
 }
 
 /**
- * Collect dropped files, recursively expanding directories when supported by
- * the browser/webview. Traversal stops immediately once the next file would
- * exceed the global attachment size limit.
+ * Collect dropped files and retain readable entries when another entry fails.
+ * Traversal stops when the next file exceeds the global attachment size limit.
  */
 export async function collectDroppedAttachmentFiles(
   dataTransfer: DataTransfer,
   currentSize = 0,
-): Promise<{ files: PendingAttachmentFile[], sizeLimitHit: boolean }> {
-  const results: PendingAttachmentFile[] = []
-  const currentSizeRef = { value: currentSize }
+): Promise<{ files: PendingAttachmentFile[], sizeLimitHit: boolean, failures: AttachmentReadFailure[] }> {
+  const collection: DroppedFileCollection = { files: [], size: currentSize, failures: [] }
   const items = [...(dataTransfer.items ?? [])] as WebkitDataTransferItem[]
-  const entries = items
-    .map(item => item.webkitGetAsEntry?.() ?? null)
-    .filter((entry): entry is NonNullable<typeof entry> => entry !== null) as FileSystemEntry[]
-
-  if (entries.length > 0) {
-    for (const entry of sortedEntries(entries)) {
-      if (await collectFilesFromEntry(entry, currentSizeRef, results))
-        return { files: results, sizeLimitHit: true }
+  const entries: FileSystemEntry[] = []
+  for (const item of items) {
+    try {
+      const entry = item.webkitGetAsEntry?.()
+      if (entry)
+        entries.push(entry)
     }
-    return { files: results, sizeLimitHit: false }
+    catch {
+      collection.failures.push({})
+    }
   }
-
-  for (const file of [...dataTransfer.files]) {
-    if (currentSizeRef.value + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
-      return { files: results, sizeLimitHit: true }
-    currentSizeRef.value += file.size
-    results.push({ file })
+  let sizeLimitHit = false
+  if (entries.length > 0 || collection.failures.length > 0) {
+    for (const entry of sortedEntries(entries)) {
+      if (await collectFilesFromEntry(entry, collection)) {
+        sizeLimitHit = true
+        break
+      }
+    }
   }
-  return { files: results, sizeLimitHit: false }
+  else {
+    for (const file of [...dataTransfer.files]) {
+      if (collection.size + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {
+        sizeLimitHit = true
+        break
+      }
+      collection.size += file.size
+      collection.files.push({ file })
+    }
+  }
+  return { files: collection.files, sizeLimitHit, failures: collection.failures }
 }
 
 // ---------------------------------------------------------------------------

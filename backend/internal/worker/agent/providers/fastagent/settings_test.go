@@ -89,3 +89,51 @@ func TestFastAgentBypassUnchangedOrOmittedChoiceDelegatesOtherSettings(t *testin
 		}
 	}
 }
+
+func TestFastAgentNativeCommandsRequiresBypassBeforeAnyOtherWrite(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		bypass, native bool
+		options        map[string]string
+		restart        bool
+	}{
+		{options: map[string]string{"nativeCommands": "true", "model": "model-b"}},
+		{bypass: true, options: map[string]string{"nativeCommands": "true"}, restart: true},
+		{options: map[string]string{"nativeCommands": "true", "bypassPermissions": "true"}, restart: true},
+		{bypass: true, native: true, options: map[string]string{"bypassPermissions": "false", "model": "model-b"}},
+		{bypass: true, native: true, options: map[string]string{"bypassPermissions": "false", "nativeCommands": "false"}, restart: true},
+		{bypass: true, native: true, options: map[string]string{"nativeCommands": "false"}, restart: true},
+	} {
+		a, requests := newFastAgentSettingsSubject(t, tc.bypass)
+		a.nativeCommands = tc.native
+		assert.Equal(t, !tc.native, optionids.GroupByID(a.OptionGroups(), "bypassPermissions").Mutable)
+		before := a.SettingsSnapshot().ConfirmedOptions()
+		result := a.UpdateSettings(tc.options)
+		assert.Equal(t, !tc.restart, result.AppliedLive)
+		assert.Equal(t, before, a.SettingsSnapshot().ConfirmedOptions())
+		assert.Empty(t, requests())
+	}
+	for _, bypass := range []bool{false, true} {
+		a, _ := newFastAgentSettingsSubject(t, bypass)
+		group := optionids.GroupByID(a.OptionGroups(), OptionNativeCommands)
+		require.NotNil(t, group)
+		assert.Equal(t, bypass, group.Mutable)
+		assert.Equal(t, "false", group.CurrentValue)
+		assert.Equal(t, "false", nativeCommandsGroup.DefaultValue, "the live view cannot mutate the template")
+		if !bypass {
+			assert.Contains(t, group.ReadOnlyReason, "do not request approval")
+		}
+	}
+}
+
+func TestFastAgentNativeCommandsRejectsInvalidValuesBeforeOtherWrites(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"yes", "1", "-1", "TRUE", " false "} {
+		a, requests := newFastAgentSettingsSubject(t, true)
+		before := a.SettingsSnapshot().ConfirmedOptions()
+		result := a.UpdateSettings(map[string]string{"nativeCommands": value, "model": "model-b", "bypassPermissions": "false"})
+		assert.True(t, result.AppliedLive)
+		assert.Equal(t, before, result.ConfirmedOptions())
+		assert.Empty(t, requests())
+	}
+}

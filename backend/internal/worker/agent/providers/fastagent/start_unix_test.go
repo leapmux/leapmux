@@ -81,3 +81,22 @@ func TestFastAgentBypassInvalidStartupDoesNotLaunch(t *testing.T) {
 	assert.Nil(t, started)
 	assert.Empty(t, probe.Runs(t, 0), "invalid input cannot start a native process")
 }
+
+func TestFastAgentNativeCommandsInvalidStartupDoesNotLaunch(t *testing.T) {
+	probe := agenttest.NewEnvProbe(t, "fast-agent", nil)
+	t.Setenv("PATH", filepath.Dir(probe.Program)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, options := range []map[string]string{
+		{"nativeCommands": "true"},
+		{"nativeCommands": "true", "bypassPermissions": "false"},
+		{"nativeCommands": "yes", "bypassPermissions": "true"},
+	} {
+		started, err := Start(t.Context(), agent.Options{AgentID: "invalid-native", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Shell: "/bin/sh", Options: options}, agent.NewProviderServices(&agenttest.Sink{}))
+		if started != nil {
+			started.Stop()
+			_ = started.Wait()
+		}
+		require.Error(t, err)
+		assert.Nil(t, started)
+	}
+	assert.Empty(t, probe.Runs(t, 0))
+}

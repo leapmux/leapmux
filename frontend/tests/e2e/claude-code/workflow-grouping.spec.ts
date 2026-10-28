@@ -4,24 +4,24 @@ import { claudeTest } from '../claude-fixtures'
 import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { agentTabs, answerControl, assistantBubbles, controlButton, expectAgentTabCount, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { workflowGroupHeading } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
 const WORKFLOW_NAME = 'leapmux-e2e-probe'
 
 const CHILD_RESULT = 'WORKFLOW_CHILD_OK'
+const CHILD_RESULT_TWO = 'WORKFLOW_CHILD_TWO_OK'
 
-function workflowScript(prompt: string): string {
+function workflowScript(agents: readonly { prompt: string, label: string }[]): string {
   return [
     `export const meta = { name: ${JSON.stringify(WORKFLOW_NAME)}, description: 'Run one local probe', phases: [{ title: 'Probe' }] };`,
-    `const result = await agent(${JSON.stringify(prompt)}, { label: 'probe', phase: 'Probe' });`,
-    'return { result };',
+    `const results = [${agents.map(agent => `await agent(${JSON.stringify(agent.prompt)}, { label: ${JSON.stringify(agent.label)}, phase: 'Probe' })`).join(', ')}];`,
+    'return { results };',
   ].join('\n')
 }
 
-claudeTest('shows a native Claude Workflow run without a grouped child row', async ({ authenticatedWorkspace, page, modelScript }) => {
+claudeTest('shows each agent of a native Claude Workflow run under the run group', async ({ authenticatedWorkspace, page, modelScript }) => {
   void authenticatedWorkspace
   const tabsBefore = await agentTabs(page).count()
-  const childPrompt = modelScript.prompt(`Reply with ${CHILD_RESULT}.`)
   await modelScript.rule({
     name: 'the workflow child answers locally',
     // Claude puts system reminders before the child's harness text. The root's
@@ -33,7 +33,9 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   // result. Their count depends on when the workflow notification arrives.
   await modelScript.fallback({ text: 'Workflow notification noted.' })
   const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript(childPrompt))] },
+    { toolCalls: [codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript([
+      { prompt: modelScript.prompt(`Reply with ${CHILD_RESULT}.`), label: 'probe' },
+    ]))] },
     { text: 'The workflow finished.' },
   )
   await sendMessage(page, modelScript.prompt('Run the one-child workflow and report its result.'))
@@ -50,16 +52,73 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
   await expandBackgroundTasksSection(page)
   const workflowRows = backgroundTaskRows(page, { kind: 'workflow' })
-  const row = workflowRows.filter({ hasText: 'Run one local probe' }).first()
-  await expect(row).toBeVisible()
-  await expectRowBecomesFinal(page, row)
-  await expect(row).toHaveAttribute('data-status', 'succeeded')
-  await expect.poll(() => workflowGroupHeading(row)).toContain(WORKFLOW_NAME)
+  const runRow = workflowRows.filter({ hasText: 'Run one local probe' }).first()
+  await expect(runRow).toBeVisible()
+  await expectRowBecomesFinal(page, runRow)
+  await expect(runRow).toHaveAttribute('data-status', 'succeeded')
+  const agentRows = backgroundTaskRows(page, { kind: 'subagent' })
+  await expect(agentRows).toHaveCount(1)
+  const agentRow = agentRows.filter({ hasText: 'probe' }).first()
+  await expect(agentRow).toBeVisible()
+  await expectRowBecomesFinal(page, agentRow)
+  await expect(agentRow).toHaveAttribute('data-status', 'succeeded')
+  // The run's row and its agent's row share one group heading: the workflow name.
+  await expectRowsInWorkflowGroup([runRow, agentRow], WORKFLOW_NAME)
+  await expect(runRow).toHaveAttribute('data-child-agent-id', '')
+  await expect(agentRow).toHaveAttribute('data-child-agent-id', '')
   expect((await modelScript.status()).ruleMatches['the workflow child answers locally']).toBe(1)
   await expect(workflowRows).toHaveCount(1)
-  await expect(backgroundTaskRows(page, { kind: 'subagent' })).toHaveCount(0)
-  await expect(row).toHaveAttribute('data-child-agent-id', '')
   await expectAgentTabCount(page, tabsBefore)
 })
 
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/520.
+claudeTest('shows two agents of one Workflow run as two rows in one group', async ({ authenticatedWorkspace, page, modelScript }) => {
+  void authenticatedWorkspace
+  const tabsBefore = await agentTabs(page).count()
+  await modelScript.rule({
+    name: 'the first workflow child answers locally',
+    when: { user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT] },
+    respond: { text: CHILD_RESULT },
+  })
+  await modelScript.rule({
+    name: 'the second workflow child answers locally',
+    when: { user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT_TWO] },
+    respond: { text: CHILD_RESULT_TWO },
+  })
+  await modelScript.fallback({ text: 'Workflow notification noted.' })
+  const start = await modelScript.queue(
+    { toolCalls: [codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript([
+      { prompt: modelScript.prompt(`Reply with ${CHILD_RESULT}.`), label: 'first' },
+      { prompt: modelScript.prompt(`Reply with ${CHILD_RESULT_TWO}.`), label: 'second' },
+    ]))] },
+    { text: 'The workflow finished.' },
+  )
+  await sendMessage(page, modelScript.prompt('Run the two-child workflow and report its result.'))
+  await modelScript.waitForSteps(start + 1)
+  const permission = await waitForControlBanner(page)
+  await expect(permission).toContainText('Permission Required')
+  await answerControl(page, 'allow')
+  await modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(page)
+
+  await expandBackgroundTasksSection(page)
+  const runRow = backgroundTaskRows(page, { kind: 'workflow' }).filter({ hasText: 'Run one local probe' }).first()
+  await expectRowBecomesFinal(page, runRow)
+  await expect(runRow).toHaveAttribute('data-status', 'succeeded')
+  const agentRows = backgroundTaskRows(page, { kind: 'subagent' })
+  await expect(agentRows).toHaveCount(2)
+  const first = agentRows.filter({ hasText: 'first' }).first()
+  const second = agentRows.filter({ hasText: 'second' }).first()
+  for (const row of [first, second]) {
+    await expectRowBecomesFinal(page, row)
+    await expect(row).toHaveAttribute('data-status', 'succeeded')
+    await expect(row).toHaveAttribute('data-child-agent-id', '')
+  }
+  // One heading groups the run row and both agent rows.
+  await expectRowsInWorkflowGroup([runRow, first, second], WORKFLOW_NAME)
+  const status = await modelScript.status()
+  expect(status.ruleMatches['the first workflow child answers locally']).toBe(1)
+  expect(status.ruleMatches['the second workflow child answers locally']).toBe(1)
+  await expectAgentTabCount(page, tabsBefore)
+})
+
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.

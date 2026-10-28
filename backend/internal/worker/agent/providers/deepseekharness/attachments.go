@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -16,7 +18,7 @@ func (a *Agent) promptParts(sessionID, content string, attachments []*leapmuxv1.
 			return nil, fmt.Errorf("DeepSeek Harness received an absent attachment")
 		}
 		kind := agent.ClassifyAttachments([]*leapmuxv1.Attachment{attachment})[0]
-		if kind.Kind == agent.AttachmentKindImage {
+		if kind.Kind == contracts.AttachmentMediaKindImage {
 			parts = append(parts, map[string]any{"type": "image", "mediaType": kind.MIMEType, "data": base64.StdEncoding.EncodeToString(attachment.GetData()), "name": attachment.GetFilename()})
 			continue
 		}

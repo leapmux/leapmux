@@ -31,7 +31,10 @@ type claudeProvider struct {
 
 // Claude Code accepts text, image, and PDF blocks but has no binary content block.
 func (claudeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
 		return fmt.Errorf("claude code does not support binary attachments: %s", attachment.Filename)
 	}
 	return nil

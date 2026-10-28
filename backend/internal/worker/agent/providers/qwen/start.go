@@ -2,6 +2,8 @@ package qwen
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 
 	"github.com/coder/quartz"
 
@@ -45,12 +47,16 @@ const qwenSkipUpdateCheckEnv = "QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true"
 //
 // The launch flag states the approval mode, because Qwen's own default is
 // `auto`: a classifier model would approve tool calls before the handshake
-// set the mode that LeapMux shows.
+// set the mode that LeapMux shows. The launch also states the output style:
+// Qwen reads `--output-style` only at start, and no request of a running
+// session can change it (a probe of 0.26.0 found `session/set_config_option`
+// handling mode, model and reasoning_effort alone), so a change restarts the
+// agent.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration:  Registration(),
 		ProviderName:  "qwen",
-		BaseArgs:      []string{"--acp", "--approval-mode", launchApprovalMode(opts.PermissionMode())},
+		BaseArgs:      append([]string{"--acp", "--approval-mode", launchApprovalMode(opts.PermissionMode())}, qwenOutputStyleArgs(opts.Get(OptionOutputStyle))...),
 		PinnedEnv:     []string{qwenNoRelaunchEnv, qwenDisableCronEnv, qwenSkipUpdateCheckEnv},
 		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:      func() *Agent { return &Agent{} },
@@ -59,9 +65,22 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			return a.configure(quartz.NewReal())
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
+			a.stateMu.Lock()
+			a.outputStyle = opts.Get(OptionOutputStyle)
+			a.stateMu.Unlock()
 			return a.ApplyPermissionModeStartup(handshake, opts, contracts.QwenModeDefault, opts.Model())
 		},
 	})
+}
+
+// qwenOutputStyleArgs returns the `--output-style` pair of one launch. Auto
+// and an absent value send no flag, so the style of Qwen's own settings
+// applies.
+func qwenOutputStyleArgs(style string) []string {
+	if strings.TrimSpace(style) == "" || style == qwenOutputStyleAuto {
+		return nil
+	}
+	return []string{"--output-style", style}
 }
 
 // configure returns the hooks of one agent, with the clock that paces its
@@ -79,18 +98,22 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		ExtraMethod:            a.handleExtraMethod,
 		// Qwen streams a foreground subagent in the parent session, tagged with
 		// the tool call that spawned it.
-		ChildUpdateRoute:           childUpdateRoute,
+		ChildUpdateRoute: func(updateType string, metadata map[string]json.RawMessage) string {
+			return qwenAgentRowKey(a.CurrentSessionID(), childUpdateRoute(updateType, metadata))
+		},
 		SessionMetadataHandler:     a.handleSessionMetadata,
 		ChunkMessageID:             a.chunkMessageID,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		ControlRequestObserver:     a.observeControlRequest,
+		LocalOptionGroups:          a.outputStyleGroups,
 		// Qwen pulls steered input between two tool batches; no handshake
 		// advertises that.
 		SteersByOwnRoute:   true,
 		FollowUpPrompt:     a.followUpPrompt,
 		PromptEnded:        a.handlePromptEnded,
 		PromptPrepared:     a.preparePrompt,
+		PreparePrompt:      a.prepareAudioPrompt,
 		ClearProviderState: a.clearProviderState,
 		// Qwen advertises no session/close, so the provider stops the background
 		// work of a session that a context clear replaced itself.
@@ -114,10 +137,12 @@ func (a *Agent) clearProviderState() {
 	a.compressPending = nil
 }
 
-// Stop stops the readers of background transcripts, then the process.
+// Stop stops file readers, stops the process, then joins workflow readers.
 func (a *Agent) Stop() {
-	a.stopAllBackgroundTranscripts()
+	a.signalWorkflowStop()
+	a.stopAllBackgroundTails()
 	a.Base.Stop()
+	a.stopAllWorkflowPollers()
 }
 
 // Wait waits for the process, and stops the readers of background transcripts

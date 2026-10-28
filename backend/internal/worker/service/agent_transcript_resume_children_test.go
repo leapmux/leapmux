@@ -39,13 +39,13 @@ func seedArchivedChildForResume(t *testing.T, svc *Service, rootID, parentID, ch
 		registryParentID = parentID
 	}
 	stamp := sqltime.NewSQLiteTime(nowMillis())
-	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: rootID, RowKey: rowKey, Seq: seq,
 		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
 		ChildAgentID: childID, ParentAgentID: registryParentID,
 		Title: rowKey + " title", Description: "archived child",
 		Status: leapmuxv1.BackgroundTaskStatus(status), CreatedAt: stamp, UpdatedAt: stamp,
-	}))
+	})
 }
 
 func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
@@ -73,6 +73,8 @@ func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
 	}
 	child := byKey["first"]
 	grandchild := byKey["second"]
+	assert.Zero(t, child.OutputGeneration, "cloned registry history is explicitly unclaimed")
+	assert.Zero(t, grandchild.OutputGeneration)
 	require.NotEmpty(t, child.ChildAgentID)
 	require.NotEmpty(t, grandchild.ChildAgentID)
 	assert.NotEqual(t, "old-child", child.ChildAgentID)
@@ -90,6 +92,7 @@ func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
 		newChild, getErr := svc.Queries.GetAgentByID(t.Context(), pair.newID)
 		require.NoError(t, getErr)
 		assert.False(t, newChild.ClosedAt.Valid)
+		assert.Zero(t, newChild.OutputGeneration, "virtual child clones allocate no physical output source")
 		assert.Equal(t, pair.parentID, newChild.ParentAgentID.String)
 		assert.Equal(t, pair.rowKey+"-span", newChild.SpawnSpanID)
 		assert.Equal(t, pair.rowKey+" title", newChild.Title)
@@ -139,12 +142,12 @@ func TestResumeRejectsBrokenArchivedChildLinkWithoutCreatingARoot(t *testing.T) 
 	})
 	require.NoError(t, err)
 	stamp := sqltime.NewSQLiteTime(nowMillis())
-	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(t.Context(), db.UpsertAgentBackgroundTaskParams{
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "old-root", RowKey: "broken", Seq: 1,
 		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
 		ChildAgentID: "missing-child", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
 		CreatedAt: stamp, UpdatedAt: stamp,
-	}))
+	})
 	_, err = svc.Queries.CloseAgent(t.Context(), "old-root")
 	require.NoError(t, err)
 

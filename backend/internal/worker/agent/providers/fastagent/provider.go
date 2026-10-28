@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // fastagentProvider is the wire-format plugin for fast-agent. fast-agent
@@ -22,8 +25,11 @@ func (fastagentProvider) ListStoredSessions(ctx context.Context, q agent.StoredS
 
 // ValidateAttachment permits the content blocks Fast Agent converts to model input.
 func (fastagentProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		return providerkit.ValidateAudioAttachment(attachment, "Fast Agent audio attachment", contracts.FastagentAudioMIMEMembers)
+	}
 	switch attachment.Kind {
-	case agent.AttachmentKindText, agent.AttachmentKindImage, agent.AttachmentKindPDF:
+	case contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf:
 		return nil
 	default:
 		return fmt.Errorf("fast-agent cannot send the attachment %s", attachment.Filename)

@@ -20,11 +20,11 @@ SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq ASC;
 -- the old process cannot still own work in the new root.
 -- name: CloneAgentBackgroundTaskForResume :execrows
 INSERT INTO agent_background_tasks (
-    owner_agent_id, row_key, seq, kind, child_agent_id, parent_agent_id,
+    owner_agent_id, output_generation, row_key, seq, kind, child_agent_id, parent_agent_id,
     group_key, group_label, title, title_is_command, description,
     active_form, status, created_at, updated_at, ended_at
 )
-SELECT sqlc.arg(new_root_id), source.row_key, source.seq, source.kind,
+SELECT sqlc.arg(new_root_id), 0, source.row_key, source.seq, source.kind,
        sqlc.arg(new_child_id), sqlc.arg(new_parent_id),
        source.group_key, source.group_label, source.title, source.title_is_command, source.description,
        source.active_form,
@@ -85,33 +85,43 @@ WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND kind = sqlc.arg(kind) AND se
 -- always the caller's stamp. Binding both from one Go instant keeps the
 -- in-memory cache and the persisted row byte-identical (no strftime-vs-time.Now
 -- drift across a reconnect).
--- name: UpsertAgentBackgroundTask :exec
+-- name: UpsertAgentBackgroundTask :execrows
 INSERT INTO agent_background_tasks (
-    owner_agent_id, row_key, seq, kind, child_agent_id, parent_agent_id,
-    group_key, group_label, title, title_is_command, description, active_form, status, created_at, updated_at, ended_at
-) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    owner_agent_id, output_generation, row_key, seq, kind, child_agent_id, parent_agent_id,
+    group_key, group_label, title, title_is_command, description, active_form,
+    status, created_at, updated_at, ended_at
 )
+SELECT sqlc.arg(owner_agent_id), sqlc.arg(output_generation), sqlc.arg(row_key),
+       sqlc.arg(seq), sqlc.arg(kind), sqlc.arg(child_agent_id), sqlc.arg(parent_agent_id),
+       sqlc.arg(group_key), sqlc.arg(group_label), sqlc.arg(title), sqlc.arg(title_is_command),
+       sqlc.arg(description), sqlc.arg(active_form), sqlc.arg(status),
+       sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(ended_at)
+WHERE sqlc.arg(output_generation) > 0
 ON CONFLICT(owner_agent_id, row_key) DO UPDATE SET
-    kind           = excluded.kind,
+    output_generation = excluded.output_generation,
+    kind = excluded.kind,
     child_agent_id = CASE WHEN excluded.child_agent_id <> '' THEN excluded.child_agent_id ELSE agent_background_tasks.child_agent_id END,
     parent_agent_id = excluded.parent_agent_id,
-    group_key      = excluded.group_key,
-    group_label    = excluded.group_label,
-    title          = excluded.title,
+    group_key = excluded.group_key,
+    group_label = excluded.group_label,
+    title = excluded.title,
     title_is_command = excluded.title_is_command,
-    description    = excluded.description,
-    active_form    = excluded.active_form,
-    status         = excluded.status,
-    updated_at     = excluded.updated_at,
-    ended_at       = excluded.ended_at;
+    description = excluded.description,
+    active_form = excluded.active_form,
+    status = excluded.status,
+    updated_at = excluded.updated_at,
+    ended_at = excluded.ended_at
+WHERE agent_background_tasks.output_generation <= excluded.output_generation;
 
--- name: UpdateAgentBackgroundTaskStatus :exec
+-- name: UpdateAgentBackgroundTaskStatus :execrows
 UPDATE agent_background_tasks SET
-    status     = ?,
-    active_form = ?,
-    updated_at = ?
-WHERE owner_agent_id = ? AND row_key = ?;
+    output_generation = sqlc.arg(output_generation),
+    status = sqlc.arg(status),
+    active_form = sqlc.arg(active_form),
+    updated_at = sqlc.arg(updated_at)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
+  AND sqlc.arg(output_generation) > 0
+  AND output_generation <= sqlc.arg(output_generation);
 
 -- StampAgentBackgroundTaskEndedAt sets ended_at on a row that is already
 -- final but still has a NULL ended_at. This covers the status-update path:
@@ -126,23 +136,29 @@ WHERE owner_agent_id = ? AND row_key = ?;
 -- while this one repairs a row that is ALREADY final and never got its stamp.
 -- The two guards are disjoint by construction, so no single statement covers
 -- both.
--- name: StampAgentBackgroundTaskEndedAt :exec
+-- name: StampAgentBackgroundTaskEndedAt :execrows
 UPDATE agent_background_tasks SET
+    output_generation = sqlc.arg(output_generation),
     ended_at   = sqlc.arg(ended_at)
 WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
   AND ended_at IS NULL
-  AND status >= sqlc.arg(min_final_status);
+  AND status >= sqlc.arg(min_final_status)
+  AND sqlc.arg(output_generation) > 0
+  AND output_generation <= sqlc.arg(output_generation);
 
 -- CloseAgentBackgroundTask stamps the final status and ended_at. The
 -- `status < min_final_status` filter means a finished row can never be
 -- resurrected or re-closed by a late/duplicate event.
--- name: CloseAgentBackgroundTask :exec
+-- name: CloseAgentBackgroundTask :execrows
 UPDATE agent_background_tasks SET
+    output_generation = sqlc.arg(output_generation),
     status     = sqlc.arg(status),
     ended_at   = sqlc.arg(ended_at),
     updated_at = sqlc.arg(updated_at)
 WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
-  AND status < sqlc.arg(min_final_status);
+  AND status < sqlc.arg(min_final_status)
+  AND sqlc.arg(output_generation) > 0
+  AND output_generation <= sqlc.arg(output_generation);
 
 -- ReviveAgentBackgroundTask returns a FINISHED row to running and clears its
 -- ended_at, for a subagent that its parent restarted by sending it a message.
@@ -168,13 +184,16 @@ WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
 -- transcript-close release.
 -- name: ReviveAgentBackgroundTask :execrows
 UPDATE agent_background_tasks SET
+    output_generation = sqlc.arg(output_generation),
     status      = sqlc.arg(status),
     active_form = '',
     description = '',
     ended_at    = NULL,
     updated_at  = sqlc.arg(updated_at)
 WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
-  AND status >= sqlc.arg(min_final_status);
+  AND status >= sqlc.arg(min_final_status)
+  AND sqlc.arg(output_generation) > 0
+  AND output_generation <= sqlc.arg(output_generation);
 
 -- name: DeleteAgentBackgroundTaskByRowKey :execresult
 DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
@@ -201,14 +220,27 @@ UPDATE agent_background_tasks SET seq = ? WHERE owner_agent_id = ? AND row_key =
 -- tracks the whole lifecycle instead of a spawn row + a separately-keyed row.
 -- No status-IN guard: a rename is key-only and applies to any row state.
 -- name: RenameAgentBackgroundTask :execrows
-UPDATE agent_background_tasks SET row_key = ? WHERE owner_agent_id = ? AND row_key = ?;
+UPDATE agent_background_tasks
+SET row_key = sqlc.arg(new_row_key), output_generation = sqlc.arg(output_generation)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(old_row_key)
+  AND sqlc.arg(output_generation) > 0
+  AND output_generation <= sqlc.arg(output_generation);
 
--- CountAgentBackgroundTasksByRowKey answers "is this key already taken?" for the
--- rename path. (owner_agent_id, row_key) is the PRIMARY KEY, so a rename onto an
--- occupied key fails the UPDATE outright rather than overwriting; the caller
--- checks first and drops the losing row instead.
--- name: CountAgentBackgroundTasksByRowKey :one
-SELECT COUNT(*) FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
+-- ClaimAgentBackgroundTaskOutputGeneration changes ownership without changing visible data.
+-- name: ClaimAgentBackgroundTaskOutputGeneration :execrows
+UPDATE agent_background_tasks
+SET output_generation = sqlc.arg(output_generation)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
+  AND sqlc.arg(output_generation) > 0
+  AND output_generation < sqlc.arg(output_generation);
+
+-- DeleteAgentBackgroundTaskForGeneration removes an authorized rename loser.
+-- Keep the typed column comparison before the literal comparison for sqlc.
+-- name: DeleteAgentBackgroundTaskForGeneration :execrows
+DELETE FROM agent_background_tasks
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
+  AND output_generation <= sqlc.arg(output_generation)
+  AND sqlc.arg(output_generation) > 0;
 
 -- GetAgentBackgroundTaskByRowKey reads one row by its PRIMARY KEY, so a lookup
 -- that misses the capped display cache still resolves. The cap limits what the
@@ -246,7 +278,10 @@ UPDATE agent_background_tasks SET
     status     = sqlc.arg(status),
     ended_at   = sqlc.arg(ended_at),
     updated_at = sqlc.arg(updated_at)
-WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND status < sqlc.arg(min_final_status);
+WHERE owner_agent_id = sqlc.arg(owner_agent_id)
+  AND output_generation >= sqlc.arg(min_output_generation)
+  AND output_generation <= sqlc.arg(output_generation)
+  AND status < sqlc.arg(min_final_status);
 
 -- At Worker boot, mark every stored active task interrupted.
 -- Return the number of changed tasks for the startup log.
@@ -256,3 +291,21 @@ UPDATE agent_background_tasks SET
     ended_at   = sqlc.arg(ended_at),
     updated_at = sqlc.arg(updated_at)
 WHERE status < sqlc.arg(min_final_status);
+
+-- ListWorkingAgentBackgroundTaskKeys includes working rows outside the display cap.
+-- Paused rows stay open but do not contribute working activity.
+-- name: ListWorkingAgentBackgroundTaskKeys :many
+SELECT row_key FROM agent_background_tasks
+WHERE owner_agent_id = sqlc.arg(owner_agent_id)
+  AND status IN (sqlc.arg(pending_status), sqlc.arg(running_status))
+ORDER BY seq;
+
+-- GetLatestActiveAgentBackgroundTaskCreatedAtForGeneration reads the latest eligible worker creation.
+-- name: GetLatestActiveAgentBackgroundTaskCreatedAtForGeneration :one
+SELECT created_at FROM agent_background_tasks
+WHERE owner_agent_id = sqlc.arg(owner_agent_id)
+  AND output_generation >= sqlc.arg(min_output_generation)
+  AND output_generation <= sqlc.arg(output_generation)
+  AND status < sqlc.arg(min_final_status)
+ORDER BY created_at DESC
+LIMIT 1;

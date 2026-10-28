@@ -18,7 +18,7 @@ func TestOutputQueueRetriesTheFinalWriteWithoutAnotherNativeFrame(t *testing.T) 
 	clock := testutil.NewQuartzMock(t)
 	svc, _, _ := setupTestService(t, withClock(clock))
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: "queue-agent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
-	sink := agent.NewModelProgressResetSink(svc.Output.NewSink("queue-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	sink := agent.NewModelProgressResetSink(newTestRootOutputSink(t, svc.Output, "queue-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	queue := agent.OutputQueueFor(sink)
 	var unavailable atomic.Bool
 	unavailable.Store(true)
@@ -67,7 +67,7 @@ func TestOutputQueueKeepsPendingRowsAcrossProviderReplacement(t *testing.T) {
 		return nil
 	}})
 	require.ErrorIs(t, first.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"text":"old"}`)}, agent.SpanInfo{}), assert.AnError)
-	replacement := agent.NewModelProgressResetSink(svc.Output.NewSink("queue-replacement", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	replacement := agent.NewModelProgressResetSink(newTestRootOutputSink(t, svc.Output, "queue-replacement", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	replacement.UpdateSessionID("new")
 	unavailable.Store(false)
 	require.NoError(t, replacement.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"text":"new"}`)}, agent.SpanInfo{}))

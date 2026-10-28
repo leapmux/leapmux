@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Muse workflow child ownership proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "parentSessionId",
+    "childSessionId",
+    "subagentId",
+    "runId",
+    "records"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parentSessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "childSessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subagentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "records": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "schema_version",
+          "id",
+          "sequence",
+          "stream",
+          "record_type",
+          "durability",
+          "payload_type",
+          "payload_schema_version",
+          "payload"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "stream": {
+            "type": "object"
+          },
+          "record_type": {
+            "const": "event"
+          },
+          "durability": {
+            "const": "durable"
+          },
+          "payload_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "payload_schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "payload": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

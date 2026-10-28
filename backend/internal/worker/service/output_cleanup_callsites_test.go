@@ -146,7 +146,9 @@ func TestSubprocessCrash_DropsPendingControlRequests(t *testing.T) {
 	// Mirror runner.go's wiring: every subprocess exit drops pending control
 	// requests against svc.Output (without the in-memory tracker cleanup).
 	cleared := make(chan string, 1)
-	svc.Agents.SetOnExit(func(agentID string, _ error, _ bool) {
+	svc.Agents.SetOnExit(func(processExit agent.ProcessExit) {
+		agentID := processExit.AgentID
+
 		svc.Output.ClearPendingControlRequests(agentID)
 		cleared <- agentID
 	})
@@ -157,7 +159,7 @@ func TestSubprocessCrash_DropsPendingControlRequests(t *testing.T) {
 		AgentID:    "agent-crash",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-crash", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-crash", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 
 	svc.Agents.StopAgent("agent-crash")

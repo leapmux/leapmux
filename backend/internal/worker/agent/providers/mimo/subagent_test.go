@@ -353,6 +353,22 @@ func TestChildInput(t *testing.T) {
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1, "only the steer reached MiMo")
 }
 
+func TestChildAudioInputValidatesTheModelWithoutChangingItsDeliveryTarget(t *testing.T) {
+	t.Parallel()
+	a, server := newTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255}}}
+	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments), "does not accept audio attachments")
+	assert.Empty(t, server.allRequests())
+	model := agent.FindAvailableModel(a.catalog.models, a.model)
+	require.NotNil(t, model)
+	model.SupportsAudioInput = true
+	require.NoError(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments))
+	requests := server.requestsTo("POST /session/ses_test/prompt_async")
+	require.Len(t, requests, 1)
+	assert.JSONEq(t, `{"parts":[{"type":"text","text":"Listen to this."},{"type":"file","mime":"audio/wav","url":"data:audio/wav;base64,AP8=","filename":"voice.wav"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`, string(requests[0].Body))
+}
+
 // MiMo runs a message to an idle subagent as a turn that no event reports: no
 // actor.status starts it or ends it. So the message is refused, with the reason,
 // before any request, and the queue records a failure that the user can read.
@@ -1038,7 +1054,7 @@ func TestLateCapturedActorSetupCannotPublishAReplacementRow(t *testing.T) {
 	assert.Equal(t, "replacement-child", replacement.childAgentID)
 }
 
-func TestLateChildInputKeepsTheCapturedNativeSession(t *testing.T) {
+func TestLateChildInputRefusesTheRetiredNativeSession(t *testing.T) {
 	t.Parallel()
 	a, _, server := newSinkTestAgent(t)
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
@@ -1063,12 +1079,41 @@ func TestLateChildInputKeepsTheCapturedNativeSession(t *testing.T) {
 	close(release)
 	select {
 	case err := <-done:
-		require.NoError(t, err)
+		require.ErrorIs(t, err, agent.ErrChildRouteNotReady)
 	case <-time.After(testTimeout):
 		t.Fatal("the captured child delivery did not finish")
 	}
-	assert.Len(t, server.requestsTo("POST /session/"+testSessionID+"/prompt_async"), 1)
+	assert.Empty(t, server.requestsTo("POST /session/"+testSessionID+"/prompt_async"))
 	assert.Empty(t, server.requestsTo("POST /session/"+sessionID+"/prompt_async"))
+}
+
+func TestChildInputRechecksTheActorAfterPromptConstruction(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"idle actor", "replaced actor", "session creation", "stopped"} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			a, _, server := newSinkTestAgent(t)
+			spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+			err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
+				a.Mu.Lock()
+				switch change {
+				case "idle actor":
+					a.actors[actorID].running = false
+				case "replaced actor":
+					a.actors[actorID] = &mimoActor{id: actorID, rowKey: spawnSpanID, running: true}
+				case "session creation":
+					a.sessionSwitching = true
+				}
+				a.Mu.Unlock()
+				if change == "stopped" {
+					a.SetStoppedForTest(true)
+				}
+				return buildPromptParts("A captured child message.", nil)
+			})
+			require.Error(t, err)
+			assert.Empty(t, server.requestsTo("POST /session/"+testSessionID+"/prompt_async"))
+		})
+	}
 }
 
 func TestLateParentLinkPrioritizesAnAlreadyPendingAnswer(t *testing.T) {

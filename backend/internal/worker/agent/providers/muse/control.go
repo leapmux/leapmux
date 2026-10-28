@@ -48,6 +48,8 @@ const (
 
 type controlRecord struct {
 	kind             controlRecordKind
+	settlement       *childControlSettlement
+	writeReceipt     *agent.TranscriptWriteReceipt
 	state            *sessionState
 	sessionID        string
 	nativeID         string
@@ -124,7 +126,7 @@ func (a *Agent) publishControl(line *providerkit.ParsedLine) {
 	}
 	a.stateMu.Lock()
 	state := a.sessions[params.SessionID]
-	if state == nil || state.retired || state.childID == "" && params.SessionID != a.sessionID {
+	if !a.currentSessionState(params.SessionID, state) || state.settledChildControls[nativeID] != nil {
 		a.stateMu.Unlock()
 		return
 	}
@@ -149,12 +151,17 @@ func (a *Agent) settleControl(line *providerkit.ParsedLine, state *sessionState)
 	}
 	a.stateMu.Lock()
 	pending := state.controls[nativeID]
+	settlement := state.settledChildControls[nativeID]
+	retained := settlement != nil && settlement.retained
 	a.stateMu.Unlock()
+	if retained {
+		return
+	}
 	if queued := a.queuedControlKey(state, nativeID); queued != "" {
 		pending.key = queued
 	}
-	if pending.key != "" {
-		a.enqueueControl(&controlRecord{kind: controlSettlement, state: state, sessionID: params.SessionID, nativeID: nativeID, key: pending.key, raw: slices.Clone(line.Raw)})
+	if pending.key != "" || settlement != nil {
+		a.enqueueControl(&controlRecord{kind: controlSettlement, state: state, sessionID: params.SessionID, nativeID: nativeID, key: pending.key, raw: slices.Clone(line.Raw), settlement: settlement, cancelDone: settlement != nil, writeReceipt: agent.NewTranscriptWriteReceipt()})
 	}
 }
 
@@ -255,9 +262,16 @@ func (a *Agent) applyControlRecord(record *controlRecord) bool {
 				record.cancelDone = true
 			}
 		}
-		if _, err := record.state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: record.raw}); err != nil {
+		if _, err := record.state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: record.raw, AgentSessionID: record.sessionID, WriteReceipt: record.writeReceipt, IdempotencyKey: record.settlementKey()}); err != nil {
 			slog.Warn("persist a Muse control settlement", "error", err)
-			return false
+			if !agent.OutputRetained(err) {
+				return false
+			}
+		}
+		if record.settlement != nil {
+			a.stateMu.Lock()
+			record.settlement.retained = true
+			a.stateMu.Unlock()
 		}
 		return true
 	case controlPublish:
@@ -285,7 +299,7 @@ func (a *Agent) applyControlRecord(record *controlRecord) bool {
 
 func (a *Agent) installControlPublication(record *controlRecord, published bool) bool {
 	a.stateMu.Lock()
-	if !a.currentSessionState(record.sessionID, record.state) {
+	if !a.currentSessionState(record.sessionID, record.state) || record.state.settledChildControls[record.nativeID] != nil {
 		a.stateMu.Unlock()
 		record.publishDone = true
 		record.completePublication()
@@ -324,6 +338,13 @@ func (a *Agent) installControlPublication(record *controlRecord, published bool)
 		record.cancel(previous.key)
 	}
 	return true
+}
+
+func (record *controlRecord) settlementKey() string {
+	if record.settlement == nil {
+		return ""
+	}
+	return "muse:control-settlement:" + record.sessionID + ":" + record.nativeID
 }
 
 func (record *controlRecord) completePublication() {

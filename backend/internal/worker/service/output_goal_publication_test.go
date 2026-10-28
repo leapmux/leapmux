@@ -57,7 +57,7 @@ func goalPublicationFixture(t *testing.T) (*Service, *channel.Dispatcher, *turnA
 	svc, dispatcher, base := setupTestService(t)
 	const agentID = "goal-publication-owner"
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}))
-	services := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	services := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	var process *goalCapabilityObserver
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{AgentID: agentID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}, services,
 		func(ctx context.Context, options agent.Options, output agent.ProviderServices) (agent.Agent, error) {
@@ -482,7 +482,7 @@ func TestGoalPublicationRejectsExpiredLiveEffects(t *testing.T) {
 				entered = true
 				switch change {
 				case "root":
-					replacement := svc.Output.NewSink(sink.agentID, sink.agentProvider)
+					replacement := newTestRootOutputSink(t, svc.Output, sink.agentID, sink.agentProvider)
 					replacement.UpdateSessionID("replacement-goal-session")
 				case "session":
 					services.UpdateSessionID("replacement-goal-session")

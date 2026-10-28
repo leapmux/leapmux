@@ -22,29 +22,33 @@ var errCodebuddyChildRoute = errors.New("the CodeBuddy workflow child route fail
 // The registry and child store hold the durable rows and transcripts.
 type codebuddyTaskIndex struct {
 	mu               sync.Mutex
-	spawnRows        map[string]string
-	spawnChildren    map[string]string
+	spawnRoutes      map[string]codebuddyChildRoute
 	workflowNames    map[string]string
 	workflowChildren map[string]map[string]codebuddyWorkflowChild
 	workflowByChild  map[string]string
 	pendingEnds      map[string]bgtask.Status
 }
 
+// codebuddyChildRoute keeps the canonical row and its optional transcript together.
+type codebuddyChildRoute struct {
+	rowKey  string
+	childID string
+}
+
 func (i *codebuddyTaskIndex) child(spawnID string) (string, string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	return i.spawnRows[spawnID], i.spawnChildren[spawnID]
+	route := i.spawnRoutes[spawnID]
+	return route.rowKey, route.childID
 }
 
 func (i *codebuddyTaskIndex) rememberChild(spawnID, rowKey, childID string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.spawnRows == nil {
-		i.spawnRows = make(map[string]string)
-		i.spawnChildren = make(map[string]string)
+	if i.spawnRoutes == nil {
+		i.spawnRoutes = make(map[string]codebuddyChildRoute)
 	}
-	i.spawnRows[spawnID] = rowKey
-	i.spawnChildren[spawnID] = childID
+	i.spawnRoutes[spawnID] = codebuddyChildRoute{rowKey: rowKey, childID: childID}
 }
 
 func (i *codebuddyTaskIndex) rememberWorkflow(taskID, name string) {
@@ -121,10 +125,9 @@ func (i *codebuddyTaskIndex) finishWorkflow(taskID string) []codebuddyWorkflowCh
 func (i *codebuddyTaskIndex) forgetRow(rowKey string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	for spawnID, key := range i.spawnRows {
-		if key == rowKey {
-			delete(i.spawnRows, spawnID)
-			delete(i.spawnChildren, spawnID)
+	for spawnID, route := range i.spawnRoutes {
+		if route.rowKey == rowKey {
+			delete(i.spawnRoutes, spawnID)
 		}
 	}
 }
@@ -209,7 +212,7 @@ func (a *Agent) handleTaskStarted(event *codebuddyTaskEvent) {
 	title := strings.TrimSpace(event.Description)
 	var kind bgtask.Kind
 	switch event.TaskType {
-	case "local_workflow":
+	case "local_workflow", "Workflow":
 		kind = bgtask.KindWorkflow
 		if name := strings.TrimSpace(event.WorkflowName); name != "" {
 			title = name
@@ -218,12 +221,12 @@ func (a *Agent) handleTaskStarted(event *codebuddyTaskEvent) {
 			title = "Workflow"
 		}
 		a.tasks.rememberWorkflow(event.TaskID, title)
-	case "local_agent":
+	case "local_agent", "Agent":
 		kind = bgtask.KindSubagent
 		if title == "" {
 			title = bgtask.FirstLine(event.Prompt)
 		}
-	case "local_bash":
+	case "local_bash", "Bash", "PowerShell":
 		kind = bgtask.KindShell
 		if title == "" {
 			title = bgtask.FirstLine(event.Prompt)
@@ -458,7 +461,7 @@ func (a *Agent) replayWorkflowChild(runID string, child codebuddyWorkflowChild, 
 			}
 			err = a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, record.Raw, span)
 		}
-		if err != nil {
+		if err != nil && !agent.OutputRetained(err) {
 			return fmt.Errorf("%w: replay workflow child %s row %d: %w", errCodebuddyChildRoute, child.rowKey, index, err)
 		}
 	}

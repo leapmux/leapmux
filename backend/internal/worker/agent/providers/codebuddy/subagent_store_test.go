@@ -36,14 +36,35 @@ const (
 )
 
 type codebuddyChildWriteFailureSink struct {
-	*agenttest.Sink
+	agent.ProviderServices
 	childID  string
 	injected int
 }
 
-type codebuddyFailingChildTranscript struct {
+type codebuddyRetainedArchiveSink struct {
 	*agenttest.Sink
-	parent *codebuddyChildWriteFailureSink
+	failOpening bool
+	childID     string
+	nativeRows  int
+}
+
+func (sink *codebuddyRetainedArchiveSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	childID, err := sink.Sink.EnsureChildAgent(spec)
+	if err == nil {
+		sink.childID = childID
+		if sink.failOpening {
+			sink.Child(childID).PersistErr = errors.New("the opening message storage is unavailable")
+		}
+	}
+	return childID, err
+}
+
+func (sink *codebuddyRetainedArchiveSink) PersistChildMessage(childID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
+	sink.nativeRows++
+	if !sink.failOpening {
+		sink.Child(childID).PersistErr = errors.New("the native archive storage is unavailable")
+	}
+	return sink.Sink.PersistChildMessage(childID, source, content, span)
 }
 
 type codebuddyArchiveSwapRoot struct {
@@ -79,13 +100,9 @@ func (r *codebuddyArchiveSwapRoot) OpenChild(name string) (sessionstore.ArchiveR
 	}, nil
 }
 
-func (s *codebuddyChildWriteFailureSink) ChildSink(childID string) agent.ProviderServices {
+func (s *codebuddyChildWriteFailureSink) PersistChildMessage(childID string, _ leapmuxv1.MessageSource, _ []byte, _ agent.SpanInfo) error {
 	s.childID = childID
-	return agent.NewProviderServices(&codebuddyFailingChildTranscript{Sink: s.Child(childID), parent: s})
-}
-
-func (s *codebuddyFailingChildTranscript) PersistMessage(_ leapmuxv1.MessageSource, _ agent.MessageContent, _ agent.SpanInfo) error {
-	s.parent.injected++
+	s.injected++
 	return errors.New("child transcript write failed")
 }
 
@@ -410,8 +427,10 @@ func TestCodebuddyWorkflowChildWriteFailureReportsFailedWithoutLosingThePrompt(t
 	writeCodebuddyWorkflowJournal(t, sessionDir,
 		`{"type":"agent_finished","runId":"run-1","key":"v2:child-key","sessionId":"agent-child-1"}`)
 	writeCodebuddyChildHistory(t, sessionDir, codebuddyTestChildID)
-	failingSink := &codebuddyChildWriteFailureSink{Sink: sink}
-	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(failingSink))
+	failingSink := &codebuddyChildWriteFailureSink{
+		ProviderServices: agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
+	}
+	a.sink = failingSink
 	finishCodebuddyWorkflowFixture(a)
 
 	assert.Equal(t, 1, failingSink.injected, "the test must fail exactly one child sink write")
@@ -426,6 +445,58 @@ func TestCodebuddyWorkflowChildWriteFailureReportsFailedWithoutLosingThePrompt(t
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, messages[0].Source, "no assistant answer was written")
 	assert.Contains(t, string(messages[0].Content), "Reply with CHILD_TEXT.")
 	assert.NotEmpty(t, sink.LeapMuxNotifications(), "the reader needs a visible route failure")
+}
+
+func TestCodebuddyWorkflowRetainsItsCompleteArchiveWithoutReportingANativeFailure(t *testing.T) {
+	for _, failOpening := range []bool{true, false} {
+		t.Run(map[bool]string{true: "opening message", false: "native tool message"}[failOpening], func(t *testing.T) {
+			a, sink, sessionDir := codebuddyWorkflowStoreFixture(t)
+			writeCodebuddyWorkflowJournal(t, sessionDir,
+				`{"type":"agent_finished","runId":"run-1","key":"v2:child-key","sessionId":"agent-child-1"}`)
+			nativeRows := []string{
+				`{"type":"function_call","id":"request-record","callId":"child-read-1","name":"Read","arguments":"{}"}`,
+				`{"type":"function_call_result","id":"result-record","callId":"child-read-1","name":"Read","status":"completed","output":"CHILD_FILE_MARKER"}`,
+				`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The saved child answer."}]}`,
+			}
+			records := append([]string{`{"type":"message","role":"user","content":[{"type":"input_text","text":"Read the marker file."}]}`}, nativeRows...)
+			writeCodebuddyChildHistoryRecords(t, sessionDir, codebuddyTestChildID, records...)
+			services := &codebuddyRetainedArchiveSink{Sink: sink, failOpening: failOpening}
+			a.sink = agent.NewProviderServices(services)
+			finishCodebuddyWorkflowFixture(a)
+
+			require.NotEmpty(t, services.childID)
+			child := sink.Child(services.childID)
+			queue := child.OutputQueue()
+			require.True(t, queue.HasPending(), "the actual child queue must retain the refused storage write")
+			assert.Equal(t, len(nativeRows), services.nativeRows, "every archive row must be admitted despite a retained storage failure")
+			row, found := sink.BackgroundTask(codebuddyTestChildKey)
+			require.True(t, found)
+			assert.Equal(t, services.childID, row.ChildAgentID)
+			assert.Equal(t, bgtask.StatusSucceeded, row.Status, "queue retention must preserve the native success")
+			assert.Empty(t, sink.LeapMuxNotifications(), "a retained archive must not produce a route-failure diagnostic")
+
+			beforeRecovery := len(child.Messages())
+			var committed []agenttest.Message
+			if !failOpening {
+				committed = append(committed, child.Messages()[0])
+			}
+			child.PersistErr = nil
+			require.NoError(t, queue.Flush())
+			committed = append(committed, child.Messages()[beforeRecovery:]...)
+			require.Len(t, committed, len(records), "the complete archive must commit once and in order")
+			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, committed[0].Source)
+			assert.JSONEq(t, `{"content":"Read the marker file."}`, string(committed[0].Content))
+			for index, original := range nativeRows {
+				assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, committed[index+1].Source)
+				assert.Equal(t, original, string(committed[index+1].Content))
+			}
+			assert.Equal(t, "child-read-1", committed[1].SpanID)
+			assert.Equal(t, "child-read-1", committed[2].SpanID)
+			assert.True(t, committed[2].Closing)
+			assert.False(t, queue.HasPending())
+			assert.Equal(t, 0, sink.MessageCount(), "the retained child archive must stay out of the parent transcript")
+		})
+	}
 }
 
 func TestCodebuddyWorkflowArchiveRetryAfterMissingFirstRead(t *testing.T) {

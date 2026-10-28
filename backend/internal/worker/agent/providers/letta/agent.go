@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -261,7 +263,7 @@ func buildUserMessages(content string, attachments []*leapmuxv1.Attachment) ([]a
 		if err := (lettaProvider{}).ValidateAttachment(attachment); err != nil {
 			return nil, err
 		}
-		if attachment.Kind == agent.AttachmentKindImage {
+		if attachment.Kind == contracts.AttachmentMediaKindImage {
 			blocks = append(blocks, map[string]any{
 				"type": "image",
 				"source": map[string]any{

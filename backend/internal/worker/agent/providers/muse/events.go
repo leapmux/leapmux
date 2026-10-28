@@ -60,7 +60,7 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 		}
 		sink, raw := state.sink, line.Raw
 		// Capture the goal writer before dispatch releases.
-		// A goal observer can enter HandleOutput again, so the callback must run without dispatchMu.
+		// A goal observer can enter HandleOutput again, so the callback must run without dispatcher.mu.
 		// The captured writer refuses old goal data after a session replacement.
 		captured := agent.CaptureTranscript(sink, agent.MessageContent{AgentSessionID: event.SessionID, Original: raw}, agent.SpanInfo{})
 		writer, err := sink.GoalWriterFor(captured)
@@ -68,7 +68,7 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 			slog.Warn("capture a Muse goal writer", "error", err)
 			return
 		}
-		a.deferGoalAction(func() {
+		a.deferOutputAction(func() {
 			if clear {
 				if err := writer.ClearGoal(); err != nil {
 					slog.Warn("clear the native Muse goal", "error", err)
@@ -195,7 +195,7 @@ func (a *Agent) flushRetryNotices(state *sessionState) bool {
 	for index, notice := range notices {
 		if _, err := notice.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT); err != nil {
 			slog.Error("persist a Muse retry notice", "error", err)
-			if !museWriteIsRetained(err) {
+			if !agent.OutputRetained(err) {
 				a.stateMu.Lock()
 				state.retryNotices = append(notices[index:], state.retryNotices...)
 				a.stateMu.Unlock()

@@ -389,7 +389,7 @@ func TestQwenDrainDropsAMessageThatCarriesNothing(t *testing.T) {
 	assert.Equal(t, "real", items[0].(map[string]any)["displayText"])
 
 	assert.Empty(t, drain(t, a, requests, 2, qwenTestSession)["items"])
-	_, _, ok = a.followUpPrompt(false)
+	_, _, ok = a.followUpPrompt(a.CurrentSessionID(), false)
 	assert.False(t, ok)
 }
 

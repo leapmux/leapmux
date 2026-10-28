@@ -2,11 +2,15 @@ import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../hel
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { HeldNativeChild, NativeChildScriptContext, RunningChildOptions } from '../helpers/runningChildProof'
 import type { ProviderAgent } from '../helpers/workspace'
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { managedNativeContext } from '../helpers/nativeScenario'
+import { currentNativeAgent, managedNativeContext, nativeOptionGroup, nativeOptionValue } from '../helpers/nativeScenario'
+import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { chooseSettingsOption } from '../helpers/ui'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 
 /** How a Fast Agent agent opens. */
@@ -48,4 +52,18 @@ export function runningChildOptions(context: NativeChildScriptContext, options: 
 /** The related proof of a missing-setting cell: the native model answers one marked prompt. */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
   await exerciseCapabilityProbe(context)
+}
+
+/** Enable the native shell only after the user-selected Bypass policy takes effect. */
+export async function enableNativeCommands(context: ManagedNativeScenarioContext): Promise<void> {
+  if (nativeOptionValue(await currentNativeAgent(context), 'bypassPermissions') !== 'true') {
+    await chooseSettingsOption(context.page, 'bypassPermissions-true')
+    await waitForNativeOptionApplied(context, 'bypassPermissions', 'true')
+  }
+  await chooseSettingsOption(context.page, 'nativeCommands-true')
+  await waitForNativeOptionApplied(context, 'nativeCommands', 'true')
+  // The requested value can arrive before the restart's replacement catalog.
+  await retryUntilPass(async () => {
+    expect(nativeOptionGroup(await currentNativeAgent(context), 'bypassPermissions')?.mutable).toBe(false)
+  })
 }

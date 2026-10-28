@@ -1214,13 +1214,13 @@ func TestZCodeProvider_ValidateAttachmentRefusesWhatTheAppServerCannotCarry(t *t
 	t.Parallel()
 
 	provider := zcodeProvider{}
-	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindText, Filename: "a.txt"}))
-	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindImage, Filename: "a.png"}),
+	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindText, Filename: "a.txt"}))
+	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindImage, Filename: "a.png"}),
 		"the image gate depends on the running model, so it is not enforced here")
-	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindPDF, Filename: "spec.pdf"}),
+	require.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindPdf, Filename: "spec.pdf"}),
 		"the PDF gate depends on the running model, so it is not enforced here")
 
-	err := provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "a.bin"})
+	err := provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, Filename: "a.bin"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "a.bin", "the message must name the file the user attached")
 }

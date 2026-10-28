@@ -80,3 +80,54 @@ func TestQwenModelSwitchToAModelWithoutReasoningWritesNoTier(t *testing.T) {
 	assert.Equal(t, []string{"model=model-b"}, acptest.ConfigWrites(requests()))
 	assert.Nil(t, optionids.GroupByID(a.OptionGroups(), contracts.QwenConfigReasoningEffort))
 }
+
+// The launch states the style only for a value other than Auto, so the style
+// of Qwen's own settings applies.
+func TestQwenOutputStyleArgs(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, qwenOutputStyleArgs(""))
+	assert.Nil(t, qwenOutputStyleArgs("auto"))
+	assert.Nil(t, qwenOutputStyleArgs("  "))
+	assert.Equal(t, []string{"--output-style", "Concise"}, qwenOutputStyleArgs("Concise"))
+}
+
+// A changed style needs a restart; the running value and an absent value
+// reach the shared writer.
+func TestQwenUpdateSettingsRestartsOnAStyleChange(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newQwenAgent(t, nil, nil)
+	a.stateMu.Lock()
+	a.outputStyle = "Concise"
+	a.stateMu.Unlock()
+
+	restart := a.UpdateSettings(map[string]string{OptionOutputStyle: "Learning"})
+	assert.False(t, restart.AppliedLive, "Qwen reads the style only at start")
+
+	same := a.UpdateSettings(map[string]string{OptionOutputStyle: "Concise"})
+	assert.True(t, same.AppliedLive, "the running style needs no restart")
+
+	absent := a.UpdateSettings(map[string]string{agent.OptionIDModel: "m"})
+	assert.True(t, absent.AppliedLive)
+}
+
+// The group lists Auto first and the built-in styles, and shows the launch
+// value as the current one.
+func TestQwenOutputStyleGroup(t *testing.T) {
+	t.Parallel()
+	group := qwenOutputStyleGroup("", qwenBuiltinOutputStyles)
+	assert.Equal(t, OptionOutputStyle, group.GetId())
+	assert.Equal(t, qwenOutputStyleAuto, group.GetCurrentValue())
+	ids := make([]string, 0, len(group.GetOptions()))
+	for _, option := range group.GetOptions() {
+		ids = append(ids, option.GetId())
+	}
+	assert.Equal(t, []string{qwenOutputStyleAuto, "Concise", "Proactive", "Explanatory", "Learning"}, ids)
+
+	a, _, _ := newQwenAgent(t, nil, nil)
+	a.stateMu.Lock()
+	a.outputStyle = "Proactive"
+	a.stateMu.Unlock()
+	groups := a.outputStyleGroups()
+	require.Len(t, groups, 1)
+	assert.Equal(t, "Proactive", groups[0].GetCurrentValue())
+}

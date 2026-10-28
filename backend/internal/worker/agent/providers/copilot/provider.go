@@ -37,7 +37,10 @@ func (copilotProvider) Classify(raw json.RawMessage) agent.NotificationClassific
 // file. On Chat Completions it sends the PDF's file name alone, which the echo of
 // the message states (reportUnreadDocuments).
 func (copilotProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
 		return fmt.Errorf("copilot cannot deliver %s attachment %q to its model", attachment.Kind, attachment.Filename)
 	}
 	return nil

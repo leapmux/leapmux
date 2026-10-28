@@ -9,7 +9,8 @@
     "_readme",
     "events",
     "answerFields",
-    "statusTypes"
+    "statusTypes",
+    "audioMimeTypes"
   ],
   "$defs": {
     "table": {
@@ -135,6 +136,15 @@
     },
     "options": {
       "$ref": "#/$defs/table"
+    },
+    "audioMimeTypes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
     }
   }
 }

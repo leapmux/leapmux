@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "attachment-media.schema.json",
+  "title": "Native attachment media types",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "audioMimeTypes",
+    "imageMimeTypes",
+    "documentMimeTypes",
+    "kinds"
+  ],
+  "$defs": {
+    "officeMimeType": {
+      "type": "string",
+      "pattern": "^application/[a-z0-9.+-]+$"
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audioMimeTypes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Wav",
+        "XWav",
+        "Wave",
+        "VndWave",
+        "Mpeg",
+        "Mp3",
+        "Mp4",
+        "M4a",
+        "XM4a",
+        "Webm",
+        "Ogg",
+        "Flac",
+        "XFlac",
+        "Aac"
+      ],
+      "properties": {
+        "Wav": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "XWav": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Wave": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "VndWave": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Mpeg": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Mp3": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Mp4": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "M4a": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "XM4a": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Webm": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Ogg": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Flac": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "XFlac": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        },
+        "Aac": {
+          "type": "string",
+          "pattern": "^audio/[a-z0-9.+-]+$"
+        }
+      }
+    },
+    "imageMimeTypes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Png",
+        "Jpeg",
+        "Gif",
+        "Webp"
+      ],
+      "properties": {
+        "Png": {
+          "type": "string",
+          "pattern": "^(image|application)/[a-z0-9.+-]+$"
+        },
+        "Jpeg": {
+          "type": "string",
+          "pattern": "^(image|application)/[a-z0-9.+-]+$"
+        },
+        "Gif": {
+          "type": "string",
+          "pattern": "^(image|application)/[a-z0-9.+-]+$"
+        },
+        "Webp": {
+          "type": "string",
+          "pattern": "^(image|application)/[a-z0-9.+-]+$"
+        }
+      }
+    },
+    "documentMimeTypes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Pdf",
+        "Doc",
+        "Docx",
+        "Xls",
+        "Xlsx"
+      ],
+      "properties": {
+        "Doc": {
+          "$ref": "#/$defs/officeMimeType"
+        },
+        "Docx": {
+          "$ref": "#/$defs/officeMimeType"
+        },
+        "Xls": {
+          "$ref": "#/$defs/officeMimeType"
+        },
+        "Xlsx": {
+          "$ref": "#/$defs/officeMimeType"
+        },
+        "Pdf": {
+          "type": "string",
+          "pattern": "^(image|application)/[a-z0-9.+-]+$"
+        }
+      }
+    },
+    "kinds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Text",
+        "Image",
+        "Pdf",
+        "Audio",
+        "Binary"
+      ],
+      "properties": {
+        "Text": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        },
+        "Image": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        },
+        "Pdf": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        },
+        "Audio": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        },
+        "Binary": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        }
+      }
+    }
+  }
+}

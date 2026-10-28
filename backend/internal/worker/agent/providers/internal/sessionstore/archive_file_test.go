@@ -1,7 +1,9 @@
 package sessionstore
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -12,6 +14,60 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type archiveBytesReadFailure struct{ err error }
+
+func (reader archiveBytesReadFailure) Read([]byte) (int, error) { return 0, reader.err }
+
+func TestReadSizedArchiveBytesRequiresTheCompleteCheckedSize(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, content string
+		size          int64
+		valid         bool
+	}{
+		{name: "exact size", content: "safe", size: 4, valid: true},
+		{name: "truncated", content: "saf", size: 4},
+		{name: "one extra byte", content: "safer", size: 4},
+		{name: "several extra bytes", content: "saferstill", size: 4},
+		{name: "empty", valid: true},
+		{name: "empty file gained a byte", content: "x"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reader := bytes.NewReader([]byte(test.content))
+			data, err := readSizedArchiveBytes(reader, test.size)
+			assert.LessOrEqual(t, int64(len(test.content)-reader.Len()), test.size+1, "read no more than the checked size and its growth sentinel")
+			if test.valid {
+				require.NoError(t, err)
+				assert.Equal(t, test.content, string(data))
+			} else {
+				require.ErrorContains(t, err, "complete checked bytes")
+				assert.Nil(t, data)
+			}
+		})
+	}
+}
+
+func TestReadSizedArchiveBytesPreservesReadErrorsWithoutData(t *testing.T) {
+	t.Parallel()
+	readError := errors.New("injected archive read failure")
+	reader := io.MultiReader(bytes.NewReader([]byte("sa")), archiveBytesReadFailure{err: readError})
+	data, err := readSizedArchiveBytes(reader, 4)
+	require.ErrorIs(t, err, readError)
+	assert.Nil(t, data)
+}
+
+func TestReadSizedArchiveBytesRejectsInvalidSizesBeforeReading(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int64{-1, int64(^uint(0) >> 1), math.MaxInt64} {
+		reader := bytes.NewReader([]byte("safe"))
+		data, err := readSizedArchiveBytes(reader, size)
+		require.Error(t, err)
+		assert.Nil(t, data)
+		assert.Equal(t, 4, reader.Len())
+	}
+}
 
 type archiveFileTestRoot struct {
 	*os.Root

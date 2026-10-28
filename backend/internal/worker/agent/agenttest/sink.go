@@ -35,11 +35,12 @@ type ModeChange struct {
 
 // Sink is a test implementation of ProviderServices that records calls.
 type Sink struct {
-	outputQueue agent.OutputQueue
+	outputQueue        agent.OutputQueue
+	initialUserMessage agent.InitialUserMessage
 	// nativeChildKey belongs to this sink's direct parent and uses that parent's childSinkMu.
 	nativeChildKey string
-	// PersistErr, when set, is what PersistMessage returns. Read without the
-	// lock: a test sets it at construction and never changes it afterwards.
+	// PersistErr controls storage refusal. A test may change it only while no
+	// write runs, because the write path reads it without a separate lock.
 	PersistErr        error
 	mu                sync.Mutex
 	messages          []Message
@@ -166,6 +167,8 @@ type nativeMessageIdentity struct{ sessionID, key string }
 var _ agent.ServiceFacets = (*Sink)(nil)
 
 type Message struct {
+	// stored distinguishes committed rows from the failed attempts in Messages.
+	stored               bool
 	Source               leapmuxv1.MessageSource
 	AgentSessionID       string
 	Content              []byte
@@ -196,6 +199,9 @@ type Message struct {
 	SpansOpenAtPersist []SpanOpen
 }
 
+// Stored distinguishes a committed row from a refused write attempt.
+func (message Message) Stored() bool { return message.stored }
+
 type SpanOpen struct {
 	SpanID       string
 	ParentSpanID string
@@ -205,13 +211,17 @@ type SpanOpen struct {
 // order. The service layer derives a row's span_lines from exactly that state,
 // so this is the observable that pins the ordering rule a provider must follow.
 func (s *Sink) liveSpansLocked() []SpanOpen {
-	active := s.tracker.ActiveSpans()
+	return openSpanSnapshot(&s.tracker)
+}
+
+func openSpanSnapshot(tracker *spantrack.SpanTracker) []SpanOpen {
+	active := tracker.ActiveSpans()
 	if len(active) == 0 {
 		return nil
 	}
 	open := make([]SpanOpen, 0, len(active))
 	for _, a := range active {
-		open = append(open, SpanOpen{SpanID: a.SpanID, ParentSpanID: s.tracker.ParentOf(a.SpanID)})
+		open = append(open, SpanOpen{SpanID: a.SpanID, ParentSpanID: tracker.ParentOf(a.SpanID)})
 	}
 	return open
 }
@@ -251,7 +261,9 @@ func (s *Sink) persistMessageLocked(source leapmuxv1.MessageSource, content agen
 		spans = slices.Clone(owner.spans)
 	}
 	s.messages = append(s.messages, Message{Source: source, AgentSessionID: identity.sessionID, Content: append([]byte(nil), content.Original...), SupplementalContent: append([]byte(nil), content.Supplemental...),
-		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, TurnEnd: turnEnd, SpansOpenAtPersist: spans})
+		stored:   s.PersistErr == nil,
+		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, TurnEnd: turnEnd, SpansOpenAtPersist: spans,
+		TranscriptOnly: owner != nil && !owner.currentLocked()})
 	if s.PersistErr == nil {
 		content.WriteReceipt.RecordStoredMessage(int64(len(s.messages)))
 		content.WriteReceipt.RecordStoredWrite(true)
@@ -308,6 +320,9 @@ func (s *Sink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
 			continue
 		}
 		message := &s.messages[index]
+		if !message.stored {
+			continue
+		}
 		if (change.Publication != nil || change.Seq == 0) && message.AgentSessionID != sessionID {
 			continue
 		}
@@ -352,7 +367,7 @@ func (s *Sink) ReadToolResultForSession(spanID, sessionID string) (*agent.Stored
 	defer s.mu.Unlock()
 	for index := len(s.messages) - 1; index >= 0; index-- {
 		message := s.messages[index]
-		if spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == sessionID {
+		if message.stored && spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == sessionID {
 			return s.storedSpanRow(index), nil
 		}
 	}
@@ -366,18 +381,18 @@ func (s *Sink) ReadToolResultBySeq(seq int64) (*agent.StoredMessage, error) {
 		return nil, nil
 	}
 	message := s.messages[seq-1]
-	if message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || message.SpanID == "" {
+	if !message.stored || message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || message.SpanID == "" {
 		return nil, nil
 	}
 	return s.storedSpanRow(int(seq - 1)), nil
 }
 
 func (s *Sink) spanRowMatches(message Message, spanID string) bool {
-	return spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == s.currentSessionIDLocked()
+	return message.stored && spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == s.currentSessionIDLocked()
 }
 
-// storedSpanRow copies one row out. The seq is the 1-based index, which is what the
-// real store allocates for a transcript that no reseq touched. The caller holds mu.
+// storedSpanRow copies a committed row. The fake uses recorded positions as
+// sequence IDs, including gaps from failed attempts. The caller holds mu.
 func (s *Sink) storedSpanRow(index int) *agent.StoredMessage {
 	message := s.messages[index]
 	return &agent.StoredMessage{Seq: int64(index + 1), Revision: message.SupplementalRevision, Content: agent.MessageContent{
@@ -460,6 +475,10 @@ type SteerEchoReport struct {
 }
 
 func (s *Sink) OutputQueue() *agent.OutputQueue { return &s.outputQueue }
+
+// A standalone provider test sink has no Worker process registry generation.
+func (*Sink) CaptureBackgroundTaskExit(bool) func() error     { return nil }
+func (*Sink) CaptureBackgroundTaskStartFailure() func() error { return nil }
 
 func (s *Sink) CaptureSteerReport(count int, outcome agent.SteerOutcome) func() error {
 	return func() error {
@@ -634,7 +653,7 @@ func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content agent
 	if err != nil {
 		return false, err
 	}
-	s.notifications = append(s.notifications, Message{Source: source, AgentSessionID: identity.sessionID,
+	s.notifications = append(s.notifications, Message{stored: true, Source: source, AgentSessionID: identity.sessionID,
 		Content: slices.Clone(content.Original), SupplementalContent: decoded.Supplemental, Metadata: decoded.Metadata, Completion: content.Completion,
 		TranscriptOnly: owner != nil && !owner.currentLocked()})
 	content.WriteReceipt.RecordStoredWrite(!s.SuppressNotificationBroadcast)
@@ -902,6 +921,10 @@ func (s *Sink) UpsertGoal(update agent.GoalUpdate) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.upsertGoalLocked(update)
+}
+
+func (s *Sink) upsertGoalLocked(update agent.GoalUpdate) {
 	s.goals = append(s.goals, update)
 	s.currentGoal = &update
 }
@@ -928,6 +951,10 @@ func (s *Sink) ClearGoal(snapshot bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearGoalLocked(snapshot)
+}
+
+func (s *Sink) clearGoalLocked(snapshot bool) {
 	s.currentGoal = nil
 	s.goalClears++
 	s.goalClearSnapshots = append(s.goalClearSnapshots, snapshot)
@@ -1189,7 +1216,8 @@ func (s *Sink) ChildSpawnSpan(childAgentID string) (string, error) {
 // ChildSink returns the services of Child(childAgentID), so messages routed into
 // a subagent transcript are recorded on a distinct sink a test can assert against.
 func (s *Sink) ChildSink(childAgentID string) agent.ProviderServices {
-	return agent.NewProviderServices(s.Child(childAgentID))
+	child := s.Child(childAgentID)
+	return agent.NewOrderedProviderServices(child.OutputQueue(), agent.NewProviderServices(child))
 }
 
 // Child returns the per-child Sink created by EnsureChildAgent, or a fresh
@@ -1214,13 +1242,11 @@ func (s *Sink) Child(childAgentID string) *Sink {
 }
 
 func (s *Sink) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
-	cs := s.Child(childAgentID)
-	return cs.PersistMessage(source, agent.MessageContent{Original: content}, span)
+	return s.ChildSink(childAgentID).PersistMessage(source, agent.MessageContent{Original: content}, span)
 }
 
 func (s *Sink) PersistChildTurnEnd(childAgentID string, content agent.MessageContent, span agent.SpanInfo) error {
-	cs := s.Child(childAgentID)
-	return cs.PersistTurnEnd(content, span)
+	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
 }
 
 // PersistChildPrompt writes a USER message with {"content": prompt} into an empty child transcript.
@@ -1231,14 +1257,25 @@ func (s *Sink) PersistChildPrompt(childAgentID, prompt string) error {
 		return nil
 	}
 	cs := s.Child(childAgentID)
-	if len(cs.Messages()) > 0 {
-		return nil
-	}
 	content, err := json.Marshal(map[string]string{"content": prompt})
 	if err != nil {
 		return err
 	}
-	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content}, agent.SpanInfo{})
+	writer := agent.NewOrderedProviderServices(cs.OutputQueue(), agent.NewProviderServices(cs))
+	return cs.initialUserMessage.Persist(writer, agent.MessageContent{Original: content}, func() (bool, error) {
+		return !cs.hasStoredTranscript(), nil
+	})
+}
+
+func (s *Sink) hasStoredTranscript() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, message := range s.messages {
+		if message.stored {
+			return true
+		}
+	}
+	return len(s.notifications) > 0 || len(s.leapMuxNotifications) > 0
 }
 
 // PersistChildUserMessage appends to an existing child transcript, as the Worker does.
@@ -1248,12 +1285,11 @@ func (s *Sink) PersistChildUserMessage(childAgentID, text string) error {
 	if childAgentID == "" || strings.TrimSpace(text) == "" {
 		return nil
 	}
-	cs := s.Child(childAgentID)
 	content, err := json.Marshal(map[string]string{"content": text})
 	if err != nil {
 		return err
 	}
-	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content}, agent.SpanInfo{
+	return s.ChildSink(childAgentID).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content}, agent.SpanInfo{
 		MarkType: leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
 	})
 }
@@ -1540,7 +1576,7 @@ func RowKeys(sink *Sink) []string {
 }
 
 // CleanupChildAgent is a no-op on the test fake: tests that exercise the
-// per-child cleanup use the real OutputHandler via svc.Output.NewSink.
+// per-child cleanup use the real OutputHandler via svc.Output.NewRootSink.
 func (s *Sink) CleanupChildAgent(childAgentID string) {}
 
 // BackgroundTasks returns the shared registry as a snapshot sorted by row key,
@@ -1562,7 +1598,7 @@ func (s *Sink) BackgroundTasks() []bgtask.Item {
 	return out
 }
 
-// MessageCount returns the number of persisted messages.
+// MessageCount returns the number of recorded message attempts.
 func (s *Sink) MessageCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1613,7 +1649,7 @@ func AgentErrorTexts(notifications []map[string]interface{}) []string {
 	return texts
 }
 
-// Messages returns a copy of all persisted messages.
+// Messages returns recorded message attempts, including failed writes.
 func (s *Sink) Messages() []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1767,7 +1803,10 @@ func (nop) PersistMessage(leapmuxv1.MessageSource, agent.MessageContent, agent.S
 func (nop) LookupChildIdentity(bgtask.RowIdentity) (agent.ChildIdentity, bool, error) {
 	return agent.ChildIdentity{}, false, nil
 }
-func (nop) EnrichMessage(agent.MessageEnrichment) (bool, error)                   { return false, nil }
+func (nop) EnrichMessage(agent.MessageEnrichment) (bool, error) { return false, nil }
+func (nop) TranscriptScopeFor(agent.CapturedTranscript) (agent.TranscriptScope, error) {
+	return nil, errors.New("the transcript sink has no captured authority")
+}
 func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)                  { return nil, nil }
 func (nop) ReadToolResult(string) (*agent.StoredMessage, error)                   { return nil, nil }
 func (nop) ReadToolResultBySeq(int64) (*agent.StoredMessage, error)               { return nil, nil }
@@ -1776,6 +1815,8 @@ func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)        
 func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error             { return nil }
 func (nop) SetTurnState(agent.TurnState, uint64)                                  {}
 func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error     { return nil }
+func (nop) CaptureBackgroundTaskExit(bool) func() error                           { return nil }
+func (nop) CaptureBackgroundTaskStartFailure() func() error                       { return nil }
 func (nop) OutputQueue() *agent.OutputQueue                                       { return nil }
 func (nop) CaptureSteerReport(int, agent.SteerOutcome) func() error {
 	return func() error { return nil }

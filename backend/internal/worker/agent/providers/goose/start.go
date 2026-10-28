@@ -12,12 +12,21 @@ import (
 var _ agent.StartFunc = Start
 
 // Start starts a Goose CLI ACP agent process and performs the handshake.
+//
+// The Native Commands option withholds the host terminal: Goose then runs
+// each command itself and saves long output to a file it reports, instead of
+// routing commands to the LeapMux terminal. Goose reads the capability only
+// in the initialize handshake, so a change restarts the agent.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	nativeCommands, err := opts.Options.Bool(OptionNativeCommands)
+	if err != nil {
+		return nil, err
+	}
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration: Registration(),
 		ProviderName: "goose",
 		BaseArgs:     []string{"acp"},
-		NewAgent:     func() *Agent { return &Agent{} },
+		NewAgent:     func() *Agent { return &Agent{nativeCommands: nativeCommands} },
 		Base:         func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {
 			return acp.Hooks{
@@ -39,7 +48,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// {toolName:"delegate", extensionName:"summon"}.
 				SubagentFromToolCall:       gooseSubagentFromToolCall,
 				SubagentFromToolCallUpdate: a.observeGooseSubagentUpdate,
-				ToolOutput:                 a.gooseToolOutput,
 				ToolNotification:           a.observeGooseToolNotification,
 				// Goose sends its live status and its usage totals ONLY to a client
 				// that asks for them, on `_goose/unstable/session/update`. Without the
@@ -49,14 +57,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ClientCapabilityMeta: map[string]any{
 					gooseSteerNamespace: map[string]any{"customNotifications": true},
 				},
+				DisableHostTerminal:    nativeCommands,
+				LocalOptionGroups:      a.nativeCommandGroups,
 				ExtraMethod:            a.handleGooseExtraMethod,
 				ToolOutputComplete:     a.clearGooseToolOutput,
 				SessionMetadataHandler: a.captureSteerRunID,
 				SessionUpdateHandler:   a.observeGooseSessionUpdate,
 				PromptEnded:            a.finishGoosePrompt,
-				AdvertisedSteerMethod: func(response []byte) string {
-					return acp.ParseAdvertisedMethod(response, gooseSteerNamespace, gooseSteerMethod)
-				},
+				AdvertisedSteerMethod:  gooseSteeringMethod,
 			}
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {

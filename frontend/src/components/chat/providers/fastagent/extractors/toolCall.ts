@@ -8,7 +8,7 @@ import { isFastAgentRefusalSentence } from '../protocol'
 /**
  * Read a Fast Agent call through the shared builder.
  * The adapter marks a refused call as declined and keeps its refusal text.
- * A command result reads the exit that Fast Agent writes after its output.
+ * The host-terminal route appends its exit code to the output text.
  */
 export const fastAgentToolCallAdapter: ACPToolCallAdapter = (facts, base): ToolCallSpec => {
   const spec = base()
@@ -33,7 +33,7 @@ function fastAgentCommandSpec(spec: ToolCallSpec): ToolCallSpec {
 
 /**
  * Read a safe integer exit code from the final native exit block.
- * Fast Agent states the code only in this block.
+ * The host-terminal route states its code in this block.
  * The shared Agent Client Protocol builder does not read that native text.
  */
 export function fastAgentCommandExit(text: string): CommandExit | undefined {

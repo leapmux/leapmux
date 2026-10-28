@@ -1,15 +1,219 @@
 package agent_test
 
 import (
+	"bytes"
+	"sync"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type capturedBatchFailureSink struct {
+	*agenttest.Sink
+	rejectSecond bool
+}
+
+func (sink *capturedBatchFailureSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if sink.rejectSecond && bytes.Equal(content.Original, []byte(`{"text":"second"}`)) {
+		return assert.AnError
+	}
+	return sink.Sink.PersistMessage(source, content, span)
+}
+
+func TestCapturedTranscriptBatchRetainsTypedOperationsAndOriginalOwnershipAcrossRetry(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &capturedBatchFailureSink{Sink: &agenttest.Sink{}, rejectSecond: true}
+	sink.UpdateSessionID("old-session")
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	preparations := 0
+	err := agent.PersistCapturedTranscriptBatch(writer, func() []agent.CapturedTranscriptOperation {
+		preparations++
+		return []agent.CapturedTranscriptOperation{
+			agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"text":"first"}`)}, agent.SpanInfo{SpanID: "archive-tool", SpanColor: 7}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT),
+			agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"text":"second"}`)}, agent.SpanInfo{SpanID: "archive-tool", SpanColor: 7, Closing: true}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT),
+			agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"type":"notice","text":"native notice"}`)}, agent.SpanInfo{}).NotificationOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT),
+			agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"type":"agent_status","text":"worker notice"}`)}, agent.SpanInfo{}).WorkerNotificationOperation(),
+			agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"type":"end"}`)}, agent.SpanInfo{}).TurnEndOperation(),
+		}
+	})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.True(t, agent.OutputRetained(err))
+	require.Len(t, sink.Messages(), 1)
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.LeapMuxNotifications())
+	sink.UpdateSessionID("replacement")
+	sink.ResetSpans()
+	sink.rejectSecond = false
+	require.NoError(t, queue.Flush())
+	assert.Equal(t, 1, preparations, "retry must not capture against the replacement or repeat span effects")
+	assert.Equal(t, 1, sink.ResetSpanCount())
+	messages := sink.Messages()
+	require.Len(t, messages, 3, "two ordinary rows and one divider, with no repeated first row")
+	assert.JSONEq(t, `{"text":"first"}`, string(messages[0].Content))
+	assert.JSONEq(t, `{"text":"second"}`, string(messages[1].Content))
+	assert.Equal(t, "old-session", messages[1].AgentSessionID)
+	assert.Equal(t, "archive-tool", messages[1].SpanID)
+	assert.Equal(t, int32(7), messages[1].SpanColor)
+	assert.True(t, messages[1].TranscriptOnly)
+	assert.True(t, messages[2].TurnEnd)
+	assert.Equal(t, "old-session", messages[2].AgentSessionID)
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Equal(t, "old-session", sink.PersistedNotifications()[0].AgentSessionID)
+	require.Len(t, sink.LeapMuxNotifications(), 1)
+	assert.Equal(t, "worker notice", sink.LeapMuxNotifications()[0]["text"])
+	assert.False(t, queue.HasPending())
+}
+
+func TestCapturedTranscriptBatchPrecedesCaptureReentryAndOwnsItsOperationSlice(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &batchMutationSink{Sink: &agenttest.Sink{PersistErr: assert.AnError}}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	sink.duringCapture = func() {
+		err := writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"later"}`)}, agent.SpanInfo{})
+		assert.True(t, agent.OutputRetained(err))
+		assert.Empty(t, sink.Messages())
+	}
+	var operations []agent.CapturedTranscriptOperation
+	err := agent.PersistCapturedTranscriptBatch(writer, func() []agent.CapturedTranscriptOperation {
+		operations = []agent.CapturedTranscriptOperation{
+			agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"text":"first"}`)}, agent.SpanInfo{}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT),
+			agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"text":"second"}`)}, agent.SpanInfo{}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT),
+		}
+		assert.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+		assert.Empty(t, sink.Messages())
+		return operations
+	})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.True(t, agent.OutputRetained(err))
+	clear(operations)
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	messages := sink.Messages()
+	require.Len(t, messages, 4, "one failed attempt and three successful rows")
+	messages = messages[1:]
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, messages[0].Source)
+	assert.JSONEq(t, `{"text":"first"}`, string(messages[0].Content))
+	assert.JSONEq(t, `{"text":"second"}`, string(messages[1].Content))
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, messages[2].Source)
+}
+
+func TestCapturedTranscriptBatchRejectsInvalidOperationsWithoutPoisoningTheQueue(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"zero operation", "unspecified source", "unknown source", "changed operation", "different queue"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			var queue agent.OutputQueue
+			sink := &agenttest.Sink{}
+			writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+			capture := agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"text":"original"}`)}, agent.SpanInfo{})
+			err := agent.PersistCapturedTranscriptBatch(writer, func() []agent.CapturedTranscriptOperation {
+				var operation agent.CapturedTranscriptOperation
+				switch scenario {
+				case "unspecified source":
+					operation = capture.MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_UNSPECIFIED)
+				case "unknown source":
+					operation = capture.MessageOperation(999)
+				case "changed operation":
+					_ = capture.MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+					operation = capture.NotificationOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+				case "different queue":
+					other := agent.NewOrderedProviderServices(&agent.OutputQueue{}, agent.NewProviderServices(sink))
+					operation = agent.CaptureTranscript(other, agent.MessageContent{Original: []byte(`{}`)}, agent.SpanInfo{}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+				}
+				return []agent.CapturedTranscriptOperation{operation}
+			})
+			require.Error(t, err)
+			assert.False(t, agent.OutputRetained(err))
+			assert.False(t, queue.HasPending())
+			assert.Empty(t, sink.Messages())
+			require.NoError(t, writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"healthy"}`)}, agent.SpanInfo{}))
+			assert.Len(t, sink.Messages(), 1)
+		})
+	}
+}
+
+func TestCapturedTranscriptBatchPreparationPanicPreservesReentrantOutput(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	require.PanicsWithValue(t, "capture failed", func() {
+		_ = agent.PersistCapturedTranscriptBatch(writer, func() []agent.CapturedTranscriptOperation {
+			err := writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"later"}`)}, agent.SpanInfo{})
+			assert.True(t, agent.OutputRetained(err))
+			panic("capture failed")
+		})
+	})
+	require.NoError(t, queue.Flush())
+	assert.False(t, queue.HasPending())
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, `{"content":"later"}`, string(sink.Messages()[0].Content))
+}
+
+func TestCapturedTranscriptBatchRequiresAQueueAndPreparation(t *testing.T) {
+	t.Parallel()
+	called := false
+	require.Error(t, agent.PersistCapturedTranscriptBatch(nil, func() []agent.CapturedTranscriptOperation { called = true; return nil }))
+	assert.False(t, called)
+	var queue agent.OutputQueue
+	writer := agent.OrderedTranscript(&queue, &agenttest.Sink{})
+	require.Error(t, agent.PersistCapturedTranscriptBatch(writer, nil))
+	assert.False(t, queue.HasPending())
+	require.NoError(t, agent.PersistCapturedTranscriptBatch(writer, func() []agent.CapturedTranscriptOperation { return nil }))
+	assert.False(t, queue.HasPending())
+}
+
+func TestCapturedTranscriptReservationHoldsLaterOutputUntilPreparation(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	batch, err := agent.ReserveCapturedTranscriptBatch(writer)
+	require.NoError(t, err)
+	assert.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+	assert.True(t, agent.OutputRetained(writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"later"}`)}, agent.SpanInfo{})))
+	writer.SetTurnState(agent.TurnState{}, 1)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.TurnActiveCalls)
+	require.NoError(t, batch.Prepare(func() []agent.CapturedTranscriptOperation {
+		return []agent.CapturedTranscriptOperation{agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"native":"first"}`)}, agent.SpanInfo{}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)}
+	}))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.JSONEq(t, `{"native":"first"}`, string(rows[0].Content))
+	assert.JSONEq(t, `{"content":"later"}`, string(rows[1].Content))
+	assert.Equal(t, []bool{false}, sink.TurnActiveCalls)
+	called := false
+	require.Error(t, batch.Prepare(func() []agent.CapturedTranscriptOperation { called = true; return nil }))
+	assert.False(t, called)
+	assert.False(t, batch.Discard())
+}
+
+func TestCapturedTranscriptUnusedReservationCanBeDiscardedWithoutLosingOtherRows(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	batch, err := agent.ReserveCapturedTranscriptBatch(writer)
+	require.NoError(t, err)
+	assert.True(t, agent.OutputRetained(writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"later"}`)}, agent.SpanInfo{})))
+	assert.True(t, batch.Discard())
+	assert.False(t, batch.Discard())
+	require.NoError(t, queue.Flush())
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, `{"content":"later"}`, string(sink.Messages()[0].Content))
+	require.Error(t, batch.Prepare(func() []agent.CapturedTranscriptOperation { t.Error("discarded preparation ran"); return nil }))
+	_, err = agent.ReserveCapturedTranscriptBatch(nil)
+	require.Error(t, err)
+}
 
 func TestOrderedTranscriptPreservesPayloadSourceAndDestination(t *testing.T) {
 	t.Parallel()
@@ -125,6 +329,31 @@ func TestPersistTranscriptBatchCopiesEveryPayloadBeforeCapture(t *testing.T) {
 	assert.JSONEq(t, `{"text":"second"}`, string(messages[1].Content))
 }
 
+func TestPersistTranscriptBatchCapturesEveryRecordBeforePublishingTheFirst(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &batchMutationSink{Sink: &agenttest.Sink{}}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	captures := 0
+	sink.duringCapture = func() {
+		captures++
+		sink.duringCapture = func() {
+			captures++
+			assert.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+			assert.Empty(t, sink.Messages(), "a partial capture must not publish a prefix of the batch")
+		}
+	}
+	require.NoError(t, agent.PersistTranscriptBatch(writer, []agent.TranscriptMessage{
+		{Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: agent.MessageContent{Original: []byte(`{"text":"first"}`)}},
+		{Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: agent.MessageContent{Original: []byte(`{"text":"second"}`)}},
+	}))
+	assert.Equal(t, 2, captures)
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.JSONEq(t, `{"text":"first"}`, string(rows[0].Content))
+	assert.JSONEq(t, `{"text":"second"}`, string(rows[1].Content))
+}
+
 func TestPersistPreparedMessageKeepsTheCapturedSessionAndSelectedBytesOnRetry(t *testing.T) {
 	t.Parallel()
 	var queue agent.OutputQueue
@@ -200,6 +429,95 @@ func TestPersistPreparedMessageRejectsInvalidAdmission(t *testing.T) {
 	assert.False(t, queue.HasPending())
 }
 
+type preparedMessageInterceptor struct {
+	agent.TranscriptServices
+	queue  *agent.OutputQueue
+	calls  int
+	before func()
+}
+
+func (writer *preparedMessageInterceptor) OutputQueue() *agent.OutputQueue { return writer.queue }
+
+func (writer *preparedMessageInterceptor) PersistPreparedMessage(source leapmuxv1.MessageSource, template agent.MessageContent, span agent.SpanInfo, prepare func() []byte) error {
+	writer.calls++
+	if writer.before != nil {
+		writer.before()
+	}
+	return agent.PersistPreparedMessage(writer.TranscriptServices, source, template, span, prepare)
+}
+
+func TestPreparedTranscriptOverrideOwnsAdmissionBeforeTheGlobalQueue(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{}
+	sink.UpdateSessionID("original")
+	writer := &preparedMessageInterceptor{TranscriptServices: agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink)), queue: &queue}
+	writer.before = func() { assert.False(t, queue.HasPending(), "the concrete writer owns prepared admission") }
+	preparations := 0
+	require.NoError(t, agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, func() []byte {
+		preparations++
+		sink.UpdateSessionID("replacement")
+		return []byte(`{"text":"selected"}`)
+	}))
+	assert.Equal(t, 1, writer.calls)
+	assert.Equal(t, 1, preparations)
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, `{"text":"selected"}`, string(rows[0].Content))
+	assert.Equal(t, "original", rows[0].AgentSessionID)
+	assert.True(t, rows[0].TranscriptOnly)
+	assert.False(t, queue.HasPending())
+}
+
+func TestPreparedTranscriptOverrideCannotAcceptInvalidAdmission(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	writer := &preparedMessageInterceptor{TranscriptServices: agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(&agenttest.Sink{})), queue: &queue}
+	prepare := func() []byte { t.Error("invalid admission reached preparation"); return nil }
+	for _, source := range []leapmuxv1.MessageSource{leapmuxv1.MessageSource_MESSAGE_SOURCE_UNSPECIFIED, 999} {
+		require.Error(t, agent.PersistPreparedMessage(writer, source, agent.MessageContent{}, agent.SpanInfo{}, prepare))
+	}
+	require.Error(t, agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, nil))
+	assert.Zero(t, writer.calls)
+	assert.False(t, queue.HasPending())
+}
+
+func TestPreparedMessagePreparationPanicReleasesOnlyItsOwnReservation(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	require.PanicsWithValue(t, "preparation failed", func() {
+		_ = agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, func() []byte {
+			err := writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"later"}`)}, agent.SpanInfo{})
+			assert.True(t, agent.OutputRetained(err))
+			panic("preparation failed")
+		})
+	})
+	require.NoError(t, queue.Flush())
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
+	assert.JSONEq(t, `{"content":"later"}`, string(rows[0].Content))
+	assert.False(t, queue.HasPending())
+}
+
+func TestPreparedMessageCapturePanicLeavesTheQueueUsable(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &batchMutationSink{Sink: &agenttest.Sink{}, duringCapture: func() { panic("capture failed") }}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	require.PanicsWithValue(t, "capture failed", func() {
+		_ = agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, func() []byte {
+			t.Error("failed capture reached preparation")
+			return nil
+		})
+	})
+	assert.False(t, queue.HasPending())
+	require.NoError(t, writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"healthy"}`)}, agent.SpanInfo{}))
+	require.Len(t, sink.Messages(), 1)
+}
+
 func TestOrderedChildFailureDoesNotBlockAnotherTranscript(t *testing.T) {
 	t.Parallel()
 	root := &agenttest.Sink{}
@@ -261,4 +579,67 @@ func TestOrderedTranscriptRetriesUncertaintyBeforeLaterRows(t *testing.T) {
 	require.NoError(t, agent.FlushPendingOutput(sink))
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 2}}, raw.SteerEchoReports())
 	assert.Equal(t, []string{"steer-uncertain:2", "turn_end"}, raw.TurnLifecycle())
+}
+
+type pausedReceiptCaptureSink struct {
+	*agenttest.Sink
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (sink *pausedReceiptCaptureSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	captured := sink.Sink.CaptureMessage(content, span)
+	close(sink.entered)
+	<-sink.release
+	return captured
+}
+
+func TestTranscriptWriteReceiptPublishesItsOriginalAuthorityAfterCapture(t *testing.T) {
+	t.Parallel()
+	var absent *agent.TranscriptWriteReceipt
+	publication, session, known := absent.CapturedPublication()
+	assert.Nil(t, publication)
+	assert.Empty(t, session)
+	assert.False(t, known)
+	assert.False(t, absent.OrderedWriteComplete())
+	receipt := agent.NewTranscriptWriteReceipt()
+	_, _, known = receipt.CapturedPublication()
+	assert.False(t, known)
+	sink := &pausedReceiptCaptureSink{Sink: &agenttest.Sink{}, entered: make(chan struct{}), release: make(chan struct{})}
+	sink.UpdateSessionID("original")
+	sink.PersistErr = assert.AnError
+	var queue agent.OutputQueue
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(sink.release) }) })
+	done := make(chan error, 1)
+	go func() {
+		done <- writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"text":"native"}`), WriteReceipt: receipt}, agent.SpanInfo{SpanID: "tool"})
+	}()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-sink.entered:
+	case <-ctx.Done():
+		t.Fatal("the ordered capture did not start")
+	}
+	_, _, known = receipt.CapturedPublication()
+	assert.False(t, known, "an unfinished capture supplies no authority")
+	sink.UpdateSessionID("replacement")
+	release.Do(func() { close(sink.release) })
+	require.ErrorIs(t, <-done, assert.AnError)
+	publication, session, known = receipt.CapturedPublication()
+	require.True(t, known)
+	require.NotNil(t, publication)
+	assert.Equal(t, "original", session)
+	assert.False(t, receipt.OrderedWriteComplete())
+	assert.False(t, publication.Owner().IsCurrent())
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	assert.True(t, receipt.OrderedWriteComplete())
+	after, afterSession, known := receipt.CapturedPublication()
+	require.True(t, known)
+	assert.Same(t, publication.Owner(), after.Owner())
+	assert.Equal(t, session, afterSession)
+	require.Len(t, sink.Messages(), 2)
+	assert.True(t, sink.Messages()[1].TranscriptOnly)
 }

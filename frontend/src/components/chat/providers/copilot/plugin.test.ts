@@ -20,7 +20,7 @@ describe('copilot provider', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
   it('accepts text, image and PDF attachments, and refuses a binary file', () => {
-    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, binary: false })
+    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, audio: false, binary: false })
   })
 
   // The tool result already states the completion, so the Worker drops this announcement.
@@ -86,6 +86,8 @@ describe('copilot provider', () => {
       COPILOT_EVENT.AssistantTurnStart,
       COPILOT_EVENT.AssistantTurnEnd,
       COPILOT_EVENT.AssistantMessageDelta,
+      // Live shell chunks never become durable conversation rows in the Worker.
+      COPILOT_EVENT.ToolShellOutput,
       COPILOT_EVENT.SubagentStarted,
       // The Worker consumes the subagent settings before storage.
       COPILOT_EVENT.SubagentConfigured,

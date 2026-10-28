@@ -26,6 +26,8 @@ export interface WatchPlan {
    * watchPlanKey includes this set so a resync change sends a new request.
    */
   terminalResync: Set<string>
+  /** Local context that requires a new FULL replay when it changes. Never sent on the wire. */
+  agentReplayIdentities?: ReadonlyMap<string, string>
 }
 
 /**
@@ -101,6 +103,8 @@ export interface DetachedTerminalWatch {
 export interface BuildWatchPlansOpts {
   agentResumeSeq?: (agentId: string) => bigint
   agentWindowTailSeq?: (agentId: string) => bigint
+  /** Capture the authority needed by each FULL replay. Empty means unresolved. */
+  agentReplayIdentity?: (agentId: string) => string
   terminalAfterOffset?: (terminalId: string) => bigint | number
   terminalNeedsResync?: (terminalId: string) => boolean
   /**
@@ -123,6 +127,7 @@ export function buildWatchPlans(
   const {
     agentResumeSeq = () => 0n,
     agentWindowTailSeq = () => 0n,
+    agentReplayIdentity,
     terminalAfterOffset = () => 0,
     terminalNeedsResync = () => false,
     getAgentTab,
@@ -186,6 +191,13 @@ export function buildWatchPlans(
       continue
     pushTerminal(plan, detached.terminalId, detached.mode)
   }
+  if (agentReplayIdentity) {
+    for (const plan of plans.values()) {
+      plan.agentReplayIdentities = new Map(plan.agents
+        .filter(entry => entry.mode === WatchMode.FULL)
+        .map(entry => [entry.agentId, agentReplayIdentity(entry.agentId)]))
+    }
+  }
   return plans
 
   /**
@@ -210,6 +222,7 @@ export function buildWatchPlans(
  * Compare these interest fields:
  * - Entity IDs.
  * - Modes.
+ * - Local FULL replay identities.
  * - Terminal resync state.
  * Exclude cursors because each message changes them.
  * Including cursors would send an interest update for each chat frame.
@@ -217,7 +230,10 @@ export function buildWatchPlans(
  */
 export function watchPlanKey(plan: WatchPlan): string {
   const agents = plan.agents
-    .map(a => `${a.agentId}:${a.mode}`)
+    .map((entry) => {
+      const identity = entry.mode === WatchMode.FULL ? plan.agentReplayIdentities?.get(entry.agentId) : undefined
+      return `${entry.agentId}:${entry.mode}${identity === undefined ? '' : `:${JSON.stringify(identity)}`}`
+    })
     .toSorted()
     .join(',')
   const terminals = plan.terminals

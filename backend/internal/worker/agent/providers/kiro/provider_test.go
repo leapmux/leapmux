@@ -368,19 +368,19 @@ func TestKiroResolveWithoutAStoredRequestForwards(t *testing.T) {
 	assert.Equal(t, response, result.Content)
 }
 
-func TestKiroValidateAttachmentRefusesOnlyABinary(t *testing.T) {
+func TestKiroValidateAttachmentRefusesAnUnsupportedBinary(t *testing.T) {
 	t.Parallel()
 	p := kiroProvider{}
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage, agent.AttachmentKindPDF} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf} {
 		assert.NoError(t, p.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "f"}), "kind %v", kind)
 	}
-	err := p.ValidateAttachment(agent.ClassifiedAttachment{Kind: agent.AttachmentKindBinary, Filename: "app.zip"})
+	err := p.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, Filename: "app.zip"})
 	require.Error(t, err)
-	assert.EqualError(t, err, "attachment app.zip is binary, and Kiro does not support binary attachments", "the reader reads the product name as the product spells it")
+	assert.EqualError(t, err, `the Kiro agent cannot read the binary attachment "app.zip"`, "the reader reads the product name as the product spells it")
 }
 
 // The registry classifies each attachment and applies the same policy that the
-// plugin states, so a binary file fails before it reaches Kiro.
+// plugin states, so an unsupported binary file fails before it reaches Kiro.
 func TestKiroNormalizeAttachmentsRefusesABinary(t *testing.T) {
 	t.Parallel()
 	registry := agenttest.MustNewRegistry(Registration())

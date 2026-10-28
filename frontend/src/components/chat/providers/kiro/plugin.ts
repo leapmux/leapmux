@@ -1,4 +1,4 @@
-import { KIRO_CONFIG, KIRO_MODE } from '~/generated/contracts/kiro-protocol'
+import { KIRO_BINARY_MIME, KIRO_CONFIG, KIRO_MODE } from '~/generated/contracts/kiro-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { kiroAssistantTextSegments } from './assistantText'
@@ -25,7 +25,8 @@ registerACPProvider({
   // - Text.
   // - Images.
   // - PDF files.
-  attachments: { text: true, image: true, pdf: true, binary: false },
+  // - Word and Excel files.
+  attachments: { text: true, image: true, pdf: true, audio: false, binary: [...KIRO_BINARY_MIME] },
   extractControl: kiroExtractControl,
   elicitation: kiroElicitation,
   controlResponseDisplay: kiroControlResponseSummary,

@@ -89,6 +89,91 @@ func followRunningChild(t *testing.T, a *Agent, stdin *agenttest.Stdin) {
 	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable }, "the load marks the child session steerable")
 }
 
+func clearChildSessionContext(t *testing.T, a *Agent, stdin *agenttest.Stdin) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.ClearContext()
+		done <- err
+	}()
+	request := awaitRequest(t, stdin, "session/new", 1)
+	require.True(t, a.Deliver(request.ID, agenttest.JSONRPCResponse(request.ID, agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2"}`)})))
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("context clear did not finish")
+	}
+}
+
+func TestOpenCodeContextClearRetiresLoadedChildRoutes(t *testing.T) {
+	t.Parallel()
+	a, _, stdin := newChildSessionAgent(t)
+	followRunningChild(t, a, stdin)
+	clearChildSessionContext(t, a, stdin)
+	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
+	assert.ErrorIs(t, a.SendChildInput("call-1", "old input", nil), errOpenCodeSubagentIdle)
+	assert.ErrorIs(t, a.SteerChildInput("call-1", "old steer", nil), agent.ErrNoActiveTurn)
+	assert.Empty(t, writtenRequests(stdin, "session/prompt"))
+	_, served := a.SessionOwner("ses-child")
+	assert.False(t, served)
+}
+
+func TestOpenCodeChildLoadPrecedesTheRootReplacement(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, _, stdin := newChildSessionAgent(t)
+		defer func() {
+			a.SimulateExitForTest()
+			a.Stop()
+			synctest.Wait()
+		}()
+		a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Count."))
+		a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
+		load := awaitRequest(t, stdin, "session/load", 1)
+		done := make(chan error, 1)
+		go func() {
+			_, err := a.ClearContext()
+			done <- err
+		}()
+		synctest.Wait()
+		assert.Empty(t, writtenRequests(stdin, "session/new"), "an admitted load must finish before root replacement")
+		require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{}`)})))
+		request := awaitRequest(t, stdin, "session/new", 1)
+		require.True(t, a.Deliver(request.ID, agenttest.JSONRPCResponse(request.ID, agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2"}`)})))
+		require.NoError(t, <-done)
+		assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
+		_, served := a.SessionOwner("ses-child")
+		assert.False(t, served)
+	})
+}
+
+func TestOpenCodeOutgoingFollowerCannotLoadAfterRootReplacement(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, _, stdin := newChildSessionAgent(t)
+		defer func() {
+			a.SimulateExitForTest()
+			a.Stop()
+			synctest.Wait()
+		}()
+		done := make(chan error, 1)
+		go func() {
+			_, err := a.ClearContext()
+			done <- err
+		}()
+		request := awaitRequest(t, stdin, "session/new", 1)
+		a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
+		synctest.Wait()
+		assert.Empty(t, writtenRequests(stdin, "session/load"), "a follower must not enter a root that is being replaced")
+		require.True(t, a.Deliver(request.ID, agenttest.JSONRPCResponse(request.ID, agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2"}`)})))
+		require.NoError(t, <-done)
+		synctest.Wait()
+		assert.Empty(t, writtenRequests(stdin, "session/load"), "the captured outgoing owner cannot become the replacement owner")
+		assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
+		_, served := a.SessionOwner("ses-child")
+		assert.False(t, served)
+	})
+}
+
 func TestOpenCodeLoadsTheChildSessionOfARunningTask(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newChildSessionAgent(t)
@@ -99,6 +184,22 @@ func TestOpenCodeLoadsTheChildSessionOfARunningTask(t *testing.T) {
 	// The same call stated again neither loads nor attaches twice.
 	a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
 	assert.Len(t, writtenRequests(stdin, "session/load"), 1)
+}
+
+func TestOpenCodeKeepsTheLoadedChildModelSeparateFromTheRoot(t *testing.T) {
+	t.Parallel()
+	a, _, stdin := newChildSessionAgent(t)
+	a.SetCurrentModel("private/parent")
+	a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Count slowly."))
+	a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
+	load := awaitRequest(t, stdin, "session/load", 1)
+	require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/voice","options":[{"value":"private/voice","name":"Voice"}]}]}`)})))
+	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable })
+	a.childSessionsMu.Lock()
+	model := a.childSessions["call-1"].modelID
+	a.childSessionsMu.Unlock()
+	assert.Equal(t, "private/voice", model)
+	assert.Equal(t, "private/parent", a.CurrentModel())
 }
 
 func TestOpenCodeFollowsOnlyARunningTaskWithAChildSession(t *testing.T) {
@@ -220,6 +321,26 @@ func TestOpenCodeLateChildSteerRefusalReachesTheParentAfterRouteTeardown(t *test
 	notifications := sink.LeapMuxNotifications()
 	assert.Equal(t, contracts.NotificationTypeAgentError, notifications[0][contracts.NotificationFieldType])
 	assert.Contains(t, notifications[0][contracts.NotificationFieldError], "the session ended")
+}
+
+func TestOpenCodeLateChildSteerRefusalKeepsItsOutgoingTranscript(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newChildSessionAgent(t)
+	followRunningChild(t, a, stdin)
+	row, found := sink.BackgroundTask("call-1")
+	require.True(t, found)
+	child := sink.Child(row.ChildAgentID)
+	require.NoError(t, a.SteerChildInput("call-1", "An outgoing child message.", nil))
+	prompt := awaitRequest(t, stdin, "session/prompt", 1)
+	clearChildSessionContext(t, a, stdin)
+	require.True(t, a.Deliver(prompt.ID, agenttest.JSONRPCResponse(prompt.ID, agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"the retired child refused the message"}`)})))
+	testutil.RequireEventually(t, func() bool {
+		return len(child.LeapMuxNotifications())+len(sink.LeapMuxNotifications()) > 0
+	})
+	assert.Empty(t, sink.LeapMuxNotifications(), "an outgoing refusal cannot enter the replacement root")
+	notices := child.LeapMuxNotifications()
+	require.Len(t, notices, 1)
+	assert.Contains(t, notices[0][contracts.NotificationFieldError], "the retired child refused the message")
 }
 
 func TestOpenCodeAFailedChildLoadLeavesTheChildUnsteerable(t *testing.T) {

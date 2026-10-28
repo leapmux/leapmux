@@ -7,4 +7,4 @@ copilotTest('keeps two actual native children outside workflow groups after relo
   await exerciseUngroupedNativeChildren(native, { openChild: slot => openProfiledNativeChild(native, COPILOT_CHILD, slot), catalogProof: true })
 })
 
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/520.
+// Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.

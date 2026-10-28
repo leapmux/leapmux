@@ -24,7 +24,7 @@ type museProvider struct {
 }
 
 func (museProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("Muse Code MSP", attachment)
+	return providerkit.ValidateTextAndImageAttachment("Muse Code MSP", attachment)
 }
 func (museProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}

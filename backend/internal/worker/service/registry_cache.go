@@ -159,6 +159,8 @@ type registryView[T any] struct {
 	queries *db.Queries
 	// ownerID is the agent that owns the rows this view addresses.
 	ownerID string
+	// deleteByKeyOverride binds an authorized targeted deletion without changing cap maintenance.
+	deleteByKeyOverride func(context.Context, *db.Queries, string, string) error
 }
 
 // on binds the cache to a query handle and an owner. Caller must hold c.Mu.
@@ -569,6 +571,9 @@ func (v registryView[T]) dropStoredRowLocked(ctx context.Context, row T, superse
 	c := v.cache
 	if !superseded && c.ops.retention != nil && c.ops.retention.keep(row) {
 		return nil
+	}
+	if v.deleteByKeyOverride != nil {
+		return v.deleteByKeyOverride(ctx, v.queries, v.ownerID, c.ops.keyOf(row))
 	}
 	return c.ops.deleteByKey(ctx, v.queries, v.ownerID, c.ops.keyOf(row))
 }

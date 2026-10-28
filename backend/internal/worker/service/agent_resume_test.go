@@ -1033,7 +1033,7 @@ func TestAgentResume_SkipsAnAgentAlreadyRunning(t *testing.T) {
 		AgentID:       "agent-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 	require.True(t, svc.Agents.HasAgent("agent-1"))

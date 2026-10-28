@@ -17,26 +17,8 @@ import { acpRemapFacts, acpSpecFor, acpToolFacts } from '../../acp/extractors/to
 import { gooseAgentRequest, gooseAgentResult } from '../extractors/agent'
 import { gooseSubagentToolCall, isGooseSubagentToolRequest } from '../extractors/subagentToolRequest'
 import { GOOSE_CODE_EXECUTION } from '../protocol'
+import { gooseToolIdentity } from '../toolIdentity'
 import { GOOSE_DEVELOPER_EXTENSION, GOOSE_DEVELOPER_TOOL, GOOSE_TOOL_KINDS, isGooseDeveloperTool } from '../toolKinds'
-
-/** Read the complete native report. The first line describes script execution, not MCP transport. */
-function gooseScriptReport(text: string): { failed: boolean, output: string } | null {
-  const match = /^Code Executed Successfully: (true|false)\n\n# Return Value\n```json\n([\s\S]*?)\n```\n\n# STDOUT\n[\s\S]*?\n\n# STDERR\n[\s\S]*$/.exec(text)
-  if (!match)
-    return null
-  const value = match[2]
-  if (value === undefined)
-    return null
-  try {
-    JSON.parse(value)
-  }
-  catch {
-    return null
-  }
-  // Script text can contain the report's section headings. Preserve the complete body instead of splitting ambiguous streams.
-  const bodyStart = text.indexOf('\n\n') + 2
-  return { failed: match[1] === 'false', output: text.slice(bodyStart) }
-}
 
 /**
  * Add the native image file and dimensions to a read_image specification.
@@ -101,27 +83,19 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec 
     const built = gooseCall(synthetic, () => acpSpecFor(synthetic, 'mcp'))
     return { ...built, label: 'Tool request' }
   }
-  const metadata = pickObject(pickObject(pickObject(tool, '_meta'), 'goose'), 'toolCall')
-  const fullName = pickString(metadata, 'toolName')
-  const separator = fullName.indexOf('__')
-  const extension = pickString(metadata, 'extensionName') || (separator >= 0 ? fullName.slice(0, separator) : '')
-  const name = separator >= 0 ? fullName.slice(separator + 2) : fullName
+  const { name, extension } = gooseToolIdentity(tool)
   const args = facts.args
   // Metadata supplies stable tool identity. Platform tool names can omit an extension prefix, and generated titles can change.
   const toolIdentity = name ? { name } : {}
 
   if (extension === GOOSE_CODE_EXECUTION.Extension && name === GOOSE_CODE_EXECUTION.Tool) {
-    const report = facts.finished ? gooseScriptReport(facts.text) : null
-    if (report) {
-      // Retained cancellation remains authoritative even when the script report describes failure.
-      const failed = report.failed && facts.retained !== 'interrupted' && facts.status !== 'cancelled' && facts.status !== 'declined'
+    if (facts.finished) {
       return {
         kind: 'execute',
         ...toolIdentity,
         label: 'Code execution',
         request: { command: pickString(args, 'code'), language: 'javascript' },
-        result: { commands: [{ output: report.output, ...(report.failed ? { failed: true as const } : {}) }], unresolvedTerminals: [] },
-        ...(failed ? { statusOverride: 'failed' as const } : {}),
+        result: { commands: [{ output: facts.text }], unresolvedTerminals: [] },
       }
     }
     if (!facts.finished && isObject(tool.rawInput) && typeof tool.rawInput.code === 'string') {

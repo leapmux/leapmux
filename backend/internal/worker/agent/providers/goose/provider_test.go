@@ -3,6 +3,8 @@ package goose
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -11,10 +13,10 @@ import (
 func TestGooseRefusesEmbeddedBlobAttachments(t *testing.T) {
 	t.Parallel()
 	provider := Registration().Plugin
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage} {
 		assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "input"}), kind)
 	}
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindPDF, agent.AttachmentKindBinary} {
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary} {
 		assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "input"}), string(kind))
 	}
 }

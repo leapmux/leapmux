@@ -2278,7 +2278,8 @@ ${CODEX_PERMISSION_PRESET_KINDS.map(preset).join('\n')}
  * per-constant name entry: the Go constant is `<goPrefix><Table><Key>` and the TS key
  * is the bare `Key` inside a `<TS_PREFIX>_<TABLE>` object.
  *
- * `subsetOf` selects keys from a declared parent table. Its JSON value is an array.
+ * `subsetOf` selects keys from a local table or a registered contract.table.
+ * Its JSON value is an array. Foreign table imports must form an acyclic graph.
  * Go emits a Members slice, and TypeScript emits a ReadonlySet of the parent values.
  * A subset carries no separate literal vocabulary.
  *
@@ -2479,6 +2480,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'MiMoEvent', doc: 'event types the worker persists verbatim and the browser reads' },
+      { key: 'audioMimeTypes', subsetOf: 'attachment-media.audioMimeTypes', goTable: 'AudioMIME', tsTable: 'AUDIO_MIME', doc: 'audio MIME types accepted by MiMo native input' },
       { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'MiMoStatusType', doc: '`status.type` words of `session.status`' },
       { key: 'errorNames', goTable: 'ErrorName', tsTable: 'ERROR_NAME', tsType: 'MiMoErrorName', doc: 'native error names that both readers use for a turn outcome' },
       { key: 'partTypes', goTable: 'PartType', tsTable: 'PART_TYPE', tsType: 'MiMoPartType', doc: 'message part types the browser draws' },
@@ -2503,10 +2505,24 @@ export const PROVIDER_PROTOCOLS = [
     title: 'OpenCode, Kilo and MiMo Code',
     preamble: 'The OpenCode family states a question on the daemon\'s own event stream, which its Agent Client Protocol adapter does not forward. MiMo Code sends the same question shapes on its native event stream.',
     tables: [
+      { key: 'audioMimeTypes', subsetOf: 'attachment-media.audioMimeTypes', goTable: 'AudioMIME', tsTable: 'AUDIO_MIME', doc: 'audio MIME types carried by the native Google adapter of the family' },
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'daemon events that both sides read' },
       { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'OpenCodeStatusType', doc: 'status.type values of session.status that both sides read' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'OpenCodeOptionID', owner: 'LeapMux chose these', doc: 'option keys for the family settings both sides address' },
+    ],
+  },
+  {
+    name: 'attachment-media',
+    goPrefix: 'AttachmentMedia',
+    tsPrefix: 'ATTACHMENT_MEDIA',
+    title: 'Attachment media',
+    preamble: 'The browser and worker share native audio MIME types and aliases.',
+    tables: [
+      { key: 'kinds', goTable: 'Kind', goType: 'Kind', tsTable: 'KIND', tsType: 'AttachmentKind', doc: 'attachment kinds' },
+      { key: 'audioMimeTypes', goTable: 'AudioMIME', tsTable: 'AUDIO_MIME', tsType: 'AttachmentAudioMIME', doc: 'audio MIME types and aliases accepted by the native audio input' },
+      { key: 'imageMimeTypes', goTable: 'ImageMIME', tsTable: 'IMAGE_MIME', tsType: 'AttachmentImageMIME', doc: 'image MIME types recognized by attachment handling' },
+      { key: 'documentMimeTypes', goTable: 'DocumentMIME', tsTable: 'DOCUMENT_MIME', tsType: 'AttachmentDocumentMIME', doc: 'document MIME types recognized by attachment handling' },
     ],
   },
   {
@@ -2525,6 +2541,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CodexSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope that carries a Codex call\'s joined output' },
+      { key: 'audioMimeTypes', subsetOf: 'attachment-media.audioMimeTypes', goTable: 'AudioMIME', tsTable: 'AUDIO_MIME', doc: 'audio MIME types accepted by the native Codex input decoder' },
       { key: 'item', goTable: 'Item', tsTable: 'ITEM_FIELD', tsType: 'CodexItemField', doc: 'fields of the item frame the join lands on' },
       { key: 'collabItem', goTable: 'CollabItem', tsTable: 'COLLAB_ITEM', tsType: 'CodexCollabItemField', goTagPin: 'backend/internal/worker/agent/providers/codex/supplement_tags_test.go', doc: 'fields of a collab tool call that list the subagents it created' },
       { key: 'controlTools', frameKind: 'name', goTable: 'ControlTool', tsTable: 'CONTROL_TOOL', tsType: 'CodexControlTool', owner: 'LeapMux chose these', doc: 'tool names of the control requests that LeapMux publishes for Codex itself' },
@@ -2725,6 +2742,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'consentScopes', goTable: 'ConsentScope', tsTable: 'CONSENT_SCOPE', tsType: 'KiroConsentScope', doc: 'consent scopes of an always-allow or an always-deny reply beyond the default session scope' },
       { key: 'userInputActions', goTable: 'UserInputAction', tsTable: 'USER_INPUT_ACTION', tsType: 'KiroUserInputAction', doc: 'question reply actions both sides spell' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'KiroConfigId', doc: 'config-option ids of the axes both sides address by id' },
+      { key: 'binaryMimeTypes', subsetOf: 'attachment-media.documentMimeTypes', goTable: 'BinaryMIME', tsTable: 'BINARY_MIME', doc: 'Office MIME types that Kiro accepts as document blobs' },
     ],
   },
   {
@@ -2734,11 +2752,13 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Qwen Code',
     preamble: [
       'Qwen owns the extension method, the `_meta` keys, and the tool, mode and permission-option',
-      'names below. Both sides read them -- the worker routes the subagent updates, resolves the',
+      'names below. LeapMux owns the registry prefix. Both sides read these values: the worker',
+      'routes the subagent updates, resolves the',
       'plan approval and ends the turns Qwen starts; the browser plugin draws the same tool calls',
       'and dialogs and reads the same turn end.',
     ].join('\n// '),
     tables: [
+      { key: 'audioMimeTypes', subsetOf: 'attachment-media.audioMimeTypes', goTable: 'AudioMIME', tsTable: 'AUDIO_MIME', doc: 'audio MIME types accepted by the native Qwen converter' },
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'QwenMethod', doc: 'extension methods both sides dispatch on' },
       { key: 'compressionPhases', goTable: 'CompressionPhase', tsTable: 'COMPRESSION_PHASE', tsType: 'QwenCompressionPhase', doc: 'phases of _meta.contextCompression' },
       { key: 'messageSources', goTable: 'MessageSource', tsTable: 'MESSAGE_SOURCE', tsType: 'QwenMessageSource', doc: 'background sources that use a separate transcript path' },
@@ -2747,6 +2767,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'QwenMode', doc: 'approval modes, carried on LeapMux\'s permission-mode axis' },
       { key: 'permissionOptions', goTable: 'PermissionOption', tsTable: 'PERMISSION_OPTION', tsType: 'QwenPermissionOption', doc: 'option ids of the permission requests both sides answer' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'QwenConfigId', doc: 'config-option ids of the axes both sides address by id' },
+      { key: 'registryKeys', goTable: 'RegistryKey', tsTable: 'REGISTRY_KEY', tsType: 'QwenRegistryKey', owner: 'LeapMux chose this', doc: 'prefix of session-qualified Qwen registry identities shared by the worker and browser' },
     ],
   },
   {
@@ -3063,8 +3084,11 @@ export const PROVIDER_PROTOCOLS = [
       'that select native launch settings. The worker and browser share these values.',
     ].join('\n// '),
     tables: [
+      { key: 'audioMimeTypes', subsetOf: 'attachment-media.audioMimeTypes', goTable: 'AudioMIME', tsTable: 'AUDIO_MIME', doc: 'audio MIME types carried by the native Google adapter' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'FastagentOption', doc: 'LeapMux option IDs for native launch settings' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'FastagentMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
+      { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'FastagentTool', readers: ['ts'], readersWhy: 'The worker preserves native requests and results without comparing these names. The browser uses them to render shell tools.', doc: 'native local command tools' },
+      { key: 'archive', goTable: 'Archive', tsTable: 'ARCHIVE', tsType: 'FastagentArchiveField', doc: 'provenance of unchanged native history elements' },
     ],
   },
   {
@@ -3090,6 +3114,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'inputOutcomes', goTable: 'InputOutcome', tsTable: 'INPUT_OUTCOME', tsType: 'MuseInputOutcome', doc: 'native question settlement outcomes', readers: ['ts'], readersWhy: 'The Worker retains the native settlement frame. The browser reads each outcome word for display.' },
       { key: 'compactionOutcomes', goTable: 'CompactionOutcome', tsTable: 'COMPACTION_OUTCOME', tsType: 'MuseCompactionOutcome', doc: 'native compaction outcomes' },
       { key: 'logEvents', goTable: 'LogEvent', tsTable: 'LOG_EVENT', tsType: 'MuseLogEvent', doc: 'native log events that supply structured results' },
+      { key: 'parentInput', goTable: 'ParentInput', tsTable: 'PARENT_INPUT', tsType: 'MuseParentInputToken', doc: 'native causal vocabulary for delivered parent instructions' },
       { key: 'supplementFields', goTable: 'SupplementField', tsTable: 'SUPPLEMENT_FIELD', tsType: 'MuseSupplementField', owner: 'LeapMux chose these', doc: 'separate native records and recovery failures' },
       { key: 'streamKinds', goTable: 'StreamKind', tsTable: 'STREAM_KIND', tsType: 'MuseStreamKind', doc: 'native raw log stream kinds that both sides inspect' },
       { key: 'optionIds', goTable: 'OptionID', tsTable: 'OPTION_ID', tsType: 'MuseOptionID', owner: 'LeapMux chose these', doc: 'startup option identifiers' },
@@ -3165,6 +3190,8 @@ export function checkProviderStructs(spec, p) {
     const names = t.subsetOf !== undefined
       ? [`${spec.goPrefix}${t.goTable}Members`]
       : Object.keys(p[t.key] ?? {}).map(key => `${spec.goPrefix}${t.goTable}${key}`)
+    if (t.goType !== undefined)
+      names.push(`${spec.goPrefix}${t.goType}`)
     if (t.goSlice)
       names.push(`${spec.goPrefix}${t.goTable}Keys`)
     for (const name of names) {
@@ -3175,7 +3202,7 @@ export function checkProviderStructs(spec, p) {
   }
   for (const [name, definition] of Object.entries(structs)) {
     mustBe(/^[A-Z][A-Za-z0-9]*$/.test(name), file, `structs.${name} must be a PascalCase Go type name`)
-    mustBe(!constants.has(name), file, `structs.${name} takes the name of a constant or key slice this domain already emits -- pick another, or the generated package will not compile`)
+    mustBe(!constants.has(name), file, `structs.${name} takes the name of a generated declaration this domain already emits -- pick another, or the generated package will not compile`)
     mustBe(declared.has(definition.table), file, `structs.${name}.table ${JSON.stringify(definition.table)} is not a declared table`)
     const seen = new Set()
     for (const field of definition.fields) {
@@ -3277,6 +3304,76 @@ export function tableReaders(t) {
   return t.readers ?? ['go', 'ts']
 }
 
+/** Resolve one subset without reading contract data or emitting source. */
+export function resolveProviderSubsetParent(spec, subset, protocols = PROVIDER_PROTOCOLS) {
+  const file = `${spec.name}.json`
+  mustBe(typeof subset.subsetOf === 'string', file, `subset ${subset.key} has an unknown parent table`)
+  const parts = subset.subsetOf.split('.')
+  mustBe(parts.length === 1 || parts.length === 2, file, `subset ${subset.key} must specify a table or contract.table`)
+  const contractName = parts.length === 1 ? spec.name : parts[0]
+  const tableKey = parts.at(-1)
+  const parentSpec = contractName === spec.name ? spec : protocols.find(protocol => protocol.name === contractName)
+  mustBe(parentSpec != null, file, `subset ${subset.key} has an unknown parent contract ${JSON.stringify(contractName)}`)
+  const table = parentSpec.tables.find(table => table.key === tableKey)
+  mustBe(table != null, file, `subset ${subset.key} has an unknown parent table ${JSON.stringify(subset.subsetOf)}`)
+  mustBe(table.subsetOf === undefined, file, `${subset.key} cannot be a subset of a subset`)
+  return { spec: parentSpec, table }
+}
+
+function providerProtocolDependencies(spec, protocols = PROVIDER_PROTOCOLS) {
+  return [...new Set(spec.tables.filter(table => table.subsetOf !== undefined)
+    .map(table => resolveProviderSubsetParent(spec, table, protocols).spec.name)
+    .filter(name => name !== spec.name))]
+}
+
+/** Foreign subset imports must form an acyclic module graph. */
+export function checkProviderProtocolDependencies(protocols = PROVIDER_PROTOCOLS) {
+  const byName = new Map()
+  for (const spec of protocols) {
+    mustBe(!byName.has(spec.name), `${spec.name}.json`, 'repeated provider protocol registration')
+    byName.set(spec.name, spec)
+  }
+  const state = new Map()
+  const path = []
+  const visit = (name) => {
+    if (state.get(name) === 'complete')
+      return
+    if (state.get(name) === 'visiting')
+      throw new ContractError(`${name}.json`, `cross-contract subset imports form a cycle: ${[...path.slice(path.indexOf(name)), name].join(' -> ')}`)
+    state.set(name, 'visiting')
+    path.push(name)
+    for (const parent of providerProtocolDependencies(byName.get(name), protocols))
+      visit(parent)
+    path.pop()
+    state.set(name, 'complete')
+  }
+  for (const spec of protocols)
+    visit(spec.name)
+}
+
+/** Group canonical imports and refuse ambiguous generated identifiers. */
+function providerProtocolImports(spec) {
+  const local = new Set(spec.tables.flatMap(table => [
+    `${spec.tsPrefix}_${table.tsTable}`,
+    ...(table.tsType === undefined ? [] : [table.tsType]),
+  ]))
+  const byContract = new Map()
+  const owners = new Map()
+  for (const subset of spec.tables.filter(table => table.subsetOf !== undefined)) {
+    const parent = resolveProviderSubsetParent(spec, subset)
+    if (parent.spec.name === spec.name)
+      continue
+    const symbol = `${parent.spec.tsPrefix}_${parent.table.tsTable}`
+    mustBe(!local.has(symbol), `${spec.name}.json`, `imported table ${symbol} collides with a local generated declaration`)
+    mustBe(!owners.has(symbol) || owners.get(symbol) === parent.spec.name, `${spec.name}.json`, `imported table ${symbol} collides with the import from ${owners.get(symbol)}`)
+    owners.set(symbol, parent.spec.name)
+    if (!byContract.has(parent.spec.name))
+      byContract.set(parent.spec.name, new Set())
+    byContract.get(parent.spec.name).add(symbol)
+  }
+  return [...byContract].map(([name, symbols]) => `import { ${[...symbols].join(', ')} } from './${name}'`).join('\n')
+}
+
 /**
  * A provider protocol is valid when every declared table is present and non-empty,
  * every table the FILE carries is declared (so a table added to the JSON cannot sit
@@ -3284,28 +3381,36 @@ export function tableReaders(t) {
  * make two dispatch branches indistinguishable on the wire. Each table also states
  * its readers and its `frameKind` from the known values.
  */
-export function checkProviderProtocol(spec, p) {
+export function checkProviderProtocol(spec, p, readProtocol) {
   const file = `${spec.name}.json`
   const declared = spec.tables.map(t => t.key)
   for (const t of spec.tables) {
     if (t.subsetOf !== undefined) {
-      for (const field of ['frameKind', 'goSlice', 'defaultsFor', 'tsType'])
+      for (const field of ['frameKind', 'goSlice', 'defaultsFor', 'tsType', 'goType'])
         mustBe(!Object.hasOwn(t, field), file, `subset ${t.key} cannot state ${field}`)
-      const parent = spec.tables.find(table => table.key === t.subsetOf)
-      mustBe(typeof t.subsetOf === 'string' && parent != null, file, `subset ${t.key} has an unknown parent table`)
-      mustBe(parent.subsetOf === undefined, file, `${t.key} cannot be a subset of a subset`)
+      const parent = resolveProviderSubsetParent(spec, t)
+      let parentData = p
+      if (parent.spec.name !== spec.name) {
+        mustBe(typeof readProtocol === 'function', file, `subset ${t.key} requires a reader for its foreign parent data`)
+        parentData = readProtocol(parent.spec.name)
+        mustBe(parentData != null && typeof parentData === 'object' && !Array.isArray(parentData), file, `subset ${t.key} has no foreign parent data for ${parent.spec.name}`)
+        mustBe(parentData[parent.table.key] != null && typeof parentData[parent.table.key] === 'object' && !Array.isArray(parentData[parent.table.key]), file, `subset ${t.key} has no parent table ${t.subsetOf}`)
+      }
+      const parentValues = parentData[parent.table.key] ?? {}
       const members = p[t.key]
       mustBe(Array.isArray(members), file, `subset ${t.key} must be an array`)
       mustBe(members.length > 0, file, `subset ${t.key} is empty`)
       const seen = new Set()
       for (const key of members) {
         mustBe(typeof key === 'string', file, `subset ${t.key} must contain a string key`)
-        mustBe(Object.hasOwn(p[t.subsetOf] ?? {}, key), file, `${t.key}.${key} is not a key of ${t.subsetOf}`)
-        mustBe(typeof p[t.subsetOf][key] === 'string', file, `${t.key}.${key} requires a string value in ${t.subsetOf}`)
+        mustBe(Object.hasOwn(parentValues, key), file, `${t.key}.${key} is not a key of ${t.subsetOf}`)
+        mustBe(typeof parentValues[key] === 'string', file, `${t.key}.${key} requires a string value in ${t.subsetOf}`)
         mustBe(!seen.has(key), file, `subset ${t.key} repeats key ${key}`)
         seen.add(key)
       }
     }
+    if (Object.hasOwn(t, 'goType'))
+      mustBe(typeof t.goType === 'string' && /^[A-Z][A-Za-z0-9]*$/.test(t.goType), file, `table ${t.key}.goType must be a PascalCase identifier`)
     const readers = tableReaders(t)
     mustBe(readers.length > 0, file, `table ${t.key} declares no reader -- a table nothing reads is a contract for a value that does not cross the boundary, so delete it`)
     for (const side of readers)
@@ -3366,6 +3471,7 @@ export function checkProviderProtocol(spec, p) {
       seen.set(literal, name)
     }
   }
+  providerProtocolImports(spec)
   checkProviderStructs(spec, p)
   checkUnreadKeys(spec, p)
   // A key-valued pointer must specify a member of the table it points into, or the
@@ -3483,20 +3589,24 @@ function emitTsStartupOptionGroups(spec, p) {
 export function emitGoProviderProtocol(spec, p) {
   const blocks = spec.tables.flatMap((t) => {
     if (t.subsetOf !== undefined) {
-      const parent = spec.tables.find(table => table.key === t.subsetOf)
-      const rows = p[t.key].map(key => `\t${spec.goPrefix}${parent.goTable}${key},`).join('\n')
-      return [`// ${spec.goPrefix}${t.goTable}Members lists ${t.doc}.\nvar ${spec.goPrefix}${t.goTable}Members = []string{\n${rows}\n}`]
+      const parent = resolveProviderSubsetParent(spec, t)
+      const rows = p[t.key].map(key => `\t${parent.spec.goPrefix}${parent.table.goTable}${key},`).join('\n')
+      const memberType = parent.table.goType === undefined ? 'string' : `${parent.spec.goPrefix}${parent.table.goType}`
+      return [`// ${spec.goPrefix}${t.goTable}Members lists ${t.doc}.\nvar ${spec.goPrefix}${t.goTable}Members = []${memberType}{\n${rows}\n}`]
     }
     const decls = Object.entries(p[t.key])
       .map(([name, literal]) => ({ name: `${spec.goPrefix}${t.goTable}${name}`, value: jsonString(literal) }))
-    const block = `// ${spec.goPrefix}${t.goTable}* are ${t.doc}.\nconst (\n${goConstBlock(decls)}\n)`
+    const valueType = t.goType === undefined ? undefined : `${spec.goPrefix}${t.goType}`
+    const typeDeclaration = valueType === undefined ? '' : `// ${valueType} identifies ${t.doc}.\ntype ${valueType} string\n\n`
+    const typedDecls = valueType === undefined ? decls : decls.map(declaration => ({ ...declaration, type: valueType }))
+    const block = `${typeDeclaration}// ${spec.goPrefix}${t.goTable}* are ${t.doc}.\nconst (\n${goConstBlock(typedDecls)}\n)`
     if (!t.goSlice)
       return [block]
     // The MEMBERSHIP of this table crosses the boundary, not only the spellings: the
     // browser derives the same set with Object.values(), so a Go copy listed by hand
     // checks a different number of keys once the table grows, and neither side fails.
     const rows = decls.map(d => `\t${d.name},`).join('\n')
-    const list = `// ${spec.goPrefix}${t.goTable}Keys is every key of that table, in the contract's own order.\nvar ${spec.goPrefix}${t.goTable}Keys = []string{\n${rows}\n}`
+    const list = `// ${spec.goPrefix}${t.goTable}Keys is every key of that table, in the contract's own order.\nvar ${spec.goPrefix}${t.goTable}Keys = []${valueType ?? 'string'}{\n${rows}\n}`
     return [`${block}\n\n${list}`]
   })
   const extra = p.defaultMode == null
@@ -3518,14 +3628,16 @@ ${extra}${emitGoStartupOptionGroups(spec, p)}`
 }
 
 export function emitTsProviderProtocol(spec, p) {
+  const imports = providerProtocolImports(spec)
   // A subset initializer reads its parent. Emit all parents first to avoid a temporal dead zone.
   const tables = [...spec.tables.filter(t => t.subsetOf === undefined), ...spec.tables.filter(t => t.subsetOf !== undefined)]
   const blocks = tables.map((t) => {
     if (t.subsetOf !== undefined) {
-      const parent = spec.tables.find(table => table.key === t.subsetOf)
-      const members = p[t.key].map(key => `${spec.tsPrefix}_${parent.tsTable}.${key}`).join(', ')
+      const parent = resolveProviderSubsetParent(spec, t)
+      const members = p[t.key].map(key => `${parent.spec.tsPrefix}_${parent.table.tsTable}.${key}`).join(', ')
       return `/** ${t.owner ?? spec.title} ${t.doc}. */\nexport const ${spec.tsPrefix}_${t.tsTable}: ReadonlySet<string> = new Set([${members}])`
     }
+    mustBe(typeof t.tsType === 'string' && /^[A-Z][A-Za-z0-9]*$/.test(t.tsType), `${spec.name}.json`, `table ${t.key}.tsType must be a PascalCase identifier`)
     const rows = Object.entries(p[t.key]).map(([name, literal]) => `  ${name}: ${jsonString(literal)},`).join('\n')
     const symbol = `${spec.tsPrefix}_${t.tsTable}`
     // `owner` identifies who chose the literals when that is not the provider's
@@ -3538,7 +3650,7 @@ export function emitTsProviderProtocol(spec, p) {
     : `\n/** The mode a fresh ${spec.title} session runs on. */\nexport const ${spec.tsPrefix}_DEFAULT_MODE = ${spec.tsPrefix}_MODE.${p.defaultMode}\n`
   const preamble = spec.preamble ?? `${spec.title}'s wire vocabulary, generated from contracts/${spec.name}.json. The Go
 // provider reads the same tables, so the two can no longer drift by a character.`
-  return `${TS_HEADER(`${spec.name}.json`)}
+  return `${TS_HEADER(`${spec.name}.json`)}${imports ? `\n${imports}\n` : ''}
 // ${preamble}
 
 ${blocks.join('\n\n')}
@@ -3595,7 +3707,7 @@ function TS_HEADER(file) {
 /** gofmt-stable alignment: pads names so the `=` lines up per block. */
 function goConstBlock(decls) {
   const width = Math.max(...decls.map(d => d.name.length))
-  return decls.map(d => `\t${d.name.padEnd(width)} = ${d.value}`).join('\n')
+  return decls.map(d => `\t${d.name.padEnd(width)}${d.type === undefined ? '' : ` ${d.type}`} = ${d.value}`).join('\n')
 }
 
 function goDurationMs(ms) {
@@ -4358,9 +4470,10 @@ const DOMAINS = [
   },
   ...PROVIDER_PROTOCOLS.map(spec => ({
     name: spec.name,
+    reads: providerProtocolDependencies(spec),
     emit(out, read) {
       const p = read(spec.name)
-      checkProviderProtocol(spec, p)
+      checkProviderProtocol(spec, p, read)
       out[`backend/generated/contracts/${spec.name}.go`] = emitGoProviderProtocol(spec, p)
       out[`frontend/src/generated/contracts/${spec.name}.ts`] = emitTsProviderProtocol(spec, p)
     },
@@ -4379,6 +4492,7 @@ export function generate(contractsDir, descriptorSet = null) {
     mustBe(!protocolNames.has(spec.name), `${spec.name}.json`, 'repeated provider protocol registration')
     protocolNames.add(spec.name)
   }
+  checkProviderProtocolDependencies()
   const { read, has, names } = loadContracts(contractsDir)
   // A contract no domain reads emits NOTHING, and nothing says so: it validates
   // against its schema, `task lint` passes, and the constants it declares never reach

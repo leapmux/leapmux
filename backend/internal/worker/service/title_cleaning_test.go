@@ -628,8 +628,8 @@ func newRegistryRoot(t *testing.T) (*Service, *testResponseWriter) {
 }
 
 // registryRootSink returns a root sink for the agent newRegistryRoot created.
-func registryRootSink(svc *Service) agent.ProviderServices {
-	return svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+func registryRootSink(t testing.TB, svc *Service) agent.ProviderServices {
+	return newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 }
 
 // spawnChildWithTitle drives EnsureChildAgent the way every provider does and
@@ -645,7 +645,7 @@ func spawnChildWithTitle(t *testing.T, title string) (*Service, *testResponseWri
 	svc, w := newRegistryRoot(t)
 	registerAgentWatch(svc, w.channelID, "root-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	childID, err := registryRootSink(svc).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: title})
+	childID, err := registryRootSink(t, svc).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: title})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 	return svc, w, childID
@@ -660,7 +660,7 @@ func upsertTaskWithTitle(t *testing.T, task bgtask.Upsert) (*Service, *testRespo
 	svc, w := newRegistryRoot(t)
 	registerAgentWatch(svc, w.channelID, "root-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	require.NoError(t, registryRootSink(svc).UpsertBackgroundTask(task))
+	require.NoError(t, registryRootSink(t, svc).UpsertBackgroundTask(task))
 	return svc, w
 }
 
@@ -764,7 +764,7 @@ func TestEnsureChildAgent_AnEmptiedTitleKeepsTheRegistryRowTitle(t *testing.T) {
 	t.Parallel()
 
 	svc, _ := newRegistryRoot(t)
-	sink := registryRootSink(svc)
+	sink := registryRootSink(t, svc)
 
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent,
@@ -853,7 +853,7 @@ func TestUpsertBackgroundTask_AnEmptiedTitleKeepsTheStoredTitle(t *testing.T) {
 	t.Parallel()
 
 	svc, _ := newRegistryRoot(t)
-	sink := registryRootSink(svc)
+	sink := registryRootSink(t, svc)
 
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent,
@@ -901,7 +901,7 @@ func TestUpsertBackgroundTask_ABlankTitleKeepsTheStoredTitle(t *testing.T) {
 	t.Parallel()
 
 	svc, _ := newRegistryRoot(t)
-	sink := registryRootSink(svc)
+	sink := registryRootSink(t, svc)
 
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent,
@@ -933,7 +933,7 @@ func TestUpsertBackgroundTask_PassesAnAlreadyCleanedTitleThrough(t *testing.T) {
 	t.Parallel()
 
 	svc, _ := newRegistryRoot(t)
-	sink := registryRootSink(svc)
+	sink := registryRootSink(t, svc)
 
 	raw := strings.Repeat("一", 50)
 	cleaned := strings.Repeat("一", 42)

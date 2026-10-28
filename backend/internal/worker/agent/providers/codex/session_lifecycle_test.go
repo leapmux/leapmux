@@ -1072,3 +1072,31 @@ func codexLeapMuxNotices(t *testing.T, sink *agenttest.Sink) []map[string]interf
 	}
 	return notices
 }
+
+func TestCodexAudioRetryRefusesAnUnsupportedModelBeforeHistoryChanges(t *testing.T) {
+	t.Parallel()
+	a, sink, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
+	armRetryableTurn(t, a, sink)
+	a.mainTurn.input = []map[string]interface{}{{"type": "audio", "url": "data:audio/wav;base64,AAE="}}
+	a.availableModels = []*agent.ModelInfo{{Id: "gpt-5.5"}}
+	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
+	require.ErrorIs(t, err, agent.ErrTurnRetryUnavailable)
+	assert.ErrorContains(t, err, "does not accept audio")
+	assert.Nil(t, retry)
+	assert.Nil(t, a.retry)
+	assert.NotNil(t, a.retryOffer)
+	assert.Equal(t, "turn-1", a.mainTurn.id)
+	assert.NotEmpty(t, a.mainTurn.input)
+	assert.Empty(t, requests(), "neither interrupt nor history replacement may start")
+}
+
+func TestCodexAudioDoesNotOfferRetryOnAnUnsupportedModel(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
+	armRetryableTurn(t, a, sink)
+	a.mainTurn.input = []map[string]interface{}{{"type": "audio", "url": "data:audio/wav;base64,AAE="}}
+	a.availableModels = []*agent.ModelInfo{{Id: "gpt-5.5"}}
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`)))
+	assert.Nil(t, a.retryOffer)
+	assert.Equal(t, "turn-1", a.mainTurn.id)
+}

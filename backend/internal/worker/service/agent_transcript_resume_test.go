@@ -530,7 +530,7 @@ func TestEmbeddedNotificationJournalSurvivesRootNestedAndRepeatedResume(t *testi
 	seedTranscriptSource(t, svc, "journal-old-root", workingDir, "native-root", provider, false)
 	seedArchivedChildForResume(t, svc, "journal-old-root", "journal-old-root", "journal-old-child", "first", 1, bgtask.StatusSucceeded)
 	seedArchivedChildForResume(t, svc, "journal-old-root", "journal-old-child", "journal-old-nested", "second", 2, bgtask.StatusSucceeded)
-	root := svc.Output.NewSink("journal-old-root", provider)
+	root := newTestRootOutputSink(t, svc.Output, "journal-old-root", provider)
 	child := root.ChildSink("journal-old-child")
 	nested := child.ChildSink("journal-old-nested")
 	content := agent.MessageContent{
@@ -573,7 +573,7 @@ func TestEmbeddedNotificationJournalSurvivesRootNestedAndRepeatedResume(t *testi
 			require.NoError(t, err)
 			currentIDs[row.SpawnSpanID] = row.ID
 		}
-		resumedRoot := svc.Output.NewSink(target, provider)
+		resumedRoot := newTestRootOutputSink(t, svc.Output, target, provider)
 		for key, currentID := range currentIDs {
 			row, err := svc.Queries.GetLatestMessageByAgentID(t.Context(), currentID)
 			require.NoError(t, err)

@@ -274,6 +274,11 @@ func (a *Agent) BeginTurnRetry(turnID, model string) (agent.TurnRetry, error) {
 		a.retryOfferMu.Unlock()
 		return nil, fmt.Errorf("%w: a steering request still awaits a response", agent.ErrAgentBusy)
 	}
+	if err := a.validateCodexAudioInputLocked(a.mainTurn.input, model); err != nil {
+		a.Mu.Unlock()
+		a.retryOfferMu.Unlock()
+		return nil, fmt.Errorf("%w: %v", agent.ErrTurnRetryUnavailable, err)
+	}
 	retry := &codexTurnRetry{
 		a:           a,
 		turnID:      turnID,

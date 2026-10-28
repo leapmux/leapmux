@@ -4,16 +4,22 @@ import type { ClassificationInput } from '../capabilities'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import { MUSE_ITEM_KIND, MUSE_METHOD } from '~/generated/contracts/muse-protocol'
 import { notificationClassifierFor } from '../../notificationClassification'
+import { museNativeParentInput } from './delivery'
 import { museNotificationEntry } from './extractors/notification'
 import { museItemLifecycle } from './extractors/toolCommon'
+import { museViewProjectionUnavailable } from './projection'
 import { museItem, museItemText } from './protocol'
 
 export function classifyMuseMessage(input: ClassificationInput): MessageCategory {
   const payload = input.parentObject
+  if (museViewProjectionUnavailable(payload, input.supplementalContent))
+    return { kind: 'hidden' }
   if (input.wrapper)
     return notificationClassifierFor(input.agentProvider, museNotificationEntry)(input.wrapper.messages, 'hidden')
   if (!payload)
     return { kind: 'unknown' }
+  if (museNativeParentInput(payload, input.supplementalContent, input.agentSessionId) !== undefined)
+    return { kind: 'user_content' }
   if (!payload.method && typeof payload.content === 'string')
     return payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
   if (payload.method === MUSE_METHOD.TurnCompleted)
@@ -45,6 +51,8 @@ export function classifyMuseMessage(input: ClassificationInput): MessageCategory
 }
 
 export function museSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
+  if (museViewProjectionUnavailable(parsed.parentObject, parsed.supplementalContent))
+    return 'other'
   const item = museItem(parsed.parentObject)
   if (!item || (item.kind !== MUSE_ITEM_KIND.ToolCall && item.kind !== MUSE_ITEM_KIND.UserShell))
     return 'other'

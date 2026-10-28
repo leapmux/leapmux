@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flac-audio.schema.json",
+  "title": "Complete FLAC audio attachment fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "mimeType",
+    "dataBase64"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mimeType": {
+      "const": "audio/flac"
+    },
+    "dataBase64": {
+      "type": "string",
+      "minLength": 56,
+      "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+    }
+  }
+}

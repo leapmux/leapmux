@@ -61,8 +61,12 @@ export function museToolCall(input: RowExtractionInput): ToolCall | null {
   }
   const native = museNativeResult(resultParse?.parentObject, resultParse?.supplementalContent)
   if (kind === 'execute' && !declined) {
-    const commandOutput = { output: preview, ...(nativeFinal && !native ? { outputUnavailable: true } : {}) }
     const structured = native?.structured
+    const output = typeof args.command === 'string' && typeof structured?.chunk_id === 'string' && structured.chunk_id.trim() !== ''
+      && structured.command === args.command && typeof structured.output === 'string'
+      ? structured.output
+      : preview
+    const commandOutput = { output, ...(nativeFinal && !native ? { outputUnavailable: true } : {}) }
     const code = structured?.exit_code
     const signal = structured?.exit_signal
     const outcome: CommandResult = typeof code === 'number' && Number.isSafeInteger(code)

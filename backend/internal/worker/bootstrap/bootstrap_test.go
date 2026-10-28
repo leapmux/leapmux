@@ -376,12 +376,13 @@ func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := w.Service.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink, sinkErr := w.Service.Output.NewRootSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, sinkErr)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "sub", Kind: bgtask.KindSubagent, Title: "review the diff", Status: bgtask.StatusRunning,
 	}))
 
-	handler("agent-1", errors.New("boom"), false)
+	handler(agent.ProcessExit{AgentID: "agent-1", Err: errors.New("boom"), Stopped: false, Output: sink})
 
 	rows, err := w.Service.Queries.ListAgentBackgroundTasksNewestFirst(bg, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: "agent-1", Limit: 10,

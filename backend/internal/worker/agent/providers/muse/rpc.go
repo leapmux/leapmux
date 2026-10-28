@@ -40,7 +40,11 @@ func (c *connection) request(method string, params any, timeout time.Duration, o
 	if err != nil {
 		return nil, fmt.Errorf("encode the Muse %s request: %w", method, err)
 	}
-	return c.SendRequestObserved(method, raw, timeout, observe)
+	result, err := c.SendRequestObserved(method, raw, timeout, observe)
+	if err != nil {
+		return nil, fmt.Errorf("the Muse %s request failed: %w", method, err)
+	}
+	return result, nil
 }
 
 // command verifies the echoed idempotency ID of an admission acknowledgement.

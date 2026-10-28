@@ -51,16 +51,29 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 	return a.observeSubagentCall(tc.ToolCallID, tc.Title, tc.RawInput)
 }
 
-// observeSubagentCall waits for the input that a streaming call sends later.
-func (a *Agent) observeSubagentCall(toolCallID, title string, rawInput json.RawMessage) *acp.SubagentObservation {
-	if toolCallID == "" || (title != "subagent" && !strings.HasSuffix(title, "/subagent")) {
-		return nil
-	}
-	var input struct {
-		Message string `json:"message"`
-		Label   string `json:"label"`
+type fastagentSubagentInput struct {
+	Message string `json:"message"`
+	Label   string `json:"label"`
+}
+
+func fastagentSubagentRequest(title string, rawInput json.RawMessage) (fastagentSubagentInput, bool) {
+	var input fastagentSubagentInput
+	if title != "subagent" && !strings.HasSuffix(title, "/subagent") {
+		return input, false
 	}
 	if json.Unmarshal(rawInput, &input) != nil || input.Message == "" {
+		return input, false
+	}
+	return input, true
+}
+
+// observeSubagentCall waits for the input that a streaming call sends later.
+func (a *Agent) observeSubagentCall(toolCallID, title string, rawInput json.RawMessage) *acp.SubagentObservation {
+	if toolCallID == "" {
+		return nil
+	}
+	input, valid := fastagentSubagentRequest(title, rawInput)
+	if !valid {
 		return nil
 	}
 	label := input.Label

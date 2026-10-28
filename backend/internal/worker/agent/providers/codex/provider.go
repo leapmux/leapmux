@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -19,10 +20,19 @@ type codexProvider struct {
 	agent.ProviderDefaults
 }
 
-// LeapMux currently sends text and image blocks through this provider.
-// Native audio inputs are not integrated: https://github.com/leapmux/leapmux/issues/498.
+// Codex accepts audio on models whose native catalog declares audio input.
+// The input writer checks that model capability before native delivery.
 func (codexProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("codex", attachment)
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		if !codexAudioMIME(attachment.MIMEType) {
+			return fmt.Errorf("codex does not support audio format %q", attachment.MIMEType)
+		}
+		if len(attachment.Data) == 0 {
+			return fmt.Errorf("audio attachment %q is empty", attachment.Filename)
+		}
+		return nil
+	}
+	return providerkit.ValidateTextAndImageAttachment("codex", attachment)
 }
 
 func (p codexProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {

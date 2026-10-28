@@ -14,7 +14,7 @@ describe('reasonix provider', () => {
   const plugin = providerFor(AgentProvider.REASONIX)!
 
   // Reasonix is text-only -- the one attachment-capability variant among the ACP stubs.
-  describeACPProviderBasics(AgentProvider.REASONIX, { text: true, image: false, pdf: false, binary: false })
+  describeACPProviderBasics(AgentProvider.REASONIX, { text: true, image: false, pdf: false, audio: false, binary: false })
 
   it('uses the advertised mode and tool approval controls', () => {
     expect(plugin?.configuration?.planMode).toBeDefined()

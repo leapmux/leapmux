@@ -1,9 +1,12 @@
-import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
+import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
+import { qwenRegistryRowKey } from '../../../src/components/chat/providers/qwen/registryKey'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
+import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { stepRequest } from '../helpers/mockModelScript'
+import { currentNativeAgent } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -31,8 +34,14 @@ async function answerTheChild(script: ModelScript): Promise<void> {
 }
 
 /** The row, and the child transcript it opens, carry the child's task and its answer. */
-async function expectChildTranscript(page: Page): Promise<void> {
+async function expectChildTranscript(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, nativeToolCallID: string): Promise<void> {
+  const { page } = context
+  const root = await currentNativeAgent(context)
+  const registryKey = qwenRegistryRowKey(QWEN_TOOL.Agent, root.agentSessionId, nativeToolCallID)
+  if (registryKey === undefined)
+    throw new Error('The native root supplies no registry identity for its child.')
   const row = await requireRegistryRow(page)
+  await expect(row).toHaveAttribute('data-task-id', registryKey)
   await expectRowBecomesFinal(page, row)
   await expectSectionPersists(page)
   // `openChildTabFromRow` waits until the row links a child agent.
@@ -65,7 +74,7 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(messageBubbles(page).filter({ hasText: 'Agent "Ask for one word" completed' }).first()).toBeVisible()
-    await expectChildTranscript(page)
+    await expectChildTranscript({ page, leapmuxServer }, 'spawn-qwen')
   })
 
   qwenTest('a background subagent opens a row, fills its transcript from the file and ends with Qwen\'s own turn', async ({
@@ -95,6 +104,6 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     await waitForAgentIdle(page)
     expect(JSON.stringify(stepRequest(status, start + 2).body)).toContain('<task-notification>')
     await expect(assistantBubbles(page).filter({ hasText: 'The background subagent reported PONG.' })).toBeVisible()
-    await expectChildTranscript(page)
+    await expectChildTranscript({ page, leapmuxServer }, 'spawn-qwen-background')
   })
 })

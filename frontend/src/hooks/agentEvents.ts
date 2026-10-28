@@ -29,6 +29,7 @@ import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickStri
 import { createLogger } from '~/lib/logger'
 import { extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { messageSpanIdentity } from '~/lib/messageSpan'
+import { parseCalendarResetDate } from '~/lib/rateLimitUtils'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { compactionContextUsage } from '~/stores/agentSession.store'
@@ -54,16 +55,18 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
     if (!isObject(tier))
       continue
     // Each typed picker validates one field. assignDefined omits absent or invalid fields.
-    // RateLimitInfo has eight fields, and shallowEqual compares the key count before the values.
+    // shallowEqual compares the key count before the values.
     // The serializer omits absent keys from a stored tier.
     // Writing those keys as undefined here would make each broadcast compare unequal to that stored tier.
     // An explicit undefined fallback keeps the destination field's RateLimitInfo type.
     // The type checker rejects a picker whose return type differs from that field.
     const info: RateLimitInfo = {}
+    assignDefined(info, 'label', pickString(tier, RATE_LIMIT_FIELD.Label, undefined))
     assignDefined(info, 'rateLimitType', pickString(tier, RATE_LIMIT_FIELD.RateLimitType, undefined))
     assignDefined(info, 'status', pickString(tier, RATE_LIMIT_FIELD.Status, undefined))
     assignDefined(info, 'utilization', pickNumber(tier, RATE_LIMIT_FIELD.Utilization, undefined))
     assignDefined(info, 'resetsAt', pickNumber(tier, RATE_LIMIT_FIELD.ResetsAt, undefined))
+    assignDefined(info, 'resetsOn', parseCalendarResetDate(tier[RATE_LIMIT_FIELD.ResetsOn]))
     assignDefined(info, 'surpassedThreshold', pickNumber(tier, RATE_LIMIT_FIELD.SurpassedThreshold, undefined))
     assignDefined(info, 'overageStatus', pickString(tier, RATE_LIMIT_FIELD.OverageStatus, undefined))
     assignDefined(info, 'overageResetsAt', pickNumber(tier, RATE_LIMIT_FIELD.OverageResetsAt, undefined))

@@ -18,7 +18,7 @@ func TestDeliveredStopKeepsDistinctClaimsThatReuseOneRequestID(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "distinct-stop-claims"
 	createClaimTestAgent(t, svc, agentID)
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{AgentID: agentID, WorkingDir: t.TempDir()}, sink, claudetest.StartSilent)
 	require.NoError(t, err)
 	sink.SetTurnState(agent.TurnState{Active: true}, 1)

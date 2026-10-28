@@ -76,7 +76,7 @@ WHEN NEW.id = 'session-log-owner' BEGIN SELECT RAISE(ABORT, 'session update refu
 					return
 				}
 				mutation.Unlock()
-				svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 				replacement = requireRootOutputSink(t, svc.Output, agentID)
 			}}))
 			defer slog.SetDefault(previousLogger)
@@ -89,6 +89,7 @@ WHEN NEW.id = 'session-log-owner' BEGIN SELECT RAISE(ABORT, 'session update refu
 			after, err := svc.Queries.GetAgentByID(t.Context(), agentID)
 			require.NoError(t, err)
 			expected := before
+			expected.OutputGeneration++
 			if boundary == "successful update" {
 				expected.AgentSessionID = "requested-native-session"
 			}

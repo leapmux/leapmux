@@ -43,7 +43,13 @@ func (FamilyProvider) Classify(content json.RawMessage) agent.NotificationClassi
 // ValidateAttachment refuses a file type that the OpenCode family cannot send
 // through its model path.
 func (FamilyProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	if attachment.Kind == agent.AttachmentKindBinary {
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		return providerkit.ValidateAudioAttachment(attachment, "the audio attachment", contracts.OpenCodeAudioMIMEMembers)
+	}
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
 		return fmt.Errorf("OpenCode protocol does not support binary attachments: %s", attachment.Filename)
 	}
 	return nil

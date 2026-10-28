@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
@@ -18,6 +20,8 @@ type Agent struct {
 
 	sink agent.ProviderServices
 	opts agent.Options
+	// swarmMode is the immutable --swarm choice for this process.
+	swarmMode bool
 
 	mu             sync.Mutex
 	sessionID      string
@@ -249,7 +253,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	}
 	classified := agent.ClassifyAttachments(attachments)
 	for _, attachment := range classified {
-		if attachment.Kind != agent.AttachmentKindText {
+		if attachment.Kind != contracts.AttachmentMediaKindText {
 			return fmt.Errorf("%w: CodeBuddy steers a running turn with text only, so %q goes in the next turn",
 				agent.ErrSteeringUnsupported, attachment.Filename)
 		}

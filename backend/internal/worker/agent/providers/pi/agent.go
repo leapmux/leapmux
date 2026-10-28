@@ -279,18 +279,18 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 	images := make([]map[string]any, 0)
 	for _, attachment := range classified {
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			if messageBuilder.Len() > 0 {
 				messageBuilder.WriteString("\n\n")
 			}
 			messageBuilder.WriteString(providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			images = append(images, map[string]any{
 				"type":     "image",
 				"data":     base64.StdEncoding.EncodeToString(attachment.Data),
 				"mimeType": attachment.MIMEType,
 			})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
 			// Pi's prompt payload carries text and images only, so the
 			// attachment is omitted rather than sent as junk text.
 		}

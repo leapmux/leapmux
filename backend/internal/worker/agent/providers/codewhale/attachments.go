@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -35,7 +37,7 @@ const (
 
 // validateCodewhaleAttachment is the static attachment policy.
 func validateCodewhaleAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment("Codewhale", attachment)
+	return providerkit.ValidateTextAndImageAttachment("Codewhale", attachment)
 }
 
 // buildTurnInput turns a message and its attachments into the prompt and the
@@ -55,9 +57,9 @@ func buildTurnInput(content string, classified []agent.ClassifiedAttachment, ima
 			return "", nil, err
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			blocks = append(blocks, providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			if imageInput == imageInputUnsupported {
 				return "", nil, fmt.Errorf("the current Codewhale model does not accept images: %s", attachment.Filename)
 			}
@@ -75,7 +77,7 @@ func buildTurnInput(content string, classified []agent.ClassifiedAttachment, ima
 				Mime:       attachment.MIMEType,
 				DataBase64: base64.StdEncoding.EncodeToString(attachment.Data),
 			})
-		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
+		case contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary, contracts.AttachmentMediaKindAudio:
 			// validateCodewhaleAttachment refused both above: a turn carries text
 			// and images alone.
 		}

@@ -3,8 +3,11 @@
 package codebuddy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -36,28 +39,51 @@ func TestStartPinsTheUpdaterOff(t *testing.T) {
 // reports the mode, so the helper fails when pwsh stops reading this profile.
 func TestCodebuddyStartupSettingsSurvivePowerShellLegacyArgumentPassing(t *testing.T) {
 	for _, baseName := range []string{"plain", `a path with a "quote"`, "a path with ‘ ’ ‚ ‛"} {
-		t.Run(baseName, func(t *testing.T) {
-			shell, home := testutil.RequirePowerShellArgumentPassing(t, "Legacy", codebuddyArgumentPassingEnv)
-			useStartupHelper(t, "legacy-style")
+		for _, swarm := range []bool{false, true} {
+			t.Run(baseName+"/swarm="+strconv.FormatBool(swarm), func(t *testing.T) {
+				shell, home := testutil.RequirePowerShellArgumentPassing(t, "Legacy", codebuddyArgumentPassingEnv)
+				scenario := "legacy-style"
+				if swarm {
+					scenario = "legacy-swarm-style"
+				}
+				useStartupHelper(t, scenario)
 
-			base := filepath.Join(t.TempDir(), baseName)
-			require.NoError(t, os.MkdirAll(base, 0o700))
-			dirs := agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}, base)
+				base := filepath.Join(t.TempDir(), baseName)
+				require.NoError(t, os.MkdirAll(base, 0o700))
+				dirs := agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}, base)
 
-			started, err := Start(t.Context(), agent.Options{
-				Options: map[string]string{OptionOutputStyle: "Concise"},
-				AgentID: "codebuddy-legacy-arguments", WorkingDir: t.TempDir(), HomeDir: home, Shell: shell,
-				ExtraEnv:  []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home},
-				AgentDirs: dirs,
-			}, agent.NewProviderServices(&agenttest.Sink{}))
-			if started != nil {
-				t.Cleanup(func() {
-					started.Stop()
-					_ = started.Wait()
-				})
-			}
-			require.NoError(t, err)
-			assert.Equal(t, "Concise", started.(*Agent).SettingsSnapshot().SurfacedOptions[OptionOutputStyle])
-		})
+				started, err := Start(t.Context(), agent.Options{
+					Options: map[string]string{OptionOutputStyle: "Concise", OptionSwarmMode: strconv.FormatBool(swarm)},
+					AgentID: "codebuddy-legacy-arguments", WorkingDir: t.TempDir(), HomeDir: home, Shell: shell,
+					ExtraEnv:  []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home},
+					AgentDirs: dirs,
+				}, agent.NewProviderServices(&agenttest.Sink{}))
+				if started != nil {
+					t.Cleanup(func() {
+						started.Stop()
+						_ = started.Wait()
+					})
+				}
+				require.NoError(t, err)
+				assert.Equal(t, "Concise", started.(*Agent).SettingsSnapshot().SurfacedOptions[OptionOutputStyle])
+			})
+		}
+	}
+}
+
+func TestCodebuddySwarmLaunchArguments(t *testing.T) {
+	for _, tc := range []struct {
+		value, resume string
+		want          bool
+	}{
+		{}, {value: "false"}, {value: "true", want: true}, {value: "true", resume: "existing-session", want: true},
+	} {
+		runs := agenttest.RunLaunch(t, agenttest.LaunchProbe{Binary: "codebuddy", Start: func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+			opts.Options = map[string]string{"swarmMode": tc.value}
+			opts.ResumeSessionID = tc.resume
+			return Start(ctx, opts, sink)
+		}})
+		require.Len(t, runs, 1)
+		assert.Equal(t, tc.want, slices.Contains(runs[0].Args, "--swarm"))
 	}
 }

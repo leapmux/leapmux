@@ -10,6 +10,7 @@ import { parseGenerationCounters } from './generationProgress'
 import { readNativeInputQueue } from './nativeInputQueueIdle'
 import { exerciseInterruptedPartialAnswer } from './nativeLifecycle'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText, nativeModelConversationTurns, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
+import { prepareOnLiveCatalog } from './nativeSettings'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
@@ -183,7 +184,8 @@ export const NATIVE_TOOL_STEERING_TEXT = 'Also append the word steered to your f
  * Cline does this. The command reaches the model only in base64, so the padding
  * in the request can come only from the output.
  */
-export async function exerciseSteerAfterTool(context: ManagedNativeScenarioContext, options: { expectDisplayedOutput?: boolean } = {}): Promise<void> {
+export async function exerciseSteerAfterTool(context: ManagedNativeScenarioContext, options: { expectDisplayedOutput?: boolean, prepare?: () => Promise<void> } = {}): Promise<void> {
+  await prepareOnLiveCatalog(context.page, options.prepare)
   const agent = await currentNativeAgent(context)
   const output = createToolOutputControl(agent.workingDir)
   const steering = NATIVE_TOOL_STEERING_TEXT

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,11 +81,11 @@ func (handler *museControlLogHandler) WithGroup(string) slog.Handler      { retu
 
 func museControlCallbackCanReenter(t *testing.T, a *Agent) bool {
 	t.Helper()
-	if !a.dispatchMu.TryLock() {
+	if !a.dispatcher.mu.TryLock() {
 		t.Error("the control callback retains the dispatch mutex")
 		return false
 	}
-	a.dispatchMu.Unlock()
+	a.dispatcher.mu.Unlock()
 	if !a.stateMu.TryLock() {
 		t.Error("the control callback retains the state mutex")
 		return false
@@ -166,19 +168,19 @@ func TestMuseControlWarningReleasesDispatchBeforeLoggerCallback(t *testing.T) {
 			return true
 		})
 		assert.True(t, hasError)
-		if !a.dispatchMu.TryLock() {
+		if !a.dispatcher.mu.TryLock() {
 			t.Error("the control warning retains the dispatch mutex")
 			panic("the control logger panics")
 		}
-		a.dispatchMu.Unlock()
+		a.dispatcher.mu.Unlock()
 		a.HandleOutput(next)
 		entered = true
 		panic("the control logger panics")
 	}}))
 	require.PanicsWithValue(t, "the control logger panics", func() { a.HandleOutput(malformedRaw) })
 	assert.True(t, entered, "the logger callback must enter the real next control path")
-	if assert.True(t, a.dispatchMu.TryLock(), "a logger panic must release the dispatch mutex") {
-		a.dispatchMu.Unlock()
+	if assert.True(t, a.dispatcher.mu.TryLock(), "a logger panic must release the dispatch mutex") {
+		a.dispatcher.mu.Unlock()
 	}
 	restoreLogger()
 	assert.Same(t, previousLogger, slog.Default())
@@ -718,16 +720,41 @@ func TestMuseControlPublicationRetainsFailedBytesBeforeExactReplay(t *testing.T)
 
 }
 
+// A future native event supplies a complete prefix without introducing an input.
+// These control tests exercise ownership after the source-position check.
+func provedChildFrame(t *testing.T, a *Agent, state *sessionState, raw []byte) []byte {
+	t.Helper()
+	var frame struct {
+		Params struct {
+			SessionID string `json:"sessionId"`
+		} `json:"params"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &frame))
+	id := frame.Params.SessionID
+	sequence := int64(1)
+	var item itemParams
+	if json.Unmarshal(providerkit.ParseLine(raw).Params, &item) == nil && item.Item.Revision > 0 {
+		sequence = item.Item.Revision
+	}
+	seedChildNativeSources(t, a, id, state, sequence)
+	if state.childViewPrefix == childViewPrefixUnrequested {
+		state.childViewPrefix = childViewPrefixReady
+	}
+	source, err := json.Marshal(nativeSourceRange{Stream: nativeStream{Kind: "session", ID: id}, First: nativePosition{ID: fmt.Sprintf("source-%d", sequence), Sequence: sequence}, Last: nativePosition{ID: fmt.Sprintf("source-%d", sequence), Sequence: sequence}})
+	require.NoError(t, err)
+	return rewriteNativeInputJSON(t, raw, source, "params", "sourceRange")
+}
+
 func TestMuseControlPublicationKeepsRootAndChildAuthoritySeparate(t *testing.T) {
 	a, rootSink := museControlPublicationAgent(t)
 	childSink := &museControlPublicationSink{Sink: &agenttest.Sink{}}
-	childState := &sessionState{sink: agent.NewProviderServices(childSink), childID: "child-agent", items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("child-session")}
+	childState := &sessionState{sink: agent.NewProviderServices(childSink), childID: "child-agent", parentSessionID: "session", items: make(map[string]*itemState), completed: make(map[string]turnCompletionState), log: newNativeLog("child-session")}
 	a.sessions["child-session"] = childState
 	rootKey, rootRequest := questionRequest(t, []any{museNativeQuestion("native", "single")})
 	var childRequest map[string]any
 	require.NoError(t, json.Unmarshal(rootRequest, &childRequest))
 	childRequest["params"].(map[string]any)["sessionId"] = "child-session"
-	childRaw := []byte(mustMuseChoiceJSON(t, childRequest))
+	childRaw := provedChildFrame(t, a, childState, []byte(mustMuseChoiceJSON(t, childRequest)))
 	childKey, err := controlID(controlParams{SessionID: "child-session", UserInputID: "question"})
 	require.NoError(t, err)
 	a.HandleOutput(rootRequest)
@@ -740,6 +767,7 @@ func TestMuseControlPublicationKeepsRootAndChildAuthoritySeparate(t *testing.T) 
 		entered = true
 	}
 	a.HandleOutput(childRaw)
+	a.viewWork.CloseAndWait()
 	assert.True(t, entered)
 	assert.Empty(t, a.sessions["session"].controls)
 	assert.Empty(t, childState.controls)
@@ -751,6 +779,41 @@ func TestMuseControlPublicationKeepsRootAndChildAuthoritySeparate(t *testing.T) 
 	require.Len(t, childSink.requests, 1)
 	assert.Equal(t, rootRequest, []byte(rootSink.requests[0].Payload))
 	assert.Equal(t, childRaw, []byte(childSink.requests[0].Payload))
+}
+
+func TestMuseContextClearWithdrawsAnInFlightDescendantControlPublication(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, _ := museControlPublicationAgent(t)
+		childSink := &museControlPublicationSink{Sink: &agenttest.Sink{}}
+		a.sessions["parent"] = &sessionState{childID: "parent-agent", parentSessionID: "session", sink: a.sink, items: make(map[string]*itemState), completed: make(map[string]turnCompletionState)}
+		state := &sessionState{childID: "child-agent", parentSessionID: "parent", sink: agent.NewProviderServices(childSink), items: make(map[string]*itemState), completed: make(map[string]turnCompletionState)}
+		a.sessions["child"] = state
+		a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+			if method == methodSessionStart {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"session":{"sessionId":"replacement"}}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		}})
+		release := make(chan struct{})
+		childSink.onPublish = func(agent.ControlRequest) { <-release }
+		raw := provedChildFrame(t, a, state, approvalRequest("child", 0))
+		published := make(chan struct{})
+		go func() { a.HandleOutput(raw); close(published) }()
+		synctest.Wait()
+		_, err := a.ClearContext()
+		require.NoError(t, err)
+		close(release)
+		synctest.Wait()
+		<-published
+		a.viewWork.CloseAndWait()
+		key := testApprovalKey("child", "approval", 0)
+		assert.True(t, state.retired)
+		assert.Empty(t, state.controls)
+		assert.Empty(t, childSink.pending)
+		assert.Equal(t, []string{key}, childSink.canceled)
+		a.HandleOutput(raw)
+		assert.Len(t, childSink.requests, 1, "retired descendants cannot publish another control")
+	})
 }
 
 func TestMuseApprovalSettlementRejectsMalformedStageEvidence(t *testing.T) {

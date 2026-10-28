@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -61,7 +63,7 @@ func TestCodebuddyStoredSessionsTitle(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")
 	notes := providerkit.BuildInlineTextAttachmentBlock(agent.ClassifiedAttachment{
-		Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("line one\n"), Kind: agent.AttachmentKindText,
+		Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("line one\n"), Kind: contracts.AttachmentMediaKindText,
 	})
 	cases := []struct {
 		name  string

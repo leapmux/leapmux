@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -42,8 +43,8 @@ type acpChildren struct {
 	// active maps a registry row key to the child conversation that renders
 	// its updates.
 	active map[string]*childConversation
-	// sessions maps a child session id to the registry row key of its subagent.
-	sessions map[string]string
+	// sessions records each child session's root owner and registry row.
+	sessions map[string]childSessionRoute
 	// closed holds row keys that this process closes or that the registry reports as finished.
 	// Those rows route no update, and later chunks do not read the registry again.
 	// A late tagged update enters neither the child nor the parent transcript.
@@ -56,6 +57,79 @@ type acpChildren struct {
 	// refused holds rows whose explicit child validation rejected the stored identity.
 	// Only a later successful validation removes a row.
 	refused map[string]struct{}
+}
+
+// ChildSessionTarget identifies one native child and the root that owns it.
+// A captured target remains tied to that root through a context clear.
+type ChildSessionTarget struct {
+	RootSessionID string
+	SessionID     string
+	RowKey        string
+}
+
+func (target ChildSessionTarget) valid() bool {
+	return target.RootSessionID != "" && target.SessionID != "" && target.RowKey != "" && target.SessionID != target.RootSessionID
+}
+
+type childSessionRoute struct {
+	rootSessionID string
+	rowKey        string
+}
+
+// childSessionDispatch closes admission before a context clear drains native
+// child operations. A paused operation waits on the transition's completion,
+// then validates its captured root. Concurrent clears use the same lease.
+type childSessionDispatch struct {
+	mu     sync.Mutex
+	paused chan struct{}
+	active sync.WaitGroup
+}
+
+func (d *childSessionDispatch) acquire(ctx context.Context) (func(), bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	for {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		d.mu.Lock()
+		paused := d.paused
+		if paused == nil {
+			d.active.Add(1)
+			d.mu.Unlock()
+			return sync.OnceFunc(d.active.Done), true
+		}
+		d.mu.Unlock()
+		select {
+		case <-paused:
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+}
+
+func (d *childSessionDispatch) pause() func() {
+	var paused chan struct{}
+	for {
+		d.mu.Lock()
+		previous := d.paused
+		if previous == nil {
+			paused = make(chan struct{})
+			d.paused = paused
+			d.mu.Unlock()
+			break
+		}
+		d.mu.Unlock()
+		<-previous
+	}
+	d.active.Wait()
+	return sync.OnceFunc(func() {
+		d.mu.Lock()
+		d.paused = nil
+		close(paused)
+		d.mu.Unlock()
+	})
 }
 
 type childRouteResult uint8
@@ -219,6 +293,7 @@ func (b *Base) childFor(rowKey string) *childConversation {
 		},
 		parent: ref.parent,
 	}
+	child.publicationMutex = &child.feedMu
 	b.children.active[rowKey] = child
 	return child
 }
@@ -316,46 +391,73 @@ func (b *Base) FinishChildTurn(rowKey string) {
 	child.flushAssistantBuffer()
 }
 
-// AttachChildSession routes sessionID updates to the subagent transcript that owns rowKey.
-// An agent with a separate child session calls it after linking that session to its row.
-func (b *Base) AttachChildSession(sessionID, rowKey string) {
-	if sessionID == "" || rowKey == "" {
-		return
+// AttachChildSession installs a route only while its captured root is current.
+// Reader callbacks use this state operation without waiting on session RPCs.
+func (b *Base) AttachChildSession(target ChildSessionTarget) bool {
+	if !target.valid() {
+		return false
 	}
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	if b.sessionID != target.RootSessionID || b.StoppedLocked() {
+		return false
+	}
+	b.recordSessionIDLocked(target.RootSessionID)
+	b.recordSessionIDLocked(target.SessionID)
 	b.children.mu.Lock()
 	defer b.children.mu.Unlock()
 	if b.children.sessions == nil {
-		b.children.sessions = make(map[string]string)
+		b.children.sessions = make(map[string]childSessionRoute)
 	}
 	// One row has one active native session. A later run retires the previous route.
 	for previous, row := range b.children.sessions {
-		if row == rowKey && previous != sessionID {
+		if row.rowKey == target.RowKey && previous != target.SessionID {
 			delete(b.children.sessions, previous)
 		}
 	}
-	b.children.sessions[sessionID] = rowKey
+	b.children.sessions[target.SessionID] = childSessionRoute{rootSessionID: target.RootSessionID, rowKey: target.RowKey}
+	return true
 }
 
-// LoadChildSession asks the agent to load sessionID, a session that a subagent
-// runs in, so that the agent streams the updates of that session. An agent
-// that replays a loaded session sends its history first. The caller attaches
-// the session to the subagent's row before (AttachChildSession), so each
-// update reaches that transcript. The answer states the settings of the child
-// session, so the base applies none of it.
-func (b *Base) LoadChildSession(sessionID string) error {
-	if sessionID == "" {
-		return fmt.Errorf("the subagent session has no ID")
+// LoadChildSession loads the target's native session so its updates stream.
+// Admission, attachment and the native load precede any root replacement. An agent
+// that replays a loaded session sends its history first, after attachment,
+// so each update reaches that transcript. The answer states the child's settings.
+// The base returns its model without changing the root settings.
+func (b *Base) LoadChildSession(target ChildSessionTarget) (string, error) {
+	if !target.valid() {
+		return "", agent.ErrChildRouteNotReady
 	}
-	params, err := json.Marshal(map[string]any{
-		"sessionId":  sessionID,
-		"cwd":        b.currentWorkingDir(),
-		"mcpServers": []any{},
+	release, admitted := b.childDispatch.acquire(b.Context())
+	if !admitted {
+		return "", agent.ErrChildRouteNotReady
+	}
+	defer release()
+	var modelID string
+	err := b.WithSessionID(func(rootSessionID string) error {
+		if rootSessionID == "" || rootSessionID != target.RootSessionID || !b.AttachChildSession(target) {
+			return agent.ErrChildRouteNotReady
+		}
+		params, err := json.Marshal(map[string]any{
+			"sessionId":  target.SessionID,
+			"cwd":        b.currentWorkingDir(),
+			"mcpServers": []any{},
+		})
+		if err != nil {
+			return fmt.Errorf("marshal ACP session load params: %w", err)
+		}
+		raw, err := b.SendRequest(MethodSessionLoad, params, b.APITimeout())
+		if err != nil {
+			return err
+		}
+		session, err := parseACPSessionResult(raw)
+		if err != nil {
+			return fmt.Errorf("read ACP subagent settings: %w", err)
+		}
+		_, modelID = acpHandshakeModelInfos(session)
+		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("marshal ACP session load params: %w", err)
-	}
-	_, err = b.SendRequest(MethodSessionLoad, params, b.APITimeout())
-	return err
+	return modelID, err
 }
 
 // SessionOwner returns the services of the transcript that owns sessionID:
@@ -466,9 +568,32 @@ func (b *Base) withOpenToolConversation(sessionID, toolCallID string, fn func(*c
 // childSessionRow returns the registry row key of the subagent that runs in
 // sessionID, or "" for a session that no subagent owns.
 func (b *Base) childSessionRow(sessionID string) string {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
 	b.children.mu.Lock()
 	defer b.children.mu.Unlock()
-	return b.children.sessions[sessionID]
+	route, found := b.children.sessions[sessionID]
+	if !found || route.rootSessionID != b.sessionID {
+		return ""
+	}
+	return route.rowKey
+}
+
+// SessionRoot returns the current root that owns a served native session.
+// It is a reader-safe state lookup and never acquires sessionMu.
+func (b *Base) SessionRoot(sessionID string) (string, bool) {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	if b.sessionID == "" {
+		return "", false
+	}
+	if sessionID == "" || sessionID == b.sessionID {
+		return b.sessionID, true
+	}
+	b.children.mu.Lock()
+	defer b.children.mu.Unlock()
+	route, found := b.children.sessions[sessionID]
+	return route.rootSessionID, found && route.rootSessionID == b.sessionID
 }
 
 // finishChildConversation ends a child with status unless identity validation refused it.
@@ -563,8 +688,9 @@ func (b *Base) renameChildConversation(from, to string) {
 		b.children.refused[to] = struct{}{}
 	}
 	for sessionID, rowKey := range b.children.sessions {
-		if rowKey == from {
-			b.children.sessions[sessionID] = to
+		if rowKey.rowKey == from {
+			rowKey.rowKey = to
+			b.children.sessions[sessionID] = rowKey
 		}
 	}
 }
@@ -577,7 +703,7 @@ func (b *Base) forgetChild(rowKey string) {
 	defer b.children.mu.Unlock()
 	delete(b.children.agents, rowKey)
 	for sessionID, key := range b.children.sessions {
-		if key == rowKey {
+		if key.rowKey == rowKey {
 			delete(b.children.sessions, sessionID)
 		}
 	}
@@ -590,21 +716,6 @@ func (b *Base) forgetChildSessions() {
 	b.children.mu.Lock()
 	defer b.children.mu.Unlock()
 	b.children.sessions = nil
-}
-
-// cleanupChildAgent releases the child service state that this process created for rowKey.
-// It uses the sink that created the child, and the child's transcript survives.
-func (b *Base) cleanupChildAgent(rowKey string) {
-	b.children.mu.Lock()
-	if _, refused := b.children.refused[rowKey]; refused {
-		b.children.mu.Unlock()
-		return
-	}
-	ref, known := b.children.agents[rowKey]
-	b.children.mu.Unlock()
-	if known {
-		ref.parent.CleanupChildAgent(ref.id)
-	}
 }
 
 // markChildClosed records that the subagent of rowKey finished.

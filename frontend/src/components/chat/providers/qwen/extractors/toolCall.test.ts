@@ -4,6 +4,44 @@ import { providerToolCall } from '~/test-support/toolCallFixture'
 import { typedResult } from '../../../model/toolCall'
 import '../plugin'
 
+describe('qwenToolCallAdapter', () => {
+  const owner = '97d857a0-9cd7-4bbf-987b-a6ab094a074b'
+  const registryKey = 'qwen-registry-v1:a1177c0911fd2197b36567c453224ef3d6fb6c4b7368399506542fa820c9aae5'
+  const spawn = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'call_shared',
+    status: 'pending',
+    kind: 'other',
+    rawInput: { description: 'Stored child', prompt: 'Read the stored task.' },
+    _meta: { toolName: 'agent' },
+  }
+
+  it('derives the child link from the stored row owner', () => {
+    const call = providerToolCall(AgentProvider.QWEN_CODE, spawn, { role: 'request', agentSessionId: owner })
+    expect(call?.kind).toBe('agent')
+    expect(call?.request).toMatchObject({ description: 'Stored child', prompt: 'Read the stored task.', registryKey })
+  })
+
+  it('keeps the stored owner when the result supplies a different session lookalike', () => {
+    const call = providerToolCall(AgentProvider.QWEN_CODE, {
+      ...spawn,
+      sessionUpdate: 'tool_call_update',
+      sessionId: '654fbfe5-9769-4517-8dfe-fcfbf19d61ac',
+      status: 'completed',
+      rawOutput: { type: 'task_execution', executionMode: 'foreground', status: 'completed', result: 'The stored task is done.' },
+    }, { role: 'result', agentSessionId: owner })
+    expect(call?.request).toMatchObject({ registryKey })
+    const result = call && typedResult(call)
+    expect(result).toMatchObject({ agents: [{ registryKey, body: 'The stored task is done.' }] })
+  })
+
+  it('keeps the child card without guessing an absent stored owner', () => {
+    const call = providerToolCall(AgentProvider.QWEN_CODE, spawn, { role: 'request' })
+    expect(call?.request).toMatchObject({ description: 'Stored child', prompt: 'Read the stored task.' })
+    expect(call?.request).not.toHaveProperty('registryKey')
+  })
+})
+
 /**
  * Verbatim shape of a Qwen Code result of `run_shell_command`: the content is the record
  * that Qwen gives its model, and `rawOutput` states the output and the exit apart.

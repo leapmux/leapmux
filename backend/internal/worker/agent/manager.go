@@ -310,6 +310,27 @@ func (m *Manager) StartAgentWith(ctx context.Context, opts Options, sink Provide
 	return m.startAgentWith(ctx, opts, sink, start, false)
 }
 
+// retainFailedStartBackgroundTasks ends only output accepted by an invoked failed attempt.
+// It does not run registered-process cleanup or enter lifecycle APIs from publication.
+func retainFailedStartBackgroundTasks(agentID string, output OutputEffectServices) {
+	if output == nil {
+		return
+	}
+	operation := output.CaptureBackgroundTaskStartFailure()
+	if operation == nil {
+		return
+	}
+	queue := output.OutputQueue()
+	if queue == nil {
+		slog.Error("the failed startup registry has no output queue", "agent_id", agentID)
+		return
+	}
+	queue.Append(OutputWrite{Label: "finalize the failed startup registry", Run: operation})
+	if err := queue.Flush(); err != nil && !errors.Is(err, ErrOutputInFlight) {
+		slog.Warn("retain background tasks after startup failure", "agent_id", agentID, "error", err)
+	}
+}
+
 // Registry returns the registry this manager was built with. Every caller that
 // reads a provider's registration reads it here, so the worker has exactly one.
 func (m *Manager) Registry() *Registry {
@@ -344,18 +365,29 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 	// permit for the life of the process: a recovered panic leaves the worker
 	// running one permit short, and after enough of them the sweep blocks in
 	// acquireStartupSlot with nothing logged.
+	startInvoked := false
+	invokeStart := func() (Agent, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		startInvoked = true
+		return start(ctx, opts, sink)
+	}
 	provider, err := func() (Agent, error) {
 		if !background {
-			return start(ctx, opts, sink)
+			return invokeStart()
 		}
 		release, err := m.acquireStartupSlot(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("wait for an agent startup slot: %w", err)
 		}
 		defer release()
-		return start(ctx, opts, sink)
+		return invokeStart()
 	}()
 	if err != nil {
+		if startInvoked {
+			retainFailedStartBackgroundTasks(opts.AgentID, sink)
+		}
 		return nil, err
 	}
 
@@ -431,7 +463,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		onExit := m.onExit
 		m.mu.RUnlock()
 		if onExit != nil {
-			onExit(opts.AgentID, err, stopped)
+			onExit(ProcessExit{AgentID: opts.AgentID, Err: err, Stopped: stopped, Output: sink})
 		}
 
 		m.mu.Lock()
@@ -1106,13 +1138,13 @@ func (m *Manager) StopAll() {
 }
 
 // ExitHandler is called when an agent process exits.
-// agentID identifies the agent, err is the error of the provider's Wait, and
-// stopped is true when the exit was driven by an explicit Stop (a user
+// ProcessExit keeps the agent, the provider Wait error, and its original output.
+// Stopped is true when the exit was driven by an explicit Stop (a user
 // interrupt, a relaunch, or a shutdown) rather than a crash. The
 // background-task registry uses stopped to label rows 'stopped' vs
 // 'interrupted'.
 //
-// err is nil after a clean exit. A non-zero exit status is an *exec.ExitError
+// Err is nil after a clean exit. A non-zero exit status is an *exec.ExitError
 // inside err, which a provider's Wait can join with other errors, so read it
 // with errors.As, never with a type assertion.
 //
@@ -1126,4 +1158,13 @@ func (m *Manager) StopAll() {
 // so an acquire here deadlocks the agent for the life of the process. Do the
 // work that needs the lock AFTER the lifecycle call returns, the way the
 // plan-execution path does.
-type ExitHandler func(agentID string, err error, stopped bool)
+type ExitHandler func(ProcessExit)
+
+// ProcessExit retains the output services of the physical process that ended.
+// A replacement may already have published a different sink for the same agent ID.
+type ProcessExit struct {
+	AgentID string
+	Err     error
+	Stopped bool
+	Output  OutputEffectServices
+}

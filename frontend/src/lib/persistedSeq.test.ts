@@ -162,16 +162,10 @@ describe('createPersistedSeq', () => {
     expect(id3).toBeGreaterThan(id1)
   })
 
-  // A corrupted persisted value must NOT poison the sequence: mark = NaN; mark++
-  // stays NaN for the install's life, and the relay owner-fence (claimId >
-  // ownerId) is always false against NaN, so every open would refuse itself until
-  // the key was cleared. localStorageGet unwraps the `{v, e}` cell via JSON.parse,
-  // and JSON has no NaN/Infinity literal -- a stored NaN/Infinity surfaces as
-  // `null`, which the `typeof persisted === 'number'` guard rejects. The values
-  // that CAN reach the validation predicate are real numbers that fail
-  // Number.isSafeInteger (negative, fractional, beyond MAX_SAFE_INTEGER) or fail
-  // the composition bound (above MARK_LIMIT); the table below covers each, and the
-  // null/NaN-arrival case is pinned separately. Anything rejected re-seeds from 0.
+  // A corrupt mark can poison every later allocation. Structured cloning keeps
+  // NaN and Infinity, so validation must reject them before arithmetic. This
+  // table covers invalid finite marks; separate cases cover NaN, Infinity,
+  // and persistence of the repaired mark.
   it.each([
     ['negative', -1],
     ['fractional', 1.5],
@@ -179,11 +173,7 @@ describe('createPersistedSeq', () => {
     ['above the composition ceiling (MARK_LIMIT + 1)', 2_199_023_255_552],
   ])('rejects a %s persisted mark and re-seeds from 0', (_label, corrupted) => {
     installCryptoMock()
-    // localStorageSet (not raw setItem): every value here round-trips through
-    // JSON faithfully (none are NaN/Infinity), so the helper is the correct
-    // production path to exercise. The repo's browser-storage rule routes
-    // writes through it, and the {v, e} wrapper it produces is what readDynamic
-    // unwraps on the next read.
+    // Seed through the gateway so the allocator reads its production mirror.
     localStorageSet(KEY_CHANNEL_RELAY_SEQ, corrupted)
     const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const first = next()
@@ -225,7 +215,7 @@ describe('createPersistedSeq', () => {
   // real one and no ordinary write can replace it. Without the delete the row
   // keeps the bad value, every reload lands here again, and the allocator mints
   // 1 for ever while the sidecar's fence sits somewhere else entirely.
-  it('clears the poisoned row so the re-seeded mark reaches disk', async () => {
+  it.each([1, 3])('clears the poisoned row so %s re-seeded marks reach disk', async (allocations) => {
     installCryptoMock()
     // A real database, because this asserts what is ON DISK. The mirror-only
     // assertions above pass either way: the mirror takes the re-seeded 1 while
@@ -238,10 +228,11 @@ describe('createPersistedSeq', () => {
       await flushStorageWrites()
 
       const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
-      expect(next()).toBeGreaterThan(0)
+      for (let index = 0; index < allocations; index++)
+        expect(next()).toBeGreaterThan(0)
       await flushStorageWrites()
 
-      expect(await readKvRow('leapmux:channel-relay-seq')).toMatchObject({ v: 1 })
+      expect(await readKvRow('leapmux:channel-relay-seq')).toMatchObject({ v: allocations })
     }
     finally {
       resetBrowserStorageForTests()

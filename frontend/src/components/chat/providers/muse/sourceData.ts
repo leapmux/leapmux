@@ -1,5 +1,6 @@
 import { MUSE_LOG_EVENT, MUSE_STREAM_KIND, MUSE_SUPPLEMENT_FIELD } from '~/generated/contracts/muse-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { museNativeRecordSet } from './nativeRecords'
 import { museItem, museParams } from './protocol'
 
 export interface MuseNativeResult {
@@ -23,28 +24,13 @@ export function museNativeResult(payload: unknown, supplemental: unknown): MuseN
     || !isObject(supplemental) || supplemental[MUSE_SUPPLEMENT_FIELD.Unavailable] !== undefined) {
     return undefined
   }
-  const raw = supplemental[MUSE_SUPPLEMENT_FIELD.NativeRecords]
-  if (!Array.isArray(raw) || raw.some(record => !isObject(record)))
+  const unique = museNativeRecordSet(supplemental[MUSE_SUPPLEMENT_FIELD.NativeRecords], params.sessionId)
+  if (!unique)
     return undefined
-  const records = raw.filter(isObject)
-  const unique = new Map<string, Record<string, unknown>>()
-  const sequences = new Map<number, string>()
-  for (const record of records) {
-    const id = pickString(record, 'id')
-    const sequence = record.sequence
-    const stream = pickObject(record, 'stream')
+  for (const record of unique.values()) {
     const body = pickObject(record, 'payload')
-    if (!id || !Number.isSafeInteger(sequence) || typeof sequence !== 'number' || sequence < 1
-      || stream?.kind !== MUSE_STREAM_KIND.Session || stream.id !== params.sessionId || body?.kind !== 'run' || body.run_id !== item.turnId) {
+    if (body?.kind !== 'run' || body.run_id !== item.turnId)
       return undefined
-    }
-    const previous = unique.get(id)
-    if ((previous && JSON.stringify(previous) !== JSON.stringify(record))
-      || (sequences.has(sequence) && sequences.get(sequence) !== id)) {
-      return undefined
-    }
-    unique.set(id, record)
-    sequences.set(sequence, id)
   }
   const origin = unique.get(pickString(source, 'id'))
   if (origin?.sequence !== source.sequence

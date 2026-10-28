@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from '@solidjs/testing-library'
+import { waitFor } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -11,25 +11,24 @@ import '../testMocks'
 import './plugin'
 
 describe('goose native tools', () => {
-  it('renders a native script failure when its MCP transport completed', async () => {
-    const report = 'Code Executed Successfully: false\n\n# Return Value\n```json\nnull\n```\n\n# STDOUT\n\n\n# STDERR\nError: NATIVE_SCRIPT77\n    at run (file:///execute.js:2:9)\n'
+  it('renders a failed native script with its exact output', async () => {
+    const report = 'Error: Error: NATIVE_SCRIPT77 (code_mode.js:2:5)\n    at run (code_mode.js:1:30)'
     const request = {
       sessionUpdate: 'tool_call',
       toolCallId: 'native-script',
       status: 'pending',
       kind: 'other',
-      title: 'execute typescript',
+      title: 'execute javascript',
       rawInput: { code: 'async function run() { throw new Error("NATIVE_SCRIPT" + (70 + 7)); }' },
-      _meta: { goose: { toolCall: { toolName: 'execute_typescript', extensionName: 'code_execution' } } },
+      _meta: { goose: { toolCall: { toolName: 'execute_javascript', extensionName: 'code_execution' } } },
     }
-    const result = { ...request, sessionUpdate: 'tool_call_update', status: 'completed', content: acpTextContent(report) }
+    const result = { ...request, sessionUpdate: 'tool_call_update', status: 'failed', content: acpTextContent(report) }
     const scenario = createTranscriptScenario({ archive: [
       makeTranscriptMessage({ id: 'native-script-request', provider: AgentProvider.GOOSE, spanId: 'native-script', spanType: 'other', agentSessionId: 'native-session', content: request }, 1n),
       makeTranscriptMessage({ id: 'native-script-result', provider: AgentProvider.GOOSE, spanId: 'native-script', spanType: 'other', agentSessionId: 'native-session', content: result }, 2n),
     ] })
-    const { container, getByRole } = scenario.renderBubble('native-script-result')
+    const { container } = scenario.renderBubble('native-script-result')
     expect(scenario.toolRow('native-script-result').call.status).toBe('failed')
-    fireEvent.click(getByRole('button', { name: /^Expand$/ }))
     await waitFor(() => expect(container.textContent).toContain('NATIVE_SCRIPT77'))
     expect(container.querySelector('.lucide-circle-alert')).not.toBeNull()
     expect(container.textContent).not.toContain('Arguments')

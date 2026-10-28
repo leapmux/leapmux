@@ -194,7 +194,7 @@ type OutputHandler struct {
 	// Per-agent notification threading state (concurrent access).
 	notifMu         sync.Map // agentID -> *sync.Mutex
 	lastNotifThread sync.Map // agentID -> *notifThreadRef
-	transcriptMu    sync.Map // root agent ID -> *sync.RWMutex
+	transcriptMu    sync.Map // root agent ID -> *transcriptMutationLock
 
 	// Per-agent session-goal mutex. The goal applier is a read-modify-write
 	// over the agents row (compare the stored goal, write only the difference),
@@ -271,7 +271,7 @@ type OutputHandler struct {
 	treeChildren sync.Map // rootAgentID -> *sync.Map[childAgentID]struct{}
 
 	// rootSinks stores each root's current sink.
-	// NewSink creates each entry. CleanupAgent removes it.
+	// NewRootSink creates each entry. CleanupAgent removes it.
 	// Child cleanup reads this registry to release the parent's child sink.
 	// Otherwise the parent retains the child's tracker and handler until the parent ends.
 	// Settings refreshes use this registry as their source identity also.
@@ -835,7 +835,7 @@ func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
 }
 
 // rootTracker returns the SpanTracker for a ROOT main agent, creating one if
-// needed. Used by NewSink; the kind is recorded so cleanup and the orphan sweep
+// needed. Used by NewRootSink; the kind is recorded so cleanup and the orphan sweep
 // can distinguish root trackers from child trackers.
 func (h *OutputHandler) rootTracker(agentID string) *SpanTracker {
 	return h.trackers.getOrCreate(agentID, spanTrackerRoot)
@@ -875,19 +875,26 @@ func (h *OutputHandler) snapshotPassthroughSpanLines(agentID string) string {
 	return lines
 }
 
-// NewSink creates a per-agent ProviderServices backed by this OutputHandler.
-func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.ProviderServices {
-	s := &agentOutputSink{
-		h:             h,
-		agentID:       agentID,
-		rootAgentID:   agentID,
-		agentProvider: agentProvider,
-		plugin:        h.agents.Registry().Plugin(agentProvider),
+// NewRootSink creates the checked output services of one physical root process.
+// Virtual children retain their creating parent's services through ChildSink.
+func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.AgentProvider) (agent.ProviderServices, error) {
+	if h.queries == nil {
+		return nil, errors.New("the root output source has no store")
 	}
 	mutation := h.transcriptMutationMutex(agentID)
 	mutation.Lock()
+	source, err := h.queries.AllocateAgentOutputGeneration(h.bgTaskCtx(), agentID)
+	if err != nil {
+		mutation.Unlock()
+		return nil, fmt.Errorf("allocate the root output source for %s: %w", agentID, err)
+	}
+	s := &agentOutputSink{
+		h: h, agentID: agentID, rootAgentID: agentID,
+		agentProvider: agentProvider, plugin: h.agents.Registry().Plugin(agentProvider),
+		outputGeneration: source.OutputGeneration,
+		messageSession:   &nativeSessionFact{id: source.AgentSessionID},
+	}
 	s.tracker = h.rootTracker(agentID)
-	s.restoreMessageSession()
 	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	}, s.currentMessageSessionID)
@@ -902,7 +909,7 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 	h.enqueueProgressClears(retiredIDs)
 	mutation.Unlock()
 	h.drainProgressClears(retiredIDs)
-	return agent.NewProviderServices(s)
+	return agent.NewProviderServices(s), nil
 }
 
 // lockRootSinkMutation records admission before it waits for settings settlement.
@@ -1018,15 +1025,20 @@ type agentOutputSink struct {
 	// every registry write (EnsureChildAgent, UpsertBackgroundTask, ...) lands
 	// under the root and a child's own TodoWrite feeds agent_todos under the
 	// child id (correct for the child tab).
-	rootAgentID   string
-	agentProvider leapmuxv1.AgentProvider
-	plugin        agent.Provider
-	tracker       *SpanTracker
+	rootAgentID string
+	// outputGeneration belongs to this physical root and is inherited by its children.
+	outputGeneration int64
+	agentProvider    leapmuxv1.AgentProvider
+	plugin           agent.Provider
+	tracker          *SpanTracker
 	// childSinks caches ChildSink results by child agent id so repeated
 	// PersistChild* / nested-spawn calls reuse the same child sink (and its
 	// span tracker). Guarded by childMu.
 	childMu    sync.Mutex
 	childSinks map[string]*agentOutputSink
+	// initialUserMessage retains this transcript's opening assignment until
+	// its shared output queue completes the emptiness check and write.
+	initialUserMessage agent.InitialUserMessage
 	// progressClosed prevents a replaced process from caching a new child
 	// publisher after closeProgressTree detached its old children.
 	progressClosed bool

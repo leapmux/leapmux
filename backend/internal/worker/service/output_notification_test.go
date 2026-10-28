@@ -129,7 +129,7 @@ func TestNotificationHistoricalObservationWithoutAReferenceKeepsTheEarlierAggreg
 	before, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: agentID})
 	require.NoError(t, err)
 	require.Len(t, before, 1)
-	replacement := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	replacement := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	replacement.UpdateSessionID("native-session")
 	replacement.ReportProgress(agent.NativeTokenProgress("current-model", 17))
 	current := requireRootOutputSink(t, svc.Output, agentID)
@@ -316,7 +316,7 @@ func TestNotificationEntryConflictingKeyPreservesTheOriginalRecord(t *testing.T)
 			case "source":
 				source = leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX
 			case "provider":
-				sink = svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+				sink = newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			}
 			broadcast, err := sink.PersistNotification(source, content)
 			require.ErrorContains(t, err, "identity conflict")
@@ -374,7 +374,7 @@ func TestEmbeddedNotificationJournalRetainsOlderAggregateKeys(t *testing.T) {
 func TestEmbeddedNotificationJournalSourceOnlyAppendKeepsSequenceAndProgress(t *testing.T) {
 	t.Parallel()
 	svc, _, ownerID, _ := setupBgTaskTestWithService(t)
-	sink := agent.NewModelProgressResetSink(svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	sink := agent.NewModelProgressResetSink(newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	sink.UpdateSessionID("native")
 	content := agent.MessageContent{Original: raw(t, codexStartupStatus("codex_apps", "ready", nil)), IdempotencyKey: "first"}
 	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
@@ -535,7 +535,7 @@ func TestNotificationEntryOriginalOuterSinkRetainsItsThreadAfterReplacement(t *t
 	require.NoError(t, err)
 	originalNext := agent.CaptureTranscript(originalSink,
 		agent.MessageContent{Original: []byte(`{"type":"system","text":"original second"}`), IdempotencyKey: "original-second"}, agent.SpanInfo{})
-	replacement := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	replacement := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	replacement.UpdateSessionID("replacement-session")
 	_, err = replacement.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: []byte(`{"type":"system","text":"replacement first"}`), IdempotencyKey: "replacement-first"})

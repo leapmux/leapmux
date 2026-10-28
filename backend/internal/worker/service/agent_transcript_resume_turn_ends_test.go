@@ -17,7 +17,7 @@ func TestResumeKeepsNativeCompletionReceiptsForTheRootAndSuppressedChildDivider(
 	workingDir := t.TempDir()
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	seedTranscriptSource(t, svc, "old-root", workingDir, "native-root-session", provider, false)
-	root := svc.Output.NewSink("old-root", provider)
+	root := newTestRootOutputSink(t, svc.Output, "old-root", provider)
 	rootContent := agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`), AgentSessionID: "native-root-session", IdempotencyKey: "root-turn:1"}
 	require.NoError(t, root.PersistTurnEnd(rootContent, agent.SpanInfo{}))
 	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
@@ -47,7 +47,7 @@ func TestResumeKeepsNativeCompletionReceiptsForTheRootAndSuppressedChildDivider(
 	writer := &testResponseWriter{channelID: "resumed-native-completion"}
 	registerAgentWatch(svc, writer.channelID, newRootID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	registerAgentWatch(svc, writer.channelID, newChild.ID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
-	newRoot := svc.Output.NewSink(newRootID, provider)
+	newRoot := newTestRootOutputSink(t, svc.Output, newRootID, provider)
 	require.NoError(t, newRoot.PersistTurnEnd(rootContent, agent.SpanInfo{}))
 	require.NoError(t, newRoot.ChildSink(newChild.ID).PersistTurnEnd(childContent, agent.SpanInfo{}))
 	for _, stream := range writer.streamsSnapshot() {

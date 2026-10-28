@@ -22,7 +22,8 @@
     "streamKinds",
     "optionIds",
     "workspaceTrust",
-    "startupOptionGroups"
+    "startupOptionGroups",
+    "parentInput"
   ],
   "properties": {
     "_readme": {
@@ -143,6 +144,9 @@
           }
         }
       }
+    },
+    "parentInput": {
+      "$ref": "#/$defs/table"
     }
   },
   "$defs": {

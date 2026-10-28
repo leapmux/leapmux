@@ -9,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { compactControl } from '~/components/common/CompactControl.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
-import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AttachmentSchema, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE, setStorageAccountForTests } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { formatResetTimestamp } from '~/lib/rateLimitUtils'
@@ -267,6 +267,13 @@ describe('AgentEditorPanel', () => {
     const warning = within(screen.getByTestId('agent-info-trigger')).getByText('Warning', { exact: true })
     const tooltip = hoverForTooltip(warning)
     expect(tooltip?.textContent).toContain(formatResetTimestamp(0))
+  })
+
+  it('shows a calendar reset tooltip for an exceeded account quota', () => {
+    const rateLimits = { credit: { status: 'exceeded', resetsOn: '2026-11-25' } }
+    renderPanel({ agentSessionInfo: { rateLimits } })
+    const exceeded = within(screen.getByTestId('agent-info-trigger')).getByText('Exceeded', { exact: true })
+    expect(hoverForTooltip(exceeded)?.textContent).toContain('Resets on 2026-11-25')
   })
 
   it('identifies the focused editor before and after the agent changes', () => {
@@ -1567,6 +1574,72 @@ describe('agent editor panel', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
     await Promise.resolve()
     expect(getAttachments('a1')).toEqual([normalAttachment])
+  })
+
+  it('keeps a pending normal attachment out of a queued input being edited', async () => {
+    vi.useRealTimers()
+    const readers: FileReader[] = []
+    const read = vi.spyOn(FileReader.prototype, 'readAsArrayBuffer').mockImplementation(function (this: FileReader) {
+      readers.push(this)
+    })
+    const queuedAttachment = create(AttachmentSchema, {
+      filename: 'queued.txt',
+      mimeType: 'text/plain',
+      data: new TextEncoder().encode('queued'),
+    })
+    const snapshot = (owner: string) => create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      revision: owner ? 2n : 1n,
+      paused: true,
+      items: [{
+        id: 'queued-1',
+        agentId: 'a1',
+        text: 'queued preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: owner,
+      }],
+    })
+    const [queue, setQueue] = createSignal(snapshot(''))
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={queue()}
+          queueClientId="client-a"
+          onBeginQueueEdit={() => {
+            const edited = snapshot('client-a')
+            setQueue(edited)
+            return Promise.resolve({ snapshot: edited, attachments: [queuedAttachment], text: 'queued text' })
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    try {
+      await fireEvent.change(screen.getByTestId('file-input'), { target: { files: [new File(['pending'], 'pending.txt')] } })
+      const reader = readers[0]
+      expect(reader).toBeDefined()
+      await fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      await waitFor(() => expect(screen.getByTestId('attachment-pill')).toHaveTextContent('queued.txt'))
+      Object.defineProperty(reader!, 'result', { value: new TextEncoder().encode('pending').buffer })
+      reader!.onload?.(new ProgressEvent('load') as ProgressEvent<FileReader>)
+      await Promise.resolve()
+      expect(screen.getAllByTestId('attachment-pill')).toHaveLength(1)
+      expect(screen.getByTestId('attachment-pill')).toHaveTextContent('queued.txt')
+      expect(getAttachments(queueEditDraftKey('a1', 'queued-1'))).toMatchObject([{
+        filename: 'queued.txt',
+        mimeType: 'text/plain',
+        data: queuedAttachment.data,
+      }])
+      expect(getAttachments('a1')).toEqual([])
+    }
+    finally {
+      read.mockRestore()
+      clearAttachments(queueEditDraftKey('a1', 'queued-1'))
+    }
   })
 
   // The delete path and the cancel path share one cleanup helper. This pins the

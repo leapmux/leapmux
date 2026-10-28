@@ -2,6 +2,7 @@ package mimo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -80,7 +81,11 @@ func (a *Agent) ClearContext() (string, error) {
 	a.sessionSwitching = true
 	// A compaction route or follow-up HTTP call can still own the old session
 	// after its visible turn ends. Abort it when the session changes.
-	active := a.turnActive || a.inputSends[oldID] > 0 || a.compactionAck != nil || a.manualCompactionID != "" || a.manualCompactionReady
+	sends := make([]*mimoInputSend, 0, len(a.inputSends[oldID]))
+	for send := range a.inputSends[oldID] {
+		sends = append(sends, send)
+	}
+	active := a.turnActive || len(sends) > 0 || a.compactionAck != nil || a.manualCompactionID != "" || a.manualCompactionReady
 	a.Mu.Unlock()
 	ctx := a.Context()
 	session, err := a.rpc.createSession(ctx)
@@ -90,6 +95,26 @@ func (a *Agent) ClearContext() (string, error) {
 		a.Mu.Unlock()
 		a.PublishTurnActive()
 		return "", fmt.Errorf("create a MiMo session: %w", err)
+	}
+	// Wait for HTTP admission before the abort. Canceling the client request
+	// cannot prove that the server stopped processing it. Each RPC has its own
+	// deadline. MiMo's 204 response admits background work; it does not join it.
+	var deliveryErr error
+	for _, send := range sends {
+		<-send.done
+		if send.err != nil {
+			err := classifyDeliveryError("outgoing prompt", send.err)
+			if errors.Is(err, agent.ErrDeliveryUncertain) {
+				deliveryErr = errors.Join(deliveryErr, err)
+			}
+		}
+	}
+	if deliveryErr != nil {
+		a.Mu.Lock()
+		a.sessionSwitching = false
+		a.Mu.Unlock()
+		a.PublishTurnActive()
+		return "", fmt.Errorf("the outgoing MiMo session still has unconfirmed input: %w", deliveryErr)
 	}
 	if oldID != "" && active {
 		if err := a.rpc.abort(ctx, oldID); err != nil {

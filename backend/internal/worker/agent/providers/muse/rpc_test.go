@@ -7,11 +7,25 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRequestFailureIdentifiesTheNativeMethodAndKeepsItsCause(t *testing.T) {
+	a, _ := testAgent(t)
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(string, json.RawMessage) agenttest.RPCReply {
+		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"view range read failed","data":{"kind":"internal","sessionId":"child"}}`)}
+	}})
+	_, err := a.request(methodViewPage, map[string]string{"sessionId": "child"}, time.Second, nil)
+	require.ErrorContains(t, err, methodViewPage)
+	var native *providerkit.JSONRPCResponseError
+	require.ErrorAs(t, err, &native)
+	assert.Equal(t, -32603, native.Code)
+	assert.JSONEq(t, `{"kind":"internal","sessionId":"child"}`, string(native.Data))
+}
 
 func TestCommandAcceptsNoopOnlyForCompaction(t *testing.T) {
 	a, _ := testAgent(t)
@@ -55,8 +69,9 @@ func TestCommandParamsPreservesTheCaller(t *testing.T) {
 }
 
 type museTestPeer struct {
-	agent *Agent
-	reply func(string, json.RawMessage) agenttest.RPCReply
+	agent      *Agent
+	reply      func(string, json.RawMessage) agenttest.RPCReply
+	afterReply func(string)
 }
 
 func (p *museTestPeer) Write(raw []byte) (int, error) {
@@ -70,6 +85,9 @@ func (p *museTestPeer) Write(raw []byte) (int, error) {
 	}
 	reply := p.reply(request.Method, request.Params)
 	p.agent.Deliver(request.ID, agenttest.JSONRPCResponse(request.ID, reply))
+	if p.afterReply != nil {
+		p.afterReply(request.Method)
+	}
 	return len(raw), nil
 }
 func (*museTestPeer) Close() error { return nil }

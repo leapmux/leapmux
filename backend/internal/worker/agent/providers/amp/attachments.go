@@ -102,9 +102,9 @@ func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bo
 	images := 0
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			addText(providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage:
+		case contracts.AttachmentMediaKindImage:
 			mediaType, err := checkImage(attachment)
 			if err != nil {
 				return nil, nil, err
@@ -122,7 +122,7 @@ func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bo
 			})
 		default:
 			// ValidateAttachment refused these before the queue accepted them.
-			return nil, nil, providerkit.RejectPDFAndBinaryAttachment("Amp", attachment)
+			return nil, nil, providerkit.ValidateTextAndImageAttachment("Amp", attachment)
 		}
 	}
 	size, err := jsonSize(estimate)
@@ -147,7 +147,7 @@ func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bo
 func countImages(attachments []*leapmuxv1.Attachment) int {
 	count := 0
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if attachment.Kind == agent.AttachmentKindImage {
+		if attachment.Kind == contracts.AttachmentMediaKindImage {
 			count++
 		}
 	}
@@ -173,13 +173,13 @@ func jsonSize(value any) (int, error) {
 // fits in a line by itself.
 func validateAttachment(attachment agent.ClassifiedAttachment) error {
 	switch attachment.Kind {
-	case agent.AttachmentKindText:
+	case contracts.AttachmentMediaKindText:
 		return nil
-	case agent.AttachmentKindImage:
+	case contracts.AttachmentMediaKindImage:
 		_, err := checkImage(attachment)
 		return err
 	default:
-		return providerkit.RejectPDFAndBinaryAttachment("Amp", attachment)
+		return providerkit.ValidateTextAndImageAttachment("Amp", attachment)
 	}
 }
 

@@ -91,6 +91,15 @@ func gooseDelegateInstructions(rawInput json.RawMessage) string {
 // request inside Goose's logging metadata.
 const gooseSubagentToolRequestType = "subagent_tool_request"
 
+// isGooseSubagentToolRequest identifies structured child requests before a
+// generic MCP log handler can consume them.
+func isGooseSubagentToolRequest(raw json.RawMessage) bool {
+	var data struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(raw, &data) == nil && data.Type == gooseSubagentToolRequestType
+}
+
 // gooseSubagentRequestedTool reads the name of the tool one subagent request asks
 // for, or the empty string when the request states none.
 //
@@ -170,10 +179,7 @@ func gooseSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Subage
 	if err := json.Unmarshal(meta.ToolNotification.Params, &params); err != nil {
 		return nil
 	}
-	var data struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(params.Data, &data); err != nil || data.Type != gooseSubagentToolRequestType {
+	if !isGooseSubagentToolRequest(params.Data) {
 		return nil
 	}
 	// Key the registry row, the child-agent linkage, AND the lifecycle updates

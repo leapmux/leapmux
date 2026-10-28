@@ -102,6 +102,7 @@ type nativeItem struct {
 	Objective           string                 `json:"objective"`
 	Role                string                 `json:"role"`
 	ControlStatus       string                 `json:"controlStatus"`
+	Result              json.RawMessage        `json:"result"`
 	WorkflowRunID       string                 `json:"workflowRunId"`
 	EntryID             string                 `json:"entryId"`
 	Children            json.RawMessage        `json:"children"`

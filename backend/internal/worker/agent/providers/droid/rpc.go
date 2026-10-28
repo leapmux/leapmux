@@ -50,9 +50,10 @@ func (a *Agent) writeRequest(id, method string, params any) error {
 
 // nextRequestID issues a JSON-RPC request ID.
 func (a *Agent) nextRequestID() string {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	return fmt.Sprintf("leapmux-%d", a.NextTurnSeq())
+	a.rpcMu.Lock()
+	defer a.rpcMu.Unlock()
+	a.requestSequence++
+	return fmt.Sprintf("leapmux-%d", a.requestSequence)
 }
 
 // registerReply adds a one-request inbox before the request reaches Droid.

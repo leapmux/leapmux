@@ -246,7 +246,7 @@ func TestSessionInfoReplay_SurvivesControlRequestCleanup(t *testing.T) {
 	assert.EqualValues(t, 42, info[contracts.SessionInfoKeyThinkingTokens])
 }
 
-func TestNewSinkClosesTheReplacedProgressTree(t *testing.T) {
+func TestNewRootSinkClosesTheReplacedProgressTree(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, broadcasts := newSessionInfoServiceFixture(t)
@@ -255,7 +255,7 @@ func TestNewSinkClosesTheReplacedProgressTree(t *testing.T) {
 	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
 	child.ReportProgress(agent.OutputDeltaProgress("tool", 512))
 
-	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 	replacementRoot := requireRootOutputSink(t, svc.Output, "agent-1")
 	require.NotSame(t, root, replacementRoot)
 
@@ -312,7 +312,7 @@ func TestWatchEvents_CatchUpReplaysTheSessionCounters(t *testing.T) {
 
 	// The running process reports its counters BEFORE this client subscribes,
 	// which is the reload it stands for: the frame went out to nobody.
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 	sink.BroadcastSessionInfo(map[string]interface{}{
 		contracts.SessionInfoKeyGoalProgress: map[string]interface{}{
 			contracts.GoalProgressFieldIterations: 4,

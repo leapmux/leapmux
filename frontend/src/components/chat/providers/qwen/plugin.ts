@@ -1,4 +1,4 @@
-import { QWEN_CONFIG, QWEN_MODE } from '~/generated/contracts/qwen-protocol'
+import { QWEN_AUDIO_MIME, QWEN_CONFIG, QWEN_MODE } from '~/generated/contracts/qwen-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 
@@ -13,7 +13,7 @@ import { qwenQuestionHandling } from './pluginControls'
 
 registerACPProvider({
   provider: AgentProvider.QWEN_CODE,
-  attachments: { text: true, image: true, pdf: true, binary: false },
+  attachments: { text: true, image: true, pdf: true, audio: [...QWEN_AUDIO_MIME], binary: false },
   effortGroupKey: QWEN_CONFIG.ReasoningEffort,
   toolCallAdapter: qwenToolCallAdapter,
   outputFilePaths: qwenOutputFilePaths,

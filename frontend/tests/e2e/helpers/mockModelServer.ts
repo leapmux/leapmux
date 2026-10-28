@@ -33,7 +33,7 @@ import { createDualVersionListener } from './dualVersionListener'
 import { handleGoogleModelHttp } from './googleModelApi'
 import { createKiloCloudSurface } from './kiloCloudSurface'
 import { createKimiCodeSurface } from './kimiCodeSurface'
-import { handleKiroHttp, kiroRequestMetadata } from './kiroSurface'
+import { createKiroSurface, kiroRequestMetadata } from './kiroSurface'
 import { createLettaSurface } from './lettaSurface'
 import { MOCK_IDENTITY_TOKEN, MOCK_MODELS, MOCK_SESSION_TOKEN, MODEL_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
@@ -301,7 +301,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     createKimiCodeSurface(scriptHost, { accessToken: MOCK_IDENTITY_TOKEN }),
     createAmpSurface(ampScriptOptions(scriptHost, instructionFiles)),
     createCursorSurface(scriptHost, instructionFiles),
-    { handleHttp: (request, response, url) => handleKiroHttp(request, response, url, scriptHost) },
+    createKiroSurface(scriptHost),
     { handleHttp: (request, response, url) => handleGoogleModelHttp(request, response, url, scriptHost) },
   ]
   const clearScenario = (scenarioID: string): void => {

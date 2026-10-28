@@ -1,10 +1,55 @@
 {
-  "_readme": "Fast Agent owns the session mode IDs. Both languages read the mode that a default setup reports. Fast Agent modes select configured agents, and the native session reports them on the modes channel. LeapMux owns the BypassPermissions option ID: the worker uses it to select the native --no-permissions launch flag, and the browser uses it for the Bypass preset. Changing that flag requires a process restart.",
+  "_readme": "Fast Agent owns the session mode IDs. Both languages read the mode that a default setup reports. Fast Agent modes select configured agents, and the native session reports them on the modes channel. LeapMux owns the BypassPermissions option ID: the worker uses it to select the native --no-permissions launch flag, and the browser uses it for the Bypass preset. Changing that flag requires a process restart. Root turns can be recovered as complete ordered native history suffixes. Each row retains one unchanged native source element and separate archive provenance. The sole proved human dispatch is omitted because the worker already owns its user row. Later native user-role content is tool-result context, not another human input. The archive table supplies those provenance keys. Live ACP call IDs have no proven association with native history call IDs. Native Google audio format membership is the audioMimeTypes subset of attachment-media; browser and worker consume the same subset. The worker checks the running native provider before forwarding audio.",
   "modes": {
     "Agent": "agent"
   },
   "defaultMode": "Agent",
   "options": {
     "BypassPermissions": "bypassPermissions"
-  }
+  },
+  "tools": {
+    "Bash": "bash",
+    "Process": "process"
+  },
+  "archive": {
+    "Namespace": "fast-agent/root-archive",
+    "FormatKey": "format",
+    "Format": "fast-agent/history-element/v1",
+    "CaptureID": "captureId",
+    "SessionID": "sessionId",
+    "Actor": "actor",
+    "HistoryFile": "historyFile",
+    "MessageIndex": "messageIndex",
+    "Role": "role",
+    "Field": "field",
+    "Channel": "channel",
+    "Index": "index",
+    "Timestamp": "timestamp",
+    "CallID": "callId",
+    "ToolName": "toolName",
+    "SpanID": "spanId",
+    "Request": "request",
+    "Content": "content",
+    "ToolCalls": "tool_calls",
+    "ToolResults": "tool_results",
+    "Channels": "channels",
+    "Reasoning": "reasoning",
+    "AssistantRole": "assistant",
+    "UserRole": "user",
+    "ErrorChannel": "fast-agent-error",
+    "TimingChannel": "fast-agent-timing",
+    "ToolTimingChannel": "fast-agent-tool-timing",
+    "ToolMetadataChannel": "fast-agent-tool-metadata",
+    "UsageChannel": "fast-agent-usage",
+    "ShellProcessMetadataChannel": "fast-agent-shell-process-metadata"
+  },
+  "audioMimeTypes": [
+    "Wav",
+    "Mpeg",
+    "Mp3",
+    "Aac",
+    "Ogg",
+    "Flac",
+    "Webm"
+  ]
 }

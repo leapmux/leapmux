@@ -467,15 +467,14 @@ func TestKiroClearContextCancelsTheRecoveredGoalRun(t *testing.T) {
 	assert.Equal(t, []agent.GoalAction{agent.GoalActionSet}, a.SupportedGoalActions(), "the new session holds no run")
 }
 
-// An agent that answers session/new with the outgoing id serves that session
-// still, so its runs go on.
-func TestKiroClearContextKeepsTheRunsOfASessionThatStays(t *testing.T) {
+// A rejected session/new response leaves the outgoing session's runs intact.
+func TestKiroClearContextKeepsRunsWhenTheAgentReusesTheSessionID(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newKiroAgent(t, agent.Options{}, openingSession(kiroTestSession))
 	a.HandleOutput(runStart(t, kiroGoalWorkflowName))
 
 	_, err := a.ClearContext()
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "current session ID")
 	syncPeer(t, a)
 
 	assert.Empty(t, requestsFor(requests(), kiroWorkflowCancelMethod))

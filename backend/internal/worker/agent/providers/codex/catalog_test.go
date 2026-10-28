@@ -367,3 +367,16 @@ func TestSettledPermissionProfile(t *testing.T) {
 	assert.Equal(t, contracts.CodexPermissionProfileWorkspace, settledPermissionProfile("gone", workspaceAndTeam))
 	assert.Equal(t, "team", settledPermissionProfile("gone", teamOnly), "without the workspace, the first offered profile")
 }
+
+func TestCodexModelDiscoveryKeepsAudioCapabilities(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{"data":[{"id":"audio","inputModalities":["text","audio"],"hidden":true},{"id":"text","inputModalities":["text","image"]},{"id":"unknown"}],"nextCursor":null}`)}
+	})
+	models := a.queryAvailableModels(time.Second)
+	require.Len(t, models, 3)
+	assert.True(t, models[0].SupportsAudioInput)
+	assert.True(t, models[0].Hidden)
+	assert.False(t, models[1].SupportsAudioInput)
+	assert.False(t, models[2].SupportsAudioInput)
+}

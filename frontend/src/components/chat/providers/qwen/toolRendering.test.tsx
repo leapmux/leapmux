@@ -10,11 +10,12 @@ import '../testMocks'
 import './plugin'
 
 /** One finished call, read through the plugin with its opening frame paired. */
-function finishedCall(name: string, kind: string, rawInput: Record<string, unknown>, frame: Record<string, unknown>) {
+function finishedCall(name: string, kind: string, rawInput: Record<string, unknown>, frame: Record<string, unknown>, agentSessionId?: string) {
   const request = { sessionUpdate: 'tool_call', toolCallId: 'call', status: 'in_progress', title: name, kind, rawInput, _meta: { toolName: name } }
   return providerToolCall(AgentProvider.QWEN_CODE, { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', _meta: { toolName: name }, ...frame }, {
     spanType: 'tool_call_update',
     request: input(request, null, AgentProvider.QWEN_CODE),
+    ...(agentSessionId === undefined ? {} : { agentSessionId }),
   })
 }
 
@@ -69,11 +70,14 @@ describe('qwen tool rendering', () => {
     const call = finishedCall('agent', 'other', { description: 'Background child', prompt: 'p', run_in_background: true }, {
       content: acpTextContent('Background agent launched successfully.\ntask_id: general-purpose-call_1 (internal ID)\nThe agent is working in the background.'),
       rawOutput: { type: 'task_execution', subagentName: 'general-purpose', executionMode: 'background', status: 'background' },
-    })
+    }, '97d857a0-9cd7-4bbf-987b-a6ab094a074b')
     if (call?.kind !== 'agent' || !call.result || !('agents' in call.result))
       throw new Error('a subagent launch is an agent row')
-    expect(call.request).toMatchObject({ description: 'Background child', registryKey: 'call' })
-    expect(call.result.agents[0]).toMatchObject({ agentId: 'general-purpose-call_1', outcome: 'running', body: '' })
+    const registryKey = 'qwen-registry-v1:7fe6819ccb624dc01f86cb9003bd778eaaf885c1d49af63717756ea0ec51a0ca'
+    expect(call.id).toBe('call')
+    expect(call.status).toBe('completed')
+    expect(call.request).toMatchObject({ description: 'Background child', prompt: 'p', registryKey })
+    expect(call.result.agents[0]).toMatchObject({ registryKey, agentId: 'general-purpose-call_1', outcome: 'running', body: '' })
   })
 
   it('draws a subagent run that failed', () => {

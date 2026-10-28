@@ -729,7 +729,7 @@ func TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty(t *testing
 		HomeDir:       "/tmp",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "rtask", Kind: bgtask.KindShell, Title: "root task", Status: bgtask.StatusRunning,
 	}))
@@ -785,7 +785,7 @@ func TestListAgentMessages_RootLatestPage_BackgroundTasksLoaded(t *testing.T) {
 		HomeDir:       "/tmp",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "rtask", Kind: bgtask.KindShell, Title: "root task", Status: bgtask.StatusRunning,
 	}))

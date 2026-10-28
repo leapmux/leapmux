@@ -178,13 +178,13 @@ func TestCapturedAutoRetryRefusesReplacedOwnersWithoutResettingBackoff(t *testin
 			svc, _, _ := setupTestService(t, withClock(clock))
 			agentID := "agent-1"
 			seedAgent(t, svc, agentID)
-			sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			writer := sink.CaptureAutoRetry()
 			switch replacement {
 			case "session":
 				sink.UpdateSessionID("replacement-session")
 			case "process":
-				svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			case "cleanup":
 				svc.Output.CleanupAgent(agentID)
 			}

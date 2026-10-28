@@ -12,6 +12,38 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+type droidTurnSnapshotSink struct {
+	agent.ProviderServices
+	beforeQueue func()
+}
+
+func (sink *droidTurnSnapshotSink) OutputQueue() *agent.OutputQueue {
+	before := sink.beforeQueue
+	sink.beforeQueue = nil
+	if before != nil {
+		before()
+	}
+	return agent.OutputQueueFor(sink.ProviderServices)
+}
+
+func TestPublishTurnActiveKeepsItsOrderingTokenWithItsSnapshot(t *testing.T) {
+	t.Parallel()
+	a, recorded, _ := newSteerAgent(t)
+	observer := &droidTurnSnapshotSink{ProviderServices: a.sink}
+	a.sink = observer
+	a.startTurn()
+	// Queue lookup occurs after the caller captures state. A newer turn
+	// publication here must retain the newer ordering token.
+	observer.beforeQueue = a.endTurn
+	assert.True(t, a.PublishTurnActive().Active, "the delayed publication retains its original active snapshot")
+	states, sequences := recorded.TurnStates(), recorded.TurnSeqs()
+	require.Len(t, states, 3)
+	assert.Equal(t, []uint64{1, 3, 2}, sequences)
+	assert.False(t, states[1].Active)
+	assert.True(t, states[2].Active)
+	assert.Greater(t, sequences[1], sequences[2], "the worker must recognize the delayed active snapshot as older than the ended turn")
+}
+
 func TestSendInputCarriesImageBytes(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newSteerAgent(t)

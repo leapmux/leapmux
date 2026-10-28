@@ -45,7 +45,7 @@ func TestNotificationProviderPreparationPermitsReentry(t *testing.T) {
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "notification-reentry-owner"
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
-			sink := svc.Output.NewSink(ownerID, providerID)
+			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			sink.UpdateSessionID("native")
 			_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 				agent.MessageContent{Original: []byte(`{"type":"system","value":"first"}`), IdempotencyKey: "first"})
@@ -55,7 +55,7 @@ func TestNotificationProviderPreparationPermitsReentry(t *testing.T) {
 			provider.reenter = func() {
 				go func() {
 					if operation == "publisher replacement" {
-						replacement := svc.Output.NewSink(ownerID, providerID)
+						replacement := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 						replacement.SetTurnState(agent.TurnState{Active: true}, 1)
 						nestedFinished <- nil
 						return

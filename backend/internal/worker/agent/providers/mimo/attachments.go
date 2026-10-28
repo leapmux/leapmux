@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -15,9 +17,10 @@ import (
 // by its type: a `text/plain` file becomes a synthetic read of the file, and an
 // image, audio, video or PDF file reaches the model as media. A model that lacks
 // the modality gets a text notice in its place ("this model does not support
-// image input") instead of a failed request, so the worker needs no per-model
-// gate. A file of any other type passes through unconverted, and the model's API
-// can refuse the whole request for it, so a binary attachment is refused here.
+// image input") instead of a failed request. The worker checks audio against
+// its live model catalog before sending it, so those bytes cannot disappear.
+// A file of any other type passes through unconverted, and the model's API can
+// refuse the whole request for it, so a binary attachment is refused here.
 //
 // Text is inlined into the prompt instead, as Pi and ZCode do. MiMo converts
 // only the exact type `text/plain`, and a Markdown or source file would pass
@@ -31,7 +34,7 @@ const mimoMaxAttachmentBytes = 20 * 1024 * 1024
 
 // buildPromptParts turns a user message and its attachments into prompt parts:
 // one text part that holds the message and every text attachment, then one file
-// part for each image and PDF, in the order the user attached them.
+// part for each image, PDF and audio file, in the order the user attached them.
 func buildPromptParts(content string, attachments []*leapmuxv1.Attachment) ([]mimoPromptPart, error) {
 	classified := agent.ClassifyAttachments(attachments)
 	blocks := []string{}
@@ -49,9 +52,9 @@ func buildPromptParts(content string, attachments []*leapmuxv1.Attachment) ([]mi
 			return nil, fmt.Errorf("MiMo Code attachments exceed %d bytes in one message", mimoMaxAttachmentBytes)
 		}
 		switch attachment.Kind {
-		case agent.AttachmentKindText:
+		case contracts.AttachmentMediaKindText:
 			blocks = append(blocks, providerkit.BuildInlineTextAttachmentBlock(attachment))
-		case agent.AttachmentKindImage, agent.AttachmentKindPDF:
+		case contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindAudio:
 			files = append(files, mimoPromptPart{
 				Type:     promptPartFile,
 				URL:      providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data),

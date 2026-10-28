@@ -40,7 +40,7 @@ func TestSettingsInvalidOptionsLogReleasesAdmissionBeforeReplacement(t *testing.
 			})
 			mutexesFree = catalogCallbackLocksFree(sink)
 			if mutexesFree {
-				svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 				replacement = requireRootOutputSink(t, svc.Output, "agent-1")
 			}
 		},

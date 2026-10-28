@@ -104,7 +104,7 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	var blocks []string
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if attachment.Kind != agent.AttachmentKindText {
+		if attachment.Kind != contracts.AttachmentMediaKindText {
 			return fmt.Errorf("%w: a ZCode steer carries text only, so %q goes in the next turn",
 				agent.ErrSteeringUnsupported, attachment.Filename)
 		}

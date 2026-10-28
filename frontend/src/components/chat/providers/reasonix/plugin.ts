@@ -19,5 +19,5 @@ registerACPProvider({
   permissionPresets: reasonixPermissionPresets,
   nativeNotifications: reasonixNativeNotifications,
   // Reasonix advertises text input without image support.
-  attachments: { text: true, image: false, pdf: false, binary: false },
+  attachments: { text: true, image: false, pdf: false, audio: false, binary: false },
 })

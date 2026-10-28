@@ -75,6 +75,25 @@ func TestFastagentHomeUsesTheProcessEnvironmentWithoutAQueryHook(t *testing.T) {
 	assert.Equal(t, filepath.Join(workingDir, ".fast-agent"), fastagentHome(agent.StoredSessionQuery{WorkingDir: workingDir}))
 }
 
+func TestFastagentHomeResolvesNativeRelativeAndTildePaths(t *testing.T) {
+	t.Parallel()
+	cwd, home := t.TempDir(), t.TempDir()
+	for _, tc := range []struct{ value, want string }{
+		{"native-home", filepath.Join(cwd, "native-home")},
+		{filepath.Join("..", "native-home"), filepath.Join(filepath.Dir(cwd), "native-home")},
+		{"~/native-home", filepath.Join(home, "native-home")},
+		{"~", home},
+		{" spaced home ", filepath.Join(cwd, " spaced home ")},
+		{home, home},
+		{"", filepath.Join(cwd, ".fast-agent")},
+	} {
+		query := agent.StoredSessionQuery{WorkingDir: cwd, HomeDir: home, Getenv: agenttest.FixtureEnv(map[string]string{"FAST_AGENT_HOME": tc.value})}
+		assert.Equal(t, tc.want, fastagentHome(query), tc.value)
+	}
+	assert.Empty(t, fastagentHome(agent.StoredSessionQuery{Getenv: agenttest.FixtureEnv(nil)}))
+	assert.Empty(t, fastagentHome(agent.StoredSessionQuery{Getenv: agenttest.FixtureEnv(map[string]string{"FAST_AGENT_HOME": "relative"})}))
+}
+
 func TestFastagentStoredSessionsFiltersByWorkingDir(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

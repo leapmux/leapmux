@@ -18,7 +18,7 @@ type providerTurnAdmission struct {
 
 type providerMutationLease struct {
 	once     sync.Once
-	mutation *sync.RWMutex
+	mutation *transcriptMutationLock
 }
 
 func (lease *providerMutationLease) Release() {

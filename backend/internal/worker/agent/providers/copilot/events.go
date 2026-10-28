@@ -114,6 +114,7 @@ type copilotRetry struct {
 }
 
 // copilotDroppedEvents contains frames whose state the Worker consumes without a row.
+// The runtime neither persists nor replays live shell output chunks.
 var copilotDroppedEvents = map[string]struct{}{
 	contracts.CopilotEventSessionStart:                           {},
 	contracts.CopilotEventSessionResume:                          {},
@@ -136,6 +137,7 @@ var copilotDroppedEvents = map[string]struct{}{
 	contracts.CopilotEventAssistantReasoningDelta:                {},
 	contracts.CopilotEventToolProgress:                           {},
 	contracts.CopilotEventToolPartialResult:                      {},
+	contracts.CopilotEventToolShellOutput:                        {},
 	contracts.CopilotEventSubagentStarted:                        {},
 	contracts.CopilotEventSubagentConfigured:                     {},
 	contracts.CopilotEventSessionTaskComplete:                    {},

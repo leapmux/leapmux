@@ -98,35 +98,250 @@ func PersistTranscriptBatch(writer TranscriptServices, messages []TranscriptMess
 			return err
 		}
 	}
-	records := make([]*orderedOutputRecord, len(messages))
-	writes := make([]OutputWrite, len(messages))
-	for i, message := range messages {
-		record := &orderedOutputRecord{source: message.Source}
-		records[i] = record
-		writes[i] = OutputWrite{Label: "persist transcript batch", Run: func() error {
-			if !record.ready.Load() {
-				return ErrOutputInFlight
-			}
-			return record.captured.PersistQueuedMessage(record.ticket, record.source)
-		}}
+	return persistCapturedTranscriptBatch(queue, func() []CapturedTranscriptOperation {
+		operations := make([]CapturedTranscriptOperation, 0, len(messages))
+		for _, message := range messages {
+			operations = append(operations, CaptureTranscript(writer, message.Content, message.Span).MessageOperation(message.Source))
+		}
+		return operations
+	})
+}
+
+// PersistCapturedTranscriptBatch reserves one queue position before preparation.
+// prepare freezes an already selected representation against its original
+// writers. It must not read native history or change the representation.
+// No batch operation runs until every capture is ready. A retained failure
+// retries the captures, without invoking prepare again.
+func PersistCapturedTranscriptBatch(writer TranscriptServices, prepare func() []CapturedTranscriptOperation) error {
+	return persistCapturedTranscriptBatch(OutputQueueFor(writer), prepare)
+}
+
+func persistCapturedTranscriptBatch(queue *OutputQueue, prepare func() []CapturedTranscriptOperation) error {
+	if prepare == nil {
+		return errors.New("the transcript batch has no preparation function")
 	}
-	tickets := queue.Append(writes...)
-	for i, message := range messages {
-		records[i].ticket = tickets[i]
-		records[i].captured = CaptureTranscript(DirectTranscript(writer), message.Content, message.Span)
-		records[i].ready.Store(true)
-	}
-	err := queue.Flush()
-	if len(tickets) == 0 {
+	batch, err := reserveCapturedTranscriptBatch(queue)
+	if err != nil {
 		return err
 	}
-	if tickets[len(tickets)-1].Done() {
+	return batch.Prepare(prepare)
+}
+
+const (
+	capturedBatchReserved uint32 = iota
+	capturedBatchPreparing
+	capturedBatchReady
+	capturedBatchDiscarded
+)
+
+// CapturedTranscriptBatch owns an output position before its captures are ready.
+// Prepare fills it once. Discard releases an unused reservation.
+type CapturedTranscriptBatch struct {
+	queue      *OutputQueue
+	ticket     *OutputTicket
+	owner      *OutputOwner
+	state      atomic.Uint32
+	operations []CapturedTranscriptOperation
+	index      int // Only the queue's current callback reads or changes index.
+	stream     *capturedTranscriptStream
+}
+
+type capturedTranscriptStream struct {
+	next      func() (CapturedTranscriptOperation, bool, error)
+	pending   *CapturedTranscriptOperation
+	submitted bool
+	done      bool
+}
+
+// ReserveCapturedTranscriptBatch prevents later rows or effects from overtaking
+// an admitted group. The caller must eventually Prepare or Discard the group.
+func ReserveCapturedTranscriptBatch(writer TranscriptServices) (*CapturedTranscriptBatch, error) {
+	return reserveCapturedTranscriptBatch(OutputQueueFor(writer))
+}
+
+func reserveCapturedTranscriptBatch(queue *OutputQueue) (*CapturedTranscriptBatch, error) {
+	if queue == nil {
+		return nil, errors.New("the transcript batch has no output queue")
+	}
+	batch := &CapturedTranscriptBatch{queue: queue, owner: NewOutputOwner()}
+	batch.ticket = queue.Append(OutputWrite{Owner: batch.owner, Label: "persist captured transcript batch", Run: batch.persist})[0]
+	return batch, nil
+}
+
+func (batch *CapturedTranscriptBatch) persist() error {
+	if batch.state.Load() != capturedBatchReady {
+		return ErrOutputInFlight
+	}
+	if batch.stream != nil {
+		return batch.persistStream()
+	}
+	for batch.index < len(batch.operations) {
+		operation := batch.operations[batch.index]
+		_, err := operation.captured.persistWithExecution(operation.operation, operation.source,
+			&outputExecution{ticket: batch.ticket, operation: operation.operation, source: operation.source})
+		if err != nil {
+			return err
+		}
+		batch.index++
+	}
+	return nil
+}
+
+// PrepareStream installs one completely selected representation. The caller
+// validates the whole native candidate before selecting archive or live output.
+// next returns done=true at the end. A capture error must keep its position.
+// A storage error retries the retained capture without calling next again.
+// The queue owns the iterator and its recovery data until successful completion.
+func (batch *CapturedTranscriptBatch) PrepareStream(next func() (CapturedTranscriptOperation, bool, error)) error {
+	if batch == nil {
+		return errors.New("the transcript batch has no reservation")
+	}
+	if next == nil {
+		batch.Discard()
+		return errors.New("the transcript stream has no iterator")
+	}
+	if !batch.state.CompareAndSwap(capturedBatchReserved, capturedBatchPreparing) {
+		return errors.New("the transcript batch preparation already began or was discarded")
+	}
+	batch.stream = &capturedTranscriptStream{next: next}
+	batch.state.Store(capturedBatchReady)
+	return batch.flushPrepared()
+}
+
+func (batch *CapturedTranscriptBatch) persistStream() error {
+	stream := batch.stream
+	if stream.done {
+		return nil
+	}
+	for {
+		if stream.pending == nil {
+			operation, done, err := stream.next()
+			if err != nil {
+				return err
+			}
+			if done {
+				stream.done = true
+				stream.next = nil
+				return nil
+			}
+			// A rejected operation stays here so a retry cannot omit its row.
+			stream.pending = &operation
+			stream.submitted = false
+		}
+		operation := stream.pending
+		if !stream.submitted {
+			if err := batch.validateStreamOperation(*operation); err != nil {
+				return err
+			}
+			if err := operation.markSubmitted(); err != nil {
+				return err
+			}
+			stream.submitted = true
+		}
+		_, err := operation.captured.persistWithExecution(operation.operation, operation.source,
+			&outputExecution{ticket: batch.ticket, operation: operation.operation, source: operation.source})
+		if err != nil {
+			return err
+		}
+		stream.pending = nil
+		stream.submitted = false
+	}
+}
+
+func (batch *CapturedTranscriptBatch) validateStreamOperation(operation CapturedTranscriptOperation) error {
+	if operation.err != nil {
+		return operation.err
+	}
+	state := operation.captured.write
+	if state == nil || state.writer == nil {
+		return errors.New("the captured transcript write has no writer")
+	}
+	if err := validateOrderedContent(operation.source, state.content); err != nil {
+		return err
+	}
+	switch operation.operation {
+	case capturedMessage, capturedNotification:
+	case capturedWorkerNotification:
+		if operation.source != leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX {
+			return errors.New("the worker notification has an invalid source")
+		}
+	case capturedTurnEnd:
+		if operation.source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
+			return errors.New("the transcript turn end has an invalid source")
+		}
+	default:
+		return errors.New("the captured transcript operation is unknown")
+	}
+	if OutputQueueFor(state.writer) != batch.queue {
+		return errors.New("the captured transcript operation belongs to another output queue")
+	}
+	return nil
+}
+
+func (batch *CapturedTranscriptBatch) flushPrepared() error {
+	err := batch.queue.FlushAfterReady(batch.ticket)
+	if batch.ticket.Done() {
 		return nil
 	}
 	if err == nil {
 		err = ErrOutputInFlight
 	}
 	return &PendingOutputError{Err: err}
+}
+
+// Discard releases a group only before preparation begins. It invokes no sink.
+// A caller that has no other publication to flush must flush its queue afterward.
+func (batch *CapturedTranscriptBatch) Discard() bool {
+	if batch == nil || !batch.state.CompareAndSwap(capturedBatchReserved, capturedBatchDiscarded) {
+		return false
+	}
+	batch.queue.ClearOwner(batch.owner)
+	return true
+}
+
+// Prepare installs one complete selected representation. It can run after the
+// admission call returns. No operation publishes until all captures are ready.
+// A failure in storage keeps this same representation for retry.
+func (batch *CapturedTranscriptBatch) Prepare(prepare func() []CapturedTranscriptOperation) error {
+	if batch == nil {
+		return errors.New("the transcript batch has no reservation")
+	}
+	if prepare == nil {
+		batch.Discard()
+		return errors.New("the transcript batch has no preparation function")
+	}
+	if !batch.state.CompareAndSwap(capturedBatchReserved, capturedBatchPreparing) {
+		return errors.New("the transcript batch preparation already began or was discarded")
+	}
+	prepared := false
+	defer func() {
+		if !prepared {
+			// Invalid or panicking preparation admits no batch row. Remove its
+			// unready position without discarding any reentrant submission.
+			batch.state.Store(capturedBatchDiscarded)
+			batch.queue.ClearOwner(batch.owner)
+		}
+	}()
+	batch.operations = slices.Clone(prepare())
+	for _, operation := range batch.operations {
+		if operation.err != nil {
+			return operation.err
+		}
+		if operation.captured.write == nil || operation.captured.write.writer == nil {
+			return errors.New("the captured transcript write has no writer")
+		}
+		if OutputQueueFor(operation.captured.write.writer) != batch.queue {
+			return errors.New("the captured transcript operation belongs to another output queue")
+		}
+	}
+	for _, operation := range batch.operations {
+		if err := operation.markSubmitted(); err != nil {
+			return err
+		}
+	}
+	batch.state.Store(capturedBatchReady)
+	prepared = true
+	return batch.flushPrepared()
 }
 
 // PersistPreparedMessage reserves the row before capture or preparation can yield to another writer.
@@ -139,37 +354,22 @@ func PersistPreparedMessage(writer TranscriptServices, source leapmuxv1.MessageS
 	if err := validateOrderedContent(source, template); err != nil {
 		return err
 	}
-	queue := OutputQueueFor(writer)
-	if queue == nil {
+	if prepared, ok := writer.(PreparedTranscriptWriter); ok {
+		return prepared.PersistPreparedMessage(source, template, span, prepare)
+	}
+	if OutputQueueFor(writer) == nil {
 		return errors.New("the transcript message has no output queue")
 	}
-	var ready atomic.Bool
-	var captured CapturedTranscript
-	var ticket *OutputTicket
-	var omitted bool
-	ticket = queue.Append(OutputWrite{Label: "persist prepared message", Run: func() error {
-		if !ready.Load() {
-			return ErrOutputInFlight
+	return PersistCapturedTranscriptBatch(writer, func() []CapturedTranscriptOperation {
+		capture, present, err := CapturePreparedTranscript(writer, source, template, span, prepare)
+		if err != nil {
+			return []CapturedTranscriptOperation{{err: err}}
 		}
-		if omitted {
+		if !present {
 			return nil
 		}
-		return captured.PersistQueuedMessage(ticket, source)
-	}})[0]
-	direct := DirectTranscript(writer)
-	content := CaptureTranscript(direct, template, span).FrozenContent().Clone()
-	content.Original = slices.Clone(prepare())
-	omitted = content.Original == nil
-	captured = frozenTranscript(direct, content, span)
-	ready.Store(true)
-	err := queue.Flush()
-	if ticket.Done() {
-		return nil
-	}
-	if err == nil {
-		err = ErrOutputInFlight
-	}
-	return &PendingOutputError{Err: err}
+		return []CapturedTranscriptOperation{capture.MessageOperation(source)}
+	})
 }
 
 // OutputQueueFor returns the ordering queue of an ordered transcript writer.
@@ -274,11 +474,14 @@ func (writer orderedTranscript) persist(operation capturedOperation, source leap
 	if record.queue != writer.queue || record.operation != operation || record.source != source {
 		return false, errors.New("the ordered transcript operation, source or queue changed")
 	}
+	var err error
 	if first {
 		record.captured = captureTranscriptWithReceipt(writer.TranscriptServices, content, span, receipt)
 		record.ready.Store(true)
+		err = writer.queue.FlushAfterReady(record.ticket)
+	} else {
+		err = writer.queue.Flush()
 	}
-	err := writer.queue.Flush()
 	if record.ticket.Done() {
 		return record.broadcast.Load() && record.reported.CompareAndSwap(false, true), nil
 	}

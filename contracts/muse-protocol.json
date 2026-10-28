@@ -1,5 +1,5 @@
 {
-  "_readme": "Muse Code owns the Muse Session Protocol (MSP) vocabulary below. The Worker and browser read these shared native values. Commands and item kinds that only Go uses stay in the Muse package. Tool names that only the browser uses stay in the Muse plugin.",
+  "_readme": "Muse Code owns the Muse Session Protocol (MSP) vocabulary below. The Worker and browser read these shared native values. Commands and item kinds that only Go uses stay in the Muse package. Tool names that only the browser uses stay in the Muse plugin. LeapMux marks native view frames that it retains as diagnostic evidence after projection fails. That marker keeps the native bytes available without rendering an unproved conversation row. The parentInput table supplies native causal vocabulary shared by the worker proof and browser extraction of a delivered parent instruction.",
   "methods": {
     "ItemStarted": "item/started",
     "ItemUpdated": "item/updated",
@@ -90,11 +90,13 @@
   },
   "logEvents": {
     "ToolResultBatchCommitted": "tool_result_batch_committed",
-    "AssistantToolCallsCommitted": "assistant_tool_calls_committed"
+    "AssistantToolCallsCommitted": "assistant_tool_calls_committed",
+    "InboxItemDrained": "inbox_item_drained"
   },
   "supplementFields": {
     "NativeRecords": "nativeRecords",
-    "Unavailable": "nativeResultUnavailable"
+    "Unavailable": "nativeResultUnavailable",
+    "ViewProjectionUnavailable": "nativeViewProjectionUnavailable"
   },
   "streamKinds": {
     "Session": "session"
@@ -126,5 +128,29 @@
         }
       ]
     }
+  },
+  "parentInput": {
+    "Run": "run",
+    "SubagentControl": "subagent_control",
+    "CommandIntake": "command_intake",
+    "InputSource": "subagent_input",
+    "SendMessage": "send_message",
+    "FollowupTask": "followup_task",
+    "ParentAgent": "parent_agent",
+    "User": "user",
+    "ChildAgent": "child_agent",
+    "SpawnAccepted": "spawn_accepted",
+    "ChildSessionBound": "child_session_bound",
+    "StartAttested": "start_attested",
+    "Queue": "queue",
+    "Followup": "followup",
+    "Tool": "subagent_send_message",
+    "Accepted": "accepted",
+    "Received": "received",
+    "Steering": "subagent_steering",
+    "IntakePayloadType": "runtime.command_intake.subagent_steering.received",
+    "Event": "event",
+    "Durable": "durable",
+    "Duplicate": "duplicate"
   }
 }

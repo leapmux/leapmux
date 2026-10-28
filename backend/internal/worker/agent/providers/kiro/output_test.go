@@ -10,10 +10,39 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+func TestKiroNativeNotificationsKeepTheirSourceAndSession(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"refusal", "future_kind", contracts.KiroKindSummarizationCompleted, kiroKindHookUpdate} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+			updateType := "session_info_update"
+			metadata := map[string]any{"kind": kind}
+			if kind == "refusal" {
+				updateType = "agent_message_chunk"
+				metadata = map[string]any{"refusal": map[string]any{"category": "CYBER", "explanation": "The native refusal."}}
+			}
+			if kind == kiroKindHookUpdate {
+				metadata["hook"] = map[string]any{"status": "failed", "output": "The native hook failure."}
+			}
+			update := map[string]any{"sessionUpdate": updateType, "_meta": map[string]any{"kiro": metadata}}
+			a.HandleOutput(notification(t, "session/update", map[string]any{"sessionId": kiroTestSession, "update": update}))
+			rows := sink.PersistedNotifications()
+			require.Len(t, rows, 1)
+			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
+			assert.Equal(t, kiroTestSession, rows[0].AgentSessionID)
+			expected, err := json.Marshal(update)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expected), string(rows[0].Content))
+		})
+	}
+}
 
 // turnStart is Kiro's marker of the start of one execution.
 func turnStart(t *testing.T) []byte {
@@ -486,17 +515,29 @@ func TestKiroSessionInfoOfEveryKindIsConsumed(t *testing.T) {
 			t.Parallel()
 			a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
 
-			a.HandleOutput(infoUpdate(t, map[string]any{"kind": kind, "promptTurnSummaries": []any{map[string]any{"usage": 0.01, "unitPlural": "credits"}}}))
+			update := infoUpdateObject(map[string]any{"kind": kind, "promptTurnSummaries": []any{map[string]any{"usage": 0.01, "unitPlural": "credits"}}})
+			a.HandleOutput(sessionUpdate(t, kiroTestSession, update))
 
 			assert.Empty(t, sink.Messages(), "session info is no conversation")
 			assert.Empty(t, sink.Notifications())
+			rows := sink.PersistedNotifications()
+			if kind == "a_kind_from_a_later_build" {
+				require.Len(t, rows, 1)
+				original, err := json.Marshal(update)
+				require.NoError(t, err)
+				assert.Equal(t, original, rows[0].Content)
+				assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
+				assert.Equal(t, kiroTestSession, rows[0].AgentSessionID)
+			} else {
+				assert.Empty(t, rows)
+			}
 		})
 	}
 }
 
-// A session_info_update whose Kiro metadata LeapMux cannot read is still
-// consumed, and it states nothing: no row, no notice and no reading.
-func TestKiroUnreadableSessionInfoStatesNothing(t *testing.T) {
+// Malformed known payloads publish no reading or notification. Unreadable Kiro
+// metadata remains a native notification because its kind cannot be identified.
+func TestKiroMalformedSessionInfoPreservesUnknownMetadata(t *testing.T) {
 	t.Parallel()
 	for name, kiro := range map[string]any{
 		"metadata that is not an object": "x",
@@ -510,13 +551,25 @@ func TestKiroUnreadableSessionInfoStatesNothing(t *testing.T) {
 			t.Parallel()
 			a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
 
-			a.HandleOutput(sessionUpdate(t, kiroTestSession, map[string]any{
+			update := map[string]any{
 				"sessionUpdate": "session_info_update",
 				"_meta":         map[string]any{"kiro": kiro},
-			}))
+			}
+			a.HandleOutput(sessionUpdate(t, kiroTestSession, update))
 
 			assert.Empty(t, sink.Messages(), "session info is no conversation")
 			assert.Empty(t, sink.Notifications())
+			rows := sink.PersistedNotifications()
+			if name == "metadata that is not an object" {
+				require.Len(t, rows, 1)
+				original, err := json.Marshal(update)
+				require.NoError(t, err)
+				assert.Equal(t, original, rows[0].Content)
+				assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
+				assert.Equal(t, kiroTestSession, rows[0].AgentSessionID)
+			} else {
+				assert.Empty(t, rows)
+			}
 			_, broadcast := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
 			assert.False(t, broadcast)
 		})

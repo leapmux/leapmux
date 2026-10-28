@@ -26,6 +26,9 @@ type ampProvider struct {
 // ValidateAttachment accepts text and images and refuses the rest. See
 // validateAttachment for the whole policy.
 func (ampProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if err := (agent.ProviderDefaults{}).ValidateAttachment(attachment); err != nil {
+		return err
+	}
 	return validateAttachment(attachment)
 }
 

@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import type { AttachmentKind } from './attachments'
+import type { AttachmentKind } from '../../../src/generated/contracts/attachment-media'
 import type { MockModelProtocol, MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { expect } from '@playwright/test'
+import { ATTACHMENT_MEDIA_AUDIO_MIME, ATTACHMENT_MEDIA_DOCUMENT_MIME } from '../../../src/generated/contracts/attachment-media'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { AMP_ACTOR_PATH_PREFIX } from './ampSurface'
 import { attachmentPills, expectAttachmentOutcome, PDF_PAGE_MARKER, sendWithAttachment } from './attachments'
@@ -46,7 +47,7 @@ export function nativeUserStrings(body: unknown): string[] {
       if (!isObject(row) || row.role !== 'user' || !Array.isArray(row.parts))
         continue
       for (const part of row.parts) {
-        if (isObject(part) && (typeof part.text === 'string' || isObject(part.inlineData)))
+        if (isObject(part) && (typeof part.text === 'string' || isObject(part.inlineData) || isObject(part.inline_data)))
           parts.push(part)
       }
     }
@@ -91,6 +92,8 @@ type TypedFilePart = { location: string } & (
     mediaType: string | undefined
     /** The base64 payload. The request can carry any value here. */
     data: unknown
+    /** Google clients can use the canonical URL-safe padded alphabet. */
+    allowsURLSafeBase64?: boolean
   }
   | { defect: string }
 )
@@ -103,6 +106,10 @@ export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/w
 /** Kiro states a file type as a short format word. This maps each word that a proof reads to its media type. */
 const KIRO_FORMAT_MEDIA_TYPES: ReadonlyMap<unknown, string> = new Map([
   ['pdf', PDF_MEDIA_TYPE],
+  ['doc', ATTACHMENT_MEDIA_DOCUMENT_MIME.Doc],
+  ['docx', ATTACHMENT_MEDIA_DOCUMENT_MIME.Docx],
+  ['xls', ATTACHMENT_MEDIA_DOCUMENT_MIME.Xls],
+  ['xlsx', ATTACHMENT_MEDIA_DOCUMENT_MIME.Xlsx],
   ['png', 'image/png'],
   ['jpeg', 'image/jpeg'],
   ['gif', 'image/gif'],
@@ -271,10 +278,38 @@ function anthropicFileParts(body: unknown): TypedFilePart[] {
     block.type === 'document' ? anthropicSourcePart(location, block.source, 'media_type') : undefined, holdsAnthropicToolResult)
 }
 
-/** Chat Completions: a `file` part with `file.file_data` in a user message. */
+/** Native Chat audio serializers emit these format tokens and MIME aliases. */
+const CHAT_AUDIO_MIME_ALIASES = new Map<string, readonly [string, ...string[]]>([
+  ['wav', [ATTACHMENT_MEDIA_AUDIO_MIME.Wav, ATTACHMENT_MEDIA_AUDIO_MIME.XWav, ATTACHMENT_MEDIA_AUDIO_MIME.Wave, ATTACHMENT_MEDIA_AUDIO_MIME.VndWave]],
+  ['mp3', [ATTACHMENT_MEDIA_AUDIO_MIME.Mpeg, ATTACHMENT_MEDIA_AUDIO_MIME.Mp3]],
+  ['flac', [ATTACHMENT_MEDIA_AUDIO_MIME.Flac, ATTACHMENT_MEDIA_AUDIO_MIME.XFlac]],
+  ['m4a', [ATTACHMENT_MEDIA_AUDIO_MIME.Mp4, ATTACHMENT_MEDIA_AUDIO_MIME.M4a, ATTACHMENT_MEDIA_AUDIO_MIME.XM4a]],
+  ['ogg', [ATTACHMENT_MEDIA_AUDIO_MIME.Ogg]],
+])
+
+function chatInputAudioPart(value: unknown, location: string): TypedFilePart {
+  const audio = isObject(value) ? value : {}
+  const aliases = typeof audio.format === 'string' ? CHAT_AUDIO_MIME_ALIASES.get(audio.format) : undefined
+  if (!aliases)
+    return { location, defect: `declares unsupported input_audio.format=${String(audio.format)}` }
+  if (typeof audio.data === 'string' && audio.data.startsWith('data:')) {
+    const part = dataURIPart(location, 'input_audio.data', audio.data)
+    if ('defect' in part)
+      return part
+    if (!aliases.includes(part.mediaType ?? ''))
+      return { location, defect: `declares ${part.declaredType}, inconsistent with input_audio.format=${String(audio.format)}` }
+    return part
+  }
+  return { location, declaredType: `input_audio.format=${String(audio.format)}`, mediaType: aliases[0], data: audio.data }
+}
+
+/** Chat Completions: typed file data or input_audio in a user message. */
 function chatCompletionFileParts(body: unknown): TypedFilePart[] {
-  return currentTurnContentParts(body, 'messages', 'content', (part, location) =>
-    part.type === 'file' ? dataURIPart(location, 'file.file_data', pickObject(part, 'file')?.file_data) : undefined)
+  return currentTurnContentParts(body, 'messages', 'content', (part, location) => {
+    if (part.type === 'input_audio')
+      return chatInputAudioPart(part.input_audio, location)
+    return part.type === 'file' ? dataURIPart(location, 'file.file_data', pickObject(part, 'file')?.file_data) : undefined
+  })
 }
 
 /** OpenAI Responses: an input_file part with inline file_data in the current user turn. */
@@ -311,10 +346,15 @@ function kiroDocumentParts(body: unknown): TypedFilePart[] {
 
 /** Read a Google `inlineData` part. */
 function googleInlinePart(part: Record<string, unknown>, location: string): TypedFilePart | undefined {
-  const inline = pickObject(part, 'inlineData')
+  if (part.inlineData !== undefined && part.inline_data !== undefined)
+    return { location, defect: 'carries both inlineData and inline_data aliases' }
+  const inline = pickObject(part, 'inlineData') ?? pickObject(part, 'inline_data')
   if (!inline)
     return undefined
-  return { location, declaredType: `mimeType=${String(inline.mimeType)}`, mediaType: mediaTypeOf(inline.mimeType), data: inline.data }
+  if (inline.mimeType !== undefined && inline.mime_type !== undefined && inline.mimeType !== inline.mime_type)
+    return { location, defect: 'carries conflicting mimeType and mime_type aliases' }
+  const field = inline.mimeType === undefined && inline.mime_type !== undefined ? 'mime_type' : 'mimeType'
+  return { location, declaredType: `${field}=${String(inline[field])}`, mediaType: mediaTypeOf(inline[field]), data: inline.data, allowsURLSafeBase64: true }
 }
 
 /**
@@ -330,20 +370,38 @@ function typedFileParts(request: MockModelRequestRecord): TypedFilePart[] {
   return attachmentRequestReader(request).fileParts(request.body)
 }
 
+/** A document with an audio MIME does not create an Anthropic audio input type. */
+function typedAudioParts(request: MockModelRequestRecord): TypedFilePart[] {
+  switch (request.protocol) {
+    case 'openai-chat-completions':
+      return chatCompletionFileParts(request.body)
+    case 'google-generative-language':
+      return googleInlineParts(request.body)
+    case 'openai-responses':
+      return currentTurnContentParts(request.body, 'input', 'content', (part, location) =>
+        part.type === 'input_audio' ? dataURIPart(location, 'audio_url', part.audio_url) : undefined)
+    default:
+      return []
+  }
+}
+
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
 /** Decode the payload of a typed part, or state why it is not canonical base64 bytes. */
-function decodeCanonicalBase64(data: unknown): { bytes: Buffer } | { defect: string } {
+function decodeCanonicalBase64(data: unknown, allowsURLSafeBase64 = false): { bytes: Buffer } | { defect: string } {
   if (typeof data !== 'string')
     return { defect: `has ${describeValue(data)} in place of base64 bytes` }
   if (data === '')
     return { defect: 'has empty data' }
   // Buffer.from skips characters outside the alphabet and accepts absent padding
-  // and the URL-safe alphabet. Only canonical base64 encodes back to itself.
+  // and the URL-safe alphabet. Require a canonical representation. Only Google
+  // parts permit the URL-safe padded spelling their native clients emit.
   const bytes = Buffer.from(data, 'base64')
-  if (bytes.toString('base64') !== data)
+  const canonical = bytes.toString('base64')
+  const canonicalURLSafe = allowsURLSafeBase64 ? canonical.replaceAll('+', '-').replaceAll('/', '_') : undefined
+  if (canonical !== data && canonicalURLSafe !== data)
     return { defect: 'has data that is not canonical base64' }
   return { bytes }
 }
@@ -367,16 +425,16 @@ function filePartDefect(part: TypedFilePart, source: Buffer, expected: FileTypeE
     return part.defect
   if (!expected.accepts(part.mediaType))
     return `declares ${part.declaredType}, not ${expected.label}`
-  const decoded = decodeCanonicalBase64(part.data)
+  const decoded = decodeCanonicalBase64(part.data, part.allowsURLSafeBase64)
   if ('defect' in decoded)
     return decoded.defect
   return sourceBytesDefect(decoded.bytes, source)
 }
 
 /** Require the exact source file in a typed file part of the current user turn, and state each part that came close. */
-function expectTypedFilePart(request: MockModelRequestRecord, source: Buffer, expected: FileTypeExpectation): void {
+function expectTypedFilePart(request: MockModelRequestRecord, source: Buffer, expected: FileTypeExpectation, parts: readonly TypedFilePart[] = typedFileParts(request)): void {
   const defects: string[] = []
-  for (const part of typedFileParts(request)) {
+  for (const part of parts) {
     const defect = filePartDefect(part, source, expected)
     if (defect === undefined)
       return
@@ -415,17 +473,29 @@ export type DeclaredMediaType = string | RegExp
  * The complete base64 inside text or a data URI inside text does not count.
  */
 export function expectNativeFilePart(request: MockModelRequestRecord, source: Buffer, mediaType: DeclaredMediaType): void {
+  expectTypedFilePart(request, source, fileTypeExpectation(mediaType))
+}
+
+/** Require actual audio bytes in a typed media part of the current user turn. */
+export function expectNativeAudioPart(request: MockModelRequestRecord, source: Buffer, mediaType: DeclaredMediaType): void {
+  const expected = fileTypeExpectation(mediaType)
+  expectTypedFilePart(request, source, {
+    label: `audio ${expected.label}`,
+    accepts: declared => declared?.startsWith('audio/') === true && expected.accepts(declared),
+  }, typedAudioParts(request))
+}
+
+function fileTypeExpectation(mediaType: DeclaredMediaType): FileTypeExpectation {
   if (typeof mediaType === 'string') {
     if (mediaType === '')
       throw new Error('a file part proof needs the media type that the part declares')
-    expectTypedFilePart(request, source, { label: mediaType, accepts: declared => declared === mediaType })
-    return
+    return { label: mediaType, accepts: declared => declared === mediaType }
   }
   // A global or sticky pattern keeps its last match position between calls, so one part could change the result
   // for the next part.
   if (mediaType.global || mediaType.sticky)
     throw new Error('a file part proof needs a media type pattern without the g or y flag')
-  expectTypedFilePart(request, source, { label: String(mediaType), accepts: declared => declared !== undefined && mediaType.test(declared) })
+  return { label: String(mediaType), accepts: declared => declared !== undefined && mediaType.test(declared) }
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
@@ -586,7 +656,7 @@ async function transcodedImagePartDefect(part: TypedFilePart, mediaType: ImageMe
     return part.defect
   if (part.mediaType !== mediaType)
     return `declares ${part.declaredType}, not ${mediaType}`
-  const decoded = decodeCanonicalBase64(part.data)
+  const decoded = decodeCanonicalBase64(part.data, part.allowsURLSafeBase64)
   if ('defect' in decoded)
     return decoded.defect
   const encodedType = encodedImageType(decoded.bytes)
@@ -594,7 +664,7 @@ async function transcodedImagePartDefect(part: TypedFilePart, mediaType: ImageMe
     return `holds ${encodedType === undefined ? 'bytes with no known image signature' : `${encodedType} bytes`}, not the ${mediaType} that it declares`
   let pixels: number[][]
   try {
-    pixels = await decodeQuadrants(`data:${mediaType};base64,${part.data}`)
+    pixels = await decodeQuadrants(`data:${mediaType};base64,${decoded.bytes.toString('base64')}`)
   }
   catch (error) {
     return `fails to decode: ${error instanceof Error ? error.message : String(error)}`
@@ -717,28 +787,28 @@ export interface AttachmentHandoff {
    */
   transcodedImageType?: ImageMediaType
   /**
-   * For a binary file: the media type that its typed file part declares (see
-   * `expectNativeFilePart`). A binary proof needs it, because only a typed part
+   * For audio or a binary file: the media type that its typed part declares (see
+   * `expectNativeFilePart`). A media proof needs it, because only a typed part
    * gives the model a file.
    */
-  binaryMediaType?: DeclaredMediaType
+  mediaType?: DeclaredMediaType
 }
 
-/** Return the media type of a binary proof, or refuse a binary proof without one. */
-function binaryMediaType(handoff: AttachmentHandoff): DeclaredMediaType {
-  if (handoff.binaryMediaType === undefined)
-    throw new Error('a binary attachment proof needs the media type that its typed file part declares')
-  return handoff.binaryMediaType
+/** Return the required media type for an audio or binary proof. */
+function requireAttachmentMediaType(handoff: AttachmentHandoff): DeclaredMediaType {
+  if (handoff.mediaType === undefined)
+    throw new Error('an audio or binary attachment proof needs the media type that its typed file part declares')
+  return handoff.mediaType
 }
 
-/** Refuse a handoff field that does not apply to the attachment kind, and a binary proof without its media type. */
+/** Refuse a field that does not apply to the kind, or a media proof without its type. */
 function validateHandoff(kind: AttachmentKind, handoff: AttachmentHandoff): void {
   if (handoff.transcodedImageType !== undefined && kind !== 'image')
     throw new Error(`a transcoded image type applies to an image attachment, not to a ${kind} attachment`)
-  if (handoff.binaryMediaType !== undefined && kind !== 'binary')
-    throw new Error(`a binary media type applies to a binary attachment, not to a ${kind} attachment`)
-  if (kind === 'binary')
-    binaryMediaType(handoff)
+  if (handoff.mediaType !== undefined && kind !== 'binary' && kind !== 'audio')
+    throw new Error(`a media type applies to an audio or binary attachment, not to a ${kind} attachment`)
+  if (kind === 'binary' || kind === 'audio')
+    requireAttachmentMediaType(handoff)
 }
 
 /** How `expectNativeAttachmentProof` selects the request and reads the handoff. */
@@ -784,7 +854,10 @@ export async function expectAttachmentInRequest(page: Page, request: MockModelRe
       await expectNativeImagePart(request, source, uri => imageQuadrants(page, uri), handoff.transcodedImageType)
       return
     case 'binary':
-      expectNativeFilePart(request, source, binaryMediaType(handoff))
+      expectNativeFilePart(request, source, requireAttachmentMediaType(handoff))
+      return
+    case 'audio':
+      expectNativeAudioPart(request, source, requireAttachmentMediaType(handoff))
       return
     case 'text': {
       // Empty bytes satisfy every substring check. A provider must prove its empty-file descriptor explicitly.
@@ -835,8 +908,8 @@ export async function exerciseAttachmentDelivery(
   options: AttachmentDeliveryOptions = {},
 ): Promise<MockModelRequestRecord> {
   const { protocol, proof, fixturePath, attachmentOnly = false, ...handoff } = options
-  if (proof !== undefined && (handoff.transcodedImageType !== undefined || handoff.binaryMediaType !== undefined))
-    throw new Error('a custom attachment proof replaces the typed-part proof, so it takes no transcoded image type and no binary media type')
+  if (proof !== undefined && (handoff.transcodedImageType !== undefined || handoff.mediaType !== undefined))
+    throw new Error('a custom attachment proof replaces the typed-part proof, so it takes no transcoded image type or media type')
   if (proof === undefined)
     validateHandoff(kind, handoff)
   const { page, modelScript } = context

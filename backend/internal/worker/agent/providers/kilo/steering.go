@@ -23,11 +23,11 @@ type kiloSteerState struct {
 // response clears the text buffer and no callback persists the later answer.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.steers.mu.Lock()
-	if !a.PromptActive() {
+	_, active, sessionID, _ := a.SteerTarget()
+	if !active {
 		a.steers.mu.Unlock()
 		return agent.ErrNoActiveTurn
 	}
-	sessionID := a.CurrentSessionID()
 	if a.steers.pending == 0 || a.steers.sessionID != sessionID {
 		a.steers.sessionID = sessionID
 		a.steers.pending = 0
@@ -37,7 +37,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	a.steers.pending++
 	a.steers.mu.Unlock()
 
-	err := a.SendPromptDetached(content, attachments, func(response json.RawMessage, err error) {
+	err := a.SendPromptDetached(sessionID, content, attachments, func(response json.RawMessage, err error) {
 		a.finishKiloSteer(sessionID, response, err, true)
 	})
 	if err != nil {

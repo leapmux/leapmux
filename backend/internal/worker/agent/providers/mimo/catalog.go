@@ -27,10 +27,15 @@ type mimoProviderInfo struct {
 
 // mimoModelInfo is one model of GET /config/providers.
 type mimoModelInfo struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Limit  struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	Capabilities struct {
+		Input struct {
+			Audio bool `json:"audio"`
+		} `json:"input"`
+	} `json:"capabilities"`
+	Limit struct {
 		Context int64 `json:"context"`
 	} `json:"limit"`
 	// Variants maps a reasoning variant to the request options it sets. The keys
@@ -107,12 +112,13 @@ func buildMiMoCatalog(providers mimoConfigProviders, config mimoConfig, agents [
 				continue
 			}
 			models = append(models, &agent.ModelInfo{
-				Id:               id,
-				DisplayName:      mimoModelDisplayName(provider, model, modelID),
-				DefaultEffort:    mimoDefaultEffort(model.Variants),
-				SupportedEfforts: mimoEfforts(model.Variants),
-				ContextWindow:    model.Limit.Context,
-				Hidden:           model.Status == mimoModelStatusDeprecated,
+				Id:                 id,
+				DisplayName:        mimoModelDisplayName(provider, model, modelID),
+				DefaultEffort:      mimoDefaultEffort(model.Variants),
+				SupportedEfforts:   mimoEfforts(model.Variants),
+				ContextWindow:      model.Limit.Context,
+				Hidden:             model.Status == mimoModelStatusDeprecated,
+				SupportsAudioInput: model.Capabilities.Input.Audio,
 			})
 		}
 		slices.SortFunc(models, func(a, b *agent.ModelInfo) int {

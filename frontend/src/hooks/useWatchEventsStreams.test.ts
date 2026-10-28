@@ -1,10 +1,13 @@
+import type { Mock } from 'vitest'
 import type { UseWatchEventsStreamsOpts } from './useWatchEventsStreams'
-import type { WatchEventsRequest, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { WatchPlan } from './watchPlan'
+import type { WatchEventsHandle } from '~/api/workerRpc'
+import type { WatchAgentEntry, WatchEventsRequest, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { batch, createMemo, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema, TabType, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema, TabType, WatchAgentEntrySchema, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -27,7 +30,7 @@ const { showWarnToastWithLoggedCause } = await import('~/components/common/Toast
 const { useWatchEventsStreams } = await import('./useWatchEventsStreams')
 
 interface FakeHandle {
-  update: ReturnType<typeof vi.fn>
+  update: Mock<WatchEventsHandle['update']>
   close: ReturnType<typeof vi.fn>
   onEvent: (cb: (resp: WatchEventsResponse) => void) => void
   onEnd: (cb: () => void) => void
@@ -36,6 +39,14 @@ interface FakeHandle {
   _end: () => void
   _error: (err: Error) => void
   _requestId: () => bigint
+}
+
+function watchAgentState(entry: Pick<WatchAgentEntry, 'agentId' | 'mode' | 'replayId'>) {
+  return create(WatchAgentStateSchema, {
+    agentId: entry.agentId,
+    mode: entry.mode,
+    replayId: entry.replayId,
+  })
 }
 
 function makeHandle(initialId = 0n, opening?: Parameters<typeof watchEventsViaChannel>[1]): FakeHandle {
@@ -69,7 +80,7 @@ function makeHandle(initialId = 0n, opening?: Parameters<typeof watchEventsViaCh
             replayId: entry.replayId,
           }]))
         }
-        onEvent?.(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: { ...ack, agentStates: [...registered.values()].map(state => create(WatchAgentStateSchema, state)) } } }))
+        onEvent?.(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: { ...ack, agentStates: [...registered.values()].map(watchAgentState) } } }))
         return
       }
       onEvent?.(resp)
@@ -115,7 +126,7 @@ describe('useWatchEventsStreams', () => {
     await Promise.resolve()
   }
 
-  function mount(plansFn: () => Map<string, { agents: never[], terminals: never[], terminalResync: Set<string> }>, opts: Partial<Pick<UseWatchEventsStreamsOpts, 'onEvent' | 'onWorkerOnline' | 'onPromoted' | 'onReplayRequested' | 'onReplayRetired'>> = {}) {
+  function mount(plansFn: () => Map<string, WatchPlan>, opts: Partial<Pick<UseWatchEventsStreamsOpts, 'onEvent' | 'onWorkerOnline' | 'onPromoted' | 'onReplayRequested' | 'onReplayRetired'>> = {}) {
     return createRoot((dispose) => {
       disposeRoot = dispose
       const harness = installTestBridge({ workspaceId: WS })
@@ -133,6 +144,215 @@ describe('useWatchEventsStreams', () => {
       return { harness, stores, dispose }
     })
   }
+
+  function identityPlans(identity: string, cursorSeq = 7n): Map<string, WatchPlan> {
+    return new Map([['w1', {
+      agents: [
+        create(WatchAgentEntrySchema, {
+          agentId: 'child-1',
+          mode: WatchMode.FULL,
+          cursorSeq,
+          windowTailSeq: cursorSeq - 1n,
+          replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+        }),
+        create(WatchAgentEntrySchema, { agentId: 'sibling-1', mode: WatchMode.FULL }),
+        create(WatchAgentEntrySchema, { agentId: 'root-1', mode: WatchMode.NOTIFY }),
+      ],
+      terminals: [],
+      terminalResync: new Set<string>(),
+      agentReplayIdentities: new Map([
+        ['child-1', identity],
+        ['sibling-1', 'sibling-root'],
+        ['root-1', 'unused-notify-context'],
+      ]),
+    }]])
+  }
+
+  /** Decode the exact recorded transport argument, including its generated defaults. */
+  function recordedRequest(handle?: FakeHandle, updateIndex = 0): WatchEventsRequest {
+    const request = handle
+      ? handle.update.mock.calls[updateIndex]?.[0]
+      : vi.mocked(watchEventsViaChannel).mock.calls.at(-1)?.[1]
+    if (!request)
+      throw new Error('The test requires an actual transmitted watch request.')
+    return fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, request)))
+  }
+
+  function completeChildReplay(handle: FakeHandle, replayId: bigint): void {
+    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: {
+      agentId: 'child-1',
+      replay: true,
+      replayAgentId: 'child-1',
+      replayId,
+      event: { case: 'catchUpComplete', value: { latestSeq: 0n } },
+    } } }))
+  }
+
+  it.each([false, true])('replaces changed FULL authority before transport with completed=%s', async (completed) => {
+    const order: string[] = []
+    const active = new Map<string, bigint>()
+    const requested = vi.fn<NonNullable<UseWatchEventsStreamsOpts['onReplayRequested']>>((_workerId, replayId, entries) => {
+      for (const entry of entries)
+        active.set(entry.agentId, replayId)
+      order.push(`requested:${entries.map(entry => entry.agentId).join(',')}`)
+    })
+    const retired = vi.fn<NonNullable<UseWatchEventsStreamsOpts['onReplayRetired']>>((_workerId, replayId, agentIds) => {
+      for (const agentId of agentIds) {
+        if (active.get(agentId) === replayId)
+          active.delete(agentId)
+      }
+      order.push(`retired:${agentIds.join(',')}`)
+    })
+    const [context, setContext] = createSignal({ identity: 'before', cursor: 7n })
+    mount(() => identityPlans(context().identity, context().cursor), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    const opening = recordedRequest()
+    const handle = handles[0]!
+    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+      updateId: opening.updateId,
+      agentStates: opening.agents.map(watchAgentState),
+    } } }))
+    if (completed)
+      completeChildReplay(handle, opening.updateId)
+    order.length = 0
+    const update = handle.update.getMockImplementation()
+    handle.update.mockImplementation((request: Parameters<typeof watchEventsViaChannel>[1]) => {
+      expect(active.get('child-1')).toBe(request.updateId)
+      expect(active.get('sibling-1')).toBe(opening.updateId)
+      expect(request).not.toHaveProperty('agentReplayIdentities')
+      order.push('transport')
+      update?.(request)
+    })
+    setContext({ identity: 'after', cursor: 9n })
+    await flush()
+    const replacement = recordedRequest(handle)
+    expect(order).toEqual(['retired:child-1', 'requested:child-1', 'transport'])
+    expect(retired).toHaveBeenCalledExactlyOnceWith('w1', opening.updateId, ['child-1'], 'replaced')
+    expect(replacement.agents.find(entry => entry.agentId === 'child-1')).toMatchObject({ replayId: replacement.updateId, cursorSeq: 9n, windowTailSeq: 8n })
+    expect(replacement.agents.find(entry => entry.agentId === 'sibling-1')?.replayId).toBe(opening.updateId)
+    expect(replacement.agents.find(entry => entry.agentId === 'root-1')).toMatchObject({ mode: WatchMode.NOTIFY, replayId: 0n })
+    expect(replacement.updateId).toBeGreaterThan(opening.updateId)
+    expect(requested.mock.calls.at(-1)?.[3]).toEqual(new Map([['child-1', 'after'], ['sibling-1', 'sibling-root']]))
+    expect(vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1]).not.toHaveProperty('agentReplayIdentities')
+    setContext({ identity: 'after', cursor: 99n })
+    await flush()
+    expect(handle.update).toHaveBeenCalledTimes(1)
+    expect(requested).toHaveBeenCalledTimes(2)
+  })
+
+  it('coalesces pending authority changes while preserving the transmitted identity snapshot', async () => {
+    let finishOpen: ((handle: FakeHandle) => void) | undefined
+    vi.mocked(watchEventsViaChannel).mockImplementationOnce(() => new Promise<Awaited<ReturnType<typeof watchEventsViaChannel>>>((resolve) => {
+      finishOpen = handle => resolve(handle as never)
+    }))
+    const requested = vi.fn<NonNullable<UseWatchEventsStreamsOpts['onReplayRequested']>>()
+    const retired = vi.fn()
+    const [identity, setIdentity] = createSignal('before')
+    mount(() => identityPlans(identity()), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    const opening = recordedRequest()
+    const captured = requested.mock.calls[0]?.[3]
+    expect(captured?.get('child-1')).toBe('before')
+    setIdentity('intermediate')
+    setIdentity('after')
+    await flush()
+    expect(requested).toHaveBeenCalledTimes(1)
+    expect(captured?.get('child-1')).toBe('before')
+    if (!finishOpen)
+      throw new Error('The test requires its pending stream opening.')
+    const handle = makeHandle(opening.updateId, opening)
+    handles.push(handle)
+    finishOpen(handle)
+    await flush()
+    await flush()
+    const replacement = recordedRequest(handle)
+    expect(handle.update).toHaveBeenCalledTimes(1)
+    expect(requested).toHaveBeenCalledTimes(2)
+    expect(requested.mock.calls[1]?.[3].get('child-1')).toBe('after')
+    expect(captured?.get('child-1')).toBe('before')
+    expect(replacement.agents.find(entry => entry.agentId === 'child-1')?.replayId).toBe(replacement.updateId)
+    expect(replacement.agents.find(entry => entry.agentId === 'sibling-1')?.replayId).toBe(opening.updateId)
+    expect(retired).toHaveBeenCalledExactlyOnceWith('w1', opening.updateId, ['child-1'], 'replaced')
+  })
+
+  it('copies authority before its source map changes in the replay callback', async () => {
+    const identities = new Map([['child-1', 'before'], ['sibling-1', 'sibling-root']])
+    const requested = vi.fn<NonNullable<UseWatchEventsStreamsOpts['onReplayRequested']>>((_workerId, _replayId, _entries, captured) => {
+      identities.set('child-1', 'changed-after-capture')
+      expect(captured.get('child-1')).toBe('before')
+    })
+    mount(() => new Map([['w1', { ...identityPlans('before').get('w1')!, agentReplayIdentities: identities }]]), { onReplayRequested: requested })
+    await flush()
+    expect(requested).toHaveBeenCalledOnce()
+    expect(requested.mock.calls[0]?.[3].get('child-1')).toBe('before')
+    expect(identities.get('child-1')).toBe('changed-after-capture')
+    expect(recordedRequest().agents[0]?.replayId).toBeGreaterThan(0n)
+  })
+
+  it('ignores an old acknowledgment and completion before a replacement refusal', async () => {
+    const requested = vi.fn()
+    const retired = vi.fn()
+    const promoted = vi.fn()
+    const [identity, setIdentity] = createSignal('before')
+    mount(() => identityPlans(identity()), { onReplayRequested: requested, onReplayRetired: retired, onPromoted: promoted })
+    await flush()
+    const handle = handles[0]!
+    const opening = recordedRequest()
+    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+      updateId: opening.updateId,
+      agentStates: opening.agents.map(watchAgentState),
+    } } }))
+    promoted.mockClear()
+    setIdentity('after')
+    await flush()
+    const replacement = recordedRequest(handle)
+    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+      updateId: opening.updateId,
+      agentStates: opening.agents.map(watchAgentState),
+    } } }))
+    expect(promoted).not.toHaveBeenCalled()
+    completeChildReplay(handle, opening.updateId)
+    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+      updateId: replacement.updateId,
+      rejectedAgents: [{ entityId: 'child-1', reason: WatchRejectionReason.NOT_FOUND }],
+      agentStates: replacement.agents.filter(entry => entry.agentId !== 'child-1').map(watchAgentState),
+    } } }))
+    expect(retired.mock.calls).toEqual([
+      ['w1', opening.updateId, ['child-1'], 'replaced'],
+      ['w1', replacement.updateId, ['child-1'], 'rejected'],
+    ])
+    expect(promoted).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(60_000)
+    await flush()
+    expect(handle.update).toHaveBeenCalledTimes(1)
+    expect(requested).toHaveBeenCalledTimes(2)
+  })
+
+  it('retires a refused replacement write and preserves an unrelated sibling receipt', async () => {
+    const requested = vi.fn()
+    const retired = vi.fn()
+    const [identity, setIdentity] = createSignal('before')
+    mount(() => identityPlans(identity()), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    const opening = recordedRequest()
+    const handle = handles[0]!
+    handle.update.mockImplementationOnce(() => {
+      throw new Error('The replacement write was refused.')
+    })
+    setIdentity('after')
+    await flush()
+    await flush()
+    expect(requested).toHaveBeenCalledTimes(3)
+    const refusedId = requested.mock.calls[1]?.[1]
+    const acceptedId = requested.mock.calls[2]?.[1]
+    expect(acceptedId).toBeGreaterThan(refusedId)
+    expect(retired.mock.calls).toEqual([
+      ['w1', opening.updateId, ['child-1'], 'replaced'],
+      ['w1', refusedId, ['child-1'], 'rejected'],
+    ])
+    expect(recordedRequest(handle, 1).agents.find(entry => entry.agentId === 'sibling-1')?.replayId).toBe(opening.updateId)
+    expect(requested.mock.calls[2]?.[2]).toEqual([expect.objectContaining({ agentId: 'child-1', replayId: acceptedId })])
+  })
 
   it('opens one stream per worker', async () => {
     const { harness } = mount(() => new Map([
@@ -164,7 +384,7 @@ describe('useWatchEventsStreams', () => {
     if (!request || !entry)
       throw new Error('The opening request must contain its agent entry.')
     expect(entry.cursorSeq).toBe(17n)
-    expect(requested).toHaveBeenCalledWith('w1', request.updateId, [expect.objectContaining({ agentId: 'a1', cursorSeq: entry.cursorSeq, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE })])
+    expect(requested).toHaveBeenCalledWith('w1', request.updateId, [expect.objectContaining({ agentId: 'a1', cursorSeq: entry.cursorSeq, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE })], new Map())
   })
 
   it('requests promotion replay before the update reaches the transport', async () => {
@@ -447,7 +667,7 @@ describe('useWatchEventsStreams', () => {
     setIncludeOther(false)
     await flush()
     expect(requested).toHaveBeenCalledTimes(2)
-    expect(requested).toHaveBeenLastCalledWith('w1', handles[0]!._requestId(), [expect.objectContaining({ agentId: 'a1' })])
+    expect(requested).toHaveBeenLastCalledWith('w1', handles[0]!._requestId(), [expect.objectContaining({ agentId: 'a1' })], new Map())
   })
 
   it.each([
@@ -1073,7 +1293,7 @@ describe('useWatchEventsStreams', () => {
     })
     await flush()
     expect(handles[0]!.update).toHaveBeenCalledTimes(1)
-    expect(handles[0]!.update.mock.calls[0]![0].agents[0].mode).toBe(WatchMode.FULL)
+    expect(recordedRequest(handles[0]).agents[0]?.mode).toBe(WatchMode.FULL)
   })
 
   it('cancels a worker stream when its last tab leaves the plan', async () => {

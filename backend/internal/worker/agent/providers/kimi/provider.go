@@ -86,7 +86,7 @@ func (kimiProvider) ResolveControlResponse(ctx agent.ControlResponseContext) age
 // and a binary file are refused. The browser plugin's attachment policy states
 // the same rule.
 func (kimiProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment(kimiAttachmentLabel, attachment)
+	return providerkit.ValidateTextAndImageAttachment(kimiAttachmentLabel, attachment)
 }
 
 // ChildCapabilities.AcceptsMessages is true: a subagent's tab sends it messages, which the

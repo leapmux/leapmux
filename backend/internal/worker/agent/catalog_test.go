@@ -45,3 +45,11 @@ func TestFindAvailableModel(t *testing.T) {
 	assert.Nil(t, FindAvailableModel([]*ModelInfo{nil, nil}, "x"), "all-nil slice does not panic")
 	assert.Nil(t, FindAvailableModel(nil, "x"))
 }
+
+func TestModelInfosEqualIncludesAudioInput(t *testing.T) {
+	t.Parallel()
+	before := []*ModelInfo{{Id: "model-a"}}
+	after := []*ModelInfo{{Id: "model-a", SupportsAudioInput: true}}
+	assert.False(t, ModelInfosEqual(before, after))
+	assert.True(t, ModelInfosEqual(after, []*ModelInfo{{Id: "model-a", SupportsAudioInput: true}}))
+}

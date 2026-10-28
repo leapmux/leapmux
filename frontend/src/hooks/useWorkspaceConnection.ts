@@ -333,6 +333,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Each message changes it. That change must not send another watch request.
         // The worker uses it only to decide whether replay exceeds its limit.
         agentWindowTailSeq: agentId => untrack(() => chatStore.getLastSeq(agentId)),
+        agentReplayIdentity: agentId => replayRootFor(agentId, view.getAgentTab(agentId)?.workerId ?? '') ?? '',
         terminalAfterOffset: terminalId => untrack(() => metadata.get(terminalId)?.lastOffset ?? 0),
         // Track the resync flag so each set or clear sends the updated plan.
         // Do not track lastOffset, which changes for each pseudoterminal output chunk.
@@ -384,10 +385,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       || !agentSessionStore.acceptsReplay(origin, agentEvent.replayId)) {
       return undefined
     }
-    if (view.getAgentTab(origin)?.workerId !== streamWorkerId
-      || replayRootFor(origin, streamWorkerId) !== requested.rootAgentId) {
+    if (view.getAgentTab(origin)?.workerId !== streamWorkerId)
       return undefined
-    }
     const destination = view.getAgentTab(agentEvent.agentId)
     if (destination && destination.workerId !== streamWorkerId)
       return undefined
@@ -395,7 +394,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       return undefined
     if (agentEvent.agentId !== origin) {
       const kind = agentEvent.event.case
-      if ((kind !== 'goalChanged' && kind !== 'backgroundTasksChanged')
+      if (replayRootFor(origin, streamWorkerId) !== requested.rootAgentId
+        || (kind !== 'goalChanged' && kind !== 'backgroundTasksChanged')
         || requested.rootAgentId === undefined || agentEvent.agentId !== requested.rootAgentId) {
         return undefined
       }
@@ -690,13 +690,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
     },
     onWorkerOnline: setWorkerOnline,
-    onReplayRequested: (workerId, replayId, entries) => {
+    onReplayRequested: (workerId, replayId, entries, identities) => {
       batch(() => {
         for (const entry of entries) {
           agentSessionStore.beginReplay(entry.agentId, replayId)
           resumeTails.set(entry.agentId, {
             workerId,
-            rootAgentId: replayRootFor(entry.agentId, workerId),
+            rootAgentId: identities.get(entry.agentId) || undefined,
             replayId,
             cursorSeq: entry.cursorSeq,
             liveClaims: new Set<ReplayTopic>(),

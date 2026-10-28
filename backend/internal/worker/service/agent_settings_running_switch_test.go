@@ -195,7 +195,7 @@ func runningSwitchFixture(t *testing.T, provider leapmuxv1.AgentProvider, relaun
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", AgentProvider: provider, WorkingDir: t.TempDir(), Options: options,
-	}, svc.Output.NewSink("agent-1", provider), starter.start)
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", provider), starter.start)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 	svc.startAgentFn = startWith(svc.Agents, starter.start)

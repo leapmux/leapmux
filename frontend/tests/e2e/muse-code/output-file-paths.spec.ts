@@ -44,7 +44,18 @@ function museNativePreview(snapshot: NativeMessageSnapshot, callId: string): str
     .filter((item): item is Record<string, unknown> => item?.callId === callId)
     .map(item => pickString(item, 'visibleOutput'))
     .filter(text => text !== '')
-  return previews.at(-1) ?? ''
+  const preview = previews.at(-1) ?? ''
+  // Current Muse stores a JSON execution envelope in visibleOutput. Copy exposes
+  // its output text, while earlier native results contain plain preview text.
+  try {
+    const value: unknown = JSON.parse(preview)
+    if (isObject(value) && typeof value.output === 'string')
+      return value.output
+  }
+  catch {
+    // A native plain-text preview needs no decoding.
+  }
+  return preview
 }
 
 museTest('stores the native output path beside its original preview', async ({ native }, testInfo: TestInfo) => {

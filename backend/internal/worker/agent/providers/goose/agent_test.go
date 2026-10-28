@@ -542,8 +542,7 @@ func TestGoosePlatformEventLineStatesWhatItCan(t *testing.T) {
 	}
 }
 
-// The type this hook does NOT claim stays with the path that owns it:
-// `live_output` reaches the byte counter and the tail. A `message` without
+// An unknown notification reaches the shared dispatcher. A message without
 // readable string data is claimed and dropped, because its level alone states
 // nothing a reader can use.
 func TestGooseToolNotificationLeavesTheUnownedTypeAlone(t *testing.T) {
@@ -553,7 +552,6 @@ func TestGooseToolNotificationLeavesTheUnownedTypeAlone(t *testing.T) {
 	a := &Agent{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	for _, meta := range []string{
-		`{"toolNotification":{"type":"live_output","params":{"sequence":1,"chunks":[{"output":"x"}]}}}`,
 		`{"toolNotification":{"type":"a_type_from_a_later_release","params":{}}}`,
 		`{}`,
 	} {
@@ -565,4 +563,20 @@ func TestGooseToolNotificationLeavesTheUnownedTypeAlone(t *testing.T) {
 		ToolCallID: "tool-1", Meta: json.RawMessage(`{"toolNotification":{"type":"message","params":{"level":"info","logger":"goose"}}}`),
 	}), "a log line without data is claimed and dropped")
 	assert.Empty(t, sink.Messages())
+}
+
+func TestStartGooseRejectsInvalidNativeCommands(t *testing.T) {
+	installFakeGooseCLI(t, "new")
+	for _, value := range []string{"bogus", "0", "-1", "TRUE"} {
+		provider, err := Start(context.Background(), agent.Options{
+			AgentID:    "invalid-native-commands",
+			WorkingDir: t.TempDir(),
+			Shell:      testutil.TestShell(),
+			Options:    map[string]string{OptionNativeCommands: value},
+		}, agent.NewProviderServices(&agenttest.Sink{}))
+		if provider != nil {
+			provider.Stop()
+		}
+		require.ErrorContains(t, err, "must be true or false")
+	}
 }

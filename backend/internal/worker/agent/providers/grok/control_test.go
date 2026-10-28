@@ -287,7 +287,7 @@ func TestGrokRefusesADialogOfARetiredSession(t *testing.T) {
 func TestGrokResolutionInAnotherSessionLeavesTheCardOpen(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newGrokAgent(t, agent.Options{}, nil)
-	a.AttachChildSession("child-session", "call_spawn")
+	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_spawn"})
 	permission := func(id int, sessionID string) []byte {
 		return frame(t, map[string]any{
 			"id": id, "method": "session/request_permission",

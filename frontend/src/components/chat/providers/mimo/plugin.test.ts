@@ -22,10 +22,9 @@ describe('mimo plugin metadata', () => {
     expect(plugin).toBeDefined()
   })
 
-  // The worker's ValidateAttachment accepts the same three kinds. A file of another
-  // type would reach the model's API unconverted, so both sides refuse it.
-  it('advertises text, image and PDF attachments, and no binary', () => {
-    expect(plugin.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, binary: false })
+  // The worker validates these native audio formats before its live model check.
+  it('advertises native audio formats alongside text, image and PDF attachments', () => {
+    expect(plugin.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, audio: ['audio/wav', 'audio/x-wav', 'audio/mp3', 'audio/mpeg', 'audio/flac', 'audio/x-flac', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/ogg'], binary: false })
   })
 
   it('carries its primary agents on the permission-mode channel', () => {

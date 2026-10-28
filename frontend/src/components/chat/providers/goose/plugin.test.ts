@@ -11,7 +11,7 @@ const MODE_SMART_APPROVE = 'smart_approve'
 describe('goose provider', () => {
   const plugin = providerFor(AgentProvider.GOOSE)!
 
-  describeACPProviderBasics(AgentProvider.GOOSE, { text: true, image: true, pdf: false, binary: false })
+  describeACPProviderBasics(AgentProvider.GOOSE, { text: true, image: true, pdf: false, audio: false, binary: false })
 
   it('maps smart and bypass permissions to Goose modes', () => {
     expect(plugin?.controls?.permissionPresets).toEqual({
@@ -48,7 +48,7 @@ describe('goose provider', () => {
 })
 
 describe('native output without a filesystem pointer', () => {
-  it('keeps a valid native result and omits the output path hook', () => {
+  it('keeps a valid native result without deriving an output path', () => {
     const frame = {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'native-call',
@@ -87,6 +87,6 @@ describe('native output without a filesystem pointer', () => {
     expect(call?.outputFilePaths).toBeUndefined()
     const registered = providerFor(AgentProvider.GOOSE)
     expect(registered).toBeDefined()
-    expect(registered?.transcript.outputFilePaths).toBeUndefined()
+    expect(registered?.transcript.outputFilePaths).toBeTypeOf('function')
   })
 })

@@ -250,7 +250,7 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	fallback, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 
-	sink := svc.Output.NewSink(agentID, provider)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, provider)
 	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:       agentID,
 		AgentProvider: provider,

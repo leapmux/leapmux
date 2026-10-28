@@ -41,18 +41,18 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	// a previous worker process would have left them at a crash. Two active
 	// rows (pending + running) plus one already-finished row to confirm the
 	// sweep is scoped to active rows only.
-	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-pending", Seq: 1,
 		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "pending row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending),
-	}))
-	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
+	})
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-running", Seq: 2,
 		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindShell), Title: "running row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
-	}))
-	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
+	})
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-done", Seq: 3,
 		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "already done", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
-	}))
+	})
 
 	// The boot-time sweep. RestoreState logs but does not return the
 	// affected-row count, so the assertion is against the persisted rows.
@@ -92,7 +92,7 @@ func TestRestoreStatePreservesNativeMessagesForEachInterruptedChild(t *testing.T
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// Only the two active children receive an interrupted registry status.
 	liveID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
