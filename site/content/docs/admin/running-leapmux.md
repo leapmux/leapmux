@@ -153,7 +153,7 @@ leapmux control admin settings set session_duration_seconds 300   # the 5-minute
 
 ## Running under Docker
 
-Pre-built multi-arch images are published to `ghcr.io/leapmux/leapmux` and supervised by [s6-overlay](https://github.com/just-containers/s6-overlay). The single environment variable `LEAPMUX_MODE` selects which subcommand the container runs.
+Pre-built multi-arch images are published to `ghcr.io/leapmux/leapmux` and use [s6-overlay](https://github.com/just-containers/s6-overlay) as their init process. The single environment variable `LEAPMUX_MODE` selects which subcommand the container runs.
 
 ### Image variants and tags
 
@@ -166,9 +166,11 @@ Both variants target `linux/amd64` and `linux/arm64`. Release tags (`:latest`, `
 
 ### Selecting the mode
 
-`LEAPMUX_MODE` is **required** and must be one of `hub`, `worker`, `dev`, or `solo`. If it is unset or invalid, the container exits, and the error lists the four accepted modes.
+`LEAPMUX_MODE` is **required for the default command** and must be one of `hub`, `worker`, `dev`, or `solo`. If it is unset or invalid, the container exits, and the error lists the four accepted modes.
 
-The supervisor always invokes `leapmux <mode> -config /data/<mode>/<mode>.yaml`, creating an empty `0600` config file if none exists. It passes no other flags — so any additional settings must come from the YAML config file or from `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables (see [Configuration](/docs/admin/configuration/)).
+The default Docker command runs `leapmux-start` through s6. The script invokes `leapmux <mode> -config /data/<mode>/<mode>.yaml`, creating an empty `0600` config file if none exists. `LEAPMUX_DATA_DIR` replaces the `/data` directory when set. Directory or config-file creation failures stop startup. The script preserves an existing config file and passes no other flags. Additional settings must come from the YAML config file or from `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables (see [Configuration](/docs/admin/configuration/)).
+
+When LeapMux exits, s6 shuts down the container and preserves the process's exit status. Set a Docker restart policy, such as `unless-stopped`, to restart the container. `docker stop` lets LeapMux shut down gracefully. An explicit Docker command replaces `leapmux-start` and still runs through s6.
 
 ### Volume layout
 
@@ -223,7 +225,7 @@ Do not run `LEAPMUX_MODE=solo` in a container expecting to reach it from outside
 
 ### Running a Worker container
 
-The supervisor passes no `--hub` or `--registration-key` flags, so a `worker` container needs those supplied another way — via the Worker YAML config at `/data/worker/worker.yaml` or via environment variables:
+The startup script passes no `--hub` or `--registration-key` flags, so a `worker` container needs those supplied another way — via the Worker YAML config at `/data/worker/worker.yaml` or via environment variables:
 
 ```bash
 docker run -e LEAPMUX_MODE=worker \
@@ -237,7 +239,7 @@ The registration key is consumed only on first registration; once the Worker's `
 
 ### Supervision behavior
 
-The image entrypoint is s6-overlay's `/init`, which runs the `leapmux` process as a long-running service. If that service exits non-zero, the whole container is brought down so your orchestrator (Docker restart policy, Kubernetes, etc.) can restart it cleanly. A clean shutdown (for example, `SIGTERM` during a graceful stop) is treated as normal and does not trigger a restart loop.
+The image entrypoint is s6-overlay's `/init`. Its default command starts LeapMux and shuts down the container when LeapMux exits, preserving the exit status. Docker's restart policy controls whether the container starts again. A manual `docker stop` requests graceful shutdown and suppresses an immediate restart.
 
 ## Reverse proxy and public URL
 

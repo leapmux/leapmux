@@ -20,8 +20,9 @@ import (
 // serves it in the background so the deferred teardown (store close,
 // listener close) runs.
 //
-// It binds no TCP port: cfg.Listen stays empty, and the local listener comes
-// from locallistentest.UniqueListenURL. That helper picks the scheme the
+// With an empty cfg.Listen, it binds only the local listener from
+// locallistentest.UniqueListenURL. Callers may supply TCP listeners also.
+// That helper picks the scheme the
 // PLATFORM supports — `unix:` on Unix and `npipe:` on Windows — and keeps each
 // test's address distinct. Building the URL here instead hardcoded `unix:`
 // under /tmp, and locallisten.Listen has no unix listener on Windows, so every
