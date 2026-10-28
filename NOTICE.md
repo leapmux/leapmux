@@ -38,7 +38,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/felixge/httpsnoop v1.1.0](#githubcomfelixgehttpsnoop-v110)
 - [github.com/fsnotify/fsnotify v1.10.1](#githubcomfsnotifyfsnotify-v1101)
 - [github.com/fxamacker/cbor/v2 v2.9.3](#githubcomfxamackercborv2-v293)
-- [github.com/go-jose/go-jose/v4 v4.1.4](#githubcomgo-josego-josev4-v414)
+- [github.com/go-jose/go-jose/v4 v4.1.6](#githubcomgo-josego-josev4-v416)
 - [github.com/go-logr/logr v1.4.4](#githubcomgo-logrlogr-v144)
 - [github.com/go-logr/stdr v1.2.2](#githubcomgo-logrstdr-v122)
 - [github.com/go-ole/go-ole v1.3.0](#githubcomgo-olego-ole-v130)
@@ -73,12 +73,12 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/mitchellh/copystructure v1.2.0](#githubcommitchellhcopystructure-v120)
 - [github.com/mitchellh/reflectwalk v1.0.2](#githubcommitchellhreflectwalk-v102)
 - [github.com/moby/docker-image-spec v1.3.1](#githubcommobydocker-image-spec-v131)
-- [github.com/moby/go-archive v0.2.0](#githubcommobygo-archive-v020)
+- [github.com/moby/go-archive v0.3.0](#githubcommobygo-archive-v030)
 - [github.com/moby/moby/api v1.55.0](#githubcommobymobyapi-v1550)
 - [github.com/moby/moby/client v0.5.0](#githubcommobymobyclient-v050)
 - [github.com/moby/patternmatcher v0.6.1](#githubcommobypatternmatcher-v061)
 - [github.com/moby/sys/sequential v0.7.0](#githubcommobysyssequential-v070)
-- [github.com/moby/sys/user v0.4.0](#githubcommobysysuser-v040)
+- [github.com/moby/sys/user v0.4.1](#githubcommobysysuser-v041)
 - [github.com/moby/sys/userns v0.1.0](#githubcommobysysuserns-v010)
 - [github.com/moby/term v0.5.2](#githubcommobyterm-v052)
 - [github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822](#githubcommunnerzgoautoneg-v000-20191010083416-a7dc8b61c822)
@@ -3321,7 +3321,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/go-jose/go-jose/v4 v4.1.4
+### github.com/go-jose/go-jose/v4 v4.1.6
 
 ```
                                  Apache License
@@ -5980,7 +5980,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/go-archive v0.2.0
+### github.com/moby/go-archive v0.3.0
 
 ```
                                  Apache License
@@ -6999,7 +6999,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/sys/user v0.4.0
+### github.com/moby/sys/user v0.4.1
 
 ```
                                  Apache License
