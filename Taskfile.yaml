@@ -178,7 +178,7 @@ tasks:
   sync-versions:
     desc: Rewrite documented tool versions from versions.env
     # Task, workflows, and Docker read versions.env directly.
-    # Documentation and go.mod directives require literal values, so this task rewrites those values.
+    # Documentation, go.mod directives and workflow runs-on labels require literal values, so this task rewrites those values.
     # lint-versions rejects a value that differs from versions.env.
     #
     # Always run this repair. A checksum on the script alone would miss an edited destination file.
@@ -1296,6 +1296,7 @@ tasks:
       - backend/go.mod
       - desktop/go/go.mod
       - site/go.mod
+      - .github/workflows/*.yaml
     vars:
       JS_CONTEXT:
         sh: *js_context_command

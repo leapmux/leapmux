@@ -176,6 +176,20 @@
       "enabled": false
     },
     {
+      "description": [
+        "Propose no runner image change, as for the github-runner labels: a new image moves the toolchain and the compiled caches"
+      ],
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepTypes": [
+        "UBUNTU_RUNNER",
+        "MACOS_RUNNER",
+        "WINDOWS_RUNNER"
+      ],
+      "enabled": false
+    },
+    {
       "matchManagers": [
         "custom.regex"
       ],

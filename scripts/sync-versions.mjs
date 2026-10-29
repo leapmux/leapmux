@@ -9,10 +9,11 @@
 // versions.env is already *sourced* by everything that can source a file:
 // Taskfile.yaml reads it via `dotenv:`, the workflows splat it into $GITHUB_ENV,
 // and docker/Dockerfile takes it as build ARGs. What none of those can reach is
-// prose in README.md and the docs site, or the `go` directive in a go.mod --
-// formats with nowhere to put a variable. Those copies were hand-edited on every
-// bump, which is why the docs site sat on a Go version two releases stale while
-// the README was current.
+// prose in README.md and the docs site, the `go` directive in a go.mod, or the
+// `runs-on` label of a workflow job, which GitHub evaluates before any step can
+// read the file -- formats with nowhere to put a variable. Those copies were
+// hand-edited on every bump, which is why the docs site sat on a Go version two
+// releases stale while the README was current.
 //
 // So this script closes the loop from the other side: versions.env stays the
 // source, and every unreachable copy is REWRITTEN from it rather than retyped.
@@ -33,6 +34,30 @@ const VERSIONS_ENV = join(ROOT, 'versions.env')
 export function major(version) {
   return version.split('.')[0]
 }
+
+/** Escape `text` for use as a literal inside a RegExp source. */
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * The claim over the `runs-on` lines of the jobs in one workflow that run on
+ * one OS. `suffix` is the literal text after the version, such as an
+ * expression that appends `-arm` for an arm64 job.
+ */
+function runnerClaim(workflow, key, os, suffix = '') {
+  return {
+    file: `.github/workflows/${workflow}`,
+    key,
+    pattern: new RegExp(`^ {4}runs-on: ${os}-([\\w.-]+?)${escapeRegExp(suffix)}$`, 'gm'),
+    render: v => `    runs-on: ${os}-${v}${suffix}`,
+  }
+}
+
+/** Appends the runner suffix that a matrix entry states, such as `-arm`. */
+const MATRIX_RUNNER_SUFFIX = `\${{ matrix.runner_suffix }}`
+/** Appends `-arm` for the arm64 entry of an `arch` matrix. */
+const ARM64_SUFFIX = `\${{ matrix.arch == 'arm64' && '-arm' || '' }}`
 
 /**
  * Every hand-written copy of a versions.env value, and how to rewrite it.
@@ -114,6 +139,21 @@ export const CLAIMS = [
     pattern: /^go (\S+)$/gm,
     render: v => `go ${v}`,
   },
+  // The runner image of every workflow job (see RUNNER IMAGES in ci.yaml).
+  runnerClaim('ci.yaml', 'UBUNTU_RUNNER', 'ubuntu', MATRIX_RUNNER_SUFFIX),
+  runnerClaim('ci.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
+  runnerClaim('ci.yaml', 'MACOS_RUNNER', 'macos'),
+  runnerClaim('ci.yaml', 'WINDOWS_RUNNER', 'windows'),
+  runnerClaim('desktop-artifacts.yaml', 'UBUNTU_RUNNER', 'ubuntu', MATRIX_RUNNER_SUFFIX),
+  runnerClaim('desktop-artifacts.yaml', 'MACOS_RUNNER', 'macos'),
+  runnerClaim('desktop-artifacts.yaml', 'WINDOWS_RUNNER', 'windows'),
+  runnerClaim('docker.yaml', 'UBUNTU_RUNNER', 'ubuntu', ARM64_SUFFIX),
+  runnerClaim('docker.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
+  runnerClaim('notice.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
+  runnerClaim('publish-site.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
+  runnerClaim('release.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
+  runnerClaim('release.yaml', 'UBUNTU_RUNNER', 'ubuntu', ARM64_SUFFIX),
+  runnerClaim('renovate.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
 ]
 
 // ---------------------------------------------------------------------------

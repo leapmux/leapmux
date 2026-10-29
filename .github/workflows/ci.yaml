@@ -12,13 +12,11 @@ concurrency:
 
 jobs:
   linux:
-    # UBUNTU VERSION: `runs-on` is evaluated before any step can populate
-    # $GITHUB_ENV, so this runner label cannot come from versions.env the way
-    # every other pin does. It is spelled out here and in four sibling
-    # workflows (desktop-artifacts.yaml, notice.yaml, publish-site.yaml, and
-    # the arm64 runner of docker.yaml / release.yaml). Moving to a newer
-    # Ubuntu means editing all of them. This is the only occurrence in THIS
-    # workflow.
+    # RUNNER IMAGES: UBUNTU_RUNNER, MACOS_RUNNER and WINDOWS_RUNNER in
+    # versions.env own every runs-on label in the workflows. GitHub evaluates
+    # runs-on before any step can populate $GITHUB_ENV, so `task sync-versions`
+    # writes each label, and `task lint` rejects a label that differs. Edit
+    # versions.env, not a label.
     #
     # Distinct from UBUNTU_IMAGE in versions.env, which is the Docker base
     # image that the container is built FROM, not the runner it is built ON.
@@ -125,7 +123,7 @@ jobs:
         run: task test-native-linux
 
   macos:
-    runs-on: macos-latest
+    runs-on: macos-26
     permissions:
       contents: read
       actions: write
@@ -183,14 +181,15 @@ jobs:
         run: task check-build-cache
 
   windows:
-    # windows-2022 is also the image of the Windows desktop artifacts
-    # (desktop-artifacts.yaml), and the compiled caches are keyed by the image.
+    # WINDOWS_RUNNER pins the Visual Studio version with the image, because
+    # Visual Studio builds the desktop app (see RUNNER IMAGES above).
     #
-    # An earlier pin blamed windows-latest for runners that GitHub lost during
-    # the Go tests. The image was not the cause: the tests killed winlogon.exe,
-    # which recorded a parent PID that a test's process had taken. util/procutil
-    # now links no process that started before its recorded parent.
-    runs-on: windows-2022
+    # An earlier pin to windows-2022 blamed windows-latest for runners that
+    # GitHub lost during the Go tests. The image was not the cause: the tests
+    # killed winlogon.exe, which recorded a parent PID that a test's process had
+    # taken. util/procutil now links no process that started before its
+    # recorded parent.
+    runs-on: windows-2025-vs2026
     permissions:
       contents: read
       actions: write
@@ -274,7 +273,7 @@ jobs:
       matrix:
         variant: [alpine, ubuntu]
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -321,7 +320,7 @@ jobs:
     name: Required CI
     if: always()
     needs: [linux, macos, windows, docker]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions: {}
     steps:
       - name: Check required results
@@ -354,7 +353,7 @@ jobs:
   prerelease:
     needs: desktop-artifacts
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

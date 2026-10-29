@@ -4,7 +4,7 @@
 // in place, and its no-match branch is the one thing standing between a
 // reworded doc line and a version claim that silently stops being enforced.
 
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 
@@ -206,6 +206,14 @@ describe('CLAIMS registry', () => {
     }
   })
 
+  it('lists every claimed file among the sources of lint-versions', () => {
+    // Task skips lint-versions while its sources are unchanged, so a claimed
+    // file outside them could drift with a green lint.
+    const sources = Bun.YAML.parse(readFileSync(join(ROOT, 'Taskfile.yaml'), 'utf-8')).tasks['lint-versions'].sources
+    for (const file of new Set(CLAIMS.map(claim => claim.file)))
+      expect(sources.some(pattern => new Bun.Glob(pattern).match(file)), `lint-versions sources miss ${file}`).toBe(true)
+  })
+
   it('names only keys that versions.env defines', () => {
     // ROOT comes from import.meta.dirname, not `new URL(...).pathname`: a URL
     // path keeps percent-encoding (a checkout under "My Repos" becomes
@@ -216,5 +224,76 @@ describe('CLAIMS registry', () => {
     for (const claim of CLAIMS) {
       expect(versions.has(claim.key), `versions.env does not define ${claim.key}`).toBe(true)
     }
+  })
+})
+
+describe('runner claims', () => {
+  // A workflow line is claimed when a claim for its file would rewrite it.
+  const claimFor = (file, line) => CLAIMS.find(claim => claim.file === file
+    && new RegExp(claim.pattern.source, claim.pattern.flags.replace('g', '')).test(line))
+  const claimed = (workflow, key, line) => CLAIMS.find(claim => claim.file === `.github/workflows/${workflow}`
+    && claim.key === key && new RegExp(claim.pattern.source, claim.pattern.flags.replace('g', '')).test(line))
+  // GitHub expressions stay literal text until the runner evaluates a workflow.
+  const runnerSuffix = `\${{ matrix.runner_suffix }}`
+  const arm64Suffix = `\${{ matrix.arch == 'arm64' && '-arm' || '' }}`
+
+  it('owns every runs-on label of every workflow', () => {
+    // GitHub evaluates runs-on before a step can read versions.env, so a job
+    // that spells a label no claim owns drifts from versions.env unnoticed.
+    const directory = join(ROOT, '.github/workflows')
+    const workflows = readdirSync(directory).filter(name => /\.ya?ml$/.test(name))
+    expect(workflows.length).toBeGreaterThan(0)
+    let labels = 0
+    for (const name of workflows) {
+      for (const line of readFileSync(join(directory, name), 'utf-8').split('\n')) {
+        if (!/^\s*runs-on:/.test(line))
+          continue
+        labels++
+        expect(claimFor(`.github/workflows/${name}`, line), `${name} spells a runner label that no claim owns: ${line.trim()}`).toBeDefined()
+      }
+    }
+    expect(labels).toBeGreaterThan(0)
+  })
+
+  it('rewrites a runner label and reports the version it found', () => {
+    const claim = claimed('ci.yaml', 'MACOS_RUNNER', '    runs-on: macos-26')
+    const { content, drifts } = applyClaim(claim, 'jobs:\n  macos:\n    runs-on: macos-26\n', '27')
+    expect(content).toBe('jobs:\n  macos:\n    runs-on: macos-27\n')
+    expect(drifts).toEqual([
+      {
+        file: '.github/workflows/ci.yaml',
+        line: 3,
+        key: 'MACOS_RUNNER',
+        found: '26',
+        expected: '    runs-on: macos-27',
+      },
+    ])
+  })
+
+  it('keeps the expression of a suffixed label', () => {
+    const line = `    runs-on: ubuntu-24.04${arm64Suffix}`
+    const claim = claimed('docker.yaml', 'UBUNTU_RUNNER', line)
+    expect(claim).toBeDefined()
+    const { content, drifts } = applyClaim(claim, `${line}\n`, '26.04')
+    expect(content).toBe(`    runs-on: ubuntu-26.04${arm64Suffix}\n`)
+    expect(drifts.map(drift => drift.found)).toEqual(['24.04'])
+  })
+
+  it('keeps a plain label claim off a suffixed line, and the reverse', () => {
+    const plain = claimed('ci.yaml', 'UBUNTU_RUNNER', '    runs-on: ubuntu-24.04')
+    const suffixed = claimed('ci.yaml', 'UBUNTU_RUNNER', `    runs-on: ubuntu-24.04${runnerSuffix}`)
+    expect(plain).toBeDefined()
+    expect(suffixed).toBeDefined()
+    expect(plain).not.toBe(suffixed)
+    const content = `    runs-on: ubuntu-24.04${runnerSuffix}\n    runs-on: ubuntu-24.04\n`
+    expect(applyClaim(plain, content, '26.04').content).toBe(`    runs-on: ubuntu-24.04${runnerSuffix}\n    runs-on: ubuntu-26.04\n`)
+    expect(applyClaim(suffixed, content, '26.04').content).toBe(`    runs-on: ubuntu-26.04${runnerSuffix}\n    runs-on: ubuntu-24.04\n`)
+  })
+
+  it('claims no label of another OS', () => {
+    const windows = claimed('ci.yaml', 'WINDOWS_RUNNER', '    runs-on: windows-2025-vs2026')
+    expect(windows).toBeDefined()
+    expect(new RegExp(windows.pattern.source, 'm').test('    runs-on: macos-26')).toBe(false)
+    expect(new RegExp(windows.pattern.source, 'm').test('    runs-on: windows-2025-vs2026')).toBe(true)
   })
 })

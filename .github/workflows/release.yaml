@@ -25,7 +25,7 @@ jobs:
     # The apple-signing environment independently restricts its secrets.
     if: github.ref == 'refs/heads/main'
     environment: release-admin
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
@@ -138,7 +138,7 @@ jobs:
     # Upload the built+signed binaries to the (still draft) release.
     needs: desktop-artifacts
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -166,7 +166,7 @@ jobs:
   docker:
     needs: release
     if: github.ref == 'refs/heads/main'
-    runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    runs-on: ubuntu-24.04${{ matrix.arch == 'arm64' && '-arm' || '' }}
     permissions:
       contents: read
       packages: write
@@ -248,7 +248,7 @@ jobs:
   docker-merge:
     needs: docker
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -309,7 +309,7 @@ jobs:
     # see a half-shipped tag.
     needs: [attach-desktop-artifacts, docker-merge]
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

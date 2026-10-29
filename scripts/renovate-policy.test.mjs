@@ -147,6 +147,16 @@ describe('renovate policy with the pinned engine', () => {
     expect(extracted.find(dep => dep.depType === 'S6_OVERLAY_VERSION').versioning).toBe('loose')
     expect(get('loose').getNewValue({ currentValue: '3.2.3.2', currentVersion: 'v3.2.3.2', newVersion: 'v3.2.3.3' })).toBe('3.2.3.3')
   })
+  it('extracts the runner images and proposes no update for them', async () => {
+    const extracted = extractPins(readFileSync(resolve(root, 'versions.env'), 'utf8'), 'versions.env', policy.customManagers[0]).deps
+    const manager = getManagerConfig(config(), 'regex').manager
+    const runners = extracted.filter(dep => dep.datasource === 'github-runners')
+    expect(runners.map(dep => dep.depType).sort()).toEqual(['MACOS_RUNNER', 'UBUNTU_RUNNER', 'WINDOWS_RUNNER'])
+    for (const dep of runners)
+      expect((await rule({ ...dep, manager, packageFile: 'versions.env' })).enabled, dep.depType).toBe(false)
+    const bun = extracted.find(dep => dep.depType === 'BUN_VERSION')
+    expect((await rule({ ...bun, manager, packageFile: 'versions.env' })).enabled, 'an ordinary pin stays enabled').not.toBe(false)
+  })
   it('accepts the pinned engine custom-manager metadata and synchronizes only the toolchain claims', async () => {
     const extraction = extractPins(readFileSync(resolve(root, 'versions.env'), 'utf8'), 'versions.env', policy.customManagers[0])
     const dependency = extraction.deps.find(dep => dep.depType === 'BUN_VERSION')
