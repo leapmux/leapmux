@@ -291,6 +291,19 @@ task test-e2e           # End-to-end tests (Playwright)
 task test-docker IMAGE=leapmux:latest # Startup and shutdown of a built Docker image
 ```
 
+CI runs the complete validation pipeline on Linux amd64.
+macOS and Windows run `task test-native` and the full native build.
+The native test target runs these checks:
+
+- Go backend tests, including integration tests that do not require Docker
+- Go desktop sidecar tests
+- Rust desktop tests and Clippy for the host platform
+- Frontend script and end-to-end helper tests, including native process and filesystem tests
+
+Linux covers all frontend tests, repository script tests, schema validation, and
+Go lint and vet checks for all three operating systems.
+The native jobs retain filesystem, process, interprocess communication, and desktop test coverage.
+
 Run specific tests by passing arguments after `--`:
 ```bash
 # Backend tests: -run <regex> <packages>
