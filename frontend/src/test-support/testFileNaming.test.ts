@@ -134,6 +134,11 @@ describe('test file naming', () => {
     ).toEqual([])
   })
 
+  it('lists each test once in its explicit environment', () => {
+    for (const entries of [NODE_TEST_FILES, TIMEZONE_TEST_FILES])
+      expect(new Set(entries).size).toBe(entries.length)
+  })
+
   /**
    * Every `TIMEZONE_TEST_FILES` entry identifies a file that exists, and no
    * file sits in both lists. An entry that identifies nothing leaves its test
