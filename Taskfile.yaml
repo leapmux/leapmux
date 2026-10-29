@@ -1164,6 +1164,16 @@ tasks:
       # directories so a test's environment cannot remove native coverage.
       - cd frontend && bun run test scripts/ tests/e2e/helpers/
 
+  test-native-linux:
+    desc: Test native modules and check Go code on the Linux runner architecture
+    cmds:
+      # Linux amd64 owns portable validation. The other Linux architecture
+      # still checks Go lint and vet for every supported operating system.
+      # test-desktop includes host Clippy, so it runs only once here.
+      - task: test-frontend-native
+      - task: test-backend-no-docker
+      - task: test-desktop
+
   test-no-docker:
     desc: Run all tests except Docker-backed storage backends
     cmds:

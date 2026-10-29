@@ -117,13 +117,12 @@ jobs:
         # storage backends (postgres/mysql/cockroachdb/tidb/yugabytedb).
         run: task test
 
-      - name: Test (no Docker-backed storage)
+      - name: Test native modules and cross-platform Go analysis
         if: matrix.arch == 'arm64'
-        # testcontainers-backed tests for postgres/mysql/cockroachdb/tidb/
-        # yugabytedb test the SQL-dialect code, not the runner architecture.
-        # Skip them on arm64 (and macOS/Windows) to save minutes and to avoid
-        # flaky failures. amd64 still runs the full suite every commit.
-        run: task test-no-docker
+        # Keep architecture-dependent tests and Go lint/vet on arm64.
+        # Linux amd64 owns application frontend tests and portable validation,
+        # including Docker-backed storage tests.
+        run: task test-native-linux
 
   macos:
     runs-on: macos-latest

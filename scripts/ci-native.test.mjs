@@ -56,8 +56,8 @@ describe('native CI validation', () => {
     const linux = readYaml('.github/workflows/ci.yaml').jobs.linux
     for (const arch of ['amd64', 'arm64'])
       expect(linux.strategy.matrix.include.map(entry => entry.arch)).toContain(arch)
-    expect(linux.steps.find(step => step.run === 'task test-no-docker')?.if).toBe('matrix.arch == \'arm64\'')
-    const armTests = commands(tasks, 'test-no-docker')
+    expect(linux.steps.find(step => step.run === 'task test-native-linux')?.if).toBe('matrix.arch == \'arm64\'')
+    const armTests = commands(tasks, 'test-native-linux')
     for (const module of ['backend', 'desktop/go']) {
       const lint = commands(tasks, module === 'backend'
         ? 'lint-backend'
@@ -67,6 +67,22 @@ describe('native CI validation', () => {
         expect(armTests).toContain(`cd ${module} && GOOS=${os} go vet -tags integration ./...`)
       }
     }
+  })
+
+  it('keeps architecture-dependent tests and Go analysis on Linux arm64 without repeating portable suites', () => {
+    const tasks = readYaml('Taskfile.yaml').tasks
+    const native = commands(tasks, 'test-native')
+    const linux = commands(tasks, 'test-native-linux')
+    for (const command of native) {
+      // lint-desktop already runs Clippy before the Rust tests.
+      if (!command.includes('cargo clippy'))
+        expect(linux).toContain(command)
+    }
+    for (const module of ['backend', 'desktop/go'])
+      expect(linux).toContain(`cd ${module} && go tool golangci-lint run --allow-serial-runners ./...`)
+    expect(linux.filter(command => command.includes('cargo clippy'))).toHaveLength(1)
+    expect(linux.filter(command => command.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
+    expect(linux.join('\n')).not.toMatch(/bun test|bun run (?:lint|typecheck)|validate-json|renovate/)
   })
 
   it.each([
