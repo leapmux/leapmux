@@ -8,7 +8,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 
 ### Go Dependencies
 
-- [connectrpc.com/connect v1.20.0](#connectrpccomconnect-v1200)
+- [connectrpc.com/connect/v2 v2.0.2](#connectrpccomconnectv2-v202)
 - [dario.cat/mergo v1.0.2](#dariocatmergo-v102)
 - [filippo.io/edwards25519 v1.2.0](#filippoioedwards25519-v120)
 - [github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d](#githubcomaltcha-orgaltcha-lib-gov2-v200-20260725115309-2c4fc27a7b2d)
@@ -768,7 +768,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 
 ## Go Dependencies
 
-### connectrpc.com/connect v1.20.0
+### connectrpc.com/connect/v2 v2.0.2
 
 ```
                                  Apache License
