@@ -142,8 +142,7 @@ jobs:
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # `task test-no-docker` reaches `cargo clippy` through test-desktop ->
-          # lint-desktop, and rust-toolchain installs the minimal profile.
+          # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
 
@@ -167,17 +166,10 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
 
-      - name: Generate code (proto + sqlc)
-        run: task generate
-
-      - name: Install frontend dependencies
-        run: task prepare-frontend
-
-      - name: Test (no Docker-backed storage)
-        # `task test-no-docker` lints and tests frontend/backend/desktop
-        # without the Docker-backed storage backends. amd64 Linux still runs
-        # the full suite on every commit.
-        run: task test-no-docker
+      - name: Test native modules
+        # Linux amd64 owns portable validation. Keep Go and Rust tests here
+        # because filesystem, process, IPC and desktop behavior depend on the OS.
+        run: task test-native
 
       - name: Build
         # MACOS_CODESIGN_IDENTITY is intentionally unset here.
@@ -214,7 +206,7 @@ jobs:
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # See the macos job: test-no-docker lints the Rust crate too.
+          # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
 
@@ -238,12 +230,12 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
 
-      - name: Test (no Docker-backed storage)
+      - name: Test native modules
         # Run under pwsh to preserve the MSVC PATH. Git Bash prepends /usr/bin, whose link.exe
-        # shadows the MSVC linker. That prevents task test-desktop from running Cargo tests
+        # shadows the MSVC linker. That prevents task test-native from running Cargo tests
         # correctly.
         shell: pwsh
-        run: task test-no-docker
+        run: task test-native
 
       - name: Build all modules
         # Run under pwsh rather than bash. Git Bash prepends /usr/bin to

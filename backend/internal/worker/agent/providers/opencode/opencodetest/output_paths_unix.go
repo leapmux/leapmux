@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -35,7 +36,8 @@ func AssertNativeOutputPathDoesNotSaveText(t *testing.T, binary string, start ag
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	sink := &outputFileTurnSink{Sink: &agenttest.Sink{}, finished: make(chan struct{})}
+	sink := newOutputFileTurnSink(ctx, quartz.NewReal())
+	defer sink.OutputQueue().StopRetries()
 	provider, err := start(ctx, agent.Options{AgentID: "full-output-startup", HomeDir: home, WorkingDir: t.TempDir(), Shell: testutil.TestShell()}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	defer func() {

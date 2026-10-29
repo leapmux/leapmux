@@ -279,7 +279,11 @@ tasks:
 
   generate-sqlc:
     desc: Generate all type-safe SQL code
-    deps: [generate-sqlc-hub, generate-sqlc-worker]
+    # Both generators invoke the same Go tool. Run them in order so a cold
+    # cache does not compile sqlc twice at once and increase peak memory use.
+    cmds:
+      - task: generate-sqlc-hub
+      - task: generate-sqlc-worker
 
   generate-sqlc-hub:
     desc: Generate type-safe SQL code for Hub
@@ -1099,7 +1103,8 @@ tasks:
     cmds:
       - task: prepare-backend
       - task: lint-backend
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -tags integration {{.CLI_ARGS | default "./..."}}
+      # lint-backend already runs vet for each supported operating system.
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
 
   test-backend-race:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
@@ -1116,15 +1121,48 @@ tasks:
     cmds:
       - task: prepare-backend
       - task: lint-backend
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
+      - task: test-backend-no-docker-run
+
+  test-backend-no-docker-run:
+    internal: true
+    deps: [prepare-backend]
+    cmds:
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
 
   test-desktop:
     desc: Run desktop tests
     cmds:
       - task: prepare-desktop
       - task: lint-desktop
-      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -tags integration {{.CLI_ARGS | default "./..."}}
-      - cd desktop/rust && cargo test
+      - task: test-desktop-run
+
+  test-desktop-run:
+    internal: true
+    # Tauri validates the sidecar resources even in a test build.
+    deps: [prepare-desktop, build-desktop-sidecar]
+    cmds:
+      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd desktop/rust && cargo test --locked
+
+  test-native:
+    desc: Test native modules without portable validation covered by Linux CI
+    cmds:
+      # Linux CI owns Go lint and vet for all three operating systems on both
+      # runner architectures. Test commands disable their implicit vet pass.
+      # Linux also covers application frontend tests, scripts and schemas.
+      - task: test-frontend-native
+      - task: test-backend-no-docker-run
+      - task: test-desktop-run
+      # Linux cannot analyze Rust code behind macOS and Windows cfg attributes.
+      - cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings
+
+  test-frontend-native:
+    desc: Test frontend scripts and helpers with native process and filesystem behavior
+    deps: [prepare-frontend]
+    cmds:
+      # Native process tests live in both Vitest projects. Select their source
+      # directories so a test's environment cannot remove native coverage.
+      - cd frontend && bun run test scripts/ tests/e2e/helpers/
 
   test-no-docker:
     desc: Run all tests except Docker-backed storage backends
