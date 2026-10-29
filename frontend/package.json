@@ -47,7 +47,6 @@
     "@tauri-apps/plugin-notification": "2.4.0",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@thisbeyond/solid-dnd": "^0.7.5",
-    "@types/diff": "^8.0.0",
     "@vanilla-extract/css": "^1.21.2",
     "@xterm/addon-fit": "0.12.0-beta.301",
     "@xterm/addon-serialize": "0.15.0-beta.301",
