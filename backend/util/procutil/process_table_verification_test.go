@@ -75,6 +75,37 @@ func TestVerifiedForestRejectsChangedParentsAndRetainsOtherChildren(t *testing.T
 	assert.NotContains(t, verifier.parentCalls, 12)
 }
 
+// Windows keeps the parent PID of a process whose parent ended, and it gives
+// that PID to a new process. csrss.exe and winlogon.exe record smss.exe
+// instances that ended at boot. Killing such an impostor as a captured child
+// ends the user's session, and the CI runner with it.
+func TestVerifiedForestNeverOwnsAProcessThatStartedBeforeItsRecordedParent(t *testing.T) {
+	t.Parallel()
+	table, verifier := forestFixture()
+	// 14 started before root 10, and 15 started after root 10 but before its
+	// recorded parent 11. Each records a parent PID that a later process took.
+	table.byParent[10] = append(table.byParent[10], 14)
+	table.byParent[11] = append(table.byParent[11], 15)
+	verifier.identities[14] = ProcessIdentity{PID: 14, StartTime: 999}
+	verifier.identities[15] = ProcessIdentity{PID: 15, StartTime: 1050}
+	verifier.parents[14], verifier.parents[15] = 10, 11
+	owned, err := table.verifyForest(t.Context(), []ProcessIdentity{verifier.identities[10]}, verifier)
+	require.NoError(t, err, "a process that predates its recorded parent is unrelated, not an ownership failure")
+	assert.ElementsMatch(t, []ProcessIdentity{verifier.identities[11], verifier.identities[12], verifier.identities[13]}, owned)
+	assert.NotContains(t, verifier.parentCalls, 14)
+	assert.NotContains(t, verifier.parentCalls, 15)
+}
+
+// The start time has millisecond precision, so a child can share its parent's.
+func TestVerifiedForestOwnsAChildThatStartedInItsParentsMillisecond(t *testing.T) {
+	t.Parallel()
+	table, verifier := forestFixture()
+	verifier.identities[13] = ProcessIdentity{PID: 13, StartTime: verifier.identities[10].StartTime}
+	owned, err := table.verifyForest(t.Context(), []ProcessIdentity{verifier.identities[10]}, verifier)
+	require.NoError(t, err)
+	assert.Contains(t, owned, verifier.identities[13])
+}
+
 func TestVerifiedForestRejectsAChildWhoseIdentityChangesDuringVerification(t *testing.T) {
 	t.Parallel()
 	table, verifier := forestFixture()

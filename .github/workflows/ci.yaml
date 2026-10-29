@@ -225,6 +225,8 @@ jobs:
           MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           # TEMPORARY(windows-ci-lost-runner): tell the copies apart.
           MONITOR_CHECK_NAME: Windows resource monitor (copy ${{ matrix.copy }})
+          # TEMPORARY(windows-ci-lost-runner): publish what the old process table would have killed.
+          LEAPMUX_TEMPORARY_REFUSED_CHILD_LOG: ${{ runner.temp }}/leapmux-refused-children.log
         run: ./scripts/ci-windows-resource-monitor.ps1 -Mode Start
 
       - name: Setup build toolchain
@@ -261,6 +263,9 @@ jobs:
         # shadows the MSVC linker. That prevents task test-native from running Cargo tests
         # correctly.
         shell: pwsh
+        env:
+          # TEMPORARY(windows-ci-lost-runner): record what the old process table would have killed.
+          LEAPMUX_TEMPORARY_REFUSED_CHILD_LOG: ${{ runner.temp }}/leapmux-refused-children.log
         run: task test-native
 
       - name: Build all modules
@@ -280,7 +285,43 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # TEMPORARY(windows-ci-lost-runner): print what the old process table would have killed.
+          LEAPMUX_TEMPORARY_REFUSED_CHILD_LOG: ${{ runner.temp }}/leapmux-refused-children.log
         run: ./scripts/ci-windows-resource-monitor.ps1 -Mode Stop
+
+  # TEMPORARY(windows-ci-lost-runner): run the real-process test of util/procutil
+  # on Windows without the start-time rule, where it must fail, and with it.
+  windows-repro:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Load tool versions
+        uses: ./.github/actions/load-versions
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Run the test without the start-time rule
+        shell: bash
+        working-directory: backend
+        run: |
+          sed -i 's/return p.StartTime > 0 && parent.StartTime > 0 && p.StartTime >= parent.StartTime/return true/' util/procutil/process_identity.go
+          grep -n 'return true' util/procutil/process_identity.go
+          if go test -count=1 -v -run 'TestSnapshotGivesAProcessWithAReusedPIDNoEarlierProcess' ./util/procutil/; then
+            echo '::error::The real-process test passed without the start-time rule.'
+            exit 1
+          fi
+          git checkout -- util/procutil/process_identity.go
+
+      - name: Run the test with the start-time rule
+        shell: bash
+        working-directory: backend
+        run: go test -count=1 -v -run 'TestSnapshotGivesAProcessWithAReusedPIDNoEarlierProcess|TestVerifiedForest|TestBuildProcessTable|TestNewProcessTable' ./util/procutil/
 
   docker:
     strategy:

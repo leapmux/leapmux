@@ -14,26 +14,59 @@ import (
 type ProcessRecord struct {
 	PID  int
 	PPID int
+	// StartTime is when the process started, in milliseconds since the Unix
+	// epoch, as ProcessIdentity states it. Zero means that the snapshot could
+	// not read it.
+	StartTime int64
 }
 
 // ProcessTable indexes one OS snapshot. Names and identities remain live OS reads.
 type ProcessTable struct {
 	byPID    map[int]*process.Process
 	parent   map[int]int
+	start    map[int]int64
 	byParent map[int][]int
+}
+
+func newProcessTable(size int) *ProcessTable {
+	return &ProcessTable{
+		byPID:    make(map[int]*process.Process, size),
+		parent:   make(map[int]int, size),
+		start:    make(map[int]int64, size),
+		byParent: make(map[int][]int, size),
+	}
 }
 
 // NewProcessTable indexes process records without granting ownership of any PID.
 func NewProcessTable(records []ProcessRecord) *ProcessTable {
-	table := &ProcessTable{byPID: make(map[int]*process.Process), parent: make(map[int]int, len(records)), byParent: make(map[int][]int, len(records))}
+	table := newProcessTable(len(records))
+	table.index(records)
+	return table
+}
+
+// index records each valid row, and then links each row below its parent. A
+// row links only to a parent that the same rows hold and that it could be a
+// child of (see ProcessIdentity.couldBeChildOf). A parent PID that no row holds
+// belongs to a process that ended, and a row without a start time cannot prove
+// its place, so neither links.
+func (t *ProcessTable) index(records []ProcessRecord) {
+	valid := make([]ProcessRecord, 0, len(records))
 	for _, record := range records {
 		if record.PID <= 0 || record.PPID < 0 {
 			continue
 		}
-		table.parent[record.PID] = record.PPID
-		table.byParent[record.PPID] = append(table.byParent[record.PPID], record.PID)
+		t.parent[record.PID] = record.PPID
+		t.start[record.PID] = record.StartTime
+		valid = append(valid, record)
 	}
-	return table
+	for _, record := range valid {
+		parentStart, listed := t.start[record.PPID]
+		child := ProcessIdentity{PID: record.PID, StartTime: record.StartTime}
+		if !listed || !child.couldBeChildOf(ProcessIdentity{PID: record.PPID, StartTime: parentStart}) {
+			continue
+		}
+		t.byParent[record.PPID] = append(t.byParent[record.PPID], record.PID)
+	}
 }
 
 func SnapshotProcessTable(ctx context.Context) (*ProcessTable, error) {
@@ -43,29 +76,42 @@ func SnapshotProcessTable(ctx context.Context) (*ProcessTable, error) {
 	}
 	return buildProcessTable(ctx, processes, func(ctx context.Context, candidate *process.Process) (int32, error) {
 		return candidate.PpidWithContext(ctx)
+	}, func(ctx context.Context, candidate *process.Process) (int64, error) {
+		return candidate.CreateTimeWithContext(ctx)
 	})
 }
 
-// buildProcessTable accepts a reader for deterministic ownership failure tests.
-func buildProcessTable(ctx context.Context, processes []*process.Process, readParent func(context.Context, *process.Process) (int32, error)) (*ProcessTable, error) {
-	table := &ProcessTable{byPID: make(map[int]*process.Process, len(processes)), parent: make(map[int]int, len(processes)), byParent: make(map[int][]int, len(processes))}
+// buildProcessTable accepts readers for deterministic ownership failure tests.
+func buildProcessTable(ctx context.Context, processes []*process.Process, readParent func(context.Context, *process.Process) (int32, error), readStart func(context.Context, *process.Process) (int64, error)) (*ProcessTable, error) {
+	table := newProcessTable(len(processes))
+	records := make([]ProcessRecord, 0, len(processes))
 	var failures error
 	for _, candidate := range processes {
 		if err := ctx.Err(); err != nil {
 			return nil, errors.Join(failures, err)
 		}
+		pid := int(candidate.Pid)
 		parent, err := readParent(ctx, candidate)
 		if err != nil {
-			if !processGone(int(candidate.Pid), err) {
+			if !processGone(pid, err) {
 				failures = errors.Join(failures, fmt.Errorf("read the parent of process %d: %w", candidate.Pid, err))
 			}
 			continue
 		}
-		pid := int(candidate.Pid)
+		// Windows refuses some system processes a start-time read. Such a row
+		// stays without a start time, so it links to nothing, and it is no
+		// ownership failure: the worker can read every process that it started.
+		start, err := readStart(ctx, candidate)
+		if err != nil {
+			if processGone(pid, err) {
+				continue
+			}
+			start = 0
+		}
 		table.byPID[pid] = candidate
-		table.parent[pid] = int(parent)
-		table.byParent[int(parent)] = append(table.byParent[int(parent)], pid)
+		records = append(records, ProcessRecord{PID: pid, PPID: int(parent), StartTime: start})
 	}
+	table.index(records)
 	return table, failures
 }
 
@@ -84,7 +130,7 @@ func (t *ProcessTable) Records() []ProcessRecord {
 	}
 	records := make([]ProcessRecord, 0, len(t.parent))
 	for pid, parent := range t.parent {
-		records = append(records, ProcessRecord{PID: pid, PPID: parent})
+		records = append(records, ProcessRecord{PID: pid, PPID: parent, StartTime: t.start[pid]})
 	}
 	return records
 }
