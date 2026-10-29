@@ -90,6 +90,7 @@ func TestZCodeControlInputPreservesEarlierSupplement(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, `{"kind":"tool_call","toolCallId":"call","toolName":"ExitPlanMode","input":{"allowedPrompts":[],"future":9007199254740993}}`))
 	original := []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","toolName":"ExitPlanMode"}}`)
 	event, ok := parseZCodeEvent(original)
@@ -122,6 +123,7 @@ func TestZCodePlanPersistsFallbackWhenEnrichmentLosesRevision(t *testing.T) {
 	t.Parallel()
 	sink := &zcodeRejectedEnrichmentSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"call","toolName":"ExitPlanMode"}`))
 	original := []byte(` {"id":"server-1","method":"interaction/requestUserInput","params":{"requestId":"approval","toolCallId":"call","toolName":"ExitPlanMode","input":{"plan":"# Retain the plan"},"schema":{"interaction":"plan_approval"}}} `)
 	a.HandleOutput(original)
@@ -147,6 +149,7 @@ func TestZCodePlanWritesNoSecondRowWhenTheStoredRequestReadFails(t *testing.T) {
 	t.Parallel()
 	sink := &zcodeFailingToolRequestSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"call","toolName":"ExitPlanMode"}`))
 	a.HandleOutput([]byte(` {"id":"server-1","method":"interaction/requestUserInput","params":{"requestId":"approval","toolCallId":"call","toolName":"ExitPlanMode","input":{"plan":"# Retain the plan"},"schema":{"interaction":"plan_approval"}}} `))
 
@@ -162,6 +165,7 @@ func TestZCodeControlInputReportsARefusedEnrichment(t *testing.T) {
 	t.Parallel()
 	sink := &zcodeRejectedEnrichmentSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"call","toolName":"ExitPlanMode"}`))
 
 	carriesInput, err := a.supplementZCodeControlInput("call", "ExitPlanMode", json.RawMessage(`{"plan":"# Plan"}`))

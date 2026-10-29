@@ -8,22 +8,27 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// A flush of one kind keeps the other kind's scopes buffered: the completed
+// model response owns the text, and only the reasoning is persisted early.
 func TestZCodeGenerationDiscardKeepsUnselectedScopes(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	a.generationBuffer.Append("thought", agent.AssembledMessageKindReasoning, "thought", providerkit.JoinVerbatim)
-	a.generationBuffer.Append("answer", agent.AssembledMessageKindText, "answer", providerkit.JoinVerbatim)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-1","kind":"reasoning_delta","delta":"thought"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-1","kind":"text_delta","delta":"answer"}`))
 	a.DiscardOutput()
-	a.flushZCodeGenerationKind(agent.AssembledMessageKindReasoning, agent.MessageCompletionInterrupted)
-	assert.Equal(t, []string{"answer"}, a.generationBuffer.ScopeIDs())
-	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress("thought"))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-1","kind":"tool_input_start","toolCallId":"t-1","toolName":"Bash"}`))
+	assert.Equal(t, []string{zcodeTextScope("m-1")}, a.generationBuffer.ScopeIDs())
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress(zcodeReasoningScope("m-1")))
 	assert.Empty(t, sink.Messages())
 }
 
@@ -68,10 +73,11 @@ func TestHandleZCodeOutput_TurnStarted_ArmsTheUsersTurn(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
 
 	a.Mu.Lock()
-	turnActive, background, toolUses, seq := a.turnActive, a.backgroundTurn, a.TurnToolUses, a.lastSeq
+	turnActive, foreground, toolUses, seq := a.turnActive, a.turns[a.foregroundTurnID], a.TurnToolUses, a.lastSeq
 	a.Mu.Unlock()
 	assert.True(t, turnActive)
-	assert.False(t, background)
+	require.NotNil(t, foreground, "a user start opens the user foreground owner")
+	assert.False(t, foreground.background)
 	assert.Equal(t, 0, toolUses, "a fresh user turn resets the tool-use count")
 	assert.Equal(t, int64(1), seq, "the sequence must advance so a re-subscribe resumes from it")
 	assert.Equal(t, 0, sink.MessageCount(), "turn.started persists nothing")
@@ -98,9 +104,15 @@ func TestHandleZCodeOutput_TurnStarted_WithAnInputSourceIsABackgroundTurn(t *tes
 			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputSource":"`+source+`"}`))
 
 			a.Mu.Lock()
-			background, toolUses := a.backgroundTurn, a.TurnToolUses
+			var owner *zcodeTurnState
+			for _, turn := range a.turns {
+				owner = turn
+			}
+			toolUses, foreground := a.TurnToolUses, a.foregroundTurnID
 			a.Mu.Unlock()
-			assert.True(t, background)
+			require.NotNil(t, owner)
+			assert.True(t, owner.background)
+			assert.Empty(t, foreground, "a background start never replaces the user foreground owner")
 			assert.Equal(t, 3, toolUses, "a background turn must not clear the user turn's count")
 		})
 	}
@@ -111,8 +123,10 @@ func TestHandleZCodeOutput_TurnCompleted_PersistsTheDividerAndResetsSpans(t *tes
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.turnActive = true
 	a.toolCalls["call-1"] = &zcodeToolCall{final: true}
+	zcodeOwnTestTool(t, a, "call-1")
 
 	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventTurnCompleted,
 		`{"response":"done","toolCallCount":3,"resultType":"success","duration":1200,
@@ -146,6 +160,7 @@ func TestHandleZCodeOutput_TurnCompleted_StatesTheToolCountOnTheDivider(t *testi
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.turnActive = true
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{"response":"done","toolCallCount":3,"resultType":"success"}`))
@@ -160,6 +175,7 @@ func TestHandleZCodeOutput_CancelledTurnKeepsItsPartialTextAsInterrupted(t *test
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.turnActive = true
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"partial answer"}`))
@@ -181,8 +197,10 @@ func TestHandleZCodeOutput_CancelledTurnClosesARunningCallAsInterruptedAndCounts
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.turnActive = true
 	a.toolCalls["running"] = &zcodeToolCall{name: "Bash", lastFrame: []byte(`{"type":"tool.updated","payload":{"kind":"started","toolCallId":"running","toolName":"Bash"}}`)}
+	zcodeOwnTestTool(t, a, "running")
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted,
 		`{"response":"","toolCallCount":0,"resultType":"cancelled","duration":316}`))
@@ -202,8 +220,10 @@ func TestHandleZCodeOutput_CompletedTurnClosesALostCallAsFailedAndKeepsTheNative
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.turnActive = true
 	a.toolCalls["lost"] = &zcodeToolCall{name: "Read", lastFrame: []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"lost","toolName":"Read"}}`)}
+	zcodeOwnTestTool(t, a, "lost")
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{"response":"done","toolCallCount":2,"resultType":"success"}`))
 
@@ -219,23 +239,21 @@ func TestHandleZCodeOutput_TurnCompleted_OfABackgroundTurnDoesNotEndTheUsersTurn
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	a.turnActive = true
-	a.backgroundTurn = true
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "u-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "bg-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":2,"inputSource":"background_task"}`))
 
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"resultType":"success","toolCallCount":1}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "bg-1", contracts.ZCodeEventTurnCompleted, `{"resultType":"success","toolCallCount":1}`))
 
 	a.Mu.Lock()
-	turnActive, background := a.turnActive, a.backgroundTurn
+	turnActive, ownerCount := a.turnActive, len(a.turns)
 	a.Mu.Unlock()
 	// The TRANSCRIPT is what a background turn must not touch: no divider, no span
 	// reset, no closing of the user's open tool cards.
 	assert.Equal(t, 0, sink.MessageCount(), "no turn-end divider for a background turn")
 	assert.Equal(t, 0, sink.ResetSpanCount(), "the user's open tool cards must survive")
 	assert.Equal(t, 1, sink.NotificationCount(), "the background outcome is recorded as a notification")
-	assert.False(t, background, "the background flag is consumed")
-	// The FLAG clears either way. A turn ended, and leaving it set made Interrupt and
-	// Stop fire a session/stop RPC at an idle session for the rest of the agent's life.
-	assert.False(t, turnActive, "a turn ended, whichever kind it was")
+	assert.Equal(t, 1, ownerCount, "the background owner is consumed; the user owner stays")
+	assert.True(t, turnActive, "the user turn is still running")
 }
 
 // The app-server refuses two turns on one session, so a background turn runs alone --
@@ -248,7 +266,11 @@ func TestHandleZCodeOutput_TurnCompleted_OfABackgroundTurnLeavesTheAgentIdle(t *
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputSource":"background_task"}`))
 	a.Mu.Lock()
-	startedActive, startedBackground := a.turnActive, a.backgroundTurn
+	startedActive := a.turnActive
+	var startedBackground bool
+	for _, turn := range a.turns {
+		startedBackground = turn.background
+	}
 	a.Mu.Unlock()
 	assert.True(t, startedActive)
 	assert.True(t, startedBackground)
@@ -288,6 +310,7 @@ func TestHandleZCodeOutput_TurnFailed_SchedulesAutoRetryOnlyWhenRetryable(t *tes
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
 			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 			a.turnActive = true
 
 			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnFailed, tc.payload))
@@ -315,6 +338,7 @@ func TestHandleZCodeOutput_ModelStreaming_TextAndReasoningDeltas(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"inputSource":"background_task"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","delta":"Hello "}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming, `{"kind":"reasoning_delta","delta":"thinking"}`))
@@ -333,6 +357,7 @@ func TestHandleZCodeOutput_TextDeltaPersistsWhenTurnFails(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"partial answer"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnFailed,
@@ -349,6 +374,7 @@ func TestHandleZCodeOutput_KeepsReasoningDeltasVerbatim(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"**Verifying terminal release synchronization"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
@@ -366,6 +392,7 @@ func TestHandleZCodeOutput_TurnFailurePersistsIncompleteToolOutput(t *testing.T)
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"printf partial"}}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
@@ -393,6 +420,7 @@ func TestHandleZCodeOutput_TurnFailureClosesOnlyAnAnnouncedTool(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"assistantMessageId":"message-1","kind":"tool_input_start","toolCallId":"tool-1","toolName":"Bash"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnFailed,
@@ -418,6 +446,7 @@ func TestHandleZCodeOutput_ReasoningPersistsWhenTheMessageCompletes(t *testing.T
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"reasoning"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
@@ -440,7 +469,11 @@ func TestZCodeRetryAttemptCase(t *testing.T) {
 		Name:       "a stream recovery discards the failed reasoning and text",
 		FramesPath: "testdata/retry_attempt.jsonl",
 		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
-			return newZCodeTestAgent(t, agent.NewProviderServices(sink)).HandleOutput
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			// The captured frames start mid-turn: seed the owner their
+			// model.streaming events resolve to.
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+			return a.HandleOutput
 		},
 		TextOf: func(row agenttest.Message) (agenttest.RetryAttemptText, bool) {
 			if _, text, completion, ok := agenttest.DecodeAssembledMessage(row.Content); ok {
@@ -494,6 +527,7 @@ func TestHandleZCodeOutput_ATurnEndResetsTheRetry(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	feedZCodeRetry(t, a)
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
@@ -523,6 +557,7 @@ func TestHandleZCodeOutput_ToolInputKeepsTextForTheCompletedResponse(t *testing.
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"answer before tool"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
@@ -541,6 +576,7 @@ func TestHandleZCodeOutput_ModelStreaming_EmptyDeltasAndUnknownKindsAreDropped(t
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	for _, payload := range []string{
 		`{"kind":"text_delta","delta":""}`,
@@ -569,6 +605,7 @@ func TestHandleZCodeOutput_SupplementsStreamedInputWithoutChangingOriginal(t *te
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
 			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, `{"kind":"tool_call","toolCallId":"call","toolName":"Bash","input":{"command":"printf recovered"}}`))
 			original := []byte(`{"sessionId":"sess-1","seq":2,"type":"tool.updated","futureMetadata":{"x":1},"payload": {"kind":"scheduled","toolCallId":"call","toolName":"Bash","inputOmitted":true,"inputRef":"model_stream"` + inputField + `}}`)
 			event, ok := parseZCodeEvent(original)
@@ -587,6 +624,7 @@ func TestHandleZCodeOutput_ToolInputIsCachedFromTheStreamAndConsumedByScheduled(
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"kind":"tool_input_start","toolCallId":"call-1","toolName":"Bash"}`))
@@ -628,6 +666,7 @@ func TestHandleZCodeOutput_ToolCallInputSupersedesTheFragments(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"kind":"tool_input_delta","toolCallId":"c1","delta":"{\"command\":\"tru"}`))
@@ -654,6 +693,7 @@ func TestHandleZCodeOutput_ToolInputStartDropsAPartialFragment(t *testing.T) {
 	t.Parallel()
 
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"kind":"tool_input_delta","toolCallId":"c1","delta":"{\"partial\":"}`))
@@ -675,6 +715,7 @@ func TestHandleZCodeOutput_ToolProgress_UsesNativeTotal(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"inputSource":"background_task"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"progress","toolCallId":"c1","outputBytes":5,"stdoutTail":"line1"}`))
@@ -699,6 +740,7 @@ func TestHandleZCodeOutput_ToolProgress_MarksTailOnlyCountAsMinimum(t *testing.T
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"inputSource":"background_task"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"progress","toolCallId":"c1","stdoutTail":"tail"}`))
@@ -715,6 +757,7 @@ func TestHandleZCodeOutput_ToolProgress_RoutesToChild(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"inputSource":"background_task"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"sub-1","toolName":"Bash","source":"subagent",
 		  "parentToolCallId":"spawn-1","input":{"command":"ls"}}`))
@@ -742,6 +785,7 @@ func TestHandleZCodeOutput_ToolResult_PersistsClosesAndCountsTheCall(t *testing.
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.toolCalls["c1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`)}
 
 	a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventToolUpdated,
@@ -779,6 +823,7 @@ func TestHandleZCodeOutput_ToolError_ClosesTheCallToo(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.toolCalls["c1"] = &zcodeToolCall{name: "Edit"}
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
@@ -793,12 +838,15 @@ func TestHandleZCodeOutput_ToolError_ClosesTheCallToo(t *testing.T) {
 func TestHandleZCodeOutput_ToolResult_DuringABackgroundTurnDoesNotCount(t *testing.T) {
 	t.Parallel()
 
-	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
-	a.backgroundTurn = true
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"inputSource":"background_task"}`)
 	a.toolCalls["c1"] = &zcodeToolCall{name: "Bash"}
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"c1","result":{}}`))
 
+	require.Equal(t, 1, sink.MessageCount(), "the call still closes")
+	assert.True(t, sink.Messages()[0].Closing)
 	a.Mu.Lock()
 	toolUses := a.TurnToolUses
 	a.Mu.Unlock()
@@ -812,6 +860,7 @@ func TestHandleZCodeOutput_ToolBatch_BackfillsOnlyTheLostCalls(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.toolCalls["finished"] = &zcodeToolCall{name: "Bash", final: true, lastFrame: []byte(`{"type":"tool.updated"}`)}
 	a.toolCalls["lost"] = &zcodeToolCall{name: "Read", lastFrame: []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"lost","toolName":"Read"}}`)}
 	// A call that the model stream identified but the agent never announced opened
@@ -833,6 +882,7 @@ func TestHandleZCodeOutput_ToolUpdated_IgnoresAnIdlessOrUnknownKind(t *testing.T
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, `{"kind":"result"}`))
@@ -874,6 +924,7 @@ func TestHandleZCodeOutput_SubagentSpawnOpensNoSpanAndRemembersThePrompt(t *test
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"spawn-1","toolName":"Agent",
@@ -897,6 +948,7 @@ func TestHandleZCodeOutput_SubagentEndClosesTheRowTheBackgroundPathCreated(t *te
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.toolCalls["spawn-1"] = &zcodeToolCall{name: contracts.ZCodeToolNameAgent}
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
@@ -919,6 +971,7 @@ func TestHandleZCodeOutput_SubagentEndWithAnErrorFailsTheRow(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
 		`{"taskId":"task-1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","status":"running"}`))
@@ -938,6 +991,7 @@ func TestHandleZCodeOutput_SubagentEndWithNoRegistryRowCreatesNone(t *testing.T)
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"result","toolCallId":"spawn-1","toolName":"Agent","result":{"content":"done"}}`))
@@ -953,6 +1007,7 @@ func TestHandleZCodeOutput_SessionUpdated_ModelResponsePersistsTheAssistantText(
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventSessionUpdated,
 		`{"content":"Here is the answer.","stopReason":"end_turn","contextWindow":200000,
@@ -971,7 +1026,9 @@ func TestHandleZCodeOutput_SessionUpdated_ModelResponsePersistsTheAssistantText(
 
 	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, int64(50), usage["input_tokens"])
+	assert.Equal(t, int64(45), usage["input_tokens"],
+		"the projection subtracts the cache bucket out of the cache-inclusive input")
+	assert.Equal(t, int64(5), usage["cache_read_input_tokens"])
 	assert.Equal(t, int64(200000), usage["context_window"])
 }
 
@@ -982,6 +1039,7 @@ func TestHandleZCodeOutput_SessionUpdated_EmptyContentPersistsNothingButKeepsThe
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
 		`{"content":"","stopReason":"tool_calls","usage":{"inputTokens":7,"totalTokens":7}}`))
@@ -1001,6 +1059,7 @@ func TestHandleZCodeOutput_SessionUpdated_MainTurnPersistsTheAssistantText(t *te
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
 		`{"content":"The answer.","querySource":"main_turn","stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":1,"totalTokens":4}}`))
@@ -1022,6 +1081,7 @@ func TestHandleZCodeOutput_SessionUpdated_SideQueryPersistsNothingAndKeepsTheMai
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"kind":"text_delta","assistantMessageId":"main-1","delta":"answer"}`))
@@ -1046,6 +1106,7 @@ func TestHandleZCodeOutput_SessionUpdated_TelemetryVariantsAreIgnored(t *testing
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	for seq, payload := range []string{
 		`{"messageCount":12,"modelRef":{"providerId":"p","modelId":"m"},"iteration":3}`,
@@ -1477,6 +1538,7 @@ func TestHandleZCodeOutput_SessionUpdated_AWrongUsageTypeKeepsTheRow(t *testing.
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
 			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, tc.payload))
 
@@ -1495,6 +1557,7 @@ func TestHandleZCodeOutput_SessionUpdated_AWrongContextWindowTypeKeepsTheUsage(t
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
 		`{"content":"The answer.","querySource":"main_turn","stopReason":"end_turn","contextWindow":"200k",`+
@@ -1535,6 +1598,7 @@ func TestHandleZCodeOutput_SessionUpdatedDropShapesPersistNothing(t *testing.T) 
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
 			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, payload))
 
@@ -1840,6 +1904,7 @@ func TestHandleZCodeOutput_MalformedAndUnrelatedLinesAreSurvivable(t *testing.T)
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	for _, line := range []string{
 		`{"method":"session/event"}`,
@@ -1958,6 +2023,7 @@ func TestDispatchZCodeEvent_ADuplicateSequenceIsDropped(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	line := zcodeEventLine(t, 7, contracts.ZCodeEventSessionUpdated, `{"content":"the answer","stopReason":"stop"}`)
 	a.HandleOutput(line)
@@ -1979,6 +2045,7 @@ func TestDispatchZCodeEvent_AnUnsequencedEventStillDispatches(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, `{"content":"one","stopReason":"stop"}`))
 	a.HandleOutput(zcodeEventLine(t, 0, contracts.ZCodeEventSessionUpdated, `{"content":"two","stopReason":"stop"}`))
@@ -1994,6 +2061,7 @@ func TestHandleZCodeOutput_ToolBatch_PersistsAPerCallResultNotTheBatchEnvelope(t
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"lost","toolName":"Bash","input":{"command":"ls"}}`))
@@ -2023,6 +2091,7 @@ func TestHandleZCodeOutput_ToolBatch_AnErrorInTheBatchIsNotReportedAsSuccess(t *
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"lost","toolName":"Bash","input":{"command":"ls"}}`))
@@ -2054,6 +2123,7 @@ func TestHandleZCodeOutput_StreamRecoveryTakesNoAction(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 				`{"kind":"text_delta","assistantMessageId":"m1","delta":"answer"}`))
@@ -2077,6 +2147,7 @@ func TestHandleZCodeOutput_StreamRecoveryTailDiscardedEmptiesTheBufferScopes(t *
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
 		`{"kind":"text_delta","assistantMessageId":"m1","delta":"answer"}`))
@@ -2104,6 +2175,7 @@ func TestHandleZCodeOutput_RawToolFrameIsNotRetained(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"c1","toolName":"Bash","input":{"command":"ls"}}`))
@@ -2115,4 +2187,262 @@ func TestHandleZCodeOutput_RawToolFrameIsNotRetained(t *testing.T) {
 	a.Mu.Unlock()
 	assert.NotContains(t, frame, `"raw"`)
 	assert.Contains(t, frame, `"scheduled"`, "the last frame a reader can draw stays")
+}
+
+// --- turn ownership ---
+
+// A goal or compact background turn starts and ends while the user's turn runs.
+// Its completion must write no user divider and must leave the user turn active.
+func TestHandleZCodeOutput_TurnOwnership_ABackgroundTurnEndsMidUserTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "u-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi","foregroundExecutionId":"exec-u"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "bg-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"goal_state_change","foregroundExecutionId":"exec-u"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "bg-1", contracts.ZCodeEventTurnCompleted,
+		`{"resultType":"success"}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "a background turn end writes no user divider")
+	assert.Equal(t, 1, sink.NotificationCount(), "the background outcome is recorded as a notification")
+	assert.True(t, a.PublishTurnActive().Active,
+		"the background turn ended mid-user-turn, so the user turn must remain active")
+}
+
+// Two overlapping background turns keep independent output, tool ownership and
+// terminal handling: one turn's end flushes only that turn's scopes and tools.
+func TestHandleZCodeOutput_TurnOwnership_TwoBackgroundTurnsKeepSeparateState(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "bg-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"inputSource":"background_task"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "bg-2", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"subagent"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "bg-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-1","kind":"text_delta","delta":"one"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "bg-1", contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"t-1","toolName":"Bash","input":{"command":"ls"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "bg-2", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-2","kind":"text_delta","delta":"two"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 6, "bg-2", contracts.ZCodeEventTurnCompleted,
+		`{"resultType":"success"}`))
+
+	texts, closings := zcodePersistedTextsAndClosings(t, sink)
+	assert.Equal(t, []string{"two"}, texts, "the second turn's end flushes only the second turn's text")
+	assert.Empty(t, closings, "the first turn's tool call is not the second turn's to close")
+	assert.Equal(t, 1, sink.NotificationCount())
+
+	a.HandleOutput(zcodeTurnEventLine(t, 7, "bg-1", contracts.ZCodeEventTurnCompleted,
+		`{"resultType":"success"}`))
+
+	texts, closings = zcodePersistedTextsAndClosings(t, sink)
+	assert.Equal(t, []string{"two", "one"}, texts, "the first turn's text flushes once, at its own end")
+	assert.Equal(t, []string{"t-1"}, closings, "the first turn's tool call closes at its own end")
+	assert.Equal(t, 2, sink.NotificationCount())
+}
+
+// zcodePersistedTextsAndClosings returns the assembled texts and the closing span
+// ids one sink persisted so far, in order.
+func zcodePersistedTextsAndClosings(t *testing.T, sink *agenttest.ControlSink) (texts, closings []string) {
+	t.Helper()
+	for _, row := range sink.Messages() {
+		if _, text, _, ok := agenttest.DecodeAssembledMessage(row.Content); ok {
+			texts = append(texts, text)
+		}
+		if row.Closing {
+			closings = append(closings, row.SpanID)
+		}
+	}
+	return texts, closings
+}
+
+// A terminal that names no known turn has no side effects: no divider, no
+// notification, no usage, and no flush of another turn's stream.
+func TestHandleZCodeOutput_TurnOwnership_ATerminalForAnUnknownTurnHasNoSideEffects(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "u-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "u-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-1","kind":"text_delta","delta":"answer"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "mystery", contracts.ZCodeEventTurnCompleted,
+		`{"response":"done","resultType":"success","usage":{"inputTokens":5,"totalTokens":5}}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "a terminal without an owner writes no divider and no text")
+	assert.Equal(t, 0, sink.NotificationCount())
+	_, usage := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+	assert.False(t, usage, "a terminal without an owner records no usage")
+	assert.True(t, a.PublishTurnActive().Active, "the user turn keeps running")
+	assert.Equal(t, len("answer"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m-1")),
+		"the user turn's text stays buffered")
+}
+
+// The user terminal while a background turn remains active closes only the user
+// turn: the divider lands, and the background turn keeps the agent busy.
+func TestHandleZCodeOutput_TurnOwnership_TheUserTerminalLeavesABackgroundTurnActive(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "u-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "bg-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"background_task"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "u-1", contracts.ZCodeEventTurnCompleted,
+		`{"response":"done","toolCallCount":1,"resultType":"success"}`))
+
+	require.Equal(t, 1, sink.MessageCount(), "the user turn writes its divider")
+	assert.True(t, sink.Messages()[0].TurnEnd)
+	assert.True(t, a.PublishTurnActive().Active, "the background turn is still running")
+	assert.Equal(t, 0, sink.NotificationCount(), "the background outcome is not written yet")
+}
+
+// A background model response must not discard the foreground turn's buffered
+// text or flush its reasoning: the flush and discard belong to the owner only.
+func TestHandleZCodeOutput_TurnOwnership_ABackgroundModelResponseKeepsTheForegroundStream(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "u-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "u-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-fg","kind":"text_delta","delta":"answer"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "u-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-fg","kind":"reasoning_delta","delta":"think"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "bg-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"background_task"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "bg-1", contracts.ZCodeEventSessionUpdated,
+		`{"content":"bg answer","stopReason":"end_turn"}`))
+
+	assert.Equal(t, len("answer"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m-fg")),
+		"the background response must not discard the foreground text")
+	assert.Equal(t, len("think"), a.generationBuffer.RetainedTextLenForTest(zcodeReasoningScope("m-fg")),
+		"the background response must not flush the foreground reasoning")
+}
+
+// A tool-input start flushes the reasoning of its own owner only: the other
+// turn's reasoning stays buffered for its own response.
+func TestHandleZCodeOutput_TurnOwnership_ToolInputStartFlushesOnlyItsOwnersReasoning(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "u-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "u-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-u","kind":"reasoning_delta","delta":"u-think"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "bg-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"background_task"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "bg-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-b","kind":"reasoning_delta","delta":"b-think"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "bg-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-b","kind":"tool_input_start","toolCallId":"t-1","toolName":"Bash"}`))
+
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), `"text":"b-think"`,
+		"the owner's own reasoning flushes")
+	assert.Equal(t, len("u-think"), a.generationBuffer.RetainedTextLenForTest(zcodeReasoningScope("m-u")),
+		"the foreground reasoning belongs to another owner and stays buffered")
+}
+
+// ID-less events follow the existing behavior when one owner is unsettled, and
+// terminal and streaming events are ignored as ambiguous when owners overlap.
+func TestHandleZCodeOutput_TurnOwnership_IDlessEventsResolveTheSoleUnsettledOwner(t *testing.T) {
+	t.Parallel()
+
+	t.Run("one owner keeps the existing behavior", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+		zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+			`{"assistantMessageId":"m-1","kind":"text_delta","delta":"answer"}`))
+		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted,
+			`{"response":"done","resultType":"success"}`))
+
+		require.Equal(t, 2, sink.MessageCount(), "the buffered text and the divider both land")
+		assert.True(t, sink.Messages()[1].TurnEnd)
+		assert.False(t, a.PublishTurnActive().Active)
+	})
+
+	t.Run("overlapping owners are ambiguous", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+		zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+		zcodeStartTestTurn(t, a, `{"turnNumber":2,"inputSource":"background_task"}`)
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+			`{"assistantMessageId":"m-1","kind":"text_delta","delta":"answer"}`))
+		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted,
+			`{"response":"done","resultType":"success"}`))
+
+		assert.Equal(t, 0, sink.MessageCount(), "an ambiguous streaming or terminal event writes nothing")
+		assert.Equal(t, 0, sink.NotificationCount())
+		assert.True(t, a.PublishTurnActive().Active, "an ambiguous terminal settles no owner")
+		assert.Equal(t, 0, a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m-1")),
+			"an ambiguous streaming event records no content")
+	})
+}
+
+// Session replacement and teardown clear every turn owner, so a terminal for a
+// turn of the replaced session settles nothing and writes nothing.
+func TestHandleZCodeOutput_TurnOwnership_SessionReplacementAndTeardownClearTheOwners(t *testing.T) {
+	t.Parallel()
+
+	for name, close := range map[string]func(t *testing.T, a *Agent, stdin *zcodeRecordedStdin){
+		"session replacement": func(t *testing.T, a *Agent, stdin *zcodeRecordedStdin) {
+			go func() {
+				create := waitZCodeRequest(t, stdin, MethodSessionCreate)
+				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, create), json.RawMessage(
+					`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},`+
+						`"settings":{"mode":{"current":"build"}}}`)))
+				sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
+				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"sessionId":"sess-fresh","eventSeq":0,"events":[]}`)))
+			}()
+			_, err := a.ClearContext()
+			require.NoError(t, err)
+		},
+		"teardown": func(t *testing.T, a *Agent, stdin *zcodeRecordedStdin) {
+			answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+			a.SimulateExitForTest()
+			a.Stop()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "u-1", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":1,"input":"hi"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "bg-1", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":2,"inputSource":"background_task"}`))
+			close(t, a, stdin)
+
+			a.HandleOutput(zcodeTurnEventLine(t, 3, "u-1", contracts.ZCodeEventTurnCompleted,
+				`{"response":"done","resultType":"success"}`))
+			a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventTurnCompleted,
+				`{"response":"done","resultType":"success"}`))
+
+			assert.Equal(t, 0, sink.MessageCount(), "a cleared owner settles nothing and writes no divider")
+			assert.Equal(t, 0, sink.NotificationCount())
+			assert.False(t, a.PublishTurnActive().Active, "the replacement or teardown left no owner")
+		})
+	}
 }

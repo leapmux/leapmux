@@ -1330,8 +1330,6 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
   const stopReason = step.stopReason === undefined
     ? (step.toolCalls?.length ? 'tool_use' : 'end_turn')
     : stopReasonToken('anthropic-messages', step.stopReason)
-  const inputTokens = step.usage?.inputTokens ?? 1
-  const outputTokens = step.usage?.outputTokens ?? 1
   if (!streamRequested(requestBody)) {
     if (step.stream && !await bufferModelOutput(stream, step))
       return
@@ -1343,7 +1341,7 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
       content,
       stop_reason: stopReason,
       stop_sequence: null,
-      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+      usage: anthropicUsage(step),
     }, step)
     return
   }
@@ -1359,7 +1357,7 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: inputTokens, output_tokens: 0 },
+      usage: { ...anthropicUsage(step), output_tokens: 0 },
     },
   })
   let index = 0
@@ -1430,7 +1428,7 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
   writeSSEEvent(response, {
     type: 'message_delta',
     delta: { stop_reason: stopReason, stop_sequence: null },
-    usage: { output_tokens: outputTokens },
+    usage: { output_tokens: step.usage?.outputTokens ?? 1 },
   })
   writeSSEEvent(response, { type: 'message_stop' })
   response.end()
@@ -1589,21 +1587,62 @@ function streamRequested(body: unknown): boolean {
   return isObject(body) && body.stream === true
 }
 
-function usage(inputKey: string, outputKey: string, step?: MockModelStep): Record<string, number> {
+/**
+ * The chat-completions usage block of one step.
+ *
+ * `prompt_tokens` is the cache-INCLUSIVE input the step scripted, and the
+ * cache-read count rides `prompt_tokens_details.cached_tokens`. The OpenAI wire
+ * states no cache-write slot, so that count rides the Anthropic-style extension
+ * name that OpenAI-compatible proxies pass through.
+ */
+function usage(inputKey: string, outputKey: string, step?: MockModelStep): Record<string, unknown> {
   const input = step?.usage?.inputTokens ?? 1
   const output = step?.usage?.outputTokens ?? 1
-  return { [inputKey]: input, [outputKey]: output, total_tokens: input + output }
+  return {
+    [inputKey]: input,
+    [outputKey]: output,
+    total_tokens: input + output,
+    prompt_tokens_details: { cached_tokens: step?.usage?.cacheReadTokens ?? 0 },
+    cache_creation_input_tokens: step?.usage?.cacheWriteTokens ?? 0,
+  }
 }
 
+/**
+ * The OpenAI Responses usage block of one step. `input_tokens` is the
+ * cache-INCLUSIVE input, and the cache-read count rides `input_tokens_details`.
+ * As on chat completions, the cache-write count has no OpenAI-native slot and
+ * rides the Anthropic-style extension name.
+ */
 function responseUsage(step?: MockModelStep): Record<string, unknown> {
   const input = step?.usage?.inputTokens ?? 1
   const output = step?.usage?.outputTokens ?? 1
   return {
     input_tokens: input,
-    input_tokens_details: { cached_tokens: 0 },
+    input_tokens_details: { cached_tokens: step?.usage?.cacheReadTokens ?? 0 },
     output_tokens: output,
     output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: input + output,
+    cache_creation_input_tokens: step?.usage?.cacheWriteTokens ?? 0,
+  }
+}
+
+/**
+ * The Anthropic Messages usage of one step.
+ *
+ * The Anthropic wire states the UNcached input beside the two cache buckets, so
+ * the mock subtracts the buckets from the step's cache-INCLUSIVE input. A
+ * malformed step whose buckets exceed its input clamps the wire input to zero.
+ */
+function anthropicUsage(step?: MockModelStep): Record<string, number> {
+  const input = step?.usage?.inputTokens ?? 1
+  const output = step?.usage?.outputTokens ?? 1
+  const cacheRead = step?.usage?.cacheReadTokens ?? 0
+  const cacheWrite = step?.usage?.cacheWriteTokens ?? 0
+  return {
+    input_tokens: Math.max(0, input - cacheRead - cacheWrite),
+    output_tokens: output,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheWrite,
   }
 }
 

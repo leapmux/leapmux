@@ -73,18 +73,32 @@ func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 	}
 }
 
-// IsInterrupt recognizes ZCode's own stop frame.
+// IsInterrupt recognizes ZCode's own stop frames: the legacy session/stop and
+// the guarded v4 `stop` command Agent.Interrupt emits.
 //
 // The frontend uses the InterruptAgent RPC. This parser supports raw provider
 // input from other callers.
 func (zcodeProvider) IsInterrupt(content string) bool {
 	var msg struct {
-		Method string `json:"method"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal([]byte(content), &msg); err != nil {
 		return false
 	}
-	return msg.Method == MethodSessionStop
+	if msg.Method == MethodSessionStop {
+		return true
+	}
+	if msg.Method != MethodCommand {
+		return false
+	}
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(msg.Params, &envelope) != nil {
+		return false
+	}
+	return envelope.Type == zcodeCommandStop
 }
 
 // IsSelfDisplayingControlTool is false: the app-server does not echo a control
@@ -161,8 +175,8 @@ func (p zcodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSes
 }
 
 // TurnEndToolUses reads the tool-call count of a turn end. The Worker's own count,
-// which finishZCodeTurn writes onto every divider, comes first: a stopped turn's
-// turn.completed states toolCallCount 0 for the call that the stop cut. ZCode's own
+// which persistZCodeTurnDivider writes onto every divider, comes first: a stopped
+// turn's turn.completed states toolCallCount 0 for the call that the stop cut. ZCode's own
 // toolCallCount answers for a turn end that carries no Worker count.
 func (zcodeProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	if count, ok := agent.DefaultTurnEndToolUses(content); ok {

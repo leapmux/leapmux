@@ -26,6 +26,9 @@ func TestTurnSignalWhitelist_ZCode(t *testing.T) {
 		sink := &agenttest.Sink{}
 		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
 		// Each case gets its own agent, so the seq only has to rise within one.
+		// The seeded owner is silent (no publications of its own), so the frame
+		// under test is the only thing that may move the flag.
+		zcodeSeedTestTurn(t, a, false)
 		a.HandleOutput(zcodeEventLine(t, seq.Add(1), tc.Name, tc.Line))
 		return sink.TurnActives()
 	})

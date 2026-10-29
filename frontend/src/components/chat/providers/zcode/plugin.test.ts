@@ -314,57 +314,27 @@ describe('zcode quotable text', () => {
 
 describe('zcode contextUsageFromMessage', () => {
   // Usage rides a model response: `content` beside a `stopReason` states the
-  // finished generation the counts belong to.
-  const usageRow = (usage: Record<string, unknown>, extra: Record<string, unknown> = {}): ResolvedMessageContent =>
+  // finished generation the counts belong to. The projection's matrix lives in
+  // sessionMetadata.test.ts; this case pins the registration and the rule.
+  const usageRow = (usage: Record<string, unknown>): ResolvedMessageContent =>
     parsedOf(event(ZCODE_EVENT.SessionUpdated, {
       content: 'done',
       stopReason: 'stop',
       usage,
-      ...extra,
     }))
 
-  it('normalizes a usage snapshot onto the shared context-usage shape', () => {
+  it('is registered and subtracts the cache buckets from a cache-inclusive input', () => {
     expect(plugin?.session?.contextUsageFromMessage!(usageRow({
-      inputTokens: 100,
-      outputTokens: 10,
-      cacheReadTokens: 20,
-      cacheWriteTokens: 5,
-      totalTokens: 135,
+      inputTokens: 10,
+      outputTokens: 4,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 3,
     }))).toEqual({
-      inputTokens: 100,
-      outputTokens: 10,
-      cacheReadInputTokens: 20,
-      cacheCreationInputTokens: 5,
-      contextTokens: 135,
+      inputTokens: 5,
+      cacheCreationInputTokens: 3,
+      cacheReadInputTokens: 2,
+      outputTokens: 4,
     })
-  })
-
-  it('omits contextTokens when the snapshot reports no total', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(usageRow({ inputTokens: 100, outputTokens: 10 })))
-      .toEqual({
-        inputTokens: 100,
-        outputTokens: 10,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-      })
-  })
-
-  it('returns null for an all-zero snapshot, which reports no usage at all', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 0,
-    }))).toBeNull()
-  })
-
-  it('returns null for a session.updated with no usage and for another event type', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(parsedOf(event(ZCODE_EVENT.SessionUpdated, { messageCount: 3 }))))
-      .toBeNull()
-    expect(plugin?.session?.contextUsageFromMessage!(parsedOf(event(ZCODE_EVENT.TurnCompleted, {
-      usage: { inputTokens: 10 },
-    })))).toBeNull()
   })
 })
 

@@ -36,6 +36,7 @@ func spawnAZCodeSubagent(t *testing.T) (*Agent, *agenttest.ControlSink) {
 	t.Helper()
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
 	return a, sink
@@ -200,6 +201,7 @@ func TestZCodeSubagent_BackgroundLaunchIsNotAChildReport(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
 		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
@@ -306,6 +308,7 @@ func TestZCodeSubagent_LifecycleAndAgentResultPersistOneReport(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
 		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","status":"completed","message":"1 file"}`))
@@ -325,6 +328,7 @@ func TestZCodeSubagent_FinalLifecycleClosesWithoutAnAgentResult(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
 		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
@@ -380,6 +384,7 @@ func TestZCodeSubagent_AnUnattachableUpdateStaysInTheParent(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"orphan-1","toolName":"Bash","source":"subagent","input":{"command":"ls"}}`))
 
@@ -499,6 +504,7 @@ func TestZCodeSubagent_RowIsTitledFromTheSpawnNotTheFirstCommand(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"sub-1","toolName":"Bash","source":"subagent",
@@ -519,6 +525,7 @@ func TestZCodeSubagent_AResumedSpawnResultStillClosesTheRow(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	// The state a resume leaves behind: the durable row exists, the in-memory caches do
 	// not.
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "spawn-1", Title: "file census"})
@@ -546,6 +553,7 @@ func TestZCodeSubagent_AShellTasksRowSurvivesItsLaunchToolCall(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "call-1", Kind: bgtask.KindShell, Title: "sleep 60", Status: bgtask.StatusRunning,
 	}))
@@ -566,6 +574,7 @@ func TestZCodeSubagent_ASpawnWithNoToolCallsPersistsItsPromptAndReport(t *testin
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	require.Len(t, sink.ChildAgentIDs(), 1)
@@ -590,6 +599,7 @@ func TestZCodeSubagent_TheBackgroundTaskAndToolPathsShareOneTranscript(t *testin
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	// The background-task event arrives first, keyed on the SAME spawn tool call.
@@ -790,6 +800,7 @@ func TestZCodeInterruptChildWithoutABackgroundTask(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
 	require.ErrorIs(t, a.InterruptChild("spawn-1", agent.StopContext{}), agent.ErrChildOperationUnsupported)
@@ -841,6 +852,7 @@ func newZCodeLifecycleChild(t *testing.T) (*Agent, *agenttest.ControlSink, *zcod
 	stdin := &zcodeRecordedStdin{}
 	calls := &zcodeChildLifecycleCalls{ProviderServices: agent.NewProviderServices(sink)}
 	a := newZCodeTestAgentWithStdin(t, calls, stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleStart))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
@@ -898,6 +910,7 @@ func TestZCodeBackgroundSubagentWithoutLifecycleEndsWithItsTask(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	calls := &zcodeChildLifecycleCalls{ProviderServices: agent.NewProviderServices(sink)}
 	a := newZCodeTestAgentWithStdin(t, calls, &zcodeRecordedStdin{})
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))

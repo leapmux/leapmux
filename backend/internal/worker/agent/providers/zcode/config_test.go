@@ -1148,6 +1148,68 @@ func TestZCodeCatalog_HasInlineAPIKey(t *testing.T) {
 	assert.False(t, zcodeCatalog{}.hasInlineAPIKey(""))
 }
 
+func TestLoadZCodeCodingPlanEntitlements(t *testing.T) {
+	t.Parallel()
+
+	writeCache := func(t *testing.T, content string) string {
+		t.Helper()
+		home := t.TempDir()
+		path := filepath.Join(append([]string{home}, zcodeCodingPlanCacheRelPath...)...)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return home
+	}
+
+	t.Run("explicit available marks the coding plan available", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"available"}}}}`)
+		got := loadZCodeCodingPlanEntitlements(home)
+		require.Contains(t, got, "builtin:zai-coding-plan")
+		assert.Equal(t, zcodeAvailabilityAvailable, got["builtin:zai-coding-plan"].Availability)
+	})
+
+	t.Run("explicit unavailable marks it unavailable with not-entitled", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"unavailable"}}}}`)
+		got := loadZCodeCodingPlanEntitlements(home)
+		require.Contains(t, got, "builtin:zai-coding-plan")
+		assert.Equal(t, zcodeAvailabilityUnavailable, got["builtin:zai-coding-plan"].Availability)
+		assert.Equal(t, zcodeUnavailableNotEntitled, got["builtin:zai-coding-plan"].UnavailableReason)
+	})
+
+	t.Run("absent cache preserves the current behavior", func(t *testing.T) {
+		t.Parallel()
+		got := loadZCodeCodingPlanEntitlements(t.TempDir())
+		assert.Nil(t, got, "no cache entry means the current headless behavior applies")
+	})
+
+	t.Run("malformed cache keeps the last usable configuration", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":`)
+		got := loadZCodeCodingPlanEntitlements(home)
+		assert.Nil(t, got, "a malformed rewrite reports no entitlement")
+	})
+
+	t.Run("no entitlement is inferred from selection alone", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{}}}`)
+		got := loadZCodeCodingPlanEntitlements(home)
+		assert.Empty(t, got, "an empty items map infers nothing")
+	})
+
+	t.Run("an unrecognized status is ignored", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"pending"}}}}`)
+		got := loadZCodeCodingPlanEntitlements(home)
+		assert.Empty(t, got, "only available and unavailable are recognized")
+	})
+
+	t.Run("no home directory returns nil", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, loadZCodeCodingPlanEntitlements(""))
+	})
+}
+
 func TestLoadZCodeCatalog_MissingMalformedAndKeylessConfigurations(t *testing.T) {
 	t.Parallel()
 

@@ -40,6 +40,11 @@ type zcodeFakeProjectAPI struct {
 	calls   []string
 
 	mints atomic.Int32
+	// mintStarted counts each mint request that reached the handler.
+	mintStarted atomic.Int32
+	// mintCancelled counts each mint whose request context ended while the
+	// release gate held it: the client abandoned the call.
+	mintCancelled atomic.Int32
 }
 
 func (f *zcodeFakeProjectAPI) handle(w http.ResponseWriter, r *http.Request) {
@@ -60,8 +65,14 @@ func (f *zcodeFakeProjectAPI) handle(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		assert.Equal(f.t, map[string]string{"clientType": "zcode", "clientVersion": "3.16.3"}, body)
+		f.mintStarted.Add(1)
 		if release != nil {
-			<-release
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				f.mintCancelled.Add(1)
+				return
+			}
 		}
 		n := f.mints.Add(1)
 		if status != 0 && status != http.StatusOK {
@@ -397,6 +408,86 @@ func TestZCodeProjectTokens_ConcurrentRequestsShareOneMint(t *testing.T) {
 	assert.Equal(t, "token-1", (<-results).token)
 	assert.Equal(t, "token-1", (<-results).token)
 	assert.Equal(t, int32(1), api.mints.Load())
+}
+
+// Cancelling one waiter of a shared mint suppresses that waiter only: the HTTP
+// call continues for the survivor, whose result enters the token cache.
+func TestZCodeProjectTokens_CancelledWaiterLeavesTheSharedMintAlive(t *testing.T) {
+	t.Parallel()
+
+	tokens, api, _ := newZCodeTestProjectTokens(t)
+	key := zcodeProjectLocationKey(tokens.endpoints.zai, "zai", "user-1", nil)
+	credentials := zcodeTestReadCredentials(t, zcodeTestCredentialStore(t, map[string]string{
+		key: `{"organizationId":"org-default","projectId":"p-default","apiKeyId":"key-1"}`,
+	}))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+
+	first, cancelFirst := context.WithCancel(t.Context())
+	firstErr := make(chan error, 1)
+	survivor := make(chan zcodeProjectToken, 1)
+	go func() {
+		_, err := tokens.resolve(first, credentials, zcodeTestTokenRequest())
+		firstErr <- err
+	}()
+	go func() {
+		got, err := tokens.resolve(t.Context(), credentials, zcodeTestTokenRequest())
+		assert.NoError(t, err)
+		survivor <- got
+	}()
+	require.Eventually(t, func() bool { return tokens.mints.waitingInAll() == 2 }, 30*time.Second, time.Millisecond)
+
+	cancelFirst()
+	require.ErrorIs(t, <-firstErr, context.Canceled, "the cancelled waiter gets no result")
+	require.Eventually(t, func() bool { return tokens.mints.waitingInAll() == 1 }, zcodeCancelPromptness, time.Millisecond,
+		"one cancelled waiter must leave the shared call for the survivor promptly")
+
+	unblock()
+	assert.Equal(t, "token-1", (<-survivor).token, "the survivor gets the mint result")
+	assert.Zero(t, api.mintCancelled.Load(), "the shared HTTP call continued for the survivor")
+	tokens.mu.Lock()
+	cached := len(tokens.tokens)
+	tokens.mu.Unlock()
+	assert.Equal(t, 1, cached, "a valid result for a survivor enters the cache")
+}
+
+// A single cancelled waiter ends the shared mint: the HTTP call is cancelled
+// promptly and no result is returned or cached.
+func TestZCodeProjectTokens_LastWaiterCancellationCancelsMintAndPreventsPublication(t *testing.T) {
+	t.Parallel()
+
+	tokens, api, _ := newZCodeTestProjectTokens(t)
+	key := zcodeProjectLocationKey(tokens.endpoints.zai, "zai", "user-1", nil)
+	credentials := zcodeTestReadCredentials(t, zcodeTestCredentialStore(t, map[string]string{
+		key: `{"organizationId":"org-default","projectId":"p-default","apiKeyId":"key-1"}`,
+	}))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := tokens.resolve(ctx, credentials, zcodeTestTokenRequest())
+		done <- err
+	}()
+	require.Eventually(t, func() bool { return api.mintStarted.Load() >= 1 }, 30*time.Second, time.Millisecond)
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled, "the cancelled waiter gets no result")
+	require.Eventually(t, func() bool { return api.mintCancelled.Load() >= 1 }, zcodeCancelPromptness, time.Millisecond,
+		"the last waiter to leave cancels the shared HTTP call promptly")
+
+	unblock()
+	tokens.mu.Lock()
+	cached := len(tokens.tokens)
+	tokens.mu.Unlock()
+	assert.Zero(t, cached, "an abandoned call cannot publish into the cache")
 }
 
 // call reads each reply of the project API as the desktop's readData does: only

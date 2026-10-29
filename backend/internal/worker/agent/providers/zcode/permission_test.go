@@ -124,7 +124,7 @@ func TestZCodeClearContextKeepsControlsFromTheNewSubscription(t *testing.T) {
 		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, create), json.RawMessage(`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},"settings":{"mode":{"current":"build"}}}`)))
 		sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
 		a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, strings.ReplaceAll(zcodePermissionParams, "sess-1", "sess-fresh")))
-		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"sessionId":"sess-fresh","eventSeq":0,"events":[]}`)))
 	}()
 	session, err := a.ClearContext()
 	require.NoError(t, err)

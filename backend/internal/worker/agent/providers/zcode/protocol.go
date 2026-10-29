@@ -26,6 +26,13 @@ const (
 	// 0.16.9. The app server loads built-in and personal providers itself. Its
 	// host supplies the active account plans with this method.
 	MethodUpdateAccountConfig = "provider/updateAccountConfig"
+	// MethodProviderRefreshRegistry asks the app-server to reload its built-in
+	// and personal provider registry from disk. A current app-server caches the
+	// registry it loaded at boot, and a personal configuration change reaches
+	// the session's model catalog only after this call. The reply is
+	// `{"refreshed":true}`; a build that does not implement it answers
+	// method-not-found, which the caller treats as "the capability is absent".
+	MethodProviderRefreshRegistry = "provider/refreshRegistry"
 
 	MethodSessionCreate  = "session/create"
 	MethodSessionResume  = "session/resume"
@@ -39,6 +46,13 @@ const (
 	MethodSessionCancelBackgroundTask = "session/cancelBackgroundTask"
 
 	MethodSessionSubscribe = "session/subscribe"
+	// MethodSessionEvents fetches a contiguous range of session events after a
+	// given sequence, for gap recovery. The reply carries the events and the
+	// highest sequence the range covers.
+	MethodSessionEvents = "session/events"
+	// MethodSessionMessages fetches the session's messages, newest first, for
+	// final-message reconciliation after a stalled turn.
+	MethodSessionMessages = "session/messages"
 
 	// MethodConversationSubscribe and MethodConversationUnsubscribe open and
 	// close a subscription to the desktop protocol's view of one session. Its
@@ -79,6 +93,11 @@ const (
 	// NotifyConversationFrame carries one frame of a MethodConversationSubscribe
 	// subscription.
 	NotifyConversationFrame = "v4/conversation/frame"
+	// NotifyProviderRuntimeHeadersCancelled withdraws one
+	// interaction/requestProviderRuntimeHeaders the app-server no longer needs:
+	// its model request was aborted or replaced. Params state the LOGICAL
+	// requestId, the session and the workspace of the request.
+	NotifyProviderRuntimeHeadersCancelled = "interaction/providerRuntimeHeadersCancelled"
 )
 
 // ZCode session event types (the `type` field inside a session/event envelope).

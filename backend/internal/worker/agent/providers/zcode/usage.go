@@ -42,6 +42,10 @@ type zcodeRuntimeState struct {
 	ActiveTurnID  string             `json:"activeTurnId"`
 	ContextUsage  *zcodeContextUsage `json:"contextUsage"`
 	StateRevision int64              `json:"stateRevision"`
+	// EventSeq is the sequence the snapshot was taken at. A value past the
+	// dispatch cursor reports events that have not been delivered yet, and it
+	// never advances the cursor: only dispatched events do.
+	EventSeq int64 `json:"eventSeq"`
 }
 
 // zcodeContextUsage is the app-server's authoritative context readout.
@@ -69,6 +73,22 @@ type zcodeCost struct {
 // because a wrong number is worse than no number.
 const zcodeUsageCurrencyUSD = "USD"
 
+// ordinaryZCodeInput subtracts the cache buckets from ZCode's cache-inclusive
+// input count.
+//
+// ZCode's `inputTokens` is the TOTAL prompt traffic, so it already contains
+// `cacheReadTokens` and `cacheWriteTokens`. The broadcast's four counts are
+// exclusive rows of one breakdown, and the frontend sums them: projecting the
+// inclusive input as-is counts every cached token twice. A malformed reading
+// whose buckets exceed its input clamps to zero rather than going negative.
+func ordinaryZCodeInput(input, cacheRead, cacheWrite int64) int64 {
+	ordinary := input - cacheRead - cacheWrite
+	if ordinary < 0 {
+		return 0
+	}
+	return ordinary
+}
+
 // zcodeContextUsageMap projects token counts into the broadcast-shaped context-usage
 // map every provider emits. Returns nil for an empty usage object, so a caller does
 // not overwrite a real reading with zeros.
@@ -77,7 +97,7 @@ func zcodeContextUsageMap(usage zcodeUsage, contextWindow int64) map[string]any 
 		return nil
 	}
 	out := providerkit.ContextUsageMap(providerkit.ContextTokenCounts{
-		Input:      usage.InputTokens,
+		Input:      ordinaryZCodeInput(usage.InputTokens, usage.CacheReadTokens, usage.CacheWriteTokens),
 		CacheWrite: usage.CacheWriteTokens,
 		CacheRead:  usage.CacheReadTokens,
 		Output:     usage.OutputTokens,
@@ -101,7 +121,7 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 	// when the readout carries no `cache` block. `output_tokens` has no source here.
 	var counts providerkit.ContextTokenCounts
 	if c := usage.Cache; c != nil {
-		counts.Input = c.InputTokens
+		counts.Input = ordinaryZCodeInput(c.InputTokens, c.CacheReadTokens, c.CacheWriteTokens)
 		counts.CacheRead = c.CacheReadTokens
 		counts.CacheWrite = c.CacheWriteTokens
 	}
@@ -202,6 +222,23 @@ func (a *Agent) refreshZCodeUsageFromSession() {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		slog.Warn("zcode session/read unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
+	}
+	// A newer snapshot reports a gap: events below its eventSeq have not
+	// dispatched yet. Replay them BEFORE the fold, so older evidence cannot
+	// land on top of the newer readout when those events arrive later. A gap
+	// the replay cannot close holds the fold back: the readout is best-effort,
+	// and the cursor stays put, so the events are undelivered rather than
+	// discarded.
+	if state.Runtime != nil && state.Runtime.EventSeq > 0 {
+		a.Mu.Lock()
+		gap, current := state.Runtime.EventSeq > a.lastSeq, a.sessionID == sessionID
+		a.Mu.Unlock()
+		if gap && current {
+			if err := a.replayZCodeEvents(a.Context()); err != nil {
+				slog.Warn("zcode usage refresh replay", "agent_id", a.AgentID(), "error", err)
+				return
+			}
+		}
 	}
 	body := zcodeStatePatchBody{Runtime: state.Runtime}
 	if state.Settings != nil {

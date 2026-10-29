@@ -1,6 +1,7 @@
 package zcode
 
 import (
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -54,6 +55,7 @@ func TestZCodeInterrupt_KeepsTheTurnAliveWhileTheAgentStillSpeaks(t *testing.T) 
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -70,13 +72,14 @@ func TestZCodeInterrupt_KeepsTheTurnAliveWhileTheAgentStillSpeaks(t *testing.T) 
 	assert.Equal(t, 1, timer.armed, "the stop arms the silence fallback")
 }
 
-// Every session event the agent sends after the stop restarts the window, because a
-// frame is proof the turn is alive.
-func TestZCodeInterrupt_ASessionEventRefreshesTheFallback(t *testing.T) {
+// Only the stopped turn's own speech restarts the window. A model stream event
+// is that speech: a frame is proof the turn is alive.
+func TestZCodeInterrupt_AModelStreamEventRefreshesTheFallback(t *testing.T) {
 	t.Parallel()
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -87,9 +90,77 @@ func TestZCodeInterrupt_ASessionEventRefreshesTheFallback(t *testing.T) {
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Equal(t, 1, timer.armed)
 
-	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"still working"}}}}`)))
+	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"model.streaming","payload":{"kind":"text_delta","assistantMessageId":"m1","delta":"still working"}}}}`)))
 
-	assert.Equal(t, 2, timer.armed, "a frame after the stop restarts the window")
+	assert.Equal(t, 2, timer.armed, "a frame of the stopped turn after the stop restarts the window")
+}
+
+// Background traffic says nothing about the stopped USER turn. A background
+// task's lifecycle, a subagent's traffic and a background turn's own stream
+// must not postpone the window that ends the user's turn.
+func TestZCodeStoppedTurn_BackgroundTaskTrafficDoesNotRefreshTheWindow(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-bg", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"goal_state_change","foregroundExecutionId":"exec-u"}`))
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.Equal(t, 1, timer.armed)
+
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"task-1","status":"running"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","parentToolCallId":"call-1","status":"running"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-bg", contracts.ZCodeEventModelStreaming,
+		`{"kind":"text_delta","assistantMessageId":"m2","delta":"background work"}`))
+
+	assert.Equal(t, 1, timer.armed, "background traffic must not keep the stopped user turn alive")
+}
+
+// The stopped turn's tool and model events are its own speech: they restart the
+// window, and the first one past the grace proves the stop was ignored.
+func TestZCodeStoppedTurn_ToolAndModelEventsRefreshAndProveAnIgnoredStop(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-user", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	var ignored atomic.Int32
+	require.NoError(t, a.Interrupt(agent.NewStopContext(func() { ignored.Add(1) })))
+	require.Equal(t, 1, timer.armed)
+	// The accepted stop is now older than the grace, exactly as a live run is
+	// by the time the ignored turn's next frame arrives.
+	a.Mu.Lock()
+	a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
+	a.Mu.Unlock()
+
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-user", contracts.ZCodeEventModelStreaming,
+		`{"kind":"text_delta","assistantMessageId":"m1","delta":"still going"}`))
+	assert.Equal(t, 2, timer.armed, "the model stream of the stopped turn restarts the window")
+
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-user", contracts.ZCodeEventToolUpdated,
+		`{"toolCallId":"call-1","toolName":"bash"}`))
+	assert.Equal(t, 3, timer.armed, "a tool update of the stopped turn restarts the window")
+
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 1, "one row per accepted stop, however many frames follow")
+	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeStopIgnored+`"}`, string(notifications[0].Content))
+	assert.Equal(t, int32(1), ignored.Load(),
+		"the ignored interrupt restores the activity that makes another Interrupt available")
 }
 
 // An agent that was never stopped arms nothing, so an ordinary turn pays no cost.
@@ -132,6 +203,7 @@ func TestZCodeClearContext_DropsTheStoppedTurnWindow(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -165,6 +237,7 @@ func TestZCodeStoppedTurn_WritesARowForTheStop(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -194,6 +267,7 @@ func TestZCodeStoppedTurn_KeepsTheSpansOfWorkStillRunning(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -215,6 +289,7 @@ func TestZCodeStoppedTurn_WritesNoRowWhenTheTurnReportsItsOwnEnd(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -274,6 +349,7 @@ func TestZCodeStoppedTurn_WritesNoRowAfterTheTurnAlreadyEnded(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -298,6 +374,7 @@ func TestZCodeStoppedTurn_WritesNoIgnoredRowInsideTheGrace(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -307,7 +384,7 @@ func TestZCodeStoppedTurn_WritesNoIgnoredRowInsideTheGrace(t *testing.T) {
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
-	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"winding down"}}}}`)))
+	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"model.streaming","payload":{"kind":"text_delta","assistantMessageId":"m1","delta":"winding down"}}}}`)))
 
 	assert.Empty(t, sink.PersistedNotifications(),
 		"a turn still inside its grace owes the reader no verdict on the stop")
@@ -324,6 +401,7 @@ func TestZCodeStoppedTurn_WritesOneIgnoredRowWhenTheAgentKeepsSpeaking(t *testin
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -339,7 +417,7 @@ func TestZCodeStoppedTurn_WritesOneIgnoredRowWhenTheAgentKeepsSpeaking(t *testin
 	a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
 	a.Mu.Unlock()
 
-	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"still going"}}}}`)))
+	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"model.streaming","payload":{"kind":"text_delta","assistantMessageId":"m1","delta":"still going"}}}}`)))
 	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"tool.updated","payload":{"toolName":"bash"}}}}`)))
 
 	notifications := sink.PersistedNotifications()
@@ -373,6 +451,7 @@ func TestZCodeInterruptEscalationReady(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -404,6 +483,7 @@ func TestZCodeStop_WritesTheStopRowWhenAStopWasPending(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -436,6 +516,7 @@ func TestZCodeStop_WritesOneStopRowWhenTheWindowFiresDuringTheStop(t *testing.T)
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
 	a.Mu.Lock()
@@ -458,4 +539,121 @@ func TestZCodeStop_WritesOneStopRowWhenTheWindowFiresDuringTheStop(t *testing.T)
 	notifications := sink.PersistedNotifications()
 	require.Len(t, notifications, 1, "one Stop press earns one interrupted row")
 	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
+}
+
+// A stopped foreground turn's tool call keeps its running card (the abort reaches
+// the model stream, not a launched command), so its late result must still route
+// to the stopped owner while another turn runs -- and must leave that other
+// turn's output and activity intact.
+func TestZCodeStoppedTurn_LateToolResultRoutesToTheStoppedOwner(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "u-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "u-1", contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"t-1","toolName":"Bash","input":{"command":"sleep 90"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "bg-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"background_task"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "bg-1", contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"m-bg","kind":"text_delta","delta":"bg out"}`))
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.NotNil(t, timer.fire, "the stop arms the silence window")
+	timer.fire()
+
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "u-1", contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"t-1","result":{"content":"done"}}`))
+
+	var closing *agenttest.Message
+	for i, row := range sink.Messages() {
+		if row.Closing && row.SpanID == "t-1" {
+			closing = &sink.Messages()[i]
+		}
+	}
+	require.NotNil(t, closing, "the late result still routes to the stopped owner and closes its call")
+	assert.True(t, a.PublishTurnActive().Active,
+		"the background turn is still running, so the chat must not read idle")
+	assert.Equal(t, len("bg out"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m-bg")),
+		"the stop settles the stopped owner only; the background turn's output stays buffered")
+}
+
+// Only the watched turn's own traffic extends the silence window. An ID-less
+// session.updated extends it only when its kind reports the running turn's own
+// work: the model request of the main query, or the main reply. Side queries,
+// side replies and compaction progress are the session's own machinery and must
+// not postpone the stopped turn's end.
+func TestZCodeStoppedTurn_OnlyTheMainQueriesAndRepliesExtendTheWindow(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.Equal(t, 1, timer.armed)
+
+	extend := func(payload string) {
+		t.Helper()
+		a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, Payload: json.RawMessage(payload)})
+	}
+
+	extend(`{"type":"model_request_started","requestId":"q1"}`)
+	assert.Equal(t, 2, timer.armed, "a network status with no query source is the main query")
+
+	extend(`{"type":"model_request_completed","requestId":"q1","querySource":"main_turn"}`)
+	assert.Equal(t, 3, timer.armed, "the main query's network status is the turn speaking")
+
+	extend(`{"type":"model_request_started","requestId":"q2","querySource":"compact"}`)
+	assert.Equal(t, 3, timer.armed, "a side query is not the turn's speech")
+
+	extend(`{"content":"answer","stopReason":"stop"}`)
+	assert.Equal(t, 4, timer.armed, "the main reply is the turn speaking")
+
+	extend(`{"content":"internal","stopReason":"tool_internal"}`)
+	assert.Equal(t, 4, timer.armed, "a tool-internal reply is a side reply")
+
+	extend(`{"content":"title","querySource":"goal_summary_title","stopReason":"stop"}`)
+	assert.Equal(t, 4, timer.armed, "a reply of another query source is a side reply")
+
+	extend(`{"operationId":"c1","trigger":"auto","status":"running"}`)
+	assert.Equal(t, 4, timer.armed, "compaction progress is not the stopped turn's speech")
+}
+
+// Compaction progress is the compaction's own speech: it extends a stop window
+// that watches the compaction, and only such a window.
+func TestZCodeStoppedTurn_CompactionProgressExtendsACompactionWindow(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.Mu.Lock()
+	a.compactionSessionID = "sess-1"
+	a.Mu.Unlock()
+	a.PublishTurnActive()
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.Equal(t, 1, timer.armed)
+
+	a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated,
+		Payload: json.RawMessage(`{"operationId":"c1","trigger":"manual","status":"running"}`)})
+	assert.Equal(t, 2, timer.armed, "the compaction's own progress keeps the compaction window alive")
+
+	a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated,
+		Payload: json.RawMessage(`{"strategy":"local_tool_result_clear"}`)})
+	assert.Equal(t, 3, timer.armed, "a microcompact boundary is the compaction's own progress")
 }

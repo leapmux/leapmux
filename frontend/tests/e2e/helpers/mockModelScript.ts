@@ -130,12 +130,21 @@ export interface MockModelTextStream {
 /**
  * Token counts a step reports in its usage block.
  *
- * Every field is optional. An absent field keeps the mock's default of 1, so a
- * step that only needs a bigger `inputTokens` need not state the rest.
+ * Every field is optional. An absent `inputTokens` or `outputTokens` keeps the
+ * mock's default of 1, so a step that only needs a bigger `inputTokens` need not
+ * state the rest. An absent cache count is zero.
+ *
+ * `inputTokens` is the CACHE-INCLUSIVE count the provider's own usage reports;
+ * `cacheReadTokens` and `cacheWriteTokens` are the buckets inside it. The mock's
+ * writers map that pair onto each protocol's own usage shape.
  */
 export interface MockModelUsage {
   inputTokens?: number
   outputTokens?: number
+  /** Cache-read tokens inside the cache-inclusive `inputTokens`. */
+  cacheReadTokens?: number
+  /** Cache-write tokens inside the cache-inclusive `inputTokens`. */
+  cacheWriteTokens?: number
   /**
    * Context-window size the client may pair with `inputTokens`.
    *
@@ -876,7 +885,7 @@ function parseUsage(value: unknown, label: string): MockModelUsage | undefined {
   if (!isObject(value))
     throw new Error(`Model ${label} usage must be an object`)
   const usage: MockModelUsage = {}
-  for (const key of ['inputTokens', 'outputTokens', 'contextWindow'] as const) {
+  for (const key of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'contextWindow'] as const) {
     const raw = value[key]
     if (raw === undefined)
       continue

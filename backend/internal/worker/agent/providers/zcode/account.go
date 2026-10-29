@@ -56,15 +56,31 @@ func (a *Agent) prepareAccountSnapshot(timeout time.Duration) zcodeAccountSnapsh
 }
 
 // readAccountBindings binds the account plans against the current credential
-// store. A store that LeapMux cannot read leaves the bindings on config.json
-// alone, and the warning says why.
+// store, reloading selection, coding-plan entitlements, and legacy inline keys
+// from account files. A store that LeapMux cannot read leaves the bindings on
+// config.json alone, and the warning says why.
 func (a *Agent) readAccountBindings(rules []zcodeBuiltinProviderRule) []zcodeAccountBinding {
+	selection := loadZCodeAccountSelection(a.homeDir)
+	entitlements := loadZCodeCodingPlanEntitlements(a.homeDir)
 	credentials := a.readAccountCredentials()
 	a.Mu.Lock()
-	bindings, err := a.catalog.accountProviderBindings(rules, credentials)
+	a.catalog.accountSelection = selection
+	a.reloadLegacyProvidersLocked()
+	bindings, err := a.catalog.accountProviderBindings(rules, credentials, entitlements)
 	a.Mu.Unlock()
 	a.warnCredentialStoreError(err)
 	return bindings
+}
+
+// reloadLegacyProvidersLocked re-reads config.json and updates the catalog's
+// provider list so inline key changes are picked up. It does NOT touch Models
+// or refs, which the live catalog owns. Callers hold a.Mu.
+func (a *Agent) reloadLegacyProvidersLocked() {
+	catalog, err := loadZCodeCatalog(a.homeDir)
+	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
+		return
+	}
+	a.catalog.Providers = catalog.Providers
 }
 
 func (a *Agent) startPlanChecker(canonical map[string]string) zcodeStartPlanChecker {
@@ -87,12 +103,14 @@ func (a *Agent) pushAccountProviderConfig(account zcodeAccountSnapshotInputs, ti
 	a.Mu.Lock()
 	a.account = state
 	a.Mu.Unlock()
-	for _, rule := range state.rules {
-		if rule.isStartPlan() {
-			go a.recheckStartPlans(state)
-			break
-		}
+	// The registry refresh comes after the initial account snapshot and before
+	// the catalog reads of session/resume: a catalog read against a registry that
+	// predates the snapshot would fold models the snapshot changed.
+	if err := a.refreshZCodeProviderRegistry(timeout); err != nil {
+		return err
 	}
+	// One refresh owner per accepted account state, regardless of Start Plan rules.
+	go a.recheckStartPlans(state)
 	return nil
 }
 
@@ -119,7 +137,7 @@ func (a *Agent) sendAccountSnapshot(state *zcodeAccountState, timeout time.Durat
 	if response.Status != "received" && response.Status != "unchanged" {
 		return fmt.Errorf("ZCode account provider acknowledgement returned status %q", response.Status)
 	}
-	state.accepted(generation)
+	state.accepted(generation, state.bindingsSnapshot())
 	bindings := state.bindingsSnapshot()
 	a.Mu.Lock()
 	a.catalog.recordAccountBridge(bindings)
@@ -132,7 +150,17 @@ func (a *Agent) sendAccountSnapshot(state *zcodeAccountState, timeout time.Durat
 // zcodeRuntimeHeadersRequest is the part of interaction/requestProviderRuntimeHeaders
 // that LeapMux reads.
 type zcodeRuntimeHeadersRequest struct {
-	ProviderID string `json:"providerId"`
+	// RequestID is the LOGICAL id of the request, of the form
+	// `<session>:provider-runtime-headers:<uuid>`. The JSON-RPC envelope id is
+	// only the reply address; a cancellation names THIS id.
+	RequestID string `json:"requestId"`
+	// SessionID is the session the credential serves. A cancellation must name
+	// the same session.
+	SessionID string `json:"sessionId"`
+	// Workspace identifies the workspace of the request. A cancellation must
+	// name the same workspace.
+	Workspace  json.RawMessage `json:"workspace"`
+	ProviderID string          `json:"providerId"`
 	// ExpectedAccountScope is the scope of the credential that a model request
 	// refused. A credential of another scope must not replace it.
 	ExpectedAccountScope string `json:"expectedAccountScope"`
@@ -157,14 +185,27 @@ var errZCodeScopeInvalidated = errors.New("project_token_scope_invalidated")
 // as the desktop's AccountProviderRequestAuthService does: a Start Plan sends the
 // store's ZCode token, and a coding plan sends a project token that LeapMux mints
 // from the store's OAuth sign-in. Where the store holds no sign-in, the plan's
-// config.json key serves.
+// config.json key serves. It uses only accepted bindings and refuses a binding
+// whose accepted entitlement is unavailable before minting or discovery.
 func (a *Agent) accountRequestAuth(ctx context.Context, req zcodeRuntimeHeadersRequest) (zcodeRequestAuth, error) {
 	a.Mu.Lock()
 	state := a.account
 	a.Mu.Unlock()
+	if state == nil {
+		return zcodeRequestAuth{}, zcodeMissingCredentialError(req.ProviderID)
+	}
+	// Capture the accepted generation before discovery or mint.
+	state.mu.Lock()
+	acceptedGen := state.acceptedGeneration
+	state.mu.Unlock()
 	binding, ok := state.binding(req.ProviderID)
 	if !ok {
 		return zcodeRequestAuth{}, zcodeMissingCredentialError(req.ProviderID)
+	}
+	// Refuse a binding whose accepted entitlement is unavailable.
+	if !binding.rule.isStartPlan() && binding.entitlement.Availability == zcodeAvailabilityUnavailable {
+		return zcodeRequestAuth{}, fmt.Errorf("the coding plan for provider %q is not available: %s",
+			req.ProviderID, binding.entitlement.UnavailableReason)
 	}
 	credentials := a.readAccountCredentials()
 	session, _, err := credentials.session(binding.family())
@@ -182,16 +223,19 @@ func (a *Agent) accountRequestAuth(ctx context.Context, req zcodeRuntimeHeadersR
 		if key == "" {
 			return zcodeRequestAuth{}, zcodeMissingCredentialError(req.ProviderID)
 		}
+		// Verify the accepted generation did not change.
+		if err := a.verifyAcceptedGeneration(state, acceptedGen, binding); err != nil {
+			return zcodeRequestAuth{}, err
+		}
 		return zcodeRequestAuth{APIKey: key}, nil
 	}
 
 	var team *zcodeTeamProject
 	if binding.rule.mode() == zcodeTeamCodingPlanMode {
-		selected, ok := a.catalog.accountSelection.teams[binding.family()]
-		if !ok {
+		team = binding.team
+		if team == nil {
 			return zcodeRequestAuth{}, fmt.Errorf("the team coding plan of %q states no team project; select it in the ZCode application", binding.family())
 		}
-		team = &selected
 		// BigModel can leave a stale ZCode token as the OAuth token, which no team
 		// project accepts (resolveAccountTeamPlanRuntimeMaterial).
 		if binding.family() == zcodeFamilyBigModel && session.zcodeJWT != "" && session.accessToken == session.zcodeJWT {
@@ -224,7 +268,39 @@ func (a *Agent) accountRequestAuth(ctx context.Context, req zcodeRuntimeHeadersR
 			return zcodeRequestAuth{}, errZCodeScopeInvalidated
 		}
 	}
+	// Verify the accepted generation and its binding did not change during mint.
+	if err := a.verifyAcceptedGeneration(state, acceptedGen, binding); err != nil {
+		return zcodeRequestAuth{}, err
+	}
 	return zcodeRequestAuth{APIKey: token.token, APIKeyID: token.apiKeyID, AccountScope: scope}, nil
+}
+
+// verifyAcceptedGeneration confirms the same generation is still accepted and
+// that the binding's team and entitlement are unchanged. A changed accepted
+// generation returns errZCodeScopeInvalidated; a merely pending generation does
+// not disagree with the app-server's accepted registry.
+func (a *Agent) verifyAcceptedGeneration(state *zcodeAccountState, capturedGen int, captured zcodeAccountBinding) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.acceptedGeneration != capturedGen {
+		return errZCodeScopeInvalidated
+	}
+	for _, current := range state.acceptedBindings {
+		if current.accountID != captured.accountID {
+			continue
+		}
+		if (current.team == nil) != (captured.team == nil) {
+			return errZCodeScopeInvalidated
+		}
+		if current.team != nil && *current.team != *captured.team {
+			return errZCodeScopeInvalidated
+		}
+		if !zcodeSameEntitlement(current.entitlement, captured.entitlement) {
+			return errZCodeScopeInvalidated
+		}
+		return nil
+	}
+	return errZCodeScopeInvalidated
 }
 
 // zcodeAccountScope identifies the sign-in that a coding plan's credential comes

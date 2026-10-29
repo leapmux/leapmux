@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,7 @@ var (
 	zcodeConfigRelPath          = []string{".zcode", "v2", "config.json"}
 	zcodeDesktopSettingsRelPath = []string{".zcode", "v2", "setting.json"}
 	zcodeTelemetryStateRelPath  = []string{".zcode", "v2", "telemetry-state.json"}
+	zcodeCodingPlanCacheRelPath = []string{".zcode", "v2", "coding-plan-cache.json"}
 )
 
 // errZCodeConfigMissing reports that config.json does not exist. The current
@@ -261,6 +263,45 @@ func loadZCodeAccountSelection(homeDir string) zcodeAccountSelection {
 		}
 	}
 	return selection
+}
+
+// loadZCodeCodingPlanEntitlements reads coding-plan-cache.json, the desktop's
+// record of coding-plan availability. The shape is
+// entryStatus.items[<legacy-provider-id>].status. An explicit "available" marks
+// the plan available; an explicit "unavailable" marks it unavailable with
+// "not-entitled", even when a credential exists. An absent cache preserves the
+// current headless behavior. A malformed rewrite keeps the last usable
+// configuration and logs the error.
+func loadZCodeCodingPlanEntitlements(homeDir string) map[string]zcodeAccountEntitlement {
+	if homeDir == "" {
+		return nil
+	}
+	path := filepath.Join(append([]string{homeDir}, zcodeCodingPlanCacheRelPath...)...)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cache struct {
+		EntryStatus struct {
+			Items map[string]struct {
+				Status string `json:"status"`
+			} `json:"items"`
+		} `json:"entryStatus"`
+	}
+	if err := json.Unmarshal(data, &cache); err != nil {
+		slog.Warn("zcode coding-plan-cache.json is malformed; keeping the last usable configuration", "error", err)
+		return nil
+	}
+	out := make(map[string]zcodeAccountEntitlement, len(cache.EntryStatus.Items))
+	for id, item := range cache.EntryStatus.Items {
+		switch item.Status {
+		case "available":
+			out[id] = zcodeAccountEntitlement{Availability: zcodeAvailabilityAvailable}
+		case "unavailable":
+			out[id] = zcodeAccountEntitlement{Availability: zcodeAvailabilityUnavailable, UnavailableReason: zcodeUnavailableNotEntitled}
+		}
+	}
+	return out
 }
 
 // zcodeUUIDPattern matches the device id that the desktop generates.

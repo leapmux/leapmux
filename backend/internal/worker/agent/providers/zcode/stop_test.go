@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -156,7 +158,7 @@ func newZCodeStopAgent(t *testing.T) (*Agent, *zcodeStopInput) {
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
 		AgentID: "stop-test", Ctx: t.Context(), ProcessDone: make(chan struct{}), Stdin: w,
 	})
-	a.turnActive = true
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	t.Cleanup(a.cancelStoppedZCodeTurn)
 	return a, w
 }
@@ -191,7 +193,8 @@ func TestRawZCodeStopPreservesBytesAndSignedIntegerIDs(t *testing.T) {
 			a.Mu.Lock()
 			a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
 			a.Mu.Unlock()
-			a.refreshStoppedZCodeTurn()
+			// The stopped turn speaking restarts the window and may prove the stop ignored.
+			a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventModelStreaming})
 			assert.Equal(t, int32(1), ignored.Load())
 		})
 	}
@@ -307,7 +310,7 @@ func TestZCodeStopReportsOnlyAcknowledgedAttempts(t *testing.T) {
 	a.Mu.Lock()
 	a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
 	a.Mu.Unlock()
-	a.refreshStoppedZCodeTurn()
+	a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventModelStreaming})
 	assert.Equal(t, int32(1), first.Load())
 	assert.Zero(t, second.Load(), "the second stop still waits for its native reply")
 	replyZCodeStop(a, request.ID, `{}`)
@@ -315,8 +318,8 @@ func TestZCodeStopReportsOnlyAcknowledgedAttempts(t *testing.T) {
 	a.Mu.Lock()
 	a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
 	a.Mu.Unlock()
-	a.refreshStoppedZCodeTurn()
-	a.refreshStoppedZCodeTurn()
+	a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventModelStreaming})
+	a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventModelStreaming})
 	assert.Equal(t, int32(1), first.Load())
 	assert.Equal(t, int32(1), second.Load())
 }
@@ -332,4 +335,321 @@ func TestRawZCodeStopRejectsAReplyWithoutAResultOrError(t *testing.T) {
 	a.HandleOutput([]byte(`{"id":12}`))
 	require.Error(t, <-done, "an incomplete reply does not confirm native stop acceptance")
 	assert.False(t, a.stopWindow.armed())
+}
+
+// --- the guarded v4 stop ---
+
+// zcodeStartExecTurn starts the foreground turn with the recorded execution id,
+// as turn.started reports it for a real run.
+func zcodeStartExecTurn(t *testing.T, a *Agent, turnID, executionID string) {
+	t.Helper()
+	a.HandleOutput(zcodeTurnEventLine(t, 0, turnID, contracts.ZCodeEventTurnStarted,
+		fmt.Sprintf(`{"turnNumber":1,"input":"hi","foregroundExecutionId":%q}`, executionID)))
+}
+
+// zcodeStartBackgroundExecTurn starts a runtime turn that names the user
+// execution it belongs to.
+func zcodeStartBackgroundExecTurn(t *testing.T, a *Agent, turnID, executionID string) {
+	t.Helper()
+	a.HandleOutput(zcodeTurnEventLine(t, 0, turnID, contracts.ZCodeEventTurnStarted,
+		fmt.Sprintf(`{"turnNumber":2,"inputSource":"goal_state_change","foregroundExecutionId":%q}`, executionID)))
+}
+
+// zcodeStopAck is the acknowledgement of an accepted stop.
+func zcodeStopAck(command zcodeTestCommand) string {
+	return fmt.Sprintf(`{"commandId":%q,"status":"accepted","revisionAtDecision":9}`, command.CommandID)
+}
+
+// waitZCodeStopCommand waits until stdin holds the agent's `stop` command and
+// returns it. The command blocks its caller, so a test answers after this
+// returns.
+func waitZCodeStopCommand(t *testing.T, stdin *zcodeRecordedStdin) zcodeTestCommand {
+	t.Helper()
+	deadline := time.Now().Add(zcodeTestRPCTimeout)
+	for time.Now().Before(deadline) {
+		if commands := zcodeSentCommandsOf(t, stdin, zcodeCommandStop); len(commands) > 0 {
+			return commands[0]
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the stop command")
+	return zcodeTestCommand{}
+}
+
+// zcodeStopMethods returns the methods the agent sent, in order.
+func zcodeStopMethods(t *testing.T, stdin *zcodeRecordedStdin) []string {
+	t.Helper()
+	var methods []string
+	for _, req := range stdin.Requests(t) {
+		if req.Method != "" {
+			methods = append(methods, req.Method)
+		}
+	}
+	return methods
+}
+
+// TestZCodeInterrupt_SendsAGuardedV4StopForTheUserTurn pins the exact `stop`
+// command of a user turn. The payload carries the execution id the turn
+// recorded: an unguarded v4 stop aborts whatever execution is current, which
+// can be a NEWER one than the user stopped.
+func TestZCodeInterrupt_SendsAGuardedV4StopForTheUserTurn(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+	zcodeStartExecTurn(t, a, "turn-1", "exec-u")
+
+	issuedAfter := a.Clock().Now().UnixMilli()
+	done := make(chan error, 1)
+	go func() { done <- a.Interrupt(agent.StopContext{}) }()
+	command := waitZCodeStopCommand(t, stdin)
+	a.HandleOutput(zcodeReplyLine(t, command.ID, json.RawMessage(zcodeStopAck(command))))
+	require.NoError(t, <-done)
+
+	assert.Equal(t, MethodCommand, stdin.Requests(t)[0].Method)
+	assert.Equal(t, zcodeCommandStop, command.Type)
+	assert.Equal(t, zcodeCommandClientID, command.ClientID)
+	assert.Equal(t, "sess-1", command.SessionID)
+	assert.Nil(t, command.BaseRevision, "a stop is not a compare-and-set command")
+	assert.True(t, strings.HasPrefix(command.CommandID, zcodeStopCommandPrefix), command.CommandID)
+	assert.GreaterOrEqual(t, command.IssuedAt, issuedAfter, "issuedAt is the real clock value")
+	assert.JSONEq(t, `{"expectedForegroundExecutionId":"exec-u"}`, string(command.Payload))
+	assert.Equal(t, []string{MethodCommand}, zcodeStopMethods(t, stdin),
+		"the guarded stop alone ends the request")
+	assert.True(t, a.stopWindow.armed(), "an accepted stop arms the silence window")
+	assert.Equal(t, 1, timer.armed)
+}
+
+// TestZCodeInterrupt_SendsAGuardedV4StopForTheLatestBackgroundTurn pins the
+// payload when no user turn runs and the stop targets the latest background
+// turn. Its recorded execution id is the guard, as for the user's own turn.
+func TestZCodeInterrupt_SendsAGuardedV4StopForTheLatestBackgroundTurn(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+	zcodeStartBackgroundExecTurn(t, a, "turn-bg", "exec-b")
+
+	done := make(chan error, 1)
+	go func() { done <- a.Interrupt(agent.StopContext{}) }()
+	command := waitZCodeStopCommand(t, stdin)
+	a.HandleOutput(zcodeReplyLine(t, command.ID, json.RawMessage(zcodeStopAck(command))))
+	require.NoError(t, <-done)
+
+	assert.JSONEq(t, `{"expectedForegroundExecutionId":"exec-b"}`, string(command.Payload))
+	assert.Equal(t, []string{MethodCommand}, zcodeStopMethods(t, stdin))
+	assert.True(t, a.stopWindow.armed())
+	assert.Equal(t, 1, timer.armed)
+}
+
+// TestZCodeInterrupt_UnknownExecutionIDUsesTheLegacyStop: an owner that
+// recorded no execution id takes session/stop and sends NO v4 command at all --
+// the v4 stop without its guard aborts whatever execution is current.
+func TestZCodeInterrupt_UnknownExecutionIDUsesTheLegacyStop(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+
+	assert.Equal(t, []string{MethodSessionStop}, zcodeStopMethods(t, stdin),
+		"an unknown execution id selects the legacy stop and no unguarded v4 command")
+	assert.True(t, a.stopWindow.armed())
+	assert.Equal(t, 1, timer.armed)
+}
+
+// TestZCodeInterrupt_AcceptedAndDuplicateAcksArmOneWindow: both acknowledgements
+// state that the stop was taken, so each arms exactly one silence window and
+// neither needs a legacy follow-up.
+func TestZCodeInterrupt_AcceptedAndDuplicateAcksArmOneWindow(t *testing.T) {
+	for _, status := range []string{zcodeCommandAccepted, zcodeCommandDuplicate} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+			timer := &zcodeCapturedTimer{}
+			a.afterFunc = timer.afterFunc
+			t.Cleanup(a.cancelStoppedZCodeTurn)
+			zcodeStartExecTurn(t, a, "turn-1", "exec-u")
+
+			done := make(chan error, 1)
+			go func() { done <- a.Interrupt(agent.StopContext{}) }()
+			command := waitZCodeStopCommand(t, stdin)
+			a.HandleOutput(zcodeReplyLine(t, command.ID,
+				json.RawMessage(fmt.Sprintf(`{"commandId":%q,"status":%q,"revisionAtDecision":9}`, command.CommandID, status))))
+			require.NoError(t, <-done)
+
+			assert.True(t, a.stopWindow.armed())
+			assert.Equal(t, 1, timer.armed, "one accepted stop arms one window")
+			assert.Equal(t, []string{MethodCommand}, zcodeStopMethods(t, stdin),
+				"an accepted stop sends no legacy follow-up")
+		})
+	}
+}
+
+// TestZCodeInterrupt_TargetChangedNoopSendsNoLegacyStop: the guarded stop
+// answered `noop` with guard.stopTargetChanged states that the intended
+// execution no longer exists. Nothing is left to stop, so no window may arm and
+// no unguarded legacy stop may abort a newer execution.
+func TestZCodeInterrupt_TargetChangedNoopSendsNoLegacyStop(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+	zcodeStartExecTurn(t, a, "turn-1", "exec-u")
+
+	done := make(chan error, 1)
+	go func() { done <- a.Interrupt(agent.StopContext{}) }()
+	command := waitZCodeStopCommand(t, stdin)
+	a.HandleOutput(zcodeReplyLine(t, command.ID, json.RawMessage(
+		fmt.Sprintf(`{"commandId":%q,"status":%q,"reasonCode":%q,"revisionAtDecision":9}`,
+			command.CommandID, zcodeCommandNoop, zcodeCommandGuardStopTargetChanged))))
+	require.NoError(t, <-done)
+
+	assert.Equal(t, []string{MethodCommand}, zcodeStopMethods(t, stdin),
+		"a target that changed stops nothing, so no legacy stop may follow")
+	assert.False(t, a.stopWindow.armed())
+	assert.Zero(t, timer.armed)
+}
+
+// TestZCodeInterrupt_MethodNotFoundFallsBackToTheLegacyStop: an app-server with
+// no command inbox still implements session/stop.
+func TestZCodeInterrupt_MethodNotFoundFallsBackToTheLegacyStop(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+	zcodeStartExecTurn(t, a, "turn-1", "exec-u")
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	refuseZCodeRequest(t, a, stdin, MethodCommand, ErrMethodNotFound, "Method not found")
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+
+	assert.Equal(t, []string{MethodCommand, MethodSessionStop}, zcodeStopMethods(t, stdin),
+		"a refused command inbox selects the legacy stop")
+	assert.True(t, a.stopWindow.armed())
+	assert.Equal(t, 1, timer.armed)
+}
+
+// TestZCodeInterrupt_OtherV4RefusalsDoNotFallThrough: every refusal that does
+// not state "this inbox cannot stop" returns the error and sends no second
+// stop. A fall-through stop could abort work the user never stopped.
+func TestZCodeInterrupt_OtherV4RefusalsDoNotFallThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ack  func(zcodeTestCommand) string
+	}{
+		{"an app-server error", nil},
+		{"a failed acknowledgement", func(command zcodeTestCommand) string {
+			return fmt.Sprintf(`{"commandId":%q,"status":"failed","reasonCode":"fault.command.executionFailed","revisionAtDecision":9}`, command.CommandID)
+		}},
+		{"a rejected acknowledgement", func(command zcodeTestCommand) string {
+			return fmt.Sprintf(`{"commandId":%q,"status":"rejected","reasonCode":"busy","revisionAtDecision":9}`, command.CommandID)
+		}},
+		{"a noop of another guard", func(command zcodeTestCommand) string {
+			return fmt.Sprintf(`{"commandId":%q,"status":"noop","reasonCode":"guard.other","revisionAtDecision":9}`, command.CommandID)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+			timer := &zcodeCapturedTimer{}
+			a.afterFunc = timer.afterFunc
+			t.Cleanup(a.cancelStoppedZCodeTurn)
+			zcodeStartExecTurn(t, a, "turn-1", "exec-u")
+
+			done := make(chan error, 1)
+			go func() { done <- a.Interrupt(agent.StopContext{}) }()
+			if tc.ack == nil {
+				refuseZCodeRequest(t, a, stdin, MethodCommand, -32603, "the stop failed")
+			} else {
+				answerZCodeCommand(t, a, stdin, zcodeCommandStop, 1, tc.ack)
+			}
+			require.Error(t, <-done)
+
+			assert.Equal(t, []string{MethodCommand}, zcodeStopMethods(t, stdin),
+				"no unguarded stop may follow a refusal")
+			assert.False(t, a.stopWindow.armed())
+			assert.Zero(t, timer.armed)
+			a.Mu.Lock()
+			defer a.Mu.Unlock()
+			assert.Zero(t, a.stopsInFlight)
+		})
+	}
+}
+
+// zcodeGatedStdin delays the first write until the test releases it, so a test
+// can move the world between Interrupt's capture of the stop target and the
+// request that names it.
+type zcodeGatedStdin struct {
+	zcodeRecordedStdin
+	entered chan struct{}
+	gate    chan struct{}
+	once    sync.Once
+}
+
+func (w *zcodeGatedStdin) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		w.entered <- struct{}{}
+		<-w.gate
+	})
+	return w.zcodeRecordedStdin.Write(p)
+}
+
+// TestZCodeInterrupt_ATargetChangeCannotProduceAnUnguardedStop: the stop target
+// can change between Interrupt's capture and the request that names it. The
+// request keeps the guard of the captured execution -- never an unguarded stop
+// that aborts the NEWER execution -- and a late acknowledgement opens no window
+// for the newer generation.
+func TestZCodeInterrupt_ATargetChangeCannotProduceAnUnguardedStop(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	gated := &zcodeGatedStdin{entered: make(chan struct{}, 1), gate: make(chan struct{})}
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+		AgentID: "stop-test", Ctx: t.Context(), ProcessDone: make(chan struct{}), Stdin: gated,
+	})
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	t.Cleanup(a.cancelStoppedZCodeTurn)
+	zcodeStartExecTurn(t, a, "turn-1", "exec-1")
+
+	done := make(chan error, 1)
+	go func() { done <- a.Interrupt(agent.StopContext{}) }()
+	select {
+	case <-gated.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the guarded stop did not reach stdin")
+	}
+	// A new user turn takes the foreground while the stop request waits to be
+	// written.
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-2", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"input":"next","foregroundExecutionId":"exec-2"}`))
+	close(gated.gate)
+
+	stdin := &gated.zcodeRecordedStdin
+	command := waitZCodeStopCommand(t, stdin)
+	assert.JSONEq(t, `{"expectedForegroundExecutionId":"exec-1"}`, string(command.Payload),
+		"the request keeps the captured execution's guard through the target change")
+	a.HandleOutput(zcodeReplyLine(t, command.ID, json.RawMessage(zcodeStopAck(command))))
+	require.NoError(t, <-done)
+
+	assert.Equal(t, []string{MethodCommand}, zcodeStopMethods(t, stdin),
+		"the change produces no second, unguarded stop")
+	assert.False(t, a.stopWindow.armed(),
+		"a late acknowledgement cannot open a window for the newer generation")
+	assert.Zero(t, timer.armed)
 }

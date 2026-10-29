@@ -579,12 +579,12 @@ func (a *Agent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle
 // Only the OPENING half routes here. Every later row of the same call finds its
 // transcript through zcodeSinkForToolCall, which is what a batch summary -- carrying
 // nothing but a list of ids -- has to rely on.
-func (a *Agent) openZCodeSubagentToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) bool {
+func (a *Agent) openZCodeSubagentToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated, owner *zcodeTurnState) bool {
 	childID, ok := a.zcodeSubagentChild(payload)
 	if !ok {
 		return false
 	}
-	a.openZCodeToolCallInto(a.sink.ChildSink(childID), event, payload)
+	a.openZCodeToolCallInto(a.sink.ChildSink(childID), event, payload, owner)
 	return true
 }
 
@@ -609,7 +609,10 @@ func (a *Agent) closeZCodeSubagentChild(payload zcodeToolUpdated) {
 // The input is recovered from the model stream when the update omits it, which is the
 // COMMON case: the app-server sets `inputOmitted: true, inputRef: "model_stream"` and
 // sends no input of its own, so the stream is the only copy that ever existed.
-func (a *Agent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, event zcodeEventEnvelope, payload zcodeToolUpdated) {
+//
+// The open records the owning turn on the call, so a close can count and settle
+// against the turn that opened it.
+func (a *Agent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, event zcodeEventEnvelope, payload zcodeToolUpdated, owner *zcodeTurnState) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -624,6 +627,12 @@ func (a *Agent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, event z
 			a.nextToolOrder++
 		}
 		tc.name = toolName
+	}
+	if tc.owner == nil {
+		tc.owner = owner
+		if owner != nil {
+			owner.toolCallIDs[payload.ToolCallID] = struct{}{}
+		}
 	}
 	input := payload.Input
 	if zcodeInputIsAbsent(input) {
@@ -667,8 +676,10 @@ func (a *Agent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, event z
 // The per-call side tables, the turn tool count and the running-tool indicator are
 // the AGENT's rather than the transcript's, so they are updated here whichever sink
 // the row went to. A subagent's calls count toward the turn deliberately: they are
-// part of the work that turn did.
-func (a *Agent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServices, event zcodeEventEnvelope, payload zcodeToolUpdated, recovered *zcodeRecoveredClose) {
+// part of the work that turn did. The count and the settlement follow the turn the
+// OPENING recorded, so a close never counts against whichever turn happens to be
+// active; owner is only the fallback for a call no open ever recorded.
+func (a *Agent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServices, event zcodeEventEnvelope, payload zcodeToolUpdated, recovered *zcodeRecoveredClose, owner *zcodeTurnState) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -681,13 +692,20 @@ func (a *Agent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServices, e
 	payload.ToolName = toolName
 
 	a.Mu.Lock()
-	if !a.backgroundTurn {
-		a.TurnToolUses++
-	}
 	// The mark outlives the close, so the record stays; only what the open consumed is
 	// released. ONE record to update, which is what stops the next teardown forgetting
 	// a table.
 	tc := a.zcodeToolCallLocked(payload.ToolCallID)
+	if tc.owner == nil {
+		tc.owner = owner
+	}
+	owner = tc.owner
+	if owner != nil {
+		owner.toolCallIDs[payload.ToolCallID] = struct{}{}
+		if !owner.background {
+			a.TurnToolUses++
+		}
+	}
 	tc.final = true
 	tc.name = ""
 	tc.input = nil
@@ -729,6 +747,13 @@ func (a *Agent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServices, e
 		a.children.forgetTitle(payload.ToolCallID)
 	}
 	a.toolCallPrompts.Take(payload.ToolCallID)
+	// The last tool result of a settled owner releases its record; a settled
+	// owner with calls still open stays, so their late results route to it.
+	if owner != nil {
+		a.Mu.Lock()
+		a.dropZCodeTurnLocked(owner)
+		a.Mu.Unlock()
+	}
 	// No running-tool clear is broadcast here. The `zcode_running_tool` key this
 	// site used to clear had no reader; its replacement,
 	// contracts.SessionInfoKeyRunningTool, is cleared by the frontend when the

@@ -42,6 +42,7 @@ func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
 		ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":1,"status":"received"}`)
+	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
 	a.Mu.Lock()
@@ -49,13 +50,16 @@ func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
 	a.Mu.Unlock()
 	assert.True(t, accountConfig)
 	requests := stdin.Requests(t)
-	require.Len(t, requests, 2)
+	require.Len(t, requests, 3)
 	assert.Equal(t, MethodUpdateProviderRegistry, requests[0].Method)
 	assert.Equal(t, MethodUpdateAccountConfig, requests[1].Method)
+	assert.Equal(t, MethodProviderRefreshRegistry, requests[2].Method)
 	var params zcodeAccountProviderPayload
 	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
 	assert.Contains(t, params.Providers, "account:zai-individual-coding-plan")
+	a.Mu.Lock()
 	accountID, bridged := a.catalog.accountProviderID("builtin:zai-coding-plan")
+	a.Mu.Unlock()
 	assert.True(t, bridged, "an accepted snapshot records the bridge")
 	assert.Equal(t, "account:zai-individual-coding-plan", accountID)
 }
@@ -90,7 +94,9 @@ func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
 	accountConfig := a.account != nil
 	a.Mu.Unlock()
 	assert.False(t, accountConfig)
+	a.Mu.Lock()
 	_, bridged := a.catalog.accountProviderID("builtin:zai-coding-plan")
+	a.Mu.Unlock()
 	assert.False(t, bridged, "a refused snapshot records no bridge")
 }
 
@@ -136,10 +142,11 @@ func TestZCodeProviderSetupReportsTheCheckedStartPlan(t *testing.T) {
 	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
+	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
 	requests := stdin.Requests(t)
-	require.Len(t, requests, 2)
+	require.Len(t, requests, 3)
 	var params zcodeAccountProviderPayload
 	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
 	start := params.Providers["account:zai-start-plan"]
@@ -165,6 +172,7 @@ func TestZCodeProviderSetupReportsARefusedStartPlanCredential(t *testing.T) {
 	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
+	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
 	var params zcodeAccountProviderPayload
@@ -227,6 +235,7 @@ func TestZCodeProviderSetupOverlapsCurrentAccountCheckWithProtocolDetection(t *t
 		}
 	}()
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig, `{"receivedRevision":"leapmux-test","status":"received"}`)
+	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
 	var payload zcodeAccountProviderPayload
 	require.NoError(t, json.Unmarshal(zcodeNthRequest(t, stdin, MethodUpdateAccountConfig, 1).Params, &payload))
@@ -284,6 +293,7 @@ func TestZCodeInterrupt_SendsSessionStop(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.Mu.Lock()
 	a.turnActive = true
 	a.Mu.Unlock()
@@ -316,6 +326,9 @@ func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
+	// The silent seed keeps the progress list empty, so the model reset the
+	// settlement emits is the only one the assertion can see.
+	zcodeSeedTestTurn(t, a, false)
 	a.Mu.Lock()
 	a.turnActive = true
 	a.Mu.Unlock()
@@ -333,7 +346,7 @@ func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
 
 	reset := false
 	for _, update := range sink.ProgressUpdates() {
-		if update.Operation == agent.ProgressReset {
+		if update.Operation == agent.ProgressModelReset {
 			reset = true
 		}
 	}
@@ -349,6 +362,7 @@ func TestZCodeInterrupt_LeavesARunningToolCallOpen(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.Mu.Lock()
 	a.turnActive = true
 	a.toolCalls["call-1"] = &zcodeToolCall{name: "bash", lastFrame: []byte(`{"toolCallId":"call-1"}`)}
@@ -372,6 +386,7 @@ func TestZCodeInterrupt_ARefusedStopLeavesTheTurnRunning(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	sink := &agenttest.Sink{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.Mu.Lock()
 	a.turnActive = true
 	a.Mu.Unlock()
@@ -390,6 +405,7 @@ func TestZCodeInterrupt_StoppedAgentReturnsError(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.SetStoppedForTest(true)
 	a.Mu.Lock()
 	a.turnActive = true
@@ -406,6 +422,7 @@ func TestZCodeInterrupt_NoSessionIsANoop(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.Mu.Lock()
 	a.turnActive = true
 	a.sessionID = ""
@@ -464,12 +481,14 @@ func TestZCodeOpenSession_ResumeAdoptsTheSessionAndSkipsCreate(t *testing.T) {
 	require.Len(t, requests, 1, "a resume that holds must not also create a session")
 	assert.Equal(t, MethodSessionResume, requests[0].Method)
 	var params struct {
-		SessionID string         `json:"sessionId"`
-		Workspace zcodeWorkspace `json:"workspace"`
+		SessionID    string         `json:"sessionId"`
+		Workspace    zcodeWorkspace `json:"workspace"`
+		ToolDenylist []string       `json:"toolDenylist"`
 	}
 	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
 	assert.Equal(t, "sess-old", params.SessionID)
 	assert.Equal(t, a.workspace, params.Workspace, "the app-server indexes a session by workspace")
+	zcodeAssertToolDenylist(t, params.ToolDenylist)
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -491,7 +510,7 @@ func TestZCodeOpenSession_ResumedSessionSubscribesAfterTheSnapshotSequence(t *te
 
 	answerZCodeRequest(t, a, stdin, MethodSessionResume,
 		`{"session":{"sessionId":"sess-old"},"runtime":{"eventSeq":42}}`)
-	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{"eventSeq":42}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{"sessionId":"sess-old","eventSeq":42,"events":[]}`)
 
 	require.NoError(t, a.openSession("sess-old", zcodeTestRPCTimeout))
 	require.NoError(t, a.subscribe(zcodeTestRPCTimeout))
@@ -602,14 +621,16 @@ func TestZCodeOpenSession_WithoutAHandleGoesStraightToCreate(t *testing.T) {
 	require.Len(t, requests, 1, "an empty handle must not reach session/resume")
 	assert.Equal(t, MethodSessionCreate, requests[0].Method)
 	var params struct {
-		Workspace zcodeWorkspace `json:"workspace"`
-		Mode      string         `json:"mode"`
-		Model     zcodeModelRef  `json:"model"`
+		Workspace    zcodeWorkspace `json:"workspace"`
+		Mode         string         `json:"mode"`
+		Model        zcodeModelRef  `json:"model"`
+		ToolDenylist []string       `json:"toolDenylist"`
 	}
 	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
 	assert.Equal(t, a.workspace, params.Workspace)
 	assert.Equal(t, contracts.ZCodeModePlan, params.Mode)
 	assert.Equal(t, zcodeModelRef{ProviderID: "builtin:zai", ModelID: "GLM-5.3"}, params.Model)
+	zcodeAssertToolDenylist(t, params.ToolDenylist)
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -721,7 +742,7 @@ func TestZCodeClearContext_StopsThenClosesTheRetiredSession(t *testing.T) {
 		if subscribeFails {
 			a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, subscribe), ErrInternal, "subscribe failed"))
 		} else {
-			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, subscribe), json.RawMessage(`{}`)))
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, subscribe), json.RawMessage(`{"sessionId":"new","eventSeq":0,"events":[]}`)))
 		}
 		if subscribeFails {
 			assert.Error(t, <-result)
@@ -746,7 +767,7 @@ func TestZCodeClearContext_EndsALiveCompaction(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
 		`{"operationId":"c1","status":"started","trigger":"auto"}`))
 	answerZCodeRequest(t, a, stdin, MethodSessionCreate, `{"session":{"sessionId":"new"},"settings":{"mode":{"current":"build"}}}`)
-	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{"sessionId":"new","eventSeq":0,"events":[]}`)
 	_, err := a.ClearContext()
 	require.NoError(t, err)
 	assert.Equal(t, []any{map[string]any{"trigger": "auto"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
@@ -761,13 +782,14 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a.Mu.Lock()
 	a.turnActive = true
 	a.compactionSessionID = "sess-1"
-	a.backgroundTurn = true
 	a.lastSeq = 99
 	a.toolCalls["call-1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
 	a.pendingControls["req-1"] = newPendingControl(json.RawMessage(`{"type":"control_request"}`))
 	a.latestContextUsage = map[string]any{"context_tokens": int64(12)}
 	a.lastGoalUpdate = agent.GoalUpdate{NativeID: "g1", Objective: "Ship it", Status: agent.GoalStatusActive}
 	a.Mu.Unlock()
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	zcodeStartTestTurn(t, a, `{"turnNumber":2,"inputSource":"background_task"}`)
 	a.children.rememberChild("spawn-1", "sub-1", "child-1")
 	a.children.rememberTitle("spawn-2", "a title")
 
@@ -780,7 +802,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 			`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},`+
 				`"settings":{"mode":{"current":"build"}}}`)))
 		sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
-		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"sessionId":"sess-fresh","eventSeq":0,"events":[]}`)))
 	}()
 
 	sessionID, clearErr := a.ClearContext()
@@ -794,7 +816,8 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	defer a.Mu.Unlock()
 	assert.False(t, a.turnActive)
 	assert.Empty(t, a.compactionSessionID)
-	assert.False(t, a.backgroundTurn)
+	assert.Empty(t, a.turns, "the replaced session's turn owners go with it")
+	assert.Empty(t, a.foregroundTurnID)
 	assert.Empty(t, a.toolCalls, "one record per call, so a session replace drops every fact about it")
 	assert.Empty(t, a.pendingControls)
 	assert.Nil(t, a.latestContextUsage)
@@ -831,7 +854,7 @@ func TestZCodeClearContext_KeepsPlanMode(t *testing.T) {
 			`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},`+
 				`"settings":{"mode":{"current":"build"}}}`)))
 		sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
-		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"sessionId":"sess-fresh","eventSeq":0,"events":[]}`)))
 	}()
 
 	_, clearErr := a.ClearContext()
@@ -870,4 +893,166 @@ func TestZCodeClearContextKeepsTheCurrentSessionWhenCreationFails(t *testing.T) 
 	assert.Equal(t, int64(42), a.lastSeq)
 	assert.Equal(t, int64(17), a.stateRevision)
 	assert.True(t, a.modeObserved)
+}
+
+// A subscription reply must be the full {sessionId, eventSeq, events} document
+// for THIS session. A reply that does not prove which session and sequence it
+// covers must not dispatch anything or move the cursor: a malformed receipt
+// used to log and succeed.
+func TestZCodeSubscribe_RequiresAFullSubscribeReceipt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, result string }{
+		{"a result that is not an object", `"subscribed"`},
+		{"a null result", `null`},
+		{"an empty object", `{}`},
+		{"a missing session id", `{"eventSeq":0,"events":[]}`},
+		{"a missing sequence", `{"sessionId":"sess-1","events":[]}`},
+		{"a missing event list", `{"sessionId":"sess-1","eventSeq":0}`},
+		{"a null event list", `{"sessionId":"sess-1","eventSeq":0,"events":null}`},
+		{"an event list that is not an array", `{"sessionId":"sess-1","eventSeq":0,"events":{}}`},
+		{"an event of the wrong type", `{"sessionId":"sess-1","eventSeq":0,"events":["x"]}`},
+		{"a negative sequence", `{"sessionId":"sess-1","eventSeq":-1,"events":[]}`},
+		{"a sequence of the wrong type", `{"sessionId":"sess-1","eventSeq":"0","events":[]}`},
+		{"a session id of the wrong type", `{"sessionId":5,"eventSeq":0,"events":[]}`},
+		{"the unknown session placeholder", `{"sessionId":"unknown","eventSeq":0,"events":[]}`},
+		{"another session's receipt", `{"sessionId":"sess-other","eventSeq":5,"events":[` +
+			`{"eventId":"e1","sessionId":"sess-other","seq":1,"type":"session.titleUpdated","payload":{}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+			answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, tc.result)
+			err := a.subscribe(zcodeTestRPCTimeout)
+			require.Error(t, err)
+			a.Mu.Lock()
+			defer a.Mu.Unlock()
+			assert.Zero(t, a.lastSeq, "a rejected receipt must advance no cursor")
+		})
+	}
+}
+
+// The required receipt shape is accepted with or without the optional snapshot.
+func TestZCodeSubscribe_AcceptsAValidReceipt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, result string }{
+		{"a full receipt", `{"sessionId":"sess-1","eventSeq":0,"events":[]}`},
+		{"a receipt with an optional snapshot", `{"sessionId":"sess-1","eventSeq":0,"events":[],` +
+			`"snapshot":{"session":{"sessionId":"sess-1"},"runtime":{"eventSeq":0}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+			answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, tc.result)
+			require.NoError(t, a.subscribe(zcodeTestRPCTimeout))
+		})
+	}
+}
+
+// A context clear that cannot open its subscription fails the call: the user
+// must see that the fresh session is not streaming events yet.
+func TestZCodeClearContext_ReportsAnInvalidSubscribeReceipt(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	answerZCodeRequest(t, a, stdin, MethodSessionCreate, `{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},"settings":{"mode":{"current":"build"}}}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{"eventSeq":0}`)
+	_, err := a.ClearContext()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), MethodSessionSubscribe)
+}
+
+// --- startup selection and the reasoning-level ladder ---
+
+// The model ladder recovers on a level the model runs. Startup must not reapply
+// the level it just rejected through the separate thought-level setter: the
+// recovered level is what the session runs.
+func TestApplyStartupSettings_TheModelLadderNeverReappliesTheRejectedLevel(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "max")
+	runZCodeSetModelScript(a, stdin,
+		zcodeSetModelRejectLevel("account:p/narrow"),
+		zcodeSetModelRejectMissingLevel("account:p/narrow"),
+		zcodeSetModelAccept(`{"settings":{
+      "model":{"current":{"providerId":"account:p","modelId":"narrow"}},
+      "thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"low"},{"value":"high"}]}}}`),
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.applyStartupSettings(zcodeSettingsRequest{Model: "account:p/narrow", ThoughtLevel: "low"}, zcodeTestRPCTimeout)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("applyStartupSettings did not return")
+	}
+
+	requireNoZCodeThoughtLevelRequest(t, stdin, "startup never reapplies the level the ladder just rejected")
+	attempts := zcodeSetModelAttempts(t, stdin)
+	require.Len(t, attempts, 3)
+	assert.Equal(t, "low", attempts[0].ReasoningLevel)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/narrow", a.model)
+	assert.Equal(t, "high", a.thoughtLevel, "the recovered level is what the session runs")
+}
+
+// An exhausted ladder rejects the requested level in every selection it tries.
+// Startup must not hand that level to the separate thought-level setter.
+func TestApplyStartupSettings_AnExhaustedLadderDoesNotResendTheRejectedLevel(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "max")
+	runZCodeSetModelScript(a, stdin,
+		zcodeSetModelRejectLevel("account:p/narrow"),
+		zcodeSetModelRejectMissingLevel("account:p/narrow"),
+		zcodeSetModelRejectLevel("account:p/narrow"),
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.applyStartupSettings(zcodeSettingsRequest{Model: "account:p/narrow", ThoughtLevel: "low"}, zcodeTestRPCTimeout)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("applyStartupSettings did not return")
+	}
+
+	requireNoZCodeThoughtLevelRequest(t, stdin, "the level the ladder rejected is never resent")
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/wide", a.model, "the observed model stands")
+	assert.Equal(t, "max", a.thoughtLevel, "the observed level stands")
+}
+
+// A model switch that settles on the requested level needs no second request for
+// that level.
+func TestApplyStartupSettings_ASettledLevelNeedsNoSecondRequest(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "high")
+	runZCodeSetModelScript(a, stdin,
+		zcodeSetModelAccept(`{"settings":{
+      "model":{"current":{"providerId":"account:p","modelId":"narrow"}},
+      "thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"low"},{"value":"high"}]}}}`),
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.applyStartupSettings(zcodeSettingsRequest{Model: "account:p/narrow"}, zcodeTestRPCTimeout)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("applyStartupSettings did not return")
+	}
+
+	requireNoZCodeThoughtLevelRequest(t, stdin, "the model request carries the level the session already runs")
+	assert.Len(t, zcodeSetModelAttempts(t, stdin), 1)
 }

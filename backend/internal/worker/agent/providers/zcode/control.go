@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -441,6 +442,195 @@ func (a *Agent) replyZCodeUserInput(id json.RawMessage, behavior string, reply z
 	}
 }
 
+// zcodeRuntimeHeaderState is where one registered runtime-headers answer is in
+// its reply lifecycle.
+type zcodeRuntimeHeaderState int
+
+const (
+	// zcodeRuntimeHeaderPending is an answer whose work may still be running.
+	zcodeRuntimeHeaderPending zcodeRuntimeHeaderState = iota
+	// zcodeRuntimeHeaderReplying is an answer that committed to its reply: the
+	// cancellation that arrives now is too late.
+	zcodeRuntimeHeaderReplying
+	// zcodeRuntimeHeaderCancelled is a withdrawn answer. Its completion writes
+	// nothing.
+	zcodeRuntimeHeaderCancelled
+)
+
+// zcodeRuntimeHeaderAnswer is one registered interaction/requestProviderRuntimeHeaders.
+//
+// The two ids must never be confused. envelopeID is the JSON-RPC id of the
+// request, only for sendZCodeReply. requestID is the LOGICAL
+// `params.requestId` (`<session>:provider-runtime-headers:<uuid>`), the key a
+// cancellation names. A cancellation must also match sessionID and workspace.
+//
+// The state transition is linearized under Agent.runtimeHeaderMu, never the
+// blocking reply write itself: the write happens AFTER the lock is released, so
+// a cancellation of another answer never waits for it.
+type zcodeRuntimeHeaderAnswer struct {
+	envelopeID json.RawMessage
+	requestID  string
+	sessionID  string
+	workspace  json.RawMessage
+	// ctx is the context the credential work runs on; cancel withdraws it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	state  zcodeRuntimeHeaderState
+}
+
+// prepareZCodeRuntimeHeaderAnswer registers the answer of one
+// interaction/requestProviderRuntimeHeaders BEFORE its handler runs. The
+// handler works on a goroutine of its own, and a cancellation that lands before
+// it runs must already find the registration. It is synchronous bookkeeping --
+// one decode and one map insert -- so the read loop absorbs it.
+//
+// It returns nil for a request LeapMux cannot register: malformed params take
+// the existing error-response path, a request without a logical id cannot be
+// cancelled by id, and a duplicate logical id must NOT replace the existing
+// registration -- the answer that holds the key also holds the cancellation
+// that names it.
+func (a *Agent) prepareZCodeRuntimeHeaderAnswer(envelopeID, params json.RawMessage) *zcodeRuntimeHeaderAnswer {
+	var req zcodeRuntimeHeadersRequest
+	if err := json.Unmarshal(params, &req); err != nil || req.RequestID == "" {
+		return nil
+	}
+	answer := &zcodeRuntimeHeaderAnswer{
+		envelopeID: envelopeID,
+		requestID:  req.RequestID,
+		sessionID:  req.SessionID,
+		workspace:  req.Workspace,
+	}
+	answer.ctx, answer.cancel = context.WithCancel(a.Context())
+	a.runtimeHeaderMu.Lock()
+	if a.runtimeHeaderAnswers == nil {
+		a.runtimeHeaderAnswers = map[string]*zcodeRuntimeHeaderAnswer{}
+	}
+	if _, taken := a.runtimeHeaderAnswers[req.RequestID]; taken {
+		a.runtimeHeaderMu.Unlock()
+		answer.cancel()
+		return nil
+	}
+	a.runtimeHeaderAnswers[req.RequestID] = answer
+	a.runtimeHeaderMu.Unlock()
+	return answer
+}
+
+// replyZCodeRuntimeHeader answers one runtime-headers request. A registered
+// answer is written only when its completion wins the state transition: a
+// cancelled answer writes nothing, and a reply that already committed cannot be
+// withdrawn. An unregistered answer (malformed params, no logical request id, or
+// a duplicate id) writes directly.
+func (a *Agent) replyZCodeRuntimeHeader(envelopeID json.RawMessage, answer *zcodeRuntimeHeaderAnswer, result any) {
+	if answer == nil {
+		if err := a.sendZCodeReply(envelopeID, result); err != nil {
+			slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
+		}
+		return
+	}
+	if !a.beginZCodeRuntimeHeaderReply(answer) {
+		return
+	}
+	if err := a.sendZCodeReply(answer.envelopeID, result); err != nil {
+		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
+	}
+	a.finishZCodeRuntimeHeaderReply(answer)
+}
+
+// beginZCodeRuntimeHeaderReply commits the answer to its reply: `pending` to
+// `replying`, under the lock and never across the write. It reports false when
+// the answer is gone (a cancellation won) or a newer answer owns the key now;
+// the reply must then not start.
+func (a *Agent) beginZCodeRuntimeHeaderReply(answer *zcodeRuntimeHeaderAnswer) bool {
+	a.runtimeHeaderMu.Lock()
+	defer a.runtimeHeaderMu.Unlock()
+	if a.runtimeHeaderAnswers[answer.requestID] != answer || answer.state != zcodeRuntimeHeaderPending {
+		return false
+	}
+	answer.state = zcodeRuntimeHeaderReplying
+	return true
+}
+
+// finishZCodeRuntimeHeaderReply removes the answer's own registration after the
+// write. It removes ONLY its own: a request id that a newer answer reused after
+// a cancellation must keep that answer's registration.
+func (a *Agent) finishZCodeRuntimeHeaderReply(answer *zcodeRuntimeHeaderAnswer) {
+	a.runtimeHeaderMu.Lock()
+	defer a.runtimeHeaderMu.Unlock()
+	if a.runtimeHeaderAnswers[answer.requestID] == answer {
+		delete(a.runtimeHeaderAnswers, answer.requestID)
+	}
+}
+
+// zcodeRuntimeHeaderCancellation is the params of
+// NotifyProviderRuntimeHeadersCancelled: the identity of one withdrawn request.
+type zcodeRuntimeHeaderCancellation struct {
+	RequestID string          `json:"requestId"`
+	SessionID string          `json:"sessionId"`
+	Workspace json.RawMessage `json:"workspace"`
+}
+
+// handleZCodeRuntimeHeadersCancelled withdraws the answer of one
+// providerRuntimeHeadersCancelled notification. All three identifiers must
+// match -- the logical request id, the session AND the workspace -- so a stale
+// or mismatched notification never cancels a newer answer that happens to reuse
+// the id.
+func (a *Agent) handleZCodeRuntimeHeadersCancelled(params json.RawMessage) {
+	var note zcodeRuntimeHeaderCancellation
+	if err := json.Unmarshal(params, &note); err != nil {
+		slog.Warn("zcode provider runtime headers cancellation unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.cancelZCodeRuntimeHeaderAnswers(func(answer *zcodeRuntimeHeaderAnswer) bool {
+		return answer.requestID == note.RequestID &&
+			answer.sessionID == note.SessionID &&
+			zcodeJSONEqual(answer.workspace, note.Workspace)
+	})
+}
+
+// cancelZCodeRuntimeHeaderAnswers cancels every pending answer the matcher
+// selects. A `replying` answer is never cancelled: it already committed to its
+// reply. The state change, the removal and the cancel run under one lock, so an
+// answer this sweep removes can never start a reply afterwards.
+func (a *Agent) cancelZCodeRuntimeHeaderAnswers(match func(*zcodeRuntimeHeaderAnswer) bool) {
+	a.runtimeHeaderMu.Lock()
+	defer a.runtimeHeaderMu.Unlock()
+	for id, answer := range a.runtimeHeaderAnswers {
+		if answer.state != zcodeRuntimeHeaderPending || !match(answer) {
+			continue
+		}
+		answer.state = zcodeRuntimeHeaderCancelled
+		delete(a.runtimeHeaderAnswers, id)
+		answer.cancel()
+	}
+}
+
+// cancelZCodeRuntimeHeaderAnswersForSession cancels the pending answers of one
+// session. A context clear calls it for the session it replaced.
+func (a *Agent) cancelZCodeRuntimeHeaderAnswersForSession(sessionID string) {
+	a.cancelZCodeRuntimeHeaderAnswers(func(answer *zcodeRuntimeHeaderAnswer) bool {
+		return answer.sessionID == sessionID
+	})
+}
+
+// cancelAllZCodeRuntimeHeaderAnswers cancels every pending answer. Stop and
+// Wait call it: nothing outlives the process.
+func (a *Agent) cancelAllZCodeRuntimeHeaderAnswers() {
+	a.cancelZCodeRuntimeHeaderAnswers(func(*zcodeRuntimeHeaderAnswer) bool { return true })
+}
+
+// zcodeJSONEqual compares two JSON values semantically: whitespace and object
+// key order do not matter.
+func zcodeJSONEqual(left, right json.RawMessage) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return len(left) == 0 && len(right) == 0
+	}
+	var leftValue, rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return bytes.Equal(left, right)
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
+}
+
 // answerProviderRuntimeHeaders answers the app-server's request for freshly-minted
 // provider credentials.
 //
@@ -448,7 +638,10 @@ func (a *Agent) replyZCodeUserInput(id json.RawMessage, behavior string, reply z
 // so their reply reports authorization only. ZCode 0.16.9 keeps account credentials
 // in the host and requires the key in `requestAuth` for each model request, which
 // accountRequestAuth resolves.
-func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
+//
+// The answer is the registration prepareZCodeRuntimeHeaderAnswer made; every
+// reply goes through it, so a withdrawn answer writes nothing.
+func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage, answer *zcodeRuntimeHeaderAnswer) {
 	a.Mu.Lock()
 	accountConfig := a.account != nil
 	a.Mu.Unlock()
@@ -470,16 +663,14 @@ func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 				"errorMessage":   "leapmux could not read the provider runtime headers request",
 			}
 		}
-		if err := a.sendZCodeReply(id, result); err != nil {
-			slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
-		}
+		a.replyZCodeRuntimeHeader(id, answer, result)
 		return
 	}
 	if accountConfig {
 		// The caller sits on the event goroutine, and a coding plan's credential can
 		// take a network call, so the answer goes on a goroutine of its own: the
 		// reader must keep reading frames while the call runs.
-		go a.answerAccountRuntimeHeaders(id, req)
+		go a.answerAccountRuntimeHeaders(id, answer, req)
 		return
 	}
 	a.Mu.Lock()
@@ -492,16 +683,20 @@ func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 	if !authorized {
 		result["error"] = fmt.Sprintf("leapmux holds no credential for provider %q; add it to ZCode's configuration", req.ProviderID)
 	}
-	if err := a.sendZCodeReply(id, result); err != nil {
-		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.replyZCodeRuntimeHeader(id, answer, result)
 }
 
 // answerAccountRuntimeHeaders answers a runtime headers request of an account
 // build with the credential that accountRequestAuth resolves, or with the reason
 // that it has none.
-func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, req zcodeRuntimeHeadersRequest) {
-	ctx, cancel := context.WithTimeout(a.Context(), zcodeProjectTokenTimeout)
+func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, answer *zcodeRuntimeHeaderAnswer, req zcodeRuntimeHeadersRequest) {
+	// The answer's context is the cancellation scope: a withdrawn answer ends the
+	// credential work instead of letting it run out its timeout.
+	parent := a.Context()
+	if answer != nil {
+		parent = answer.ctx
+	}
+	ctx, cancel := context.WithTimeout(parent, zcodeProjectTokenTimeout)
 	auth, err := a.accountRequestAuth(ctx, req)
 	cancel()
 	var result any = map[string]any{"headersApplied": true, "requestAuth": auth}
@@ -509,9 +704,7 @@ func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, req zcodeRuntime
 		slog.Warn("zcode provider credential unavailable", "agent_id", a.AgentID(), "provider", req.ProviderID, "error", err)
 		result = map[string]any{"headersApplied": false, "errorMessage": err.Error()}
 	}
-	if err := a.sendZCodeReply(id, result); err != nil {
-		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.replyZCodeRuntimeHeader(id, answer, result)
 }
 
 // answerOfficialMcpAuthHeaders answers the request for credentials to ZCode's

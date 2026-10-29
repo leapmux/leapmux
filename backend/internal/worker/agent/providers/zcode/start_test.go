@@ -21,6 +21,34 @@ import (
 
 const zcodePersonalSessionFixture = `{"session":{"sessionId":"native-personal","target":null},"settings":{"model":{"current":{"providerId":"personal:work","modelId":"m"},"available":[{"ref":{"providerId":"personal:work","modelId":"m"},"label":"M","providerLabel":"Personal","properties":{"inputFormat":{"supportsText":true}}}]}},"runtime":{"eventSeq":0,"stateRevision":1}}`
 
+// zcodeRevokedModelSessionFixture reports a session whose current model is gone
+// from the live catalog: one live model remains, and it declares its reasoning
+// default.
+const zcodeRevokedModelSessionFixture = `{"session":{"sessionId":"native-personal","target":null},"settings":{"model":{"current":{"providerId":"personal:work","modelId":"revoked"},"available":[{"ref":{"providerId":"personal:work","modelId":"m"},"label":"M","providerLabel":"Personal","reasoning":{"levels":[{"value":"low"},{"value":"high"}],"defaultLevel":"high"},"properties":{"inputFormat":{"supportsText":true}}}]}},"runtime":{"eventSeq":0,"stateRevision":1}}`
+
+// zcodeEmptyCatalogSessionFixture reports an explicitly empty live catalog
+// beside a current model it does not hold.
+const zcodeEmptyCatalogSessionFixture = `{"session":{"sessionId":"native-personal","target":null},"settings":{"model":{"current":{"providerId":"personal:work","modelId":"revoked"},"available":[]}},"runtime":{"eventSeq":0,"stateRevision":1}}`
+
+// zcodeSetModelEchoFixture reports the selection that a session/setModel request
+// carried, the way the app-server reports what it settled on.
+func zcodeSetModelEchoFixture(params json.RawMessage) string {
+	var request struct {
+		Model struct {
+			ProviderID string `json:"providerId"`
+			ModelID    string `json:"modelId"`
+			Options    struct {
+				ReasoningLevel string `json:"reasoningLevel"`
+			} `json:"options"`
+		} `json:"model"`
+	}
+	_ = json.Unmarshal(params, &request)
+	return `{"session":{"sessionId":"native-personal","target":null},"settings":{"model":{"current":{"providerId":"` +
+		request.Model.ProviderID + `","modelId":"` + request.Model.ModelID +
+		`"}},"thoughtLevel":{"enabled":true,"current":"` + request.Model.Options.ReasoningLevel +
+		`","available":[{"value":"low"},{"value":"high"}]}}}`
+}
+
 // TestZCodeStartupProcess is the subprocess fixture for real Start handshakes.
 func TestZCodeStartupProcess(t *testing.T) {
 	if os.Getenv("LEAPMUX_ZCODE_STARTUP_FIXTURE") != "1" {
@@ -67,14 +95,35 @@ func TestZCodeStartupProcess(t *testing.T) {
 				os.Exit(2)
 			}
 			reply["result"] = map[string]any{"receivedRevision": params.Revision, "status": "received"}
-		case MethodSessionCreate:
-			if os.Getenv("LEAPMUX_ZCODE_FIXTURE_INVALID_PERSONAL") == "1" {
-				reply["error"] = map[string]any{"code": -32602, "message": "native provider configuration has no executable model"}
+		case MethodProviderRefreshRegistry:
+			if os.Getenv("LEAPMUX_ZCODE_FIXTURE_BAD_REGISTRY_REFRESH") == "1" {
+				reply["result"] = map[string]any{}
 			} else {
+				reply["result"] = map[string]any{"refreshed": true}
+			}
+		case MethodSessionCreate:
+			switch {
+			case os.Getenv("LEAPMUX_ZCODE_FIXTURE_INVALID_PERSONAL") == "1":
+				reply["error"] = map[string]any{"code": -32602, "message": "native provider configuration has no executable model"}
+			case os.Getenv("LEAPMUX_ZCODE_FIXTURE_REVOKED_MODEL") == "1":
+				reply["result"] = json.RawMessage(zcodeRevokedModelSessionFixture)
+			case os.Getenv("LEAPMUX_ZCODE_FIXTURE_EMPTY_CATALOG") == "1":
+				reply["result"] = json.RawMessage(zcodeEmptyCatalogSessionFixture)
+			default:
 				reply["result"] = json.RawMessage(zcodePersonalSessionFixture)
 			}
 		case MethodSetModel:
-			reply["result"] = json.RawMessage(zcodePersonalSessionFixture)
+			reply["result"] = json.RawMessage(zcodeSetModelEchoFixture(request.Params))
+		case MethodSessionSubscribe:
+			if os.Getenv("LEAPMUX_ZCODE_FIXTURE_BAD_SUBSCRIBE") == "1" {
+				reply["result"] = map[string]any{}
+			} else {
+				var params struct {
+					SessionID string `json:"sessionId"`
+				}
+				_ = json.Unmarshal(request.Params, &params)
+				reply["result"] = map[string]any{"sessionId": params.SessionID, "eventSeq": 0, "events": []any{}}
+			}
 		default:
 			reply["result"] = map[string]any{}
 		}
@@ -162,6 +211,16 @@ func TestZCodeStart_ReportsNativePersonalConfigurationFailure(t *testing.T) {
 	assert.Nil(t, started)
 }
 
+// A subscribe reply that proves nothing fails the whole start: the agent must
+// not run without a live event stream.
+func TestZCodeStart_ReportsAnInvalidSubscribeReceipt(t *testing.T) {
+	opts, _ := zcodeStartupFixture(t, "current", "")
+	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_BAD_SUBSCRIBE=1")
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	require.ErrorContains(t, err, MethodSessionSubscribe)
+	assert.Nil(t, started)
+}
+
 func TestZCodeStart_RejectsMalformedLegacyConfigurationBeforeTheServer(t *testing.T) {
 	opts, calls := zcodeStartupFixture(t, "current", "{")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
@@ -170,4 +229,85 @@ func TestZCodeStart_RejectsMalformedLegacyConfigurationBeforeTheServer(t *testin
 	assert.Contains(t, err.Error(), "parse")
 	data, _ := os.ReadFile(calls)
 	assert.Empty(t, strings.TrimSpace(string(data)))
+}
+
+// zcodeStartupCalls returns the trimmed call log of the startup fixture.
+func zcodeStartupCalls(t *testing.T, calls string) string {
+	t.Helper()
+	data, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	return strings.TrimSpace(string(data))
+}
+
+// The registry refresh sits between the initial account snapshot and the startup
+// catalog read, and its acknowledgement is required.
+func TestZCodeStart_RequiresARefreshedRegistryAcknowledgement(t *testing.T) {
+	opts, calls := zcodeStartupFixture(t, "current", "")
+	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_BAD_REGISTRY_REFRESH=1")
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	require.Error(t, err)
+	assert.Nil(t, started)
+	assert.Equal(t, strings.Join([]string{
+		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+	}, "\n"), zcodeStartupCalls(t, calls),
+		"a refused registry refresh stops the start before the catalog read")
+}
+
+// A current model the complete nonempty live catalog no longer holds is repaired
+// once: the first live model, with its reasoning default.
+func TestZCodeModelRepair_SelectsTheFirstLiveModelWhenTheCurrentOneIsGone(t *testing.T) {
+	opts, calls := zcodeStartupFixture(t, "current", "")
+	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_REVOKED_MODEL=1")
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+	native := started.(*Agent)
+	native.Mu.Lock()
+	defer native.Mu.Unlock()
+	assert.Equal(t, "personal:work/m", native.model, "the repair selects the first live model")
+	assert.Equal(t, "high", native.thoughtLevel, "the repair carries the first live model's reasoning default")
+	assert.Equal(t, strings.Join([]string{
+		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+		MethodSessionCreate, MethodSetMode, MethodSetModel, MethodSessionSubscribe,
+	}, "\n"), zcodeStartupCalls(t, calls),
+		"one repair attempt after the reassertion, and no recursive setter sequence")
+}
+
+// A persisted selection that the live catalog still holds stays: the repair adds
+// no setter call of its own.
+func TestZCodeModelRepair_RetainsAValidPersistedSelection(t *testing.T) {
+	opts, calls := zcodeStartupFixture(t, "current", "")
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+	native := started.(*Agent)
+	native.Mu.Lock()
+	defer native.Mu.Unlock()
+	assert.Equal(t, "personal:work/m", native.model)
+	assert.Equal(t, strings.Join([]string{
+		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+		MethodSessionCreate, MethodSetModel, MethodSetMode, MethodSessionSubscribe,
+	}, "\n"), zcodeStartupCalls(t, calls),
+		"the normal reassertion is the only setter call")
+}
+
+// An explicitly empty live catalog is the authoritative answer: no setter call,
+// and the model is unresolved.
+func TestZCodeModelRepair_AnExplicitlyEmptyCatalogMarksTheModelUnresolved(t *testing.T) {
+	opts, calls := zcodeStartupFixture(t, "current", "")
+	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_EMPTY_CATALOG=1")
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+	native := started.(*Agent)
+	native.Mu.Lock()
+	defer native.Mu.Unlock()
+	assert.Equal(t, "personal:work/revoked", native.model, "an empty catalog manufactures no model")
+	_, unresolved := native.unresolvedSettings[agent.OptionIDModel]
+	assert.True(t, unresolved, "an unrepaired model is marked unresolved")
+	assert.Equal(t, strings.Join([]string{
+		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+		MethodSessionCreate, MethodSetMode, MethodSessionSubscribe,
+	}, "\n"), zcodeStartupCalls(t, calls),
+		"an explicitly empty catalog makes no setter call")
 }

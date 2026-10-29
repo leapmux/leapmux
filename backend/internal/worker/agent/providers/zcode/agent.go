@@ -33,16 +33,31 @@ type Agent struct {
 	dispatchMu sync.Mutex
 	// Control requests can arrive concurrently while the server repeats an unanswered request.
 	controlMu sync.Mutex
+	// runtimeHeaderMu guards runtimeHeaderAnswers. It is a lock of its own: a
+	// blocked reply write must never block the cancellation of another answer.
+	runtimeHeaderMu sync.Mutex
+	// runtimeHeaderAnswers holds the in-flight answer of each
+	// interaction/requestProviderRuntimeHeaders, keyed by its LOGICAL
+	// params.requestId -- never by the JSON-RPC envelope id. See
+	// zcodeRuntimeHeaderAnswer.
+	runtimeHeaderAnswers map[string]*zcodeRuntimeHeaderAnswer
 	// steerMu serializes each steer command against the withdrawals, so a
 	// withdrawal sees every steer sent before it, and no steer is sent between
 	// an interrupt's withdrawal and its stop. See steering.go.
 	steerMu sync.Mutex
 	// Serialize session adoption with catalog reads of the active native session.
 	sessionLifecycleMu sync.Mutex
+	// catalogRefresh coalesces the registry-plus-catalog refresh passes that
+	// account changes and workspace modelCatalog patches request. Guarded by its
+	// own mutex. See catalog_refresh.go.
+	catalogRefresh zcodeCatalogRefreshOwner
 
 	sink       agent.ProviderServices
 	workingDir string
 	workspace  zcodeWorkspace
+	// homeDir is the finalized home directory used at startup. The refresh owner
+	// reloads account files from it.
+	homeDir string
 
 	// catalog is the translated view of ZCode's own configuration: the provider
 	// registry payload (with inline API keys), the per-model capabilities, and the
@@ -126,10 +141,15 @@ type Agent struct {
 	// lastSeq is the highest event sequence number observed. A re-subscribe asks
 	// for events after it, so a subscription that lapsed replays what it missed
 	// instead of dropping it.
-	lastSeq    int64
+	lastSeq int64
+	// turnActive mirrors "any owner in turns with settled == false", kept
+	// consistent by refreshTurnActiveLocked. It is what Interrupt, Stop and the
+	// input queue read to decide the agent is processing.
 	turnActive bool
-	// turnGeneration changes when a native turn starts or a compaction replaces it.
-	// A delayed stop acknowledgement must not open a window for another turn.
+	// turnGeneration mints the unique generation each turn record stores at its
+	// acceptance (and each compaction bumps without a record). Stop and the
+	// stopped-turn recovery compare the generation stored on their OWNING turn,
+	// never this latest value, so a background start cannot invalidate them.
 	turnGeneration uint64
 	// steeringUnsupported is true once the app-server refused the command
 	// inbox as an unknown method. SupportsSteering reports its inverse.
@@ -150,10 +170,16 @@ type Agent struct {
 	// state.updated result ends it, so the input queue stays busy meanwhile.
 	compactionSessionID string
 	compactionLive      bool
-	// backgroundTurn is true while the running turn was started by a background
-	// task rather than by the user. Such a turn must not end the user's turn.
-	backgroundTurn  bool
-	retryResolution providerkit.RetryResolution
+	// turns holds the owner record of every turn the session runs, keyed by the
+	// turn id the event envelope carries. A turn the wire identifies by no id is
+	// keyed by a synthetic one (see startZCodeTurnLocked). Each record owns its
+	// turn's generation content, its tool calls and its cleanup; several records
+	// coexist while a background turn runs beside the user's. Guarded by a.Mu.
+	turns map[string]*zcodeTurnState
+	// foregroundTurnID is the key in turns of the user's own turn, empty while
+	// the user runs none. A background start never replaces it. Guarded by a.Mu.
+	foregroundTurnID string
+	retryResolution  providerkit.RetryResolution
 	// stopWindow ends a turn whose stop the app-server accepted and then never
 	// reported. Guarded by a.Mu. See stoppedTurnWindow and armStoppedZCodeTurnLocked.
 	stopWindow stoppedTurnWindow
@@ -185,6 +211,20 @@ type Agent struct {
 	// afterFunc is time.AfterFunc. A test replaces it to fire the window itself.
 	afterFunc func(time.Duration, func()) *time.Timer
 
+	// replay is the gap-safe event dispatch bookkeeping. Guarded by dispatchMu
+	// (except its own replayMu). See event_replay.go.
+	replay zcodeReplayState
+	// replayScheduler starts a replay pass. Nil selects the default goroutine.
+	// A test replaces it to suppress automatic scheduling and call
+	// replayZCodeEvents directly.
+	replayScheduler func()
+	// recoverWatchers maps a turn id to its recovery watcher state. Guarded by
+	// a.Mu. See turn_recovery.go.
+	recoverWatchers map[string]*zcodeTurnRecoveryState
+	// recoverEmitContent delivers recovered content to the transcript. A test
+	// replaces it to assert on what recovery emits. Nil means discard.
+	recoverEmitContent func(owner *zcodeTurnState, scopeID, content string)
+
 	// observedThoughtLevels is the thought-level list the app-server reports for
 	// the CURRENT model (settings.thoughtLevel.available). It is authoritative and
 	// model-dependent, so it overrides the catalog's variants for the running model.
@@ -197,6 +237,9 @@ type Agent struct {
 	liveModelOrder []string
 	// Partial setter/read snapshots cannot expand a complete account catalog.
 	liveCatalogComplete bool
+	// modelRepairAttempted makes the unavailable-model repair a one-time stage.
+	// Guarded by Mu.
+	modelRepairAttempted bool
 
 	// toolCalls holds everything a.Mu knows about each tool call, keyed by its id.
 	toolCalls     map[string]*zcodeToolCall
@@ -229,6 +272,54 @@ type Agent struct {
 	// children maps a subagent spawn's tool-call id to the child transcript that
 	// holds that subagent's work. See subagent.go.
 	children zcodeChildIndex
+}
+
+// zcodeTurnState is the owner record of one turn: what it is, and what its
+// cleanup must touch.
+//
+// Every started turn gets one, keyed by the id the event envelope carries --
+// several coexist while a background turn runs beside the user's. The record
+// outlives its settlement while any of its tool calls remain open, so a late
+// result still routes to the turn that opened the call; it is dropped only
+// after settlement AND its last tool result. Guarded by a.Mu.
+type zcodeTurnState struct {
+	// id is the key in Agent.turns: the envelope turn id, or a synthetic key
+	// for a turn the wire identified by none.
+	id string
+	// generation is the unique Agent.turnGeneration value minted at acceptance.
+	// Stop and the stopped-turn recovery compare it, so a start of ANOTHER turn
+	// never invalidates what they captured about this one.
+	generation uint64
+	// background is true for a turn the runtime started for itself (a non-empty
+	// turn.started inputSource): a background task reporting back, a subagent's
+	// reply, a todo reminder. Such a turn must not end the user's turn or reset
+	// its state.
+	background bool
+	// foregroundExecutionID is the turn.started foregroundExecutionId, recorded
+	// for background turns too: a runtime turn states the user execution it
+	// belongs to.
+	foregroundExecutionID string
+	// settled marks a turn whose end LeapMux already recorded -- its terminal
+	// event, or the stopped-turn window's local end. turnActive derives from it.
+	settled bool
+	// acceptedAt is when LeapMux observed the turn.started.
+	acceptedAt time.Time
+	// admissionRevision is the session state revision the turn was admitted
+	// under.
+	admissionRevision int64
+	// anchorMessageID is the turn.started messageId, and inputID its inputId.
+	anchorMessageID string
+	inputID         string
+	// baselineTurnCount is the shared TurnToolUses counter at acceptance, so a
+	// later reconciliation can tell this turn's closes from earlier ones.
+	baselineTurnCount int
+	// contentByScope retains the text and reasoning delivered for this turn,
+	// keyed by generation-buffer scope, so it survives buffer persistence for a
+	// later reconciliation.
+	contentByScope map[string]string
+	// toolCallIDs holds the tool-call ids belonging to this turn. Openness is
+	// read from the tool-call records themselves (see dropZCodeTurnLocked).
+	toolCallIDs map[string]struct{}
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -321,6 +412,18 @@ func (a *Agent) finishZCodeCompaction(sessionID string) {
 
 // ZCode's installed app-server refuses session/send while a prompt runs.
 // The Worker therefore waits until that turn ends before it sends queued input.
+//
+// The reply must be the full {sessionId, accepted, stateRevision} receipt for
+// the session the request named. accepted:false is an explicit rejection; any
+// reply that does not prove acceptance is delivery-uncertain, because a
+// malformed result must never confirm delivery.
+//
+// A valid receipt creates a provisional foreground turn owner: the accepted
+// input is the user's turn even before turn.started names it. The owner carries
+// the sent inputId, the acceptance time and the receipt's state revision.
+// watchZCodeTurn starts immediately so a turn that never reports a start is
+// still reconciled. A receipt whose session was replaced while the send was in
+// flight folds no revision and creates no owner on the replacement.
 func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
@@ -345,12 +448,13 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		return err
 	}
 
+	inputID := id.Short()
 	// The app-server's session/send schema rejects delivery hints such as
 	// requestedDelivery with -32602.
 	params := map[string]any{
 		"sessionId": sessionID,
 		"content":   text,
-		"inputId":   id.Short(),
+		"inputId":   inputID,
 	}
 	if len(wire) > 0 {
 		params["attachments"] = wire
@@ -360,12 +464,25 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	for {
 		raw, err := a.sendZCodeRequest(MethodSessionSend, params, a.APITimeout())
 		if err == nil {
-			var ack struct {
-				Accepted bool `json:"accepted"`
+			var receipt zcodeSendReceipt
+			if json.Unmarshal(raw, &receipt) != nil {
+				return fmt.Errorf("%w: ZCode returned no valid %s receipt", agent.ErrDeliveryUncertain, MethodSessionSend)
 			}
-			if json.Unmarshal(raw, &ack) == nil && !ack.Accepted {
+			// accepted:false is an explicit rejection: the delivery question has
+			// a certain answer, so the ordinary error stays even when the receipt
+			// carries no other field.
+			if receipt.Accepted != nil && !*receipt.Accepted {
 				return fmt.Errorf("the app-server did not accept the message")
 			}
+			// Everything else must be the full accepted receipt for THIS session
+			// with a nonnegative revision. The pointer fields separate an absent
+			// field from a present zero: stateRevision 0 is valid on a fresh
+			// session, while a missing sessionId is not.
+			if receipt.Accepted == nil || receipt.SessionID == nil || *receipt.SessionID != sessionID ||
+				receipt.StateRevision == nil || *receipt.StateRevision < 0 {
+				return fmt.Errorf("%w: ZCode returned no valid %s receipt", agent.ErrDeliveryUncertain, MethodSessionSend)
+			}
+			a.createProvisionalZCodeTurn(sessionID, inputID, *receipt.StateRevision)
 			return nil
 		}
 		if !zcodeIsPromptRunning(err) || !a.Clock().Now().Before(deadline) {
@@ -383,6 +500,68 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 			return a.Context().Err()
 		}
 	}
+}
+
+// zcodeSendReceipt is a session/send reply. The app-server promises
+// {sessionId, accepted, stateRevision}, and each field is required: the
+// pointers tell an absent field from a present zero, because a zero revision
+// is a valid answer on a fresh session.
+type zcodeSendReceipt struct {
+	SessionID     *string `json:"sessionId"`
+	Accepted      *bool   `json:"accepted"`
+	StateRevision *int64  `json:"stateRevision"`
+}
+
+// createProvisionalZCodeTurn records the accepted input as a foreground turn
+// owner before turn.started names it. The native ID is empty; a later
+// turn.started or a session/read snapshot adopts the real one. The watcher
+// starts immediately so recovery can reconcile a turn that never reports a
+// start.
+//
+// expectedSessionID must still be the current session. A send that crossed a
+// session replacement belongs to the replaced session: its receipt then folds
+// no revision and creates no owner on the replacement, or a stale counter would
+// move the fresh session's revision and a phantom turn would run against it.
+func (a *Agent) createProvisionalZCodeTurn(expectedSessionID, inputID string, receiptRevision int64) {
+	a.Mu.Lock()
+	if a.sessionID != expectedSessionID {
+		a.Mu.Unlock()
+		return
+	}
+	a.noteZCodeStateRevisionLocked(receiptRevision)
+	admissionRevision := receiptRevision
+	if admissionRevision == 0 {
+		admissionRevision = a.stateRevision
+	}
+	if a.turns == nil {
+		a.turns = make(map[string]*zcodeTurnState)
+	}
+	a.turnGeneration++
+	turn := &zcodeTurnState{
+		id:                fmt.Sprintf("#turn-%d", a.turnGeneration),
+		generation:        a.turnGeneration,
+		acceptedAt:        a.Clock().Now(),
+		admissionRevision: admissionRevision,
+		inputID:           inputID,
+		baselineTurnCount: a.TurnToolUses,
+		contentByScope:    map[string]string{},
+		toolCallIDs:       map[string]struct{}{},
+	}
+	// A user start replaces only the previous user foreground owner.
+	if prev := a.turns[a.foregroundTurnID]; prev != nil && !prev.settled {
+		for scopeID := range prev.contentByScope {
+			a.generationBuffer.Discard(scopeID)
+		}
+		delete(a.turns, prev.id)
+	}
+	a.cancelStoppedZCodeTurnLocked()
+	a.stopCancelledRequest = false
+	a.foregroundTurnID = turn.id
+	a.turns[turn.id] = turn
+	a.refreshTurnActiveLocked()
+	a.startZCodeTurnWatcherLocked(turn)
+	a.Mu.Unlock()
+	a.PublishTurnActive()
 }
 
 const zcodeSendRetryTimerTag = "zcode-send-retry"

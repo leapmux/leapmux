@@ -28,7 +28,7 @@ func TestZCodeTurnActive_BackgroundTurnStillClears(t *testing.T) {
 	t.Parallel()
 
 	// A background turn (inputSource set) persists no divider and closes none of
-	// the user's spans, so finishZCodeTurn returns early. The clear has to happen
+	// the user's spans, so settleZCodeTurn returns early. The clear has to happen
 	// BEFORE that early return, or a background turn latches the agent busy for
 	// the life of the process.
 	sink := &agenttest.Sink{}

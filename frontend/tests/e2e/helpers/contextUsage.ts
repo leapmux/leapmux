@@ -17,21 +17,31 @@ import { openAgentInfoCard, sendMessage, waitForAgentIdle } from './ui'
  * screen from a default run.
  *
  * The card's Context row prints `formatTokenCount(total) / window`. The total
- * is input, output and cache summed, so the marker is that one abbreviation,
- * not each count separately. The card states no per-count figure, and the
- * `context-usage-grid` test id belongs to the status-bar trigger's PipGrid,
- * which has no text nodes at all.
+ * is the NORMALIZED breakdown summed: ordinary input (the cache-inclusive input
+ * minus both cache buckets), both cache buckets, and output. A consistent
+ * fixture therefore marks `input + output`; the cache buckets move the count
+ * between the breakdown rows and cancel out of the sum. The marker is that one
+ * abbreviation, not each count separately. The card states no per-count figure,
+ * and the `context-usage-grid` test id belongs to the status-bar trigger's
+ * PipGrid, which has no text nodes at all.
  */
 
 /**
  * The combined token count the card prints for one scripted usage block.
  *
- * The mock reports input and output; the card sums them (plus any cache
- * counts) into one figure. A step that reports no count at all produces no
- * marker.
+ * The mock reports a cache-INCLUSIVE input and the cache buckets inside it. The
+ * card sums the normalized breakdown -- ordinary input plus both buckets plus
+ * output -- so the total is `input + output` while the buckets fit inside the
+ * input. An over-full breakdown clamps the ordinary input to zero, and the sum
+ * then carries the whole cache traffic.
  */
 function usageTotal(usage: MockModelUsage): number {
-  return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+  const input = usage.inputTokens ?? 0
+  const output = usage.outputTokens ?? 0
+  const cacheRead = usage.cacheReadTokens ?? 0
+  const cacheWrite = usage.cacheWriteTokens ?? 0
+  const ordinaryInput = Math.max(0, input - cacheRead - cacheWrite)
+  return ordinaryInput + cacheRead + cacheWrite + output
 }
 
 /**

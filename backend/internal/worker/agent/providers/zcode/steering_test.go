@@ -131,9 +131,7 @@ func newZCodeSteerAgent(t *testing.T) (*Agent, *agenttest.Sink, *zcodeRecordedSt
 	sink := &agenttest.Sink{}
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
-	a.Mu.Lock()
-	a.turnActive = true
-	a.Mu.Unlock()
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	return a, sink, stdin
 }
 

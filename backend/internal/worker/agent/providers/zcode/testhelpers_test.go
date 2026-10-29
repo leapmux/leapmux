@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,7 +54,7 @@ func zcodeTestRelease(t *testing.T, content string) (zcodeBuiltinProviderFile, s
 func zcodeTestBindings(t *testing.T, catalog zcodeCatalog, content string, credentials zcodeCredentials) []zcodeAccountBinding {
 	t.Helper()
 	release, _ := zcodeTestRelease(t, content)
-	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, credentials)
+	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, credentials, nil)
 	require.NoError(t, err)
 	return bindings
 }
@@ -63,7 +64,7 @@ func zcodeTestBindings(t *testing.T, catalog zcodeCatalog, content string, crede
 func zcodeTestAccountPayload(t *testing.T, catalog zcodeCatalog, content string, startPlans map[string]zcodeAccountEntitlement) zcodeAccountProviderPayload {
 	t.Helper()
 	release, basedOn := zcodeTestRelease(t, content)
-	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, zcodeCredentials{})
+	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, zcodeCredentials{}, nil)
 	require.NoError(t, err)
 	return newZCodeAccountProviderPayload(bindings, basedOn, "leapmux-agent", startPlans)
 }
@@ -212,6 +213,22 @@ func (w *zcodeRecordedStdin) Requests(t *testing.T) []zcodeSentRequest {
 	return out
 }
 
+// RequestsFor returns the requests for one method. It takes no *testing.T, so a
+// responder goroutine can read it while the test runs.
+func (w *zcodeRecordedStdin) RequestsFor(method string) []zcodeSentRequest {
+	out := []zcodeSentRequest{}
+	for _, frame := range w.Frames() {
+		var req zcodeSentRequest
+		if json.Unmarshal(frame, &req) != nil {
+			continue
+		}
+		if req.Method == method {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
 // zcodeAwaitReplies waits until stdin holds n frames and returns them decoded. A
 // reply that the agent sends from a goroutine of its own needs it.
 func zcodeAwaitReplies(t *testing.T, stdin *zcodeRecordedStdin, n int) []zcodeSentRequest {
@@ -279,6 +296,9 @@ func newZCodeTestAgentWithClock(t *testing.T, sink agent.ProviderServices, stdin
 		pendingControls: map[string]*pendingControl{},
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
+	// Suppress automatic replay scheduling: tests that need replay call
+	// replayZCodeEvents directly.
+	a.replayScheduler = func() {}
 	return a
 }
 
@@ -303,6 +323,112 @@ func zcodeEventLine(t *testing.T, seq int64, eventType string, payload string) [
 	})
 	require.NoError(t, err)
 	return line
+}
+
+// zcodeTurnEventLine renders one session/event notification that names its turn,
+// as the app-server does for every event the turn owns. An empty turnID renders
+// an event that names no turn.
+func zcodeTurnEventLine(t *testing.T, seq int64, turnID, eventType, payload string) []byte {
+	t.Helper()
+	body := map[string]any{
+		"eventId":   "evt",
+		"sessionId": "sess-1",
+		"seq":       seq,
+		"type":      eventType,
+	}
+	if turnID != "" {
+		body["turnId"] = turnID
+	}
+	if payload != "" {
+		body["payload"] = json.RawMessage(payload)
+	}
+	params, err := json.Marshal(body)
+	require.NoError(t, err)
+	line, err := json.Marshal(map[string]any{
+		"method": NotifySessionEvent,
+		"params": json.RawMessage(params),
+	})
+	require.NoError(t, err)
+	return line
+}
+
+// zcodeStartTestTurn feeds a turn.started for a test that drives turn-scoped
+// events without building the line itself. Sequence 0 keeps the line out of the
+// test's own sequence.
+func zcodeStartTestTurn(t *testing.T, a *Agent, payload string) {
+	t.Helper()
+	a.HandleOutput(zcodeEventLine(t, 0, contracts.ZCodeEventTurnStarted, payload))
+}
+
+// zcodeOwnTestTool attributes a hand-seeded tool call to the agent's sole turn
+// owner, as a tool event would.
+func zcodeOwnTestTool(t *testing.T, a *Agent, toolCallID string) {
+	t.Helper()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	var sole *zcodeTurnState
+	for _, turn := range a.turns {
+		if turn.settled {
+			continue
+		}
+		require.Nil(t, sole, "the test must hold exactly one unsettled turn")
+		sole = turn
+	}
+	require.NotNil(t, sole, "zcodeStartTestTurn first")
+	a.attributeZCodeToolLocked(sole, toolCallID)
+}
+
+// zcodeSeedTestTurn records a turn owner directly, with none of the
+// publications a turn.started event makes. A test that asserts exactly which
+// frames publish needs its owner seeded this way.
+func zcodeSeedTestTurn(t *testing.T, a *Agent, background bool) {
+	t.Helper()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.turns == nil {
+		a.turns = make(map[string]*zcodeTurnState)
+	}
+	a.turnGeneration++
+	turn := &zcodeTurnState{
+		id:             fmt.Sprintf("#turn-%d", a.turnGeneration),
+		generation:     a.turnGeneration,
+		background:     background,
+		acceptedAt:     a.Clock().Now(),
+		contentByScope: map[string]string{},
+		toolCallIDs:    map[string]struct{}{},
+	}
+	if !background {
+		a.foregroundTurnID = turn.id
+	}
+	a.turns[turn.id] = turn
+	a.refreshTurnActiveLocked()
+}
+
+// zcodeFetchedEvent renders one event as a session/events response carries it:
+// the bare envelope, with no notification wrapper.
+func zcodeFetchedEvent(t *testing.T, seq int64, eventType, payload string) json.RawMessage {
+	t.Helper()
+	body := map[string]any{
+		"eventId":   "evt",
+		"sessionId": "sess-1",
+		"seq":       seq,
+		"type":      eventType,
+	}
+	if payload != "" {
+		body["payload"] = json.RawMessage(payload)
+	}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	return raw
+}
+
+// zcodeEventsReply renders one session/events response: the events a fetch
+// returns beside the sequence its range covers.
+func zcodeEventsReply(t *testing.T, eventSeq int64, events ...json.RawMessage) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"eventSeq": eventSeq, "events": events})
+	require.NoError(t, err)
+	return raw
 }
 
 // zcodeStateLine renders one top-level state.updated notification.
@@ -349,6 +475,12 @@ func zcodeErrorReplyLine(t *testing.T, id int64, code int, message string) []byt
 // backstop only: a reply that never arrives fails the test in seconds, instead of
 // parking the run until the package timeout.
 const zcodeTestRPCTimeout = 5 * time.Second
+
+// zcodeCancelPromptness bounds the waits that assert a cancellation ENDED
+// credential work or a shared call. It must stay well below
+// zcodeProjectTokenTimeout: the work's own timeout would otherwise satisfy the
+// wait and hide a cancellation that never happened.
+const zcodeCancelPromptness = 5 * time.Second
 
 // answerZCodeRequest replies to the next request for method with result.
 //

@@ -59,13 +59,55 @@ func TestRefreshZCodeUsageFromSession_DoesNotDiscardUndeliveredEvents(t *testing
 	go func() { a.refreshZCodeUsageFromSession(); close(done) }()
 	request := waitZCodeRequest(t, stdin, MethodSessionRead)
 	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"runtime":{"eventSeq":55,"stateRevision":99,"contextUsage":{"used":5000,"size":200000}}}`)))
+	// The gap the snapshot reports is replayed before the fold. This fetch
+	// cannot close it, so the fold holds back — and the undelivered events
+	// stay undelivered rather than discarded.
+	fetch := waitZCodeRequest(t, stdin, MethodSessionEvents)
+	var params struct {
+		AfterSeq int64 `json:"afterSeq"`
+	}
+	require.NoError(t, json.Unmarshal(fetch.Params, &params))
+	assert.Equal(t, int64(7), params.AfterSeq, "the fetch asks for the gap the snapshot reports")
+	a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, fetch), -32603, "temporary failure"))
 	<-done
-	assert.Equal(t, int64(99), a.stateRevision)
-	assert.Equal(t, int64(5000), a.latestContextUsage["context_tokens"])
+	a.Mu.Lock()
+	assert.Zero(t, a.stateRevision, "the fold waits for the replay to close the gap")
+	assert.Empty(t, a.latestContextUsage)
 	assert.Equal(t, int64(7), a.lastSeq)
+	a.Mu.Unlock()
 	a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventTurnStarted, `{"turnId":"later"}`))
 	assert.Equal(t, int64(8), a.lastSeq)
 	assert.True(t, a.turnActive, "the actual notification must still reach its handler")
+}
+
+// A newer session/read gap dispatches before the observation folds: the reply
+// reflects the state after the gap, so the events it outran must land first.
+func TestRefreshZCodeUsageFromSession_ReplaysANewerGapBeforeApplyingTheObservation(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	sink := &zcodeObservationSink{Sink: &agenttest.Sink{}}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.lastSeq = 7
+	// The fold broadcasts after its commit, so the replayed events are visible
+	// to the hook only if the replay completed first.
+	sink.onInfo = func() {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		assert.Equal(t, int64(9), a.lastSeq, "the gap must dispatch before the observation applies")
+	}
+	done := make(chan struct{})
+	go func() { a.refreshZCodeUsageFromSession(); close(done) }()
+	request := waitZCodeRequest(t, stdin, MethodSessionRead)
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"runtime":{"eventSeq":9,"stateRevision":99,"contextUsage":{"used":5000,"size":200000}}}`)))
+	fetch := waitZCodeRequest(t, stdin, MethodSessionEvents)
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, fetch), zcodeEventsReply(t, 9,
+		zcodeFetchedEvent(t, 8, contracts.ZCodeEventSessionTitleUpdated, ""),
+		zcodeFetchedEvent(t, 9, contracts.ZCodeEventSessionTitleUpdated, ""),
+	)))
+	<-done
+	assert.Equal(t, int64(9), a.lastSeq, "the cursor advances only through dispatched events")
+	assert.Equal(t, int64(99), a.stateRevision)
+	assert.Equal(t, int64(5000), a.latestContextUsage["context_tokens"])
 }
 
 func TestRefreshZCodeUsageFromSession_DropsAReadOfARetiredSession(t *testing.T) {
@@ -108,7 +150,7 @@ func TestZCodeContextUsageMap_MapsTokensAndTheOptionalWindow(t *testing.T) {
 		TotalTokens:      19,
 	}, 128000)
 	assert.Equal(t, map[string]any{
-		"input_tokens":                int64(10),
+		"input_tokens":                int64(5),
 		"output_tokens":               int64(4),
 		"cache_read_input_tokens":     int64(2),
 		"cache_creation_input_tokens": int64(3),
@@ -118,6 +160,38 @@ func TestZCodeContextUsageMap_MapsTokensAndTheOptionalWindow(t *testing.T) {
 	withoutWindow := zcodeContextUsageMap(zcodeUsage{InputTokens: 1}, 0)
 	_, hasWindow := withoutWindow["context_window"]
 	assert.False(t, hasWindow, "a zero window is unknown, not a real size")
+}
+
+// ZCode's inputTokens is cache-inclusive, so the projection subtracts both cache
+// buckets. One token of cache traffic then counts once: in its bucket, and not
+// also inside the input.
+func TestZCodeContextUsageMap_SubtractsTheCacheBucketsFromTheInput(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name                     string
+		input, cacheRead, cacheW int64
+		ordinary                 int64
+	}{
+		{name: "no cache", input: 10, cacheRead: 0, cacheW: 0, ordinary: 10},
+		{name: "partial cache hits", input: 10, cacheRead: 2, cacheW: 3, ordinary: 5},
+		{name: "a full cache hit", input: 5, cacheRead: 2, cacheW: 3, ordinary: 0},
+		{name: "over-clamped cache buckets", input: 3, cacheRead: 2, cacheW: 3, ordinary: 0},
+		{name: "cache traffic with no input count", input: 0, cacheRead: 5, cacheW: 1, ordinary: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := zcodeContextUsageMap(zcodeUsage{
+				InputTokens:      tc.input,
+				CacheReadTokens:  tc.cacheRead,
+				CacheWriteTokens: tc.cacheW,
+			}, 0)
+			assert.Equal(t, tc.ordinary, got["input_tokens"])
+			assert.Equal(t, tc.cacheRead, got["cache_read_input_tokens"])
+			assert.Equal(t, tc.cacheW, got["cache_creation_input_tokens"])
+		})
+	}
 }
 
 func TestZCodeContextUsageFromRuntime_NilOrUnusedReturnsNil(t *testing.T) {
@@ -144,9 +218,43 @@ func TestZCodeContextUsageFromRuntime_PrefersHeldTokensAndCarriesCache(t *testin
 	assert.Equal(t, int64(5000), got["context_tokens"],
 		"context_tokens is what the context HOLDS, not the last request")
 	assert.Equal(t, int64(200000), got["context_window"])
-	assert.Equal(t, int64(80), got["input_tokens"])
+	assert.Equal(t, int64(55), got["input_tokens"],
+		"the runtime breakdown states a cache-inclusive input, which the projection subtracts")
 	assert.Equal(t, int64(20), got["cache_read_input_tokens"])
 	assert.Equal(t, int64(5), got["cache_creation_input_tokens"])
+}
+
+// The runtime cache breakdown takes the same rule as the per-request usage.
+func TestZCodeContextUsageFromRuntime_SubtractsTheCacheBucketsFromTheInput(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name                     string
+		input, cacheRead, cacheW int64
+		ordinary                 int64
+	}{
+		{name: "no cache", input: 80, cacheRead: 0, cacheW: 0, ordinary: 80},
+		{name: "partial cache hits", input: 80, cacheRead: 20, cacheW: 5, ordinary: 55},
+		{name: "a full cache hit", input: 25, cacheRead: 20, cacheW: 5, ordinary: 0},
+		{name: "over-clamped cache buckets", input: 10, cacheRead: 20, cacheW: 5, ordinary: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := zcodeContextUsageFromRuntime(&zcodeContextUsage{
+				Used: 5000,
+				Cache: &struct {
+					InputTokens      int64 `json:"inputTokens"`
+					CacheReadTokens  int64 `json:"cacheReadTokens"`
+					CacheWriteTokens int64 `json:"cacheWriteTokens"`
+				}{InputTokens: tc.input, CacheReadTokens: tc.cacheRead, CacheWriteTokens: tc.cacheW},
+			})
+			assert.Equal(t, tc.ordinary, got["input_tokens"])
+			assert.Equal(t, tc.cacheRead, got["cache_read_input_tokens"])
+			assert.Equal(t, tc.cacheW, got["cache_creation_input_tokens"])
+			assert.Equal(t, int64(5000), got["context_tokens"])
+		})
+	}
 }
 
 func TestZCodeContextUsage_CostOrNil(t *testing.T) {
@@ -240,7 +348,7 @@ func TestRecordZCodeUsage_DoesNotReplaceAuthoritativeContextTokens(t *testing.T)
 	a.Mu.Unlock()
 	assert.Equal(t, int64(5000), got["context_tokens"],
 		"the per-request counts must not make the fill gauge jump backwards after a compaction")
-	assert.Equal(t, int64(80), got["input_tokens"])
+	assert.Equal(t, int64(74), got["input_tokens"])
 	assert.Equal(t, int64(20), got["output_tokens"])
 	assert.Equal(t, int64(4), got["cache_read_input_tokens"])
 	assert.Equal(t, int64(2), got["cache_creation_input_tokens"])
@@ -282,6 +390,7 @@ func TestZCodeTurnUsagePreservesOriginalBytes(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	raw := []byte(" {\"type\":\"turn.completed\",\"future\":9007199254740993,\"payload\":{\"response\":\"Done\",\"usage\":{\"inputTokens\":2,\"outputTokens\":1,\"totalTokens\":3}}} \n")
 	event, ok := parseZCodeEvent(raw)
 	require.True(t, ok)

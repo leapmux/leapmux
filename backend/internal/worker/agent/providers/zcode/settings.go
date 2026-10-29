@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -571,13 +572,94 @@ func zcodeOffersLevel(offered []*agent.EffortInfo, level string) bool {
 	return !concrete
 }
 
+// --- bounded reasoning-level recovery ---
+
+// The two verified reasoning-level failure classes of the current app-server.
+// Both arrive with data.code "invalid_model_request", and the message states
+// which level the model refused: either no level was sent where one is required,
+// or the level the selection carried is not one the model offers. The message
+// matches one class exactly -- the provider and model spell the same composite
+// the wire uses -- so a schema error that merely mentions reasoning does not
+// qualify.
+var (
+	zcodeReasoningLevelRequiredRE     = regexp.MustCompile(`^Reasoning level is required for [^/]+/.+$`)
+	zcodeReasoningEffortUnsupportedRE = regexp.MustCompile(`^Reasoning effort "[^"]*" is not supported by [^/]+/.+$`)
+)
+
+// zcodeIsReasoningLevelRejection reports whether err states one of the two
+// verified reasoning-level failure classes -- the only errors another selection
+// of the same model switch can resolve. Everything else, including the same
+// data.code with a message outside the two classes, stops the switch at once.
+func zcodeIsReasoningLevelRejection(err error) bool {
+	var wire *zcodeError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	var data struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(wire.Data, &data) != nil || data.Code != "invalid_model_request" {
+		return false
+	}
+	return zcodeReasoningLevelRequiredRE.MatchString(wire.Message) ||
+		zcodeReasoningEffortUnsupportedRE.MatchString(wire.Message)
+}
+
+// zcodeModelLevelAttempts caps how many reasoning-level selections one model
+// switch tries.
+const zcodeModelLevelAttempts = 5
+
+// zcodeModelLevelCandidates builds the reasoning-level ladder of one model
+// switch: the selected or live-default level first, then the selection that
+// carries no level at all, then the remaining levels the authoritative live
+// model record offers. A duplicate collapses into its earlier entry, and the
+// ladder stops at five selections. A model that declares no levels therefore
+// supplies no alternate level.
+func zcodeModelLevelCandidates(selected string, offered []*agent.EffortInfo) []string {
+	candidates := make([]string, 0, zcodeModelLevelAttempts)
+	seen := make(map[string]bool, zcodeModelLevelAttempts)
+	add := func(level string) {
+		if seen[level] || len(candidates) >= zcodeModelLevelAttempts {
+			return
+		}
+		seen[level] = true
+		candidates = append(candidates, level)
+	}
+	add(selected)
+	// The selection with no options.reasoningLevel: the app-server keeps whatever
+	// level the session already had.
+	add("")
+	for _, tier := range offered {
+		if tier == nil {
+			continue
+		}
+		if id := tier.GetId(); id != "" && id != agent.EffortAuto {
+			add(id)
+		}
+	}
+	return candidates
+}
+
+// zcodeModelApplyResult is what one model switch settled on.
+type zcodeModelApplyResult struct {
+	// ThoughtLevel is the OBSERVED level of the successful snapshot, never the
+	// requested one.
+	ThoughtLevel string
+	// Recovered records that the ladder settled the switch on a different
+	// candidate than the selected or live-default level.
+	Recovered bool
+}
+
 // applyZCodeModel pins the session's model and reports what the app-server settled
 // on.
 //
-// Legacy builds receive a runtimeModel overlay with the inline key. ZCode 0.16.9
-// owns the provider registry and strictly refuses that field, so its request carries
-// only the model reference.
-func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) error {
+// Legacy builds receive a runtimeModel overlay with the inline key, as one
+// attempt. ZCode 0.16.9 owns the provider registry and strictly refuses that
+// field, so a current account configuration sends only the model reference -- and
+// may retry: an app-server that refuses a reasoning level with one of the two
+// verified failure classes gets the bounded ladder of zcodeModelLevelCandidates
+// instead of a dead switch that a restart would repeat.
+func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) (zcodeModelApplyResult, error) {
 	a.Mu.Lock()
 	resolved, ok := a.resolveZCodeModelIDLocked(modelID)
 	sessionID := a.sessionID
@@ -587,51 +669,82 @@ func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) er
 	offered := a.zcodeThoughtLevelsLocked(resolved)
 	a.Mu.Unlock()
 	if !ok {
-		return newInvalidZCodeModelError(modelID)
+		return zcodeModelApplyResult{}, newInvalidZCodeModelError(modelID)
 	}
 	if sessionID == "" {
-		return errNoZCodeSession
+		return zcodeModelApplyResult{}, errNoZCodeSession
 	}
 	thoughtLevel := resolveZCodeThoughtLevel(level, defaultLevel, offered)
 
-	var params map[string]any
-	if accountConfig {
-		if ref.ModelID == "" {
-			providerID, providerModelID, valid := splitZCodeModelID(resolved)
-			if !valid {
-				return newInvalidZCodeModelError(modelID)
-			}
-			ref = zcodeModelRef{ProviderID: providerID, ModelID: providerModelID}
-		}
-		selection := zcodeModelSelection{zcodeModelRef: ref}
-		// A model that declares no default gets no level, so the app-server keeps
-		// whatever the session already had.
-		if thoughtLevel != "" {
-			selection.Options = &zcodeModelSelectionOptions{ReasoningLevel: thoughtLevel}
-		}
-		params = map[string]any{"sessionId": sessionID, "model": selection}
-	} else {
+	if !accountConfig {
 		overlay, found := a.catalog.runtimeModelFor(resolved, a.registryRevision, time.Now().UnixMilli())
 		if !found {
-			return newInvalidZCodeModelError(modelID)
+			return zcodeModelApplyResult{}, newInvalidZCodeModelError(modelID)
 		}
 		// A concrete level rides along so a legacy model switch does not drop it.
 		overlay.ThoughtLevel = thoughtLevel
-		params = map[string]any{
+		params := map[string]any{
 			"sessionId":    sessionID,
 			"model":        overlay.Model,
 			"runtimeModel": overlay,
 		}
+		raw, err := a.sendZCodeRequest(MethodSetModel, params, timeout)
+		if err != nil {
+			return zcodeModelApplyResult{}, err
+		}
+		return a.settleZCodeModelSnapshot(sessionID, resolved, raw)
 	}
 
-	raw, err := a.sendZCodeRequest(MethodSetModel, params, timeout)
-	if err != nil {
-		return err
+	if ref.ModelID == "" {
+		providerID, providerModelID, valid := splitZCodeModelID(resolved)
+		if !valid {
+			return zcodeModelApplyResult{}, newInvalidZCodeModelError(modelID)
+		}
+		ref = zcodeModelRef{ProviderID: providerID, ModelID: providerModelID}
 	}
+	candidates := zcodeModelLevelCandidates(thoughtLevel, offered)
+	var lastErr error
+	for i, candidate := range candidates {
+		if i > 0 && !a.isCurrentZCodeSession(sessionID) {
+			// A context clear replaced the session. The next selection would reach
+			// a session this switch does not serve.
+			return zcodeModelApplyResult{}, errNoZCodeSession
+		}
+		selection := zcodeModelSelection{zcodeModelRef: ref}
+		// A candidate with no level leaves the level to the app-server, so the
+		// selection carries no options.reasoningLevel at all.
+		if candidate != "" {
+			selection.Options = &zcodeModelSelectionOptions{ReasoningLevel: candidate}
+		}
+		params := map[string]any{
+			"sessionId": sessionID,
+			"model":     selection,
+			// A model switch of one agent must not rewrite the workspace default.
+			"persistAsWorkspaceLastUsed": false,
+		}
+		raw, err := a.sendZCodeRequest(MethodSetModel, params, timeout)
+		if err == nil {
+			result, settleErr := a.settleZCodeModelSnapshot(sessionID, resolved, raw)
+			result.Recovered = i > 0
+			return result, settleErr
+		}
+		if !zcodeIsReasoningLevelRejection(err) {
+			return zcodeModelApplyResult{}, err
+		}
+		lastErr = err
+	}
+	// Every selection carried a level the app-server refused. The last rejection
+	// says why.
+	return zcodeModelApplyResult{}, lastErr
+}
+
+// settleZCodeModelSnapshot folds a successful session/setModel reply through the
+// session-identity check and the settings fold, and reports the observed level.
+func (a *Agent) settleZCodeModelSnapshot(sessionID, resolved string, raw json.RawMessage) (zcodeModelApplyResult, error) {
 	a.sessionLifecycleMu.Lock()
 	defer a.sessionLifecycleMu.Unlock()
 	if !a.isCurrentZCodeSession(sessionID) {
-		return errNoZCodeSession
+		return zcodeModelApplyResult{}, errNoZCodeSession
 	}
 	// The requested id stands only where the snapshot states nothing. Apply it
 	// first, then fold the reply: settings.model.current OVERWRITES this when the
@@ -644,7 +757,10 @@ func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) er
 	if !observed || snapshot.Settings == nil || snapshot.Settings.Model == nil || snapshot.Settings.Model.Current.ModelID == "" {
 		a.markSettingUnresolved(agent.OptionIDModel)
 	}
-	return nil
+	a.Mu.Lock()
+	thoughtLevel := a.thoughtLevel
+	a.Mu.Unlock()
+	return zcodeModelApplyResult{ThoughtLevel: thoughtLevel}, nil
 }
 
 // runsThoughtLevel reports whether the session runs at level now. A model switch can settle on the
@@ -670,6 +786,8 @@ func (a *Agent) applyZCodeThoughtLevel(level string, timeout time.Duration) erro
 	raw, err := a.sendZCodeRequest(MethodSetThoughtLevel, map[string]any{
 		"sessionId":    sessionID,
 		"thoughtLevel": level,
+		// A thought-level change of one agent must not rewrite the workspace default.
+		"persistAsWorkspaceLastUsed": false,
 	}, timeout)
 	if err != nil {
 		return err
@@ -759,9 +877,42 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 
 	timeout := a.APITimeout()
 	applied := true
+	// skipEffortSetter suppresses the separate thought-level request after a model
+	// switch that owns the level: the ladder just rejected the request, or settled
+	// on some level of its own.
+	skipEffortSetter := false
 
 	if model := options[agent.OptionIDModel]; model != "" && normalizeZCodeModelID(model) != curModel {
-		if err := a.applyZCodeModel(model, curEffort, timeout); err != nil {
+		effort := options[agent.OptionIDEffort]
+		combinedEdit := effort != "" && effort != agent.EffortAuto && effort != curEffort
+		level := curEffort
+		if combinedEdit {
+			// A combined edit states the pair the user asked for, so the ladder
+			// starts from the requested level rather than the one the session runs.
+			level = effort
+		}
+		res, err := a.applyZCodeModel(model, level, timeout)
+		switch {
+		case err == nil:
+			if res.Recovered {
+				// The ladder settled on another level. Reapplying the request would
+				// repeat a rejected level, so the setter stays out of the way.
+				skipEffortSetter = true
+				if combinedEdit && res.ThoughtLevel != effort {
+					a.markSettingUnresolved(agent.OptionIDEffort)
+				}
+			}
+		case zcodeIsReasoningLevelRejection(err):
+			// Every selection carried a level the app-server refused. Restarting
+			// would repeat the rejected pair, so the edit reports the observed
+			// settings instead and leaves the request unresolved.
+			slog.Warn("zcode UpdateSettings setModel rejected every reasoning level; keeping the observed settings", "agent_id", a.AgentID(), "model", model, "error", err)
+			a.markSettingUnresolved(agent.OptionIDModel)
+			if combinedEdit {
+				a.markSettingUnresolved(agent.OptionIDEffort)
+				skipEffortSetter = true
+			}
+		default:
 			slog.Warn("zcode UpdateSettings setModel failed; restarting to apply", "agent_id", a.AgentID(), "model", model, "error", err)
 			applied = false
 		}
@@ -769,7 +920,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	// An effort that equals the level before the edit is the stored value that the Worker sends
 	// with every edit, so it is no request for a change. The model switch above can also settle
 	// on the level that this edit states.
-	if effort := options[agent.OptionIDEffort]; effort != "" && effort != agent.EffortAuto && effort != curEffort && !a.runsThoughtLevel(effort) {
+	if effort := options[agent.OptionIDEffort]; !skipEffortSetter && effort != "" && effort != agent.EffortAuto && effort != curEffort && !a.runsThoughtLevel(effort) {
 		if err := a.applyZCodeThoughtLevel(effort, timeout); err != nil {
 			slog.Warn("zcode UpdateSettings setThoughtLevel failed; restarting to apply", "agent_id", a.AgentID(), "level", effort, "error", err)
 			applied = false
@@ -784,7 +935,9 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 
 	if !applied {
 		// A partial apply (the model landed, the thought level was refused) is reported
-		// as-is, and the caller restarts to settle it.
+		// as-is, and the caller restarts to settle it. A model switch whose reasoning
+		// level the app-server refused never reaches this branch: restarting would
+		// repeat the rejected pair, so that edit reports the observed settings instead.
 		//
 		// The trio is deliberately NOT rolled back. A setter that succeeded moved the live
 		// session, and applyStateSnapshot folded that model's own thought levels, its
@@ -852,11 +1005,21 @@ type zcodeStatePatch struct {
 // that starts sending it working without a change.
 type zcodeStatePatchBody struct {
 	zcodeSettingsSnapshot
-	Runtime *zcodeRuntimeState `json:"runtime"`
+	Runtime    *zcodeRuntimeState    `json:"runtime"`
+	Projection *zcodeProjectionState `json:"projection"`
 	// Status is the only other session-scope key the build emits (reason
 	// `prompt_started`). The struct lists it to document the shape, and nothing
 	// reads it: turn.started/turn.completed already drive the turn state.
 	Status string `json:"status"`
+}
+
+// zcodeWorkspacePatch is the part of a workspace-scope state.updated patch that
+// LeapMux reads. `modelCatalog` announces that the app-server reloaded its
+// provider registry: the session's live model catalog needs the same
+// registry-plus-catalog refresh that a catalog generation triggers. The patch's
+// own data never folds into session settings or the event watermark.
+type zcodeWorkspacePatch struct {
+	ModelCatalog json.RawMessage `json:"modelCatalog"`
 }
 
 // isCurrentZCodeSession reports whether sessionID is the session this agent
@@ -927,11 +1090,22 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 		slog.Debug("zcode state.updated patch not a session patch", "agent_id", a.AgentID(), "scope", notif.Scope)
 		return
 	}
-	// Only session patches can change this agent's runtime and settings.
-	// A workspace patch updates the model catalog and must not change session state.
+	// Only session patches can change this agent's runtime and settings. A
+	// workspace patch carrying `modelCatalog` schedules the registry-plus-catalog
+	// refresh beside the read loop; it must not change session state.
 	if notif.Scope != ScopeSession {
+		if notif.Scope == ScopeWorkspace {
+			var workspace zcodeWorkspacePatch
+			if err := json.Unmarshal(notif.Patch, &workspace); err == nil && workspace.ModelCatalog != nil {
+				a.scheduleZCodeCatalogRefresh()
+			}
+		}
 		return
 	}
+	// A prompt boundary (prompt_completed / prompt_failed) is evidence of a
+	// turn end. Attribute it to a turn owner before the generic observation:
+	// the attribution needs the owner's admission revision and baseline.
+	a.handleZCodePromptBoundary(notif, body)
 	a.applyZCodeSessionObservation(notif.SessionID, body, &notif.Reason)
 }
 

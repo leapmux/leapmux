@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -33,6 +34,8 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 		a.handleZCodeStateUpdated(line.Params)
 	case NotifyConversationFrame:
 		a.handleZCodeConversationFrame(line.Params)
+	case NotifyProviderRuntimeHeadersCancelled:
+		a.handleZCodeRuntimeHeadersCancelled(line.Params)
 	case "":
 		// An id with no method and no pending request: a reply nobody waited for. It
 		// happens when a request timed out and its answer arrived afterwards.
@@ -45,15 +48,40 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 	}
 }
 
-// dispatchZCodeEvent routes one session event.
+// dispatchZCodeEvent dispatches one event with the legacy watermark behavior:
+// any seq > lastSeq advances the cursor, and a seq <= lastSeq is dropped.
+// handleZCodeOutput calls it so tests that feed hand-built events through
+// HandleOutput keep their existing expectations. The ordered coordinator
+// (dispatchZCodeEventOrdered) supersedes it in the production read loop and
+// subscribe.
+func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	if event.Seq > 0 {
+		a.Mu.Lock()
+		// An event at or below the watermark was already dispatched. A subscribe
+		// replays every event after `afterSeq`, and a live notification for the
+		// same event can arrive alongside it, so without this each row in the
+		// overlap is persisted twice.
+		if event.Seq <= a.lastSeq {
+			a.Mu.Unlock()
+			return
+		}
+		a.lastSeq = event.Seq
+		a.Mu.Unlock()
+	}
+	a.dispatchZCodeEventLocked(event)
+}
+
+// dispatchZCodeEventLocked routes one session event. The caller holds
+// dispatchMu (dispatchZCodeEvent, dispatchZCodeEventOrdered and
+// replayZCodeEvents take it).
 //
 // The switch lists each known event and explains each intentional drop.
 // The default branch persists an unknown event of the current session.
 //
-// Two goroutines reach this function. The read loop delivers live notifications, and
-// `subscribe` dispatches the events its own reply replays -- on the CALLER's goroutine,
-// which is the one that ran ClearContext, not the read loop. dispatchMu serializes them
-// for the WHOLE body, because `a.Mu` guards each field read on its own and not the
+// dispatchMu serializes the WHOLE body across the read loop and replay,
+// because `a.Mu` guards each field read on its own and not the
 // open-then-close SEQUENCE of one tool call: a replayed `scheduled` overtaken by its own
 // live `result` closes a span before it opens, and the card then stays running for good.
 //
@@ -61,10 +89,11 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 // reply, so holding it across that RPC would deadlock the two against each other. No
 // handler reachable from here issues a synchronous request; the one that issues any runs
 // on its own goroutine.
-func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
-	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
-
+//
+// A turn-scoped event (a terminal, model streaming, tool.updated) is resolved to its
+// turn owner BEFORE the caller advances the sequence watermark, so a filtered event
+// records no usage, consumes no stop state and flushes no buffer.
+func (a *Agent) dispatchZCodeEventLocked(event zcodeEventEnvelope) {
 	if event.SessionID != "" {
 		a.Mu.Lock()
 		currentSessionID := a.sessionID
@@ -73,32 +102,41 @@ func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 			return
 		}
 	}
-	if event.Seq > 0 {
+	var owner *zcodeTurnState
+	var toolCallID string
+	switch event.Type {
+	case contracts.ZCodeEventTurnCompleted, contracts.ZCodeEventTurnFailed,
+		contracts.ZCodeEventModelStreaming, contracts.ZCodeEventToolUpdated:
+		toolCallID = zcodeEventToolCallID(event)
 		a.Mu.Lock()
-		// An event at or below the watermark was already dispatched. A subscribe replays
-		// every event after `afterSeq`, and a live notification for the same event can
-		// arrive alongside it, so without this each row in the overlap is persisted twice.
-		if event.Seq <= a.lastSeq {
-			a.Mu.Unlock()
+		owner = a.resolveZCodeTurnLocked(event, toolCallID)
+		if owner != nil && toolCallID != "" {
+			a.attributeZCodeToolLocked(owner, toolCallID)
+		}
+		a.Mu.Unlock()
+		if owner == nil {
+			// An unknown turn id, or an id-less event with zero or several
+			// unsettled owners: the event names no owner, so it settles nothing
+			// and touches nothing.
+			slog.Debug("zcode turn-scoped event has no owner", "agent_id", a.AgentID(), "type", event.Type, "turn_id", event.TurnID)
 			return
 		}
-		a.lastSeq = event.Seq
-		a.Mu.Unlock()
 	}
 
-	// Only a new event of the current session extends the stop wait.
-	a.refreshStoppedZCodeTurn()
+	// Only a new event of the current session extends the stop wait, and only
+	// one that reports the work the window watches: see stopEventExtendsLocked.
+	a.refreshStoppedZCodeTurn(event)
 	switch event.Type {
 	case contracts.ZCodeEventTurnStarted:
 		a.handleZCodeTurnStarted(event)
 	case contracts.ZCodeEventTurnCompleted:
-		a.handleZCodeTurnCompleted(event)
+		a.handleZCodeTurnCompleted(event, owner)
 	case contracts.ZCodeEventTurnFailed:
-		a.handleZCodeTurnFailed(event)
+		a.handleZCodeTurnFailed(event, owner)
 	case contracts.ZCodeEventModelStreaming:
-		a.handleZCodeModelStreaming(event)
+		a.handleZCodeModelStreaming(event, owner)
 	case contracts.ZCodeEventToolUpdated:
-		a.handleZCodeToolUpdated(event)
+		a.handleZCodeToolUpdated(event, owner)
 	case contracts.ZCodeEventSessionUpdated:
 		a.handleZCodeSessionUpdated(event)
 	case contracts.ZCodeEventPermissionResolved:
@@ -261,19 +299,124 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 
 // zcodeTurnStarted is the turn.started payload.
 type zcodeTurnStarted struct {
-	TurnNumber  int64  `json:"turnNumber"`
-	Input       string `json:"input"`
-	InputID     string `json:"inputId"`
-	InputSource string `json:"inputSource"`
-	MessageID   string `json:"messageId"`
+	TurnNumber            int64  `json:"turnNumber"`
+	Input                 string `json:"input"`
+	InputID               string `json:"inputId"`
+	InputSource           string `json:"inputSource"`
+	MessageID             string `json:"messageId"`
+	ForegroundExecutionID string `json:"foregroundExecutionId"`
 }
 
-// handleZCodeTurnStarted arms the turn.
+// zcodeEventToolCallID reads the tool-call id a turn-scoped payload carries. It
+// is empty for a payload that names no single call, including a batch summary.
+func zcodeEventToolCallID(event zcodeEventEnvelope) string {
+	var payload struct {
+		ToolCallID string `json:"toolCallId"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return ""
+	}
+	return payload.ToolCallID
+}
+
+// resolveZCodeTurnLocked finds the owner of one turn-scoped event. The caller
+// holds a.Mu and drops the event when the answer is nil.
+//
+// The envelope's turn id names the owner when it carries one -- an unknown id
+// has no owner and the event is ignored. A payload that names one tool call
+// falls back to the turn recorded on that call, so a late result still reaches
+// the turn that opened it. An event that names neither turn nor call uses the
+// sole unsettled owner when exactly one exists, and has no owner at all when
+// zero or several do: routing it would be a guess.
+func (a *Agent) resolveZCodeTurnLocked(event zcodeEventEnvelope, toolCallID string) *zcodeTurnState {
+	if event.TurnID != "" {
+		return a.turns[event.TurnID]
+	}
+	if toolCallID != "" {
+		if tc := a.toolCalls[toolCallID]; tc != nil && tc.owner != nil {
+			return tc.owner
+		}
+	}
+	var sole *zcodeTurnState
+	for _, turn := range a.turns {
+		if turn.settled {
+			continue
+		}
+		if sole != nil {
+			return nil
+		}
+		sole = turn
+	}
+	return sole
+}
+
+// attributeZCodeToolLocked records the turn one tool call belongs to, at every
+// open and close. The caller holds a.Mu.
+func (a *Agent) attributeZCodeToolLocked(owner *zcodeTurnState, toolCallID string) {
+	if owner == nil || toolCallID == "" {
+		return
+	}
+	tc := a.zcodeToolCallLocked(toolCallID)
+	tc.owner = owner
+	owner.toolCallIDs[toolCallID] = struct{}{}
+}
+
+// refreshTurnActiveLocked recomputes the turn-active flag from the owner
+// records: any owner with settled == false keeps the agent busy. The caller
+// holds a.Mu.
+func (a *Agent) refreshTurnActiveLocked() {
+	a.turnActive = false
+	for _, turn := range a.turns {
+		if !turn.settled {
+			a.turnActive = true
+			return
+		}
+	}
+}
+
+// dropZCodeTurnLocked removes a settled owner whose last tool call has closed.
+// A settled owner stays in turns while any of its calls remains open, so a late
+// result still routes to it. The caller holds a.Mu.
+func (a *Agent) dropZCodeTurnLocked(owner *zcodeTurnState) {
+	if owner == nil || !owner.settled {
+		return
+	}
+	for id := range owner.toolCallIDs {
+		tc := a.toolCalls[id]
+		if tc != nil && !tc.final && len(tc.lastFrame) > 0 {
+			return
+		}
+	}
+	if a.turns[owner.id] == owner {
+		delete(a.turns, owner.id)
+	}
+}
+
+// clearZCodeTurnsLocked drops every owner, at a session replacement or a
+// teardown. The caller holds a.Mu.
+func (a *Agent) clearZCodeTurnsLocked() {
+	clear(a.turns)
+	a.foregroundTurnID = ""
+	a.refreshTurnActiveLocked()
+}
+
+// foregroundZCodeTurnLocked returns the unsettled user turn, which is the turn
+// a stop targets. The caller holds a.Mu.
+func (a *Agent) foregroundZCodeTurnLocked() *zcodeTurnState {
+	turn := a.turns[a.foregroundTurnID]
+	if turn == nil || turn.settled {
+		return nil
+	}
+	return turn
+}
+
+// handleZCodeTurnStarted arms the turn: one owner record per started turn.
 //
 // A turn whose inputSource is set was started by the RUNTIME, not by the user: a
 // background task reporting back, a subagent's reply being folded in, a todo
-// reminder. Such a turn is armed as a background turn, so its completion does not
-// end the user's turn and its transcript rows still land.
+// reminder. Such a turn opens its own owner record beside the user's, so its
+// completion does not end the user's turn and its transcript rows still land.
+// A user start replaces only the previous user foreground owner.
 func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	var payload zcodeTurnStarted
 	if len(event.Payload) > 0 {
@@ -284,21 +427,79 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	background := payload.InputSource != ""
 
 	a.Mu.Lock()
-	a.turnGeneration++
-	a.cancelStoppedZCodeTurnLocked()
-	a.stopCancelledRequest = false
-	a.turnActive = true
-	a.backgroundTurn = background
-	if !background {
-		a.TurnToolUses = 0
+	// A provisional foreground owner (one sendInputForSession created before
+	// the native start) adopts the native turn ID and execution ID while
+	// preserving its generation and input identity. Adoption requires a
+	// matching inputId: a start that names no input cannot be identified as
+	// the provisional turn's own.
+	if !background && payload.InputID != "" {
+		if prev := a.foregroundZCodeTurnLocked(); prev != nil && strings.HasPrefix(prev.id, "#turn-") && prev.inputID == payload.InputID {
+			delete(a.turns, prev.id)
+			prev.id = event.TurnID
+			if prev.id == "" {
+				prev.id = fmt.Sprintf("#turn-%d", prev.generation)
+			}
+			prev.foregroundExecutionID = payload.ForegroundExecutionID
+			if payload.MessageID != "" {
+				prev.anchorMessageID = payload.MessageID
+			}
+			a.turns[prev.id] = prev
+			a.foregroundTurnID = prev.id
+			a.refreshTurnActiveLocked()
+			a.Mu.Unlock()
+			a.PublishTurnActive()
+			a.observeZCodeSteerTurnStart(payload.InputID)
+			a.sink.ReportProgress(agent.ResetModelProgress())
+			slog.Debug("zcode provisional turn adopted", "agent_id", a.AgentID(), "turn_id", prev.id)
+			return
+		}
 	}
+	a.turnGeneration++
+	turn := &zcodeTurnState{
+		id:                    event.TurnID,
+		generation:            a.turnGeneration,
+		background:            background,
+		foregroundExecutionID: payload.ForegroundExecutionID,
+		acceptedAt:            a.Clock().Now(),
+		admissionRevision:     a.stateRevision,
+		anchorMessageID:       payload.MessageID,
+		inputID:               payload.InputID,
+		baselineTurnCount:     a.TurnToolUses,
+		contentByScope:        map[string]string{},
+		toolCallIDs:           map[string]struct{}{},
+	}
+	if turn.id == "" {
+		// The wire identified this turn by no id. The generation is unique, so a
+		// synthetic key built from it cannot collide with another turn's.
+		turn.id = fmt.Sprintf("#turn-%d", turn.generation)
+	}
+	if a.turns == nil {
+		a.turns = make(map[string]*zcodeTurnState)
+	}
+	if !background {
+		// A user start replaces only the previous user foreground owner. A
+		// settled owner is NOT replaced: it stays while its tool calls are open.
+		if prev := a.turns[a.foregroundTurnID]; prev != nil && !prev.settled {
+			for scopeID := range prev.contentByScope {
+				a.generationBuffer.Discard(scopeID)
+			}
+			delete(a.turns, prev.id)
+		}
+		// A background start must never take any of this: it cancels no user
+		// stop window, consumes no stop state and resets no user counter.
+		a.cancelStoppedZCodeTurnLocked()
+		a.stopCancelledRequest = false
+		a.TurnToolUses = 0
+		a.foregroundTurnID = turn.id
+	}
+	a.turns[turn.id] = turn
+	a.refreshTurnActiveLocked()
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 	// A steer that ZCode moved to the ordinary queue runs as this turn's prompt.
 	a.observeZCodeSteerTurnStart(payload.InputID)
 
 	if !background {
-		a.generationBuffer.Reset()
 		a.sink.ReportProgress(agent.ResetModelProgress())
 	}
 	slog.Debug("zcode turn started", "agent_id", a.AgentID(), "turn", payload.TurnNumber, "input_source", payload.InputSource)
@@ -314,7 +515,7 @@ type zcodeTurnCompleted struct {
 	ResultType    string      `json:"resultType"`
 }
 
-func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope, owner *zcodeTurnState) {
 	var payload zcodeTurnCompleted
 	if len(event.Payload) > 0 {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -324,10 +525,13 @@ func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
 	if payload.Usage != nil {
 		a.recordZCodeUsage(*payload.Usage)
 	}
-	cancelled := a.takeStopCancelledRequest() || payload.ResultType == contracts.ZCodeResultCancelled
-	a.finishZCodeTurn(event, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: cancelled})
-	// A completed turn is not an error, so any pending server-error retry for one is stale.
-	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, false, event.persistBytes())
+	cancelled := payload.ResultType == contracts.ZCodeResultCancelled
+	if !owner.background {
+		// The stop state belongs to the user's turn. A background terminal must
+		// not consume it.
+		cancelled = a.takeStopCancelledRequest() || cancelled
+	}
+	a.finishZCodeTurn(event, owner, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: cancelled})
 }
 
 func (a *Agent) takeStopCancelledRequest() bool {
@@ -352,23 +556,22 @@ type zcodeTurnFailed struct {
 	TurnPhase string `json:"turnPhase"`
 }
 
-func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope, owner *zcodeTurnState) {
 	var payload zcodeTurnFailed
 	if len(event.Payload) > 0 {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			slog.Warn("zcode turn.failed unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		}
 	}
-	content := event.persistBytes()
 	completion := agent.MessageCompletionError
 	failureKind := strings.ToLower(payload.Error.Type + " " + payload.Error.Code)
 	if strings.Contains(failureKind, "cancel") || strings.Contains(failureKind, "interrupt") {
 		completion = agent.MessageCompletionInterrupted
 	}
-	a.flushZCodeGeneration(completion)
-	closed := a.persistIncompleteZCodeTools(completion)
-	a.finishZCodeTurn(event, zcodeTurnEnd{closedCalls: closed})
-	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, zcodeFailureIsRetryable(payload), content)
+	a.finishZCodeTurn(event, owner, zcodeTurnEnd{
+		failedCompletion: completion,
+		retryable:        zcodeFailureIsRetryable(payload),
+	})
 }
 
 // zcodeFailureIsRetryable reports whether a failed turn should be retried.
@@ -393,93 +596,91 @@ type zcodeTurnEnd struct {
 	// cancelled states that a stop ended the turn. ZCode reports a stopped turn as
 	// turn.completed with resultType "cancelled".
 	cancelled bool
-	// closedCalls is the calls of the turn that the caller already closed at the
-	// turn end, because they never reported their own end.
-	closedCalls int
+	// failedCompletion is the outcome a turn.failed closes its scopes and tools
+	// with: error, or interrupted when the failure names a cancel. A
+	// turn.completed leaves it unset and derives its own outcomes from cancelled.
+	failedCompletion agent.MessageCompletion
+	// retryable is the app-server's own verdict on whether a turn.failed is
+	// transient, which the automatic retry decides on. A turn.completed leaves it
+	// false: its end cancels any pending server-error retry.
+	retryable bool
 }
 
-// finishZCodeTurn closes out a turn: persist the divider, reset the spans, and
-// refresh the authoritative usage.
+// finishZCodeTurn closes out ONE turn on a native terminal event. It runs the
+// shared settleZCodeTurn transition and supplies its native-divider branch: the
+// tool count and cancellation classification the divider states, the background
+// notification, and the retry bookkeeping. It settles only the owner the
+// terminal event names; every other turn keeps running.
 //
-// A BACKGROUND turn takes none of it. Its completion says nothing about the user's
-// turn, and closing the spans there would tear down the cards of tool calls the
-// user's own turn is still running.
-func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, end zcodeTurnEnd) {
-	a.retryResolution.Reset()
+// A BACKGROUND turn takes none of the user's bookkeeping. Its completion says
+// nothing about the user's turn, and closing the spans there would tear down the
+// cards of tool calls the user's own turn is still running. What it does flush
+// is its own generation scopes and its own incomplete tools, and its outcome is
+// recorded as a notification rather than as the user's turn end.
+func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, owner *zcodeTurnState, end zcodeTurnEnd) {
 	toolCallCount := end.toolCallCount
-	a.Mu.Lock()
-	background := a.backgroundTurn
-	a.stopCancelledRequest = false
-	// The turn reported its own end, so the stop's window has nothing left to watch.
-	// It is dropped in the SAME critical section that clears turnActive: a frame the
-	// read loop delivered between the two re-armed the window, and it then ended a
-	// turn that had already ended and wrote a second stop row for it.
-	a.cancelStoppedZCodeTurnLocked()
-	// A turn ends whichever kind it was, so the flag clears either way. Leaving it set
-	// for a background turn made Interrupt and Stop fire a session/stop RPC at an idle
-	// session for the rest of the agent's life. What a background turn does NOT do is
-	// close the user's spans or persist a divider, which is what the guard below states.
-	a.turnActive = false
-	if !background && toolCallCount > 0 {
-		a.TurnToolUses = int(toolCallCount)
-	}
-	if !background {
-		// The approved exit runs inside the turn that asked for it. A stored plan-exit
-		// mode that the turn end finds was never released, and no later event is its
-		// exit.
-		a.pendingExitMode = ""
-	}
-	a.backgroundTurn = false
-	a.Mu.Unlock()
-	// Deferred, for two reasons at once. It runs on EVERY path, including the
-	// two early returns below -- a background turn, and a turn whose event
-	// carries no persistable content -- and a turn that published no clear would
-	// latch the agent busy for the life of the process. And it runs AFTER
-	// PersistTurnEnd, which hands this turn's tool-call count to the activity
-	// latch: the clear is what produces the settle edge that spends the count,
-	// so publishing it first would settle the agent with no count and ring the
-	// completion sound for a turn that used no tool.
-	defer a.PublishTurnActive()
-
+	background := owner.background
 	content := event.persistBytes()
+	// The tool-use count is ZCode's own when the event states one. A stopped turn
+	// states 0 for the call the stop cut, and the divider answers with the
+	// Worker's own count instead.
+	if !background && toolCallCount > 0 {
+		a.Mu.Lock()
+		a.TurnToolUses = int(toolCallCount)
+		a.Mu.Unlock()
+	}
+
+	// What the turn's scopes and tools close with. The defaults are a completed
+	// turn's own split: its text finished, and a call that never reported its end
+	// was lost.
+	textCompletion, callCompletion := agent.MessageCompletionComplete, agent.MessageCompletionError
+	switch {
+	case event.Type != contracts.ZCodeEventTurnCompleted:
+		// A failed turn closes both with the failure's own outcome: error, or
+		// interrupted when the failure names a cancel.
+		textCompletion, callCompletion = end.failedCompletion, end.failedCompletion
+	case background:
+		// A background turn closes its scopes and tools alike complete.
+		callCompletion = agent.MessageCompletionComplete
+	case end.cancelled:
+		// A stop cut the text and the lost call alike, so both end as interrupted.
+		textCompletion, callCompletion = agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted
+	}
+
+	settle := zcodeTurnSettlement{
+		textCompletion: textCompletion,
+		callCompletion: callCompletion,
+		turnEnd:        func(closed int) { a.persistZCodeTurnDivider(event, end, content, closed) },
+		backgroundEnd: func() {
+			// The background turn's own outcome is still worth recording, as a
+			// notification rather than as the user's turn end.
+			a.persistZCodeNotification(event)
+		},
+	}
 	if content == nil {
-		return
+		// The event carries no persistable content: the turn end settles its
+		// owner and drops it, writing nothing else.
+		settle = zcodeTurnSettlement{}
 	}
-	if background {
-		completion := agent.MessageCompletionError
-		if event.Type == contracts.ZCodeEventTurnCompleted {
-			completion = agent.MessageCompletionComplete
-		}
-		a.flushZCodeGeneration(completion)
-		a.persistIncompleteZCodeTools(completion)
-		// The background turn's own outcome is still worth recording, as a notification
-		// rather than as the user's turn end.
-		a.persistZCodeNotification(event)
-		return
+	a.settleZCodeTurn(owner, settle)
+	if !background {
+		// A completed turn is not an error, so any pending server-error retry for
+		// one is stale.
+		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, end.retryable, content)
 	}
-	closed := end.closedCalls
-	if event.Type == contracts.ZCodeEventTurnCompleted {
-		// A completed turn finished its text, and a call that never reported its end
-		// was lost. A stop cut both, so they end as interrupted.
-		text, calls := agent.MessageCompletionComplete, agent.MessageCompletionError
-		if end.cancelled {
-			text, calls = agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted
-		}
-		a.flushZCodeGeneration(text)
-		closed += a.persistIncompleteZCodeTools(calls)
-	}
+}
 
-	// Recover any tool call that never reached a final update (an aborted turn), so
-	// the next turn's progress deltas are not measured against a dead stream.
-	a.ResetCumulativeOutput()
-	a.sink.ReportProgress(agent.ResetModelProgress())
-
+// persistZCodeTurnDivider is the native-divider branch's turn-end row: it
+// builds and persists the divider of a foreground turn from the calls the
+// settlement closed, with the turn's tool count and its cancellation
+// classification.
+func (a *Agent) persistZCodeTurnDivider(event zcodeEventEnvelope, end zcodeTurnEnd, content []byte, closed int) {
 	// ZCode's own count holds every call of the turn when it states one. Without it,
 	// the turn made the calls that reported their end and the calls closed here.
 	a.Mu.Lock()
 	toolUses := a.TurnToolUses
 	a.Mu.Unlock()
-	if toolCallCount == 0 {
+	if end.toolCallCount == 0 {
 		toolUses += closed
 	}
 	turnContent := agent.WithToolUseCount(zcodeTurnContent(content, a.usageSnapshot()), toolUses)
@@ -489,22 +690,6 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, end zcodeTurnEnd) {
 	if err := a.sink.PersistTurnEnd(turnContent, agent.SpanInfo{}); err != nil {
 		slog.Error("zcode persist turn end", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
-	a.sink.ResetSpans()
-	a.Mu.Lock()
-	// Any batch summary that could still reference these arrived within the turn, so the
-	// marks are spent. A record that holds nothing else goes with them, which is what
-	// keeps the map's size capped at one turn's calls rather than at the session's.
-	for id, tc := range a.toolCalls {
-		tc.final = false
-		if tc.name == "" && tc.input == nil {
-			delete(a.toolCalls, id)
-		}
-	}
-	a.Mu.Unlock()
-
-	// The app-server's own reading is authoritative, and reading it takes an RPC --
-	// which the read loop must stay free to deliver, so it cannot run inline here.
-	go a.refreshZCodeUsageFromSession()
 }
 
 // --- streaming ---
@@ -526,7 +711,10 @@ type zcodeModelStreaming struct {
 // reasoning_delta (with a non-empty delta) and the four tool_input kinds are ever
 // sent. The start/finish/error and the *_start / *_end phase markers exist in its
 // enumeration and never arrive, which is why there is no phase handling here.
-func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
+//
+// Every delta records its content on the owner the dispatch resolved, and every
+// flush reaches only that owner's scopes.
+func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope, owner *zcodeTurnState) {
 	var payload zcodeModelStreaming
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode model.streaming unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -541,6 +729,7 @@ func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 		// Keep reasoning open until the response ends so a retry can discard it.
 		textScope := zcodeTextScope(payload.AssistantMessageID)
 		a.generationBuffer.Append(textScope, agent.AssembledMessageKindText, payload.Delta, providerkit.JoinVerbatim)
+		a.recordZCodeGenerationContent(owner, textScope, payload.Delta)
 		a.sink.ReportProgress(agent.ModelTextProgress(textScope, payload.Delta))
 	case StreamReasoningDelta:
 		if payload.Delta == "" {
@@ -548,12 +737,14 @@ func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 		}
 		reasoningScope := zcodeReasoningScope(payload.AssistantMessageID)
 		a.generationBuffer.Append(reasoningScope, agent.AssembledMessageKindReasoning, payload.Delta, providerkit.JoinVerbatim)
+		a.recordZCodeGenerationContent(owner, reasoningScope, payload.Delta)
 		a.sink.ReportProgress(agent.ModelTextProgress(reasoningScope, payload.Delta))
 
 	case StreamToolInputStart:
 		// The completed model response supplies assistant text after this event.
-		// Persist only reasoning, which that response omits.
-		a.flushZCodeGenerationKind(agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
+		// Persist only reasoning, which that response omits -- and only this
+		// turn's reasoning, never another owner's.
+		a.flushZCodeGenerationKindForTurn(owner, agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
 		if payload.ToolCallID == "" {
 			return
 		}
@@ -603,6 +794,17 @@ func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 	}
 }
 
+// recordZCodeGenerationContent retains one delivered fragment on its owner, so
+// the content survives buffer persistence for a later reconciliation.
+func (a *Agent) recordZCodeGenerationContent(owner *zcodeTurnState, scopeID, delta string) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if owner.contentByScope == nil {
+		owner.contentByScope = map[string]string{}
+	}
+	owner.contentByScope[scopeID] += delta
+}
+
 // --- tool lifecycle ---
 
 // zcodeToolUpdated is the tool.updated payload, across every kind.
@@ -648,7 +850,7 @@ type zcodeToolUpdated struct {
 	ErrorCount   int      `json:"errorCount"`
 }
 
-func (a *Agent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeToolUpdated(event zcodeEventEnvelope, owner *zcodeTurnState) {
 	var payload zcodeToolUpdated
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode tool.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -672,18 +874,18 @@ func (a *Agent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
 		// A subagent's own tool calls get a transcript of their own -- see
 		// subagent.go. One whose parent tool call the update does not name falls
 		// through to the parent transcript rather than being dropped.
-		if zcodeToolFromSubagent(payload) && a.openZCodeSubagentToolCall(event, payload) {
+		if zcodeToolFromSubagent(payload) && a.openZCodeSubagentToolCall(event, payload, owner) {
 			return
 		}
-		a.openZCodeToolCall(event, payload)
+		a.openZCodeToolCall(event, payload, owner)
 	case contracts.ZCodeToolKindStarted:
 		a.recordZCodeToolStarted(payload)
 	case contracts.ZCodeToolKindProgress:
 		a.streamZCodeToolProgress(payload)
 	case contracts.ZCodeToolKindResult, contracts.ZCodeToolKindError:
-		a.closeZCodeToolCall(event, payload)
+		a.closeZCodeToolCall(event, payload, owner)
 	case contracts.ZCodeToolKindBatch:
-		a.applyZCodeToolBatch(event, payload)
+		a.applyZCodeToolBatch(event, payload, owner)
 	default:
 		slog.Debug("zcode unknown tool.updated kind", "agent_id", a.AgentID(), "kind", payload.Kind)
 	}
@@ -712,8 +914,8 @@ func (a *Agent) rememberZCodeToolFrame(toolCallID string, event zcodeEventEnvelo
 // openZCodeToolCall persists the tool call's opening row into this agent's own
 // transcript. A subagent's call goes to its child transcript instead -- see
 // subagent.go.
-func (a *Agent) openZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
-	a.openZCodeToolCallInto(a.sink, event, payload)
+func (a *Agent) openZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated, owner *zcodeTurnState) {
+	a.openZCodeToolCallInto(a.sink, event, payload, owner)
 }
 
 // recordZCodeToolStarted notes that a scheduled call began running.
@@ -807,24 +1009,49 @@ type zcodeRecoveredClose struct {
 
 // closeZCodeToolCall persists the tool call's final row into the transcript that
 // holds its opening row -- this agent's own, or a subagent's child transcript.
-func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
-	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload, nil)
+// The owner is the turn the call belongs to, and what its close counts against.
+func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated, owner *zcodeTurnState) {
+	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload, nil, owner)
 }
 
 // persistIncompleteZCodeTools closes each announced call that never reported its end,
-// with completion, and returns how many it closed. A turn end counts them as calls of
-// the turn (see finishZCodeTurn).
+// with completion, and returns how many it closed. It is the teardown variant: a
+// turn end closes only its own turn's calls, through
+// persistIncompleteZCodeToolsForTurn.
 func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) int {
+	return a.persistIncompleteZCodeToolsFor(nil, completion)
+}
+
+// persistIncompleteZCodeToolsForTurn closes the announced calls of ONE turn that
+// never reported their end, with completion, and returns how many it closed. A
+// turn end counts them as calls of the turn (see persistZCodeTurnDivider).
+func (a *Agent) persistIncompleteZCodeToolsForTurn(owner *zcodeTurnState, completion agent.MessageCompletion) int {
+	return a.persistIncompleteZCodeToolsFor(owner, completion)
+}
+
+// persistIncompleteZCodeToolsFor closes the announced calls of owner -- every
+// call when owner is nil -- that never reported their end.
+func (a *Agent) persistIncompleteZCodeToolsFor(owner *zcodeTurnState, completion agent.MessageCompletion) int {
 	a.Mu.Lock()
 	toolCallIDs := make([]string, 0, len(a.toolCalls))
 	frames := make(map[string][]byte)
 	tools := make(map[string]zcodeToolUpdated)
 	orders := make(map[string]uint64)
+	turns := make(map[string]*zcodeTurnState)
 	for toolCallID, tool := range a.toolCalls {
 		// An agent that never announced the call opened no row and reserved no span,
 		// so there is nothing to close and no frame of its own to store.
 		if tool == nil || tool.final || tool.name == "" || len(tool.lastFrame) == 0 {
 			continue
+		}
+		callOwner := tool.owner
+		if owner != nil {
+			if callOwner == nil && zcodeToolCallBelongsLocked(owner, toolCallID) {
+				callOwner = owner
+			}
+			if callOwner != owner {
+				continue
+			}
 		}
 		progress := tool.progress
 		progress.ToolCallID = toolCallID
@@ -837,6 +1064,7 @@ func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) 
 		toolCallIDs = append(toolCallIDs, toolCallID)
 		tools[toolCallID] = progress
 		orders[toolCallID] = tool.order
+		turns[toolCallID] = callOwner
 	}
 	a.Mu.Unlock()
 	if a.IsDiscardingOutput() {
@@ -869,8 +1097,20 @@ func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) 
 		a.children.forgetTool(toolCallID)
 		a.children.forgetTitle(toolCallID)
 		a.toolCallPrompts.Take(toolCallID)
+		if callOwner := turns[toolCallID]; callOwner != nil {
+			a.Mu.Lock()
+			a.dropZCodeTurnLocked(callOwner)
+			a.Mu.Unlock()
+		}
 	}
 	return len(toolCallIDs)
+}
+
+// zcodeToolCallBelongsLocked reports whether one call id is recorded on the turn.
+// The caller holds a.Mu.
+func zcodeToolCallBelongsLocked(owner *zcodeTurnState, toolCallID string) bool {
+	_, ok := owner.toolCallIDs[toolCallID]
+	return ok
 }
 
 // applyZCodeToolBatch backfills the calls a batch summary lists.
@@ -878,7 +1118,7 @@ func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) 
 // A batch arrives AFTER the per-call results and only summarizes them, so it must
 // close only an id that was opened and never reached a final state -- a call whose
 // own result was lost. Closing one that already finished would double its row.
-func (a *Agent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *Agent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcodeToolUpdated, owner *zcodeTurnState) {
 	for _, id := range payload.ToolCallIDs {
 		if id == "" {
 			continue
@@ -905,7 +1145,7 @@ func (a *Agent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcodeToolU
 		a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(id), event, recovered, &zcodeRecoveredClose{
 			outcome: zcodeBatchOutcome(payload),
 			status:  zcodeBatchTaskStatus(payload),
-		})
+		}, owner)
 	}
 }
 
@@ -1210,8 +1450,17 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 			// persists nothing.
 			return
 		}
-		a.flushZCodeGenerationKind(agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
-		a.generationBuffer.DiscardKind(agent.AssembledMessageKindText)
+		// The flush and discard below reach only the owner's scopes: a response
+		// of one turn must not close another turn's stream.
+		a.Mu.Lock()
+		owner := a.resolveZCodeTurnLocked(event, "")
+		a.Mu.Unlock()
+		if owner == nil {
+			slog.Debug("zcode model response has no owner", "agent_id", a.AgentID(), "turn_id", event.TurnID)
+			return
+		}
+		a.flushZCodeGenerationKindForTurn(owner, agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
+		a.discardZCodeGenerationKindForTurn(owner, agent.AssembledMessageKindText)
 		usage, contextWindow := payload.usageAndContextWindow()
 		if contextWindow > 0 {
 			a.Mu.Lock()
@@ -1383,22 +1632,57 @@ func parseZCodeModeSource(raw json.RawMessage) string {
 	return source
 }
 
-func (a *Agent) flushZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
-	var scopes []string
-	for _, scopeID := range a.generationBuffer.ScopeIDs() {
-		if scopeKind, _, ok := a.generationBuffer.ScopeSnapshot(scopeID); ok && scopeKind == kind {
-			scopes = append(scopes, scopeID)
-		}
+func (a *Agent) flushZCodeGeneration(completion agent.MessageCompletion) {
+	if err := providerkit.FlushGeneration(&a.generationBuffer, a.sink, completion, a.IsDiscardingOutput()); err != nil {
+		slog.Error("zcode failed to persist generation", "agent_id", a.AgentID(), "error", err)
 	}
+}
+
+// flushZCodeGenerationForTurn persists every buffered scope of ONE turn. A turn
+// end never flushes another turn's scopes: they stay buffered for their own
+// owner's end.
+func (a *Agent) flushZCodeGenerationForTurn(owner *zcodeTurnState, completion agent.MessageCompletion) {
+	scopes := a.zcodeTurnBufferedScopes(owner, nil)
 	if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, scopes, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("zcode failed to persist generation", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
-func (a *Agent) flushZCodeGeneration(completion agent.MessageCompletion) {
-	if err := providerkit.FlushGeneration(&a.generationBuffer, a.sink, completion, a.IsDiscardingOutput()); err != nil {
+// flushZCodeGenerationKindForTurn persists the buffered scopes of ONE turn of
+// one kind.
+func (a *Agent) flushZCodeGenerationKindForTurn(owner *zcodeTurnState, kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
+	scopes := a.zcodeTurnBufferedScopes(owner, &kind)
+	if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, scopes, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("zcode failed to persist generation", "agent_id", a.AgentID(), "error", err)
 	}
+}
+
+// discardZCodeGenerationKindForTurn drops the buffered scopes of ONE turn of one
+// kind without persisting them. The delivered content stays on the owner record.
+func (a *Agent) discardZCodeGenerationKindForTurn(owner *zcodeTurnState, kind agent.AssembledMessageKind) {
+	for _, scopeID := range a.zcodeTurnBufferedScopes(owner, &kind) {
+		a.generationBuffer.Discard(scopeID)
+	}
+}
+
+// zcodeTurnBufferedScopes lists the scopes of owner that still hold buffered
+// content, of one kind when kind is set.
+func (a *Agent) zcodeTurnBufferedScopes(owner *zcodeTurnState, kind *agent.AssembledMessageKind) []string {
+	a.Mu.Lock()
+	owned := make([]string, 0, len(owner.contentByScope))
+	for scopeID := range owner.contentByScope {
+		owned = append(owned, scopeID)
+	}
+	a.Mu.Unlock()
+	scopes := make([]string, 0, len(owned))
+	for _, scopeID := range owned {
+		scopeKind, _, ok := a.generationBuffer.ScopeSnapshot(scopeID)
+		if !ok || (kind != nil && scopeKind != *kind) {
+			continue
+		}
+		scopes = append(scopes, scopeID)
+	}
+	return scopes
 }
 
 func zcodeReasoningScope(assistantMessageID string) string {
@@ -1742,6 +2026,10 @@ type zcodeToolCall struct {
 	// than at the call's own close, because the batch arrives after the results it
 	// summarizes.
 	final bool
+	// owner is the turn record this call belongs to, recorded at its first open
+	// and preserved through every close, so a late result counts and settles
+	// against the turn that opened the call.
+	owner *zcodeTurnState
 }
 
 // zcodeToolCallLocked returns the record for id, creating it on first write. The caller

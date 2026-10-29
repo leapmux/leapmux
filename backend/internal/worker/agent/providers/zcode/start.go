@@ -80,6 +80,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		sink:                      sink,
 		workingDir:                opts.WorkingDir,
 		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
+		homeDir:                   accountEnvironment.home,
 		catalog:                   catalog,
 		legacyConfigurationError:  legacyConfigurationError,
 		registryRevision:          "leapmux-" + opts.AgentID,
@@ -145,6 +146,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// one. A failure here is not fatal: the session runs on the app-server's own
 	// choice, which the snapshot already recorded, and the user can change it.
 	a.applyStartupSettings(launchRequest, timeout)
+
+	// One repair attempt after the resume and the selection reassertion: a
+	// current model the live catalog no longer holds must not survive the start.
+	a.repairUnavailableZCodeModel(timeout)
 
 	if err := a.subscribe(timeout); err != nil {
 		cleanup()

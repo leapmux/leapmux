@@ -111,6 +111,19 @@ describe('usageMarkers', () => {
       formatTokenCount(40),
     ])
   })
+
+  // A cache-inclusive input states the buckets INSIDE it. The card's combined
+  // figure sums the normalized breakdown -- ordinary input plus the two buckets
+  // plus output -- so a consistent fixture marks input + output.
+  it('marks the normalized total of a cache-inclusive usage block', () => {
+    expect(usageMarkers({ inputTokens: 10, cacheReadTokens: 2, cacheWriteTokens: 3, outputTokens: 4 }))
+      .toEqual([formatTokenCount(14)])
+  })
+
+  it('clamps an over-full cache breakdown to zero ordinary input', () => {
+    expect(usageMarkers({ inputTokens: 10, cacheReadTokens: 8, cacheWriteTokens: 5, outputTokens: 4 }))
+      .toEqual([formatTokenCount(17)])
+  })
 })
 
 describe('parseContextRow', () => {

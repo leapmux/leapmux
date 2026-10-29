@@ -500,7 +500,8 @@ func TestHandleZCodeStateUpdated_NonSessionScopeIsNotSettings(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 
 	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"mode":{"current":"yolo"}}`))
 
@@ -509,6 +510,56 @@ func TestHandleZCodeStateUpdated_NonSessionScopeIsNotSettings(t *testing.T) {
 	a.Mu.Unlock()
 	assert.Equal(t, contracts.ZCodeDefaultMode, mode)
 	assert.Equal(t, 0, sink.SettingsRefreshCount())
+	assert.False(t, zcodeCatalogRefreshActive(a), "a workspace patch without modelCatalog schedules no refresh")
+}
+
+// A workspace patch that carries `modelCatalog` schedules the registry-plus-catalog
+// refresh. Its own data never folds into session settings or the event watermark.
+func TestHandleZCodeStateUpdated_WorkspaceModelCatalogPatchRefreshesTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.Mu.Lock()
+	a.model, a.thoughtLevel, a.mode, a.modeObserved, a.lastSeq = "personal:p/A", "high", "edit", true, int64(7)
+	a.Mu.Unlock()
+
+	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed",
+		`{"modelCatalog":{"revision":2},"mode":{"current":"yolo"},"runtime":{"eventSeq":42},"model":{"current":{"providerId":"personal:p","modelId":"B"}}}`))
+	zcodeAnswerRegistryRefresh(t, a, stdin, 1)
+	zcodeAnswerCatalogResume(t, a, stdin, 1, `[{"ref":{"providerId":"personal:p","modelId":"A"}}]`)
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "edit", a.mode, "workspace data is no session setting")
+	assert.Equal(t, "high", a.thoughtLevel, "workspace data is no session setting")
+	assert.Equal(t, "personal:p/A", a.model, "workspace data is no session setting")
+	assert.Equal(t, int64(7), a.lastSeq, "a workspace patch moves no event watermark")
+	assert.Equal(t, 0, sink.SettingsRefreshCount())
+}
+
+// A burst of workspace patches requests exactly one following pass: the refresh
+// runs beside the read loop, and the coalescer keeps one pass per burst.
+func TestHandleZCodeStateUpdated_WorkspaceModelCatalogPatchesCoalesce(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+
+	// The three patches land while the first pass waits for its registry answer.
+	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":2}}`))
+	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":3}}`))
+	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":4}}`))
+	zcodeAnswerRegistryRefresh(t, a, stdin, 1)
+	zcodeAnswerCatalogResume(t, a, stdin, 1, `[]`)
+	zcodeAnswerRegistryRefresh(t, a, stdin, 2)
+	zcodeAnswerCatalogResume(t, a, stdin, 2, `[]`)
+	assert.Eventually(t, func() bool {
+		return !zcodeCatalogRefreshActive(a)
+	}, 30*time.Second, time.Millisecond)
+	assert.Len(t, stdin.RequestsFor(MethodProviderRefreshRegistry), 2,
+		"three patches during one pass request exactly one following pass")
 }
 
 // A patch that changed only `status` must not persist a settings refresh: an all-nil
@@ -611,7 +662,8 @@ func TestZCodeSetters_RefuseWithoutASession(t *testing.T) {
 	a.sessionID = ""
 	a.Mu.Unlock()
 
-	assert.ErrorIs(t, a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0), errNoZCodeSession)
+	_, modelErr := a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0)
+	assert.ErrorIs(t, modelErr, errNoZCodeSession)
 	assert.ErrorIs(t, a.applyZCodeThoughtLevel("high", 0), errNoZCodeSession)
 	assert.ErrorIs(t, a.applyZCodeMode(contracts.ZCodeModePlan, 0), errNoZCodeSession)
 }
@@ -625,7 +677,7 @@ func TestApplyZCodeModel_RefusesAnUnknownModelWithoutAnRPC(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
 
-	err := a.applyZCodeModel("nope", a.thoughtLevel, 0)
+	_, err := a.applyZCodeModel("nope", a.thoughtLevel, 0)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nope", "the message must name the id, because the usual cause is a stale configuration")
 	assert.Empty(t, stdin.Frames(), "an unresolvable model must not reach the wire")
@@ -659,7 +711,7 @@ func TestApplyZCodeModel_OverlayCarriesTheLevelAndAutoResolvesTheDefault(t *test
 			// No reply ever arrives, so the call returns a context error. The REQUEST is
 			// what this test is about.
 			a.CancelForTest()
-			_ = a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0)
+			_, _ = a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0)
 
 			requests := stdin.Requests(t)
 			require.Len(t, requests, 1)
@@ -675,6 +727,8 @@ func TestApplyZCodeModel_OverlayCarriesTheLevelAndAutoResolvesTheDefault(t *test
 			assert.Equal(t, want, params.RuntimeModel.ThoughtLevel)
 			require.NotNil(t, params.RuntimeModel.Provider.APIKey)
 			assert.Equal(t, "zai-key", params.RuntimeModel.Provider.APIKey.Value)
+			assert.NotContains(t, string(requests[0].Params), "persistAsWorkspaceLastUsed",
+				"the legacy runtime-model request keeps its own shape")
 		})
 	}
 }
@@ -700,13 +754,16 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
     }`)
 
 	a.CancelForTest()
-	_ = a.applyZCodeModel("account:zai-individual-coding-plan/GLM-5.3", a.thoughtLevel, 0)
+	_, _ = a.applyZCodeModel("account:zai-individual-coding-plan/GLM-5.3", a.thoughtLevel, 0)
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
 	var params map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
 	assert.NotContains(t, params, "runtimeModel", "ZCode 0.16.9 rejects this legacy field")
+	var persist bool
+	require.NoError(t, json.Unmarshal(params["persistAsWorkspaceLastUsed"], &persist))
+	assert.False(t, persist, "a model switch must not change the workspace default")
 	var model struct {
 		zcodeModelRef
 		Options struct {
@@ -727,7 +784,7 @@ func TestApplyZCodeModel_OverlayOmitsTheLevelWhenTheModelDeclaresNoDefault(t *te
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
 	a.CancelForTest()
-	_ = a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, 0)
+	_, _ = a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, 0)
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
@@ -739,7 +796,8 @@ func TestApplyZCodeModel_OverlayOmitsTheLevelWhenTheModelDeclaresNoDefault(t *te
 }
 
 // The parameter is REQUIRED even though the app-server's schema marks it optional:
-// its handler throws for a missing value.
+// its handler throws for a missing value. persistAsWorkspaceLastUsed is sent
+// explicitly, so a thought-level change never rewrites the workspace default.
 func TestApplyZCodeThoughtLevel_AlwaysSendsTheLevel(t *testing.T) {
 	t.Parallel()
 
@@ -755,6 +813,8 @@ func TestApplyZCodeThoughtLevel_AlwaysSendsTheLevel(t *testing.T) {
 	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
 	assert.Equal(t, "max", params["thoughtLevel"])
 	assert.Equal(t, "sess-1", params["sessionId"])
+	assert.Equal(t, false, params["persistAsWorkspaceLastUsed"],
+		"a thought-level change must not change the workspace default")
 }
 
 func TestApplyZCodeMode_SendsTheModeAndAppliesNoLocalValue(t *testing.T) {
@@ -873,6 +933,40 @@ func TestNewInvalidZCodeModelError_NamesTheModel(t *testing.T) {
 	assert.Contains(t, newInvalidZCodeModelError("p/m").Error(), `"p/m"`)
 }
 
+// Ladder exhaustion must not restart the agent into the same rejected pair. The
+// edit reports the observed live values instead, with the model and the
+// unattempted effort left unresolved, and the live catalog metadata stands.
+func TestZCodeUpdateSettings_LadderExhaustionKeepsTheObservedSettingsWithoutARestart(t *testing.T) {
+	t.Parallel()
+
+	a, stdin := zcodeAgentOnTheWideModel(t, "max")
+	runZCodeSetModelScript(a, stdin,
+		zcodeSetModelRejectLevel("account:p/narrow"),
+		zcodeSetModelRejectMissingLevel("account:p/narrow"),
+		zcodeSetModelRejectLevel("account:p/narrow"),
+	)
+	done := updateZCodeSettings(a, map[string]string{agent.OptionIDModel: "account:p/narrow", agent.OptionIDEffort: "low"})
+	result := receiveZCodeResult(t, done)
+
+	require.Len(t, zcodeSetModelAttempts(t, stdin), 3, "the whole ladder runs before the switch gives up")
+	requireNoZCodeThoughtLevelRequest(t, stdin, "the unattempted effort is never sent")
+
+	assert.True(t, result.AppliedLive, "exhaustion returns the observed settings instead of a restart")
+	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[agent.OptionIDModel].State)
+	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[agent.OptionIDEffort].State)
+	assert.NotContains(t, result.ConfirmedOptions(), agent.OptionIDModel)
+	assert.NotContains(t, result.ConfirmedOptions(), agent.OptionIDEffort)
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "account:p/wide", a.model, "the observed model stands")
+	assert.Equal(t, "max", a.thoughtLevel, "the observed level stands")
+	narrow := a.liveModels["account:p/narrow"]
+	require.NotNil(t, narrow.info)
+	assert.Equal(t, int64(128000), narrow.info.ContextWindow, "the live catalog metadata survives exhaustion")
+	assert.Equal(t, []string{zcodeModalityText}, narrow.modalities, "the modality metadata survives exhaustion")
+}
+
 // The setter must keep settings.model.current from the reply, never the id it asked
 // for. Overwriting after the snapshot would report a model the session does not have
 // whenever the app-server clamps the request.
@@ -885,7 +979,8 @@ func TestApplyZCodeModel_ReportsTheObservedModel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, time.Second)
+		_, err := a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, time.Second)
+		errCh <- err
 	}()
 
 	req := waitZCodeRequest(t, stdin, MethodSetModel)
@@ -1287,6 +1382,7 @@ func TestZCodePlanFlag_APayloadWithoutAModeAndABooleanFlagIsNotAModeChange(t *te
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 	for i, payload := range []string{
 		`{"mode":"yolo"}`,
@@ -1829,6 +1925,7 @@ func TestZCodeDeferPlanExitModeIsDroppedWhenTheUsersTurnEnds(t *testing.T) {
 		t.Parallel()
 		a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
 		a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+		zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
 		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{}`))
 
@@ -1839,9 +1936,7 @@ func TestZCodeDeferPlanExitModeIsDroppedWhenTheUsersTurnEnds(t *testing.T) {
 		t.Parallel()
 		a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
 		a.DeferPlanExitMode(contracts.ZCodeModeYolo)
-		a.Mu.Lock()
-		a.backgroundTurn = true
-		a.Mu.Unlock()
+		zcodeStartTestTurn(t, a, `{"turnNumber":1,"inputSource":"background_task"}`)
 
 		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{}`))
 
